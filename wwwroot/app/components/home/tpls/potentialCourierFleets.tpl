@@ -14,7 +14,8 @@
 
 <table class="table table-striped table-responsive table-rows" id="potentialCourierFleets" data-group="couriers">
     <tbody>
-    <tr class="clickable-row noselect draggable-row droppable-row" data-isCourier="1" ng-repeat="fleet in fleetGroups | filter: box.searchBox" ng-mouseup="showCouriers(fleet)" data-courier="{{fleet.name}}">
+	<!-- draggable-row droppable-row -->
+    <tr class="clickable-row noselect " data-isCourier="1" ng-repeat="fleet in fleetGroups | filter: box.searchBox" ng-mouseup="showCouriers(fleet)" data-courier="{{fleet.name}}">
         <td>{{fleet.name}}</td>
     </tr>
     </tbody>

@@ -17,8 +17,14 @@
             </div>
             <div ng-switch-when="select">
 
-               <select name="{{field.name}}" id="gather-{{field.name}}" ng-options="option as option.label for option in field.options track by option.id" ng-model="field.value" class="form-control focusMe">
-               </select>
+               <!--<select name="{{field.name}}" id="gather-{{field.name}}" ng-options="option as option.label for option in field.options track by option.id" ng-model="field.value" class="form-control focusMe">
+			   <option value="">-- please choose the run to transfer --</option>
+			   </select> -->
+
+			   <select name="{{field.name}}" id="gather-{{field.name}}" ng-model="field.value" class="form-control focusMe">
+			   <option value="">-- please choose the run to transfer --</option>
+			   <option ng-repeat="option in field.options track by option.id" value="{{option.id}}" ng-style="{'background': option.color}">{{option.label}}</option> 
+			   </select>
 
             </div>
           </div>

@@ -178,4 +178,10 @@ public partial class TblBulkJob
     public int? DropOffLocationId { get; set; }
 
     public decimal? CourierPercentageOverride { get; set; }
+
+    public string ClientItemIds { get; set; }
+
+    public int? BulkParentId { get; set; }
+
+    public virtual ICollection<TblBulkJobRun> TblBulkJobRuns { get; set; } = new List<TblBulkJobRun>();
 }

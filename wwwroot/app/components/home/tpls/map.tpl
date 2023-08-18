@@ -29,7 +29,7 @@
         map = new google.maps.Map(document.getElementById("map_canvas"), myOptions);
         directionsDisplay.setMap(map);
     }
-	window.addEventListener('load', initialize);
+    google.maps.event.addDomListener(window, 'load', initialize);
 
 
 	var markersArray = [];
@@ -370,7 +370,7 @@
 					addGreyClickHandler(marker);
                 }
 
-	   setMapBounds();  
+	   setMapBounds();  	
 	   angular.element(".columns").scope().$apply();
 	   $("#box-map .loading").fadeOut();
 	}

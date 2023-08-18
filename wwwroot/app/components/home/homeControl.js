@@ -1,6 +1,6 @@
 angular
     .module('uRuns')
-    .controller('HomeControl', ['$scope', 'uRunData', "$state", "$filter", '$parse', "hotkeys", 'NgMap','GeoCoder', '$timeout', '$q', function ($scope, uRunData, $state, $filter, $parse, hotkeys, NgMap, GeoCoder, $timeout, $q) {
+    .controller('HomeControl', ['$scope', 'uRunData', "$state", "$filter", '$parse', "hotkeys", 'NgMap', 'GeoCoder', '$timeout', '$q', '$ngConfirm', function ($scope, uRunData, $state, $filter, $parse, hotkeys, NgMap, GeoCoder, $timeout, $q, $ngConfirm) {
 
         $scope.gather = {
             submit: function () {
@@ -13,11 +13,13 @@ angular
             },
             showForm: function () {
                 $(".gatherForm").show(0, function () {
-                    setTimeout(function () { $(".gatherForm .focusMe").focus(); }, 100);
+                    //setTimeout(function () { $(".gatherForm .focusMe").focus(); }, 0);
+                    // This will force the scopde to be updated to prevent missing data in the scope
+                    $timeout(function () { $(".gatherForm .focusMe").focus(); }, 0);
                 });
             },
             submitValue: "Save"
-        }
+        };
 
         $scope.options = {
             "detail": {
@@ -40,7 +42,7 @@ angular
                     }
                 ]
             }
-        }
+        };
 
 
         $scope.boxes = {
@@ -167,16 +169,16 @@ angular
 
                 ]
             },
-            "map": {
-                "title": "Google Map",
-                "tpl": "app/components/home/tpls/map.tpl",
-                "showSearch": 0
-            }
-            //  "map": {
-            //    "title": "Here Map",
-            //    "tpl": "app/components/home/tpls/HereMap.tpl",
+            //"map": {
+            //    "title": "Google Map",
+            //    "tpl": "app/components/home/tpls/map.tpl",
             //    "showSearch": 0
             //}
+            "map": {
+                "title": "Here Map",
+                "tpl": "app/components/home/tpls/HereMap.tpl",
+                "showSearch": 0
+            }
         };
 
         ///////////////////////////////
@@ -260,7 +262,7 @@ angular
 
             });
             //$scope.$apply();
-        }
+        };
 
         $scope.saveLayout = function () {
 
@@ -296,9 +298,9 @@ angular
                     //DO THE API CALL
                     uRunData.doAPI(callData).then(function (data) {
 
-                        console.log(data);
+                        //console.log(data);
 
-                        if (data.response == "Success") {
+                        if (data.response === "Success") {
 
                             $scope.layouts = $scope.layouts.concat(
                                 {
@@ -321,11 +323,11 @@ angular
 
                 },
                 submitValue: "Save"
-            }
+            };
 
             $scope.gather.showForm();
 
-        }
+        };
 
         $scope.sortableOptions = {
             connectWith: ".column-sortable",
@@ -374,7 +376,7 @@ angular
 
             }
 
-        }
+        };
 
 
         //Column Sorting
@@ -382,7 +384,7 @@ angular
         $scope.orderList = function (list, prop) {
 
 
-            if ($scope.sort[list] != prop) {
+            if ($scope.sort[list] !== prop) {
                 $scope.sort[list] = prop;
                 $scope[list] = $filter('orderBy')($scope[list], prop);
             } else {
@@ -390,43 +392,95 @@ angular
                 $scope[list] = $filter('orderBy')($scope[list], "-" + prop);
             }
 
-            if (list == "runbuilder") {
+            if (list === "runbuilder") {
                 $filter('filter')($scope.runList, { 'isActive': 1 })[0].jobs = $scope.runBuilder;
             }
 
-        }
+        };
 
         $scope.pickDateService = {
             "clients": [],
-            "region": [],
+            "regions": [],
+            "ourRefs": [],
             "service": [],
             "status": [],
+            "speeds": [],
             "settings": {
                 "enableSearch": true,
-                "selectedToTop": true
+                "selectedToTop": true,
+                "scrollableHeight": '300px',
+                "scrollable": true
+            },
+            "stringSettings": {
+                "template": '{{option}}',
+                smartButtonTextConverter(skip, option) { return option; },
+                "enableSearch": true,
+                "selectedToTop": true,
+                "scrollableHeight": '300px',
+                "scrollable": true
             },
             "date": moment().format("YYYY-MM-DD")
         };
+
+        // Refresh the ourRef list
+        $scope.$watch('pickDateService.date', function (newValue, oldValue, scope) {
+            $scope.getFilter();
+        }, true);
 
         $scope.doPickDateService = function () {
             //console.log("bro");
             //console.log($scope.pickDateService);
             $scope.dateService = 0;
             $scope.getData(1);
-        }
+        };
 
         $scope.openPickDateService = function () {
             $scope.dateService = 1;
+            $('.dateServiceForm').show();
             //console.log("happening");
-        }
+        };
+
+        $scope.cancelPickDateService = function () {
+            $scope.dateService = 0;
+            $('.dateServiceForm').hide();
+        };
 
         uRunData.getDateService().then(function (data) {
             //    $scope.pickServices = data.services;
             //    $scope.pickRegions = data.regions;
             //    $scope.pickStatuses = data.statuses;
             $scope.pickClients = data.response.clients;
+            $scope.getFilter();
+            $scope.getRegions();
+            $scope.getSpeeds();
         });
 
+        $scope.getFilter = function () {
+            uRunData.getFilter(moment($scope.pickDateService.date)).then(function (data) {
+                $scope.pickOurRefs = data.OurRefs;
+            });
+        }
+
+        $scope.getRegions = function () {
+            uRunData.getRegionList(moment($scope.pickDateService.date)).then(function (data) {
+                $scope.pickRegions = data;
+            });
+        };
+
+        $scope.getSpeeds = function () {
+            uRunData.getSpeedList(moment($scope.pickDateService.date)).then(function (data) {
+                $scope.pickSpeeds = data;
+            });
+        };
+
+        // Sync EH and HD jobs by creating a copy of bulk job with JobID
+        $scope.syncHDJobs = function () {
+            if (confirm('Do you want to sync all EH/HD jobs from live?')) {
+                uRunData.syncHDJobs(moment($scope.pickDateService.date)).then(function (data) {
+                    $scope.getData(1);
+                });
+            }
+        }
 
         ///////////////////////////
         // HOTKEYS 
@@ -506,10 +560,10 @@ angular
                     $scope.dispatchJobs($("#gather-courierNumber").val());
                 },
                 submitValue: "Dispatch"
-            }
+            };
             $scope.gather.showForm();
 
-        }
+        };
 
         ////////////////////////////////////////
         // DISPATCH THE JOBS
@@ -520,7 +574,7 @@ angular
                 "call": "dispatchJobs",
                 "courier": courier,
                 "jobs": []
-            }
+            };
 
             $(".activeTable .active").each(function () {
                 callData.jobs.push($(this).attr("data-jobid"));
@@ -529,35 +583,24 @@ angular
             //DO THE API CALL
             uRunData.doAPI(callData).then(function (data) {
 
-                console.log(data);
-
-
-
-                if (data.response == "Success") {
+                //console.log(data);
+                if (data.response === "Success") {
 
                     var list = $(".activeTable").attr("id");
 
                     setTimeout(function () {
-
                         $(".activeTable .active").each(function () {
-
                             //$(this).hide();
                             $(this).find(".selectjob").click();
 
                             var index = $scope[list].indexOf($scope.jobToRunBuilder);
-                            console.log(index);
+                            //console.log(index);
                             $scope[list].splice(index, 1);
                             $scope.$apply();
-
                         });
-
-
-
                     }, 0);
 
-                    if ($(".activeTable").attr("data-group") == "jobsGrouped") {
-
-
+                    if ($(".activeTable").attr("data-group") === "jobsGrouped") {
                     } else {
                         $scope.currentJob = false;
                         $scope.currentCourier = false;
@@ -575,7 +618,7 @@ angular
 
             });
 
-        }
+        };
 
 
 
@@ -628,7 +671,7 @@ angular
 
 
             });
-        }
+        };
 
         $scope.showCouriers = function (fleet) {
 
@@ -637,7 +680,7 @@ angular
             setTimeout(function () { sizeHeadings($("#potentialCouriers").parents(".column")); }, 1000);
             $("#box-potentialCouriers .loading").fadeOut();
 
-        }
+        };
 
         //////////////////////////////
         /// RUN BUILDER 
@@ -672,29 +715,20 @@ angular
 
             }, 0);
 
-        }
+        };
 
-
-
-
-        $scope.updateRun = function () {
+        $scope.updateRun = function (manualRoute) {
+            $scope.defaultRunID = null;
             $scope.defaultRun = [];
             $scope.defaultRunStart = null;
             $scope.defaultRunEnd = null;
             $scope.defaultRouteResponse = null;
 
-            //Refresh the run list 
-            $filter('filter')($scope.runList, { 'isActive': 1 })[0].jobs = $scope.runBuilder;
-
-            //// Get default route response from the saved data
-            //if ($filter('filter')($scope.runList, { 'isActive': 1 })) {
-            //    //console.log($filter('filter')($scope.runList, {'isActive':1})[0]);
-            //    if ($filter('filter')($scope.runList, { 'isActive': 1 })[0] && $filter('filter')($scope.runList, { 'isActive': 1 })[0].RunChanged == false) {
-            //        $scope.defaultRouteResponse = $filter('filter')($scope.runList, { 'isActive': 1 })[0].GoogleRouteResponse;
-            //        $scope.updatePotentialJobs();
-            //        return;
-            //    }
-            //}
+            if (typeof $filter('filter')($scope.runList, { 'isActive': 1 })[0] !== 'undefined') {
+                //Refresh the run list 
+                $filter('filter')($scope.runList, { 'isActive': 1 })[0].jobs = $scope.runBuilder;
+                $scope.defaultRunID = $filter('filter')($scope.runList, { 'isActive': 1 })[0].ID;
+            }
 
             angular.forEach($scope.runBuilder, function (value, key) {
 
@@ -702,13 +736,13 @@ angular
                 //$scope.defaultRunStart = {lat: -36.9227077, lng: 174.81272650000005}
 
                 // Use the first from lat and lng
-                if (key == 0) {
+                if (key === 0) {
                     $scope.defaultRunStart = { lat: value.fromLat, lng: value.fromLng };
                 }
 
-                if (value.isEnd == 1) {
+                if (value.isEnd === 1) {
 
-                    $scope.defaultRunEnd = { lat: value.toLat, lng: value.toLng };
+                    $scope.defaultRunEnd = { lat: value.toLat, lng: value.toLng }
 
                 } else if (value.toLat && value.toLng) {
                     $scope.defaultRun.push({ lat: value.toLat, lng: value.toLng });
@@ -717,20 +751,63 @@ angular
             });
 
 
-            if ($scope.defaultRunEnd == null) {
+            if ($scope.defaultRunEnd === null) {
                 $scope.defaultRunEnd = angular.copy($scope.defaultRun[$scope.defaultRun.length - 1]);
                 $scope.defaultRun.splice($scope.defaultRun.length - 1, 1);
             }
 
-            //if ($scope.defaultRun.length > 0) {
-            //	calcRoute();
-            //}
-
-            $scope.updatePotentialJobs();
+            $scope.updatePotentialJobs(manualRoute);
         };
 
 
-        $scope.addToRunFromMap = function (lat, lng, jn) {
+        $scope.transferToAnotherRunFromMap = function (jobID, fromRunID) {
+
+            // remove the self run from the list
+            var options = $scope.multiSelectedRuns.filter(x => x.id != fromRunID);
+
+            $scope.gather.form = {
+                id: "transferToRun",
+                title: "Transfer to Run",
+                fields: [
+                    {
+                        "name": "transferToRunName",
+                        "type": "select",
+                        "options": options, //$scope.multiSelectedRuns,
+                        "jobID": jobID,
+                        "fromRunID": fromRunID
+                    }
+                ],
+                onSubmit: function () {
+                    $scope.updateJobToRun($scope.gather.form.fields[0].jobID, $scope.gather.form.fields[0].fromRunID, $scope.gather.form.fields[0].value);
+                },
+                submitValue: "Transfer Job"
+            }
+
+            $scope.gather.showForm();
+        }
+
+        $scope.updateJobToRun = function (jobID, fromRunID, toRunID) {
+            $scope.jobToTransfer = { jobID: jobID, fromRunID: fromRunID, runID: toRunID };
+            // Update job with the new runID
+            uRunData.updateJobToRun($scope.jobToTransfer).then(function (data) {
+
+                var jobToUpdateFromRun = $filter('filter')($scope.runJobsAll, { 'BulkJobID': $scope.jobToTransfer.jobID }, true)[0];
+                jobToUpdateFromRun.BulkJobRunID = $scope.jobToTransfer.jobID;
+
+                // remove job from the old run 
+                var fromRunList = $filter('filter')($scope.runList, { 'ID': $scope.jobToTransfer.fromRunID })[0];
+                fromRunList.jobs.splice(fromRunList.jobs.indexOf(jobToUpdateFromRun), 1);
+
+                // add job into the new run
+                var toRunList = $filter('filter')($scope.runList, { 'ID': $scope.jobToTransfer.runID })[0];
+                toRunList.jobs.push(jobToUpdateFromRun);
+
+                $scope.jobToTransfer = {};
+                $scope.updateRun();
+            });
+        }
+
+        $scope.addToRunFromMap = function (lat, lng, jn, jobID, toRunID) {
 
             $scope.runBuilder.push($filter('filter')($scope.jobList, { 'JobNumber': jn })[0]);
 
@@ -738,10 +815,16 @@ angular
             $filter('filter')($scope.jobList, { 'JobNumber': jn })[0].inBuilder = 1;
             $filter('filter')($scope.runBuilder, { 'JobNumber': jn })[0].inBuilder = 1;
 
-            $scope.updateRun();
-
-        }
-
+            // if add to run ID is not null, then add this job into the lock run
+            if (toRunID) {
+                // Update job with the new runID
+                uRunData.updateJobToRun({ jobID: jobID, runID: toRunID }).then(function (data) {
+                    $scope.updateRun();
+                });
+            } else {
+                $scope.updateRun();
+            }
+        };
 
         $scope.selectJobFromMap = function (lat, lng) {
 
@@ -761,26 +844,30 @@ angular
             var $innerListItem = $("#job-" + closestJob.JobNumber);
 
             $("#job-" + closestJob.JobNumber).addClass("active").click();
-
         }
 
 
-        $scope.removeJobFromMap = function (lat, lng) {
+        $scope.removeJobFromMap = function (lat, lng, jobID) {
+            //var toCompare = [];
 
-            var toCompare = [];
+            //angular.forEach($scope.runBuilder, function (job, key) {
+            //    toCompare.push([key, job.toLat, job.toLng]);
+            //});
 
-            angular.forEach($scope.runBuilder, function (job, key) {
-                toCompare.push([key, job.toLat, job.toLng]);
-            });
+            //var closestIndex = closestLocation(lat, lng, toCompare);
 
-            var closestIndex = closestLocation(lat, lng, toCompare);
+            //var closestJob = $scope.runBuilder[closestIndex[0]];
 
-            var closestJob = $scope.runBuilder[closestIndex[0]];
+            //$scope.deleteFromRun(closestJob, 1);
 
-            $scope.deleteFromRun(closestJob, 1);
+            var jobToRemoveFromRun = $filter('filter')($scope.runJobsAll, { 'BulkJobID': jobID }, true)[0];
+            jobToRemoveFromRun.inBuilder = 0;
+            jobToRemoveFromRun.BulkJobRunID = 0;
 
-
-
+            var index = $scope.runBuilder.indexOf(jobToRemoveFromRun);
+            if (index >= 0) {
+                $scope.deleteFromRun(jobToRemoveFromRun, 1);
+            }
         }
 
 
@@ -802,9 +889,9 @@ angular
 
             closestJob.isStart = 0;
             closestJob.isEnd = 1;
-            $scope.updateRun();
+            $scope.updateRun(1); // manualRoute = 1
 
-        }
+        };
 
 
 
@@ -828,7 +915,7 @@ angular
             closestJob.isStart = 1;
             $scope.updateRun();
 
-        }
+        };
 
 
 
@@ -867,21 +954,39 @@ angular
         ];
 
         $scope.deleteFromRun = function (job, fromBuilder) {
-
-            $filter('filter')($scope.runJobsAll, { 'JobNumber': job.JobNumber },true)[0].inBuilder = 0;
+            var jobToRemoveFromRun = $filter('filter')($scope.runJobsAll, { 'JobNumber': job.JobNumber }, true)[0];
+            jobToRemoveFromRun.inBuilder = 0;
+            jobToRemoveFromRun.BulkJobRunID = 0;
 
             if (fromBuilder == 1) {
+                var selectedRun = $filter('filter')($scope.runList, { 'name': job.RunName }, true)[0];
+                if (selectedRun !== undefined && selectedRun != null && selectedRun.ID > 0) {
+                    if (confirm('Are you sure you want to remove this job from the locked run?')) {
+                        $scope.removeJobFromRun(job.BulkJobID);
+                    }
+                } else {
+                    var index = $scope.runBuilder.indexOf(job);
+                    $scope.runBuilder.splice(index, 1);
+                    $scope.updateRun();
+                }
+            }
+        };
 
-                var index = $scope.runBuilder.indexOf(job);
-                $scope.runBuilder.splice(index, 1);
+        $scope.removeJobFromRun = function (jobID) {
+            // Update job with the new runID
+            uRunData.removeJobFromRun({ jobID: jobID }).then(function (data) {
+                var jobToRemoveFromRun = $filter('filter')($scope.runJobsAll, { 'BulkJobID': jobID }, true)[0];
+                jobToRemoveFromRun.inBuilder = 0;
+                jobToRemoveFromRun.BulkJobRunID = 0;
 
+                var index = $scope.runBuilder.indexOf(jobToRemoveFromRun);
+                if (index >= 0) {
+                    $scope.runBuilder.splice(index, 1);
+                }
 
                 $scope.updateRun();
-            }
-
-        }
-
-
+            });
+        };
 
         $scope.addToRunBuilder = function (job) {
 
@@ -892,10 +997,10 @@ angular
             var index = $scope[list].indexOf(job);
             $scope[list][index].inBuilder = 1;
 
-            var index = $scope.runJobsAll.indexOf(job);
-            $scope.runJobsAll[index].inBuilder = 1;
+            var runJobsAllindex = $scope.runJobsAll.indexOf(job);
+            $scope.runJobsAll[runJobsAllindex].inBuilder = 1;
 
-        }
+        };
 
         $scope.addGroupToRunBuilder = function (jobs) {
 
@@ -911,14 +1016,14 @@ angular
                     jobs[index].inBuilder = 1;
                     //group.jobs.splice(index, 1);
 
-                    var index = $scope.runJobsAll.indexOf(job);
-                    $scope.runJobsAll[index].inBuilder = 1;
+                    var indexInAllJobs = $scope.runJobsAll.indexOf(job);
+                    $scope.runJobsAll[indexInAllJobs].inBuilder = 1;
                     //$scope.runJobsAll.splice(index, 1);
                 }
 
             });
 
-        }
+        };
 
         ////////////////////////
         // RUN LIST 
@@ -993,7 +1098,7 @@ angular
             angular.forEach($scope.runList, function (list, key) {
                 angular.forEach(list.jobs, function (job, key) {
                     setTimeout(function () {
-                        $filter('filter')($scope.runJobsAll, j => j.JobNumber == job.JobNumber)[0].inBuilder = 1;
+                        $filter('filter')($scope.runJobsAll, j => j.JobNumber === job.JobNumber)[0].inBuilder = 1;
                     }, 0);
                 });
             });
@@ -1032,12 +1137,29 @@ angular
             //	localStorage.setItem('runList',JSON.stringify(newValue));
 
             //}, true);
-        }
+        };
 
         //$scope.getPotentialCouriers();
 
         $scope.sendTo = function (path) {
             $("#box-runList").find(".loading").show();
+
+            // Check any unlocked runs in the list
+            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null)).length > 0) {
+                alert("Unlocked runs found! Please make sure all runs are locked and try it again!");
+                $("#box-runList").find(".loading").fadeOut();
+                return false;
+            }
+
+            // Check client filter is on or not
+            if ($scope.pickDateService.clients.length > 0) {
+                var confirmSendJobWithClientFilterOn = confirm("Warning: The client filter is on, are you sure you want to insert these runs?");
+                if (confirmSendJobWithClientFilterOn === false) {
+                    $("#box-runList").find(".loading").fadeOut();
+                    return false;
+                }
+            }
+
             var i = 0;
             //// Check whether all jobs get despatched to a courier
             //angular.forEach($scope.runList, function (run, key) {
@@ -1046,6 +1168,8 @@ angular
             //    }
             //});
             //i = $scope.runList.filter(runs => runs.jobs.length > 0 && !runs.courier.courier).length;
+
+
 
             var totalJobs = 0;
             // Continue when all jobs are despatched to courier
@@ -1069,12 +1193,12 @@ angular
             // copy real job array from runlist
             var buildedRunList = $scope.runList.filter(r => r.jobs.length > 0);
             // Replace Jobs to just what we need
-            angular.forEach(buildedRunList, function(run, key) {
+            angular.forEach(buildedRunList, function (run, key) {
                 run.jobs = run.jobs.map(x => {
                     return {
                         BulkJobID: x.BulkJobID,
                         BuilderIndex: x.BuilderIndex
-                    }
+                    };
                 });
             });
 
@@ -1094,7 +1218,7 @@ angular
                         }
                     }
 
-                    $("#box-jobsList .loading").fadeOut();
+                    $("#box-runList").find(".loading").fadeOut();
 
                     // Clear Storage and reset all job list
                     if (totalJobs == successTotal) {
@@ -1113,10 +1237,113 @@ angular
                 });
             } else {
                 alert("You can not send until all jobs are allocated");
+                $("#box-runList").find(".loading").fadeOut();
+            }
+        };
+
+        // Only send selected runs into live
+        $scope.sendSelectedJobsToLive = function () {
+            $("#box-runList").find(".loading").show();
+
+            // Check client filter is on or not
+            var confirmSendSelectedJobsOnly = confirm("Warning: Are you sure you want to insert selected runs only?");
+            if (confirmSendSelectedJobsOnly === false) {
+                $("#box-runList").find(".loading").fadeOut();
+                return false;
             }
 
-            $("#box-jobsList .loading").fadeOut();
-        }
+            // Check any unlocked runs in the list
+            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null)).length > 0) {
+                alert("Unlocked runs found! Please make sure all runs are locked and try it again!");
+                $("#box-runList").find(".loading").fadeOut();
+                return false;
+            }
+
+            //var i = 0;
+            //// Check whether all jobs get despatched to a courier
+            //angular.forEach($scope.runList, function (run, key) {
+            //    if (run.jobs.length > 0 && !run.courier.courier) {
+            //        i++;
+            //    }
+            //});
+            //i = $scope.runList.filter(runs => runs.jobs.length > 0 && !runs.courier.courier).length;
+
+            var totalJobs = 0;
+            //// Continue when all jobs are despatched to courier
+            //if (i == 0) {
+            //    angular.forEach($scope.groupedJobs,
+            //        function (group, key) {
+            //            angular.forEach(group.jobs,
+            //                function (job, jkey) {
+            //                    //Get total jobs varaiable
+            //                    totalJobs++;
+            //                    if (!job.inBuilder) {
+            //                        job.inBuilder = 0;
+            //                    }
+            //                    if (job.inBuilder == 0) {
+            //                        i++;
+            //                    }
+            //                });
+            //        });
+            //}
+
+            var selectedBuildedRunList = [];
+            $("#box-runList .active").each(function () {
+                let currentRun = $(this).scope().run;
+                if (currentRun.jobs.length > 0 && currentRun.locked == 1) {
+                    selectedBuildedRunList.push(currentRun);
+                    totalJobs += currentRun.jobs.length;
+                };
+            });
+
+            // Replace Jobs to just what we need
+            angular.forEach(selectedBuildedRunList, function (run, key) {
+                run.jobs = run.jobs.map(x => {
+                    return {
+                        BulkJobID: x.BulkJobID,
+                        BuilderIndex: x.BuilderIndex
+                    };
+                });
+            });
+
+            // Send to live when all jobs are routed 
+            //if (i == 0) {
+            //console.log("SEND IT!");
+            uRunData.doAPI("/Job/InsertRunJobs", JSON.stringify(selectedBuildedRunList)).then(function (data) {
+                //alert("Job Inserted " + response);
+                //var totalJobs = $scope.runList[0].jobs.length;
+                var alertHtml = "";
+                var successTotal = 0;
+                for (var j = 0; j < data.response.length; j++) {
+                    if (data.response[j].Result == "Success") {
+                        successTotal++;
+                    } else {
+                        alertHtml += data.response[j].Message + "\n";
+                    }
+                }
+
+                $("#box-runList").find(".loading").fadeOut();
+
+                // Clear Storage and reset all job list
+                if (totalJobs == successTotal) {
+                    alert(successTotal + " Job Inserted Successfully");
+                    $scope.getData(1);
+                } else {
+
+                    var failedTotal = totalJobs - successTotal;
+                    var message = successTotal + " Job Inserted Successfully, while " + failedTotal + " Failed \n\n";
+                    var alterMessage = message + alertHtml;
+                    alert(alterMessage);
+                }
+
+                $(".gpsForm").hide(0);
+
+            });
+            //} else {
+            //    alert("You can not send until all jobs are allocated");
+            //    $("#box-runList").find(".loading").fadeOut();
+            //}
+        };
 
         $scope.runListMenu = [
             // Edit Name
@@ -1135,19 +1362,27 @@ angular
                             }
                         ],
                         onSubmit: function () {
-
                             var newName = $("#editName").find("input").val();
                             $itemScope.run.name = newName;
 
+                            // If the run is locked and has id, then update the run
+                            if ($itemScope.run.locked && $itemScope.run.ID) $scope.updateBulkRun($itemScope.run);
+
                         },
                         submitValue: "Save"
-                    }
+                    };
 
                     $scope.gather.showForm();
 
-                }
+                },
+                //// Enable for unlocked runs only
+                //enabled: function ($itemScope, $event, modelValue, text, $li) {
+                //    // enabled = true, disabled = false
+                //    if ($itemScope.run.locked) return false;
+                //    return true;
+                //}
             },
-            // Edit Name
+            // Merge selected run to another run
             {
                 text: 'Merge selected run to another run',
                 click: function ($itemScope, $event, modelValue, text, $li) {
@@ -1158,28 +1393,35 @@ angular
                             {
                                 "name": "mergeRun",
                                 "label": "Run Name Merge to",
-                                "value":  $itemScope.run.name
+                                "value": $itemScope.run.name
                             }
                         ],
                         onSubmit: function () {
                             // Get run name merge to
                             setTimeout(function () {
-                                var runNameMergeTo = $("#mergeRun").find("input").val();
+                                var runNameMergeTo = $scope.gather.form.fields[0].value;
+                                //var runNameMergeTo = $("#mergeRun").find("input").val();
+
+                                // reverse when merge with itself
+                                if (runNameMergeTo.toLowerCase() === $itemScope.run.name.toLowerCase()) {
+                                    alert("Error: " + runNameMergeTo + " can not merge with itself, please choose a different run to merge with");
+                                    return false;
+                                }
 
                                 // Get Run merge to
                                 //var runMergeTo = $scope.runList.find(x => x.name.toLowerCase() == runNameMergeTo.toLowerCase());
-                                if ($filter('filter')($scope.runList, function(i){ return i.name.toLowerCase() == runNameMergeTo.toLowerCase()})[0]) {
-                                    
+                                if ($filter('filter')($scope.runList, function (i) { return i.name.toLowerCase() === runNameMergeTo.toLowerCase() })[0]) {
+
                                     // Found the destination run is in lock mode
-                                    if ($filter('filter')($scope.runList, function(i){ return i.name.toLowerCase() == runNameMergeTo.toLowerCase() && i.locked == 1})[0]) {
+                                    if ($filter('filter')($scope.runList, function (i) { return i.name.toLowerCase() === runNameMergeTo.toLowerCase() && i.locked == 1 })[0]) {
                                         alert("Error: " + runNameMergeTo + " has been locked, please un-lock the run before the merging");
                                         return false;
                                     }
 
                                     // Merge current run jobs into the runMergeTo
                                     var runMergeTo = $filter('filter')($scope.runList,
-                                        function(i) {
-                                            return i.name.toLowerCase() == runNameMergeTo.toLowerCase();
+                                        function (i) {
+                                            return i.name.toLowerCase() === runNameMergeTo.toLowerCase();
                                         })[0];
                                     runMergeTo.jobs = runMergeTo.jobs.concat($itemScope.run.jobs);
 
@@ -1187,7 +1429,7 @@ angular
                                     //angular.forEach($itemScope.run.jobs, function (job, key) {
 
                                     //    runMergeTo.jobs.push(job);
-                                        
+
                                     //    var index = $scope.runBuilder.indexOf(job);
                                     //    $scope.runBuilder.splice(index, 1);
                                     //});
@@ -1200,7 +1442,7 @@ angular
                                         $filter('filter')($scope.runList, { 'isActive': 1 })[0].isActive = 0;
                                     }
                                     runMergeTo.isActive = 1;
-                                    
+
                                     $("#runList").find(".active").removeClass("active");
                                     $("#runList").find("[data-runname='" + runMergeTo.name + "']").addClass("active"); //.trigger('click');
 
@@ -1215,7 +1457,7 @@ angular
                                     }
 
                                     $scope.updateRun();
-                                    //$scope.$apply();
+                                    $scope.$apply();
                                 } else {
                                     alert("Error: " + runNameMergeTo + " can not be found!");
                                 }
@@ -1223,17 +1465,28 @@ angular
                             }, 0);
                         },
                         submitValue: "Save"
-                    }
+                    };
 
                     $scope.gather.showForm();
                 }
+
             },
             // Routing run
             {
                 text: 'Route and Lock Run',
                 click: function ($itemScope, $event, modelValue, text, $li) {
-                    $scope.showRun($itemScope.run, 1);
-                    setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 0);
+                    //// Route and lock run
+                    //$scope.showRun($itemScope.run, 1); // 1 = Route the run
+                    //setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 500);
+
+                    //// Route and lock run
+                    $("#box-map").find(".loading").show();
+                    $("#box-runList").find(".loading").show();
+                    $("#box-runBuilder").find(".loading").show();
+                    var runIndex = $scope.runList.indexOf($itemScope.run);
+                    $scope.routeRun(runIndex);
+                    //$scope.showRun($itemScope.run, 1); // 1 = Route the run
+                    //setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 500);
                 }
             },
             // Toggle Run Lock
@@ -1262,7 +1515,7 @@ angular
                     //            } else {
                     //                alert(data.response);  
                     //            }
-                               
+
                     //            return false;
                     //        }
 
@@ -1285,6 +1538,8 @@ angular
 
                     //    setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 0);
                     //}
+                    $("#box-map").find(".loading").show();
+                    $("#box-runList").find(".loading").show();
 
                     $scope.toggleRunLock($itemScope.run);
                 }
@@ -1295,7 +1550,7 @@ angular
                 click: function ($itemScope, $event, modelValue, text, $li) {
                     setTimeout(function () {
 
-                        console.log($itemScope);
+                        //console.log($itemScope);
                         angular.forEach($itemScope.run.jobs, function (job, key) {
                             $scope.deleteFromRun(job);
                         });
@@ -1313,66 +1568,149 @@ angular
                             $scope.activateRunListDrop();
                         }
 
+                        // select Run1 as the default select run after delete 
+                        $scope.runList[0].isActive = 1;
+
                         $scope.$apply();
-
                     }, 0);
-
+                },
+                // Enable for unlocked runs only
+                enabled: function ($itemScope, $event, modelValue, text, $li) {
+                    // enabled = true, disabled = false
+                    if ($itemScope.run.locked) return false;
+                    return true;
+                }
+            },
+            {
+                text: 'Send Selected Runs To Live',
+                click: function ($itemScope, $event, modelValue, text, $li) {
+                    $scope.sendSelectedJobsToLive();
+                },
+                // Enable for locked runs only
+                enabled: function ($itemScope, $event, modelValue, text, $li) {
+                    // enabled = true, disabled = false
+                    if (!$itemScope.run.locked) return false;
+                    return true;
                 }
             }
         ];
 
         // Lock run
-        $scope.toggleRunLock = function(run) {
-            if (run.locked != 1) {
-                // Check all jobs get RunOrders before lock the run
-                var unRoutJobs = run.jobs.filter(j => j.BuilderIndex == null || j.BuilderIndex == "undefined");
-                if (unRoutJobs.length > 0) {
-                    if (!confirm('Are you sure you want to lock this un-route run into the database?')) {
-                        return false;
-                    }
-                    //alert("Please route the run before we can lock it.");
-                    //return false;
-                }
+        $scope.toggleRunLock = function (run, updateRunOnly) {
+            // Update if the run is locked
+            if (run.locked != 1 || updateRunOnly) {
+                ////// Check all jobs get RunOrders before lock the run
+                ////var unRoutJobs = run.jobs.filter(j => j.BuilderIndex == null || j.BuilderIndex == "undefined");
+                ////if (unRoutJobs.length > 0) {
+                ////    if (!confirm('Are you sure you want to lock this un-route run into the database?')) {
+                ////        return false;
+                ////    }
+                ////    //alert("Please route the run before we can lock it.");
+                ////    //return false;
+                ////}
 
-                // Insert/Update run detail into database
-                //  Store ID back into run  
-                uRunData.doAPI("Job/InsertOrUpdateRun", JSON.stringify(run)).then(function (data) {
-                    if (data.response.Result == "Success") {
-                        run.ID = parseInt(data.response.Message);
-                    } else {
-                        if (data.response.Message) {
-                            alert(data.response.Result + ": " +  data.response.Message);
-                        } else {
-                            alert(data.response);  
-                        }
-                               
-                        return false;
-                    }
+                //// Insert/Update run detail into database
+                ////  Store ID back into run  
+                //uRunData.doAPI("Job/InsertOrUpdateRun", JSON.stringify(run)).then(function (data) {
+                //    if (data.response.Result == "Success") {
+                //        run.ID = parseInt(data.response.Message);
+                //    } else {
+                //        if (data.response.Message) {
+                //            alert(data.response.Result + ": " + data.response.Message);
+                //        } else {
+                //            alert(data.response);
+                //        }
 
-                    run.locked = 1;
-                    $scope.showRun(run);
-                });
+                //        return false;
+                //    }
+
+                //    run.locked = 1;
+                //    $scope.showRun(run);
+                //});
+                $scope.InsertOrUpdateRun(run);
             } else {
-                //  Store ID back into run  
-                uRunData.doAPI("Job/DeleteRun", JSON.stringify(run)).then(function (data) {
-                    if (data.response == "Success") {
-                        run.ID = null;
+                $scope.DeleteRun(run);
+            }
+        };
+
+        $scope.InsertOrUpdateRun = function (run) {
+            // Prepare request data
+            let runRequestData = {
+                ID: run.ID,
+                Name: run.name,
+                Mins: run.mins,
+                Kms: run.kms,
+                Status: run.status,
+                Revenue: run.revenue,
+                Payout: run.payout,
+                CourierPercent: run.courierPercent,
+                Courier: run.courier,
+                Jobs: run.jobs.map(j => ({ BulkJobID: j.BulkJobID, JobNumber: j.JobNumber, BuilderIndex: j.BuilderIndex })),
+                GoogleRouteResponse: null
+            }
+
+            //uRunData.doAPI("Job/InsertOrUpdateRun", JSON.stringify(run)).then(function (data) {
+            uRunData.doAPI("Job/InsertOrUpdateRun", JSON.stringify(runRequestData)).then(function (data) {
+                $("#box-map").find(".loading").fadeOut();
+                $("#box-runList").find(".loading").fadeOut();
+                $("#box-runBuilder").find(".loading").fadeOut();
+
+                if (data.response.Result == "Success") {
+                    run.ID = parseInt(data.response.Message);
+                } else {
+                    if (data.response.Message) {
+                        alert(data.response.Result + ": " + data.response.Message);
                     } else {
                         alert(data.response);
-                        return false;
                     }
-                });
 
-                run.locked = 0;
+                    return false;
+                }
+
+                run.locked = 1;
                 $scope.showRun(run);
 
                 setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 0);
-            }
-        }
+            });
+        };
+
+        $scope.updateBulkRun = function (run) {
+            uRunData.doAPI("Job/UpdateRun", JSON.stringify(run)).then(function (data) {
+                if (data.response.Result !== "Success") {
+                    if (data.response.Message) {
+                        alert(data.response.Result + ": " + data.response.Message);
+                    } else {
+                        alert(data.response);
+                    }
+                }
+
+                $scope.showRun(run);
+                setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 0);
+            });
+        };
+
+        $scope.DeleteRun = function (run) {
+            //  Store ID back into run  
+            //uRunData.doAPI("Job/DeleteRun", JSON.stringify(run)).then(function (data) {
+            uRunData.doAPI("Job/DeleteRun?ID=" + run.ID).then(function (data) {
+                $("#box-map").find(".loading").fadeOut();
+                $("#box-runList").find(".loading").fadeOut();
+
+                if (data.response == "Success") {
+                    run.ID = null;
+                    run.locked = 0;
+                    $scope.showRun(run);
+                } else {
+                    alert(data.response);
+                    return false;
+                }
+            });
+
+            setTimeout(function () { $scope.activateRunDrop(); $scope.activateRunListDrop(); }, 0);
+        };
 
         $scope.activateRunListDrop = function () {
             setTimeout(function () {
-
                 $(document).ready(function (event) {
                     $(".droppable-item").droppable({
                         classes: {
@@ -1383,12 +1721,9 @@ angular
 
                             var run = $(this).scope().run;
 
-
-
                             $(".activeTable .active").each(function () {
 
-
-                                if ($(this).attr("data-isGroup") == 1) {
+                                if ($(this).attr("data-isGroup") == 1 && run.locked != 1) {
 
                                     var jobs = $(this).scope().grouped.jobs;
 
@@ -1400,11 +1735,61 @@ angular
                                     });
 
                                 } else if ($(this).attr("data-isCourier") == 1) {
+                                    //// Adding preassign run for couriers
+                                    //var message = "Do you want to pre-assign this run " + run.name + " to the courier " + $(this).scope().courier.courier + "?";
+                                    //var confirmPreassignJobStatus = confirm(message);
+                                    //if (confirmPreassignJobStatus === true) {
+                                    //    run.status = 18; // Preassigned job status;
+                                    //} else {
+                                    //    run.status = 0;
+                                    //}
 
-                                    run.courier = $(this).scope().courier;
-                                    $scope.$apply();
+                                    var message = "Do you want to pre-assign this run " + run.name + " to the courier " + $(this).scope().courier.courier + "?";
 
-                                } else {
+                                    $ngConfirm({
+                                        title: 'Confirm!',
+                                        content: message,
+                                        scope: $(this).scope(),
+                                        //backgroundDismiss: true,
+                                        buttons: {
+                                            sayBoo: {
+                                                text: 'Yes',
+                                                btnClass: 'btn-green',
+                                                action: function (scope, button) {
+                                                    run.status = 18; // Preassigned job status;
+                                                    //return false; // prevent close;
+                                                    run.courier = scope.courier;
+                                                    $scope.$apply();
+
+                                                    // Update this run
+                                                    $scope.InsertOrUpdateRun(run);
+                                                }
+                                            },
+                                            somethingElse: {
+                                                text: 'No',
+                                                btnClass: 'btn-orange',
+                                                action: function (scope, button) {
+                                                    run.status = 0; // Preassigned job status;
+                                                    run.courier = scope.courier;
+                                                    $scope.$apply();
+
+                                                    // Update this run
+                                                    $scope.InsertOrUpdateRun(run);
+                                                }
+                                            },
+                                            close: function (scope, button) {
+                                                // closes the modal
+                                            }
+                                        }
+                                    });
+
+                                    //run.courier = $(this).scope().courier;
+                                    //$scope.$apply();
+
+                                    //// Update this run
+                                    //$scope.InsertOrUpdateRun(run);
+
+                                } else if (run.locked != 1) {
 
                                     var job = $(this).scope().job;
                                     job.inBuilder = 1;
@@ -1427,15 +1812,12 @@ angular
                         }
                     });
                 });
-
             }, 0);
+        };
 
-        }
-
-
-        setTimeout(function () {
-            $scope.activateRunListDrop();
-        }, 1000);
+        //setTimeout(function () {
+        //    $scope.activateRunListDrop();
+        //}, 1000);
 
         $scope.runAreas = function (run) {
             if (run.jobs.length > 0) {
@@ -1455,7 +1837,7 @@ angular
             } else {
                 return ("No Jobs");
             }
-        }
+        };
 
         $scope.newRun = function (jobs) {
             var newName = "Run " + ($scope.runList.length + 1);
@@ -1477,46 +1859,47 @@ angular
                 $scope.activateRunListDrop();
 
             }, 0);
-        }
+        };
 
         $scope.runBuilderTotals = function () {
-            $scope.calc = {};
+            //$scope.calc = {};
             if ($scope.runBuilder) {
                 if ($scope.runBuilder.length > 0 && $filter('filter')($scope.runList, { 'isActive': 1 })) {
                     if ($filter('filter')($scope.runList, { 'isActive': 1 }).length > 0) {
 
-                        var hourlyRate = 25;
-                        var expPerKm = 2;
+                        //var hourlyRate = 25;
+                        //var expPerKm = 0.5;
 
-                        $scope.calc.totalMins = $filter('filter')($scope.runList, { 'isActive': 1 })[0].mins;
-                        $scope.calc.totalKms = $filter('filter')($scope.runList, { 'isActive': 1 })[0].kms;
+                        //$scope.calc.totalMins = $filter('filter')($scope.runList, { 'isActive': 1 })[0].mins;
+                        //$scope.calc.totalKms = $filter('filter')($scope.runList, { 'isActive': 1 })[0].kms;
 
-                        $scope.calc.timeAsHourPercent = Math.round($scope.calc.totalMins / 60 * 100) / 100;
-                        $scope.calc.totalDrops = $filter('filter')($scope.runList, { 'isActive': 1 })[0].jobs.length;
-                        $scope.calc.petrolExpense = $scope.calc.totalDrops * expPerKm;
+                        //$scope.calc.timeAsHourPercent = Math.round($scope.calc.totalMins / 60 * 100) / 100;
+                        //$scope.calc.totalDrops = $filter('filter')($scope.runList, { 'isActive': 1 })[0].jobs.length;
+                        //$scope.calc.petrolExpense = $scope.calc.totalDrops * expPerKm;
 
-                        $scope.calc.totalPayout = Math.round(hourlyRate * $scope.calc.timeAsHourPercent * 100) / 100;
+                        //$scope.calc.totalPayout = Math.round(hourlyRate * $scope.calc.timeAsHourPercent * 100) / 100;
 
-                        //Revenue 
+                        ////Revenue 
+                        //$scope.calc.revenue = 0;
+                        //angular.forEach($scope.runBuilder, function (value, key) {
+                        //    $scope.calc.revenue += parseInt(value.Amount);
+                        //});
 
-                        $scope.calc.revenue = 0;
-                        angular.forEach($scope.runBuilder, function (value, key) {
-                            $scope.calc.revenue += parseInt(value.Amount);
-                        });
 
+                        //$scope.calc.courierPercent = (Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100);
 
-                        $scope.calc.courierPercent = (Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100);
+                        //if ($scope.calc.courierPercent > 75) {
+                        //    $scope.calc.courierPercentColour = "red";
+                        //} else if ($scope.calc.courierPercent > 65) {
+                        //    $scope.calc.courierPercentColour = "orange";
+                        //} else {
+                        //    $scope.calc.courierPercentColour = "green";
+                        //}
 
-                        if ($scope.calc.courierPercent > 75) {
-                            $scope.calc.courierPercentColour = "red";
-                        } else if ($scope.calc.courierPercent > 65) {
-                            $scope.calc.courierPercentColour = "orange";
-                        } else {
-                            $scope.calc.courierPercentColour = "green";
-                        }
+                        //$scope.calc.courierPercent = $scope.calc.courierPercent + "%";
+                        var run = $filter('filter')($scope.runList, { 'isActive': 1 })[0];
 
-                        $scope.calc.courierPercent = $scope.calc.courierPercent + "%";
-
+                        $scope.calculateRunDetails(run.jobs, run.mins, run.kms);
                         $filter('filter')($scope.runList, { 'isActive': 1 })[0].courierPercent = angular.copy($scope.calc.courierPercent);
                     }
 
@@ -1524,8 +1907,7 @@ angular
             } else {
                 return " ";
             }
-
-        }
+        };
 
         $scope.runListCombined = function (cancelled) {
             //$scope.allJobs = [];
@@ -1544,11 +1926,332 @@ angular
             return $scope.runJobsAll;
         };
 
+        // Route and update run detail via HereMap
+        $scope.updateRunDetailsFromRun = function (run) {
+            // User the first jobs start point as start and end location, it's Urgent courier in this case
+            var start = encodeURIComponent(run.jobs[0].fromLat + "," + run.jobs[0].fromLng);
+            var end = start;
+            var destinations = run.jobs.map(function (item) { return encodeURIComponent(item.JobNumber + ";" + item.toLat + "," + item.toLng); });
+
+            // Prepare parameters for HereMap API
+            var requestData =
+                [
+                    "&mode=fastest;car;traffic:disabled;",
+                    "&start=", start
+                    //"&end=", end
+                ];
+
+            for (var i = 0, k = 0; i < destinations.length; i++) {
+                if (destinations[i] != null && destinations[i].trim().length > 0) {
+                    requestData.push("&destination" + (k + 1) + "=", destinations[i]);
+                    k++;
+                }
+            }
+
+            // String requestDataString
+            var requestDataString = requestData.join("");
+
+            // Call HereMap for each runs 
+            uRunData.getHereMapSequence(requestDataString).then(function (data) {
+                // Display error message if there is any
+                if (data.errors != null && data.errors.length > 0) {
+                    alert(data.errors[0]);
+                    $scope.hideAllLoading();
+                    return false;
+                }
+                if (data.results != null && data.results.length > 0) {
+
+                    var r = data.results[0];
+
+                    //// remove and start and end point routes
+                    r.waypoints.splice(0, 1);
+                    //r.waypoints.splice(r.waypoints.length - 1, 1);
+
+                    //// remove distance and time from the last job to the base
+                    //r.interconnections.splice(r.interconnections.length - 1, 1);
+
+                    // Get the run from the runsToInsertList
+                    var RunToInsertIndex = -1;
+                    for (var i = 0; i < $scope.runsToInsertList.length; i++) {
+                        if ($scope.runsToInsertList[i].jobs.findIndex(x => x.JobNumber === r.waypoints[0].id) >= 0) {
+                            RunToInsertIndex = i;
+                            break;
+                        }
+                    }
+
+                    // Don't do anything if doesn't find any jobs
+                    if (RunToInsertIndex == -1) {
+                        return;
+                    }
+
+                    var runOrder = 0;
+                    //Insert build index for jobs
+                    for (var j = 0; j < r.waypoints.length; j++) {
+                        var referenceJobNumber = r.waypoints[j].id;
+                        var multiboxParentJobBuilderIndex = 0;
+                        // Multiboxes jobs
+                        if (referenceJobNumber.substr(referenceJobNumber.length - 2, 1) == "-") {
+                            // Keep the same pickup order for multiboxes jobs
+                            multiboxParentJobBuilderIndex = $filter('filter')($scope.runsToInsertList[RunToInsertIndex].jobs, { JobNumber: r.waypoints[j].id.slice(0, -1) + '1' })[0].BuilderIndex ?? 0;
+
+                            if (multiboxParentJobBuilderIndex > 0 && multiboxParentJobBuilderIndex <= j) {
+                                runOrder = multiboxParentJobBuilderIndex;
+                                $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                            } else {
+                                runOrder++;
+                                // Update A job with the current builder index if it doesn't have one yet
+                                if ($scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber.toUpperCase() === r.waypoints[j].id.slice(0, -1) + '1')) {
+                                    $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber.toUpperCase() === r.waypoints[j].id.slice(0, -1) + '1').BuilderIndex = runOrder;
+                                }
+
+                                $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                            }
+                        } else {
+                            runOrder++;
+                            if ($scope.runsToInsertList[RunToInsertIndex].jobs && $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id)) {
+                                $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                            }
+                            else {
+                                //debugger;
+                                continue;
+                            }
+                        }
+
+                        // Add kms and mins for each job
+                        $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).kms = r.interconnections[j].distance / 1000;
+                        $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).mins = parseInt((r.interconnections[j].time / 60).toFixed(0));
+
+                        // Remove jobs from the all jobs list
+                        //$scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = j + 1;
+                        $scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = $scope.runsToInsertList[RunToInsertIndex].jobs.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex;
+                        $scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).inBuilder = 1;
+                    }
+
+                    // Order run jobs by the run sequences
+                    $scope.runsToInsertList[RunToInsertIndex].jobs = $filter('orderBy')($scope.runsToInsertList[RunToInsertIndex].jobs, "BuilderIndex");
+
+                    //// Get total kms and mins fo the run
+                    //var totalKms = parseFloat($scope.runsToInsertList[RunToInsertIndex].jobs.reduce((total, amount) => total + amount.kms, 0).toFixed(2));
+                    //var totalTime = $scope.runsToInsertList[RunToInsertIndex].jobs.reduce((total, amount) => total + amount.mins, 0);
+
+                    //// Calculate runs 
+                    //$scope.calc = {};
+                    //var dropExtra = 2 * $scope.runsToInsertList[RunToInsertIndex].jobs.length;
+                    //var hourlyRate = 25;
+                    //var expPerKm = 0.5;
+
+                    //$scope.calc.totalMins = parseInt(totalTime) + parseInt(dropExtra);
+                    //$scope.calc.totalKms = totalKms;
+                    //$scope.calc.timeAsHourPercent = Math.round($scope.calc.totalMins / 60 * 100) / 100;
+                    //$scope.calc.totalDrops = $scope.runsToInsertList[RunToInsertIndex].jobs.length;
+                    //$scope.calc.petrolExpense = $scope.calc.totalDrops * expPerKm;
+                    //$scope.calc.totalPayout = Math.round(hourlyRate * $scope.calc.timeAsHourPercent * 100) / 100;
+                    //$scope.calc.revenue = parseInt($scope.runsToInsertList[RunToInsertIndex].jobs.reduce((total, amount) => total + amount.Amount, 0));
+                    //$scope.calc.courierPercent = (Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100);
+
+                    //if ($scope.calc.courierPercent > 75) {
+                    //    $scope.calc.courierPercentColour = "red";
+                    //} else if ($scope.calc.courierPercent > 65) {
+                    //    $scope.calc.courierPercentColour = "orange";
+                    //} else {
+                    //    $scope.calc.courierPercentColour = "green";
+                    //}
+
+                    //$scope.calc.courierPercent = $scope.calc.courierPercent + "%";
+
+                    $scope.calculateRunDetails($scope.runsToInsertList[RunToInsertIndex].jobs);
+
+                    // Add calculations back to run
+                    $scope.runsToInsertList[RunToInsertIndex].courierPercent = angular.copy($scope.calc.courierPercent);
+                    $scope.runsToInsertList[RunToInsertIndex].mins = angular.copy($scope.calc.totalMins);
+                    $scope.runsToInsertList[RunToInsertIndex].kms = angular.copy($scope.calc.totalKms);
+
+                    // Insert and lock run
+                    $scope.toggleRunLock($scope.runsToInsertList[RunToInsertIndex]);
+                    // Remove the locked run from the RunsToInsertList
+                    $scope.runsToInsertList.splice(RunToInsertIndex, 1);
+                }
+            });
+        };
+
+        // Route and update run via HereManp
+        $scope.routeRun = function (runIndex) {
+
+            var run = $scope.runList[runIndex];
+            // User the first jobs start point as start and end location, it's Urgent courier in this case
+            var start = encodeURIComponent(run.jobs[0].fromLat + "," + run.jobs[0].fromLng);
+            //var end = start;
+            var destinations = run.jobs.map(function (item) { return encodeURIComponent(item.JobNumber + ";" + item.toLat + "," + item.toLng); });
+
+            // Prepare parameters for HereMap API
+            var requestData =
+                [
+                    "&mode=fastest;car;traffic:disabled;",
+                    "&start=", start
+                    //"&end=", end
+                ];
+
+            for (var i = 0, k = 0; i < destinations.length; i++) {
+                if (destinations[i] != null && destinations[i].trim().length > 0) {
+                    requestData.push("&destination" + (k + 1) + "=", destinations[i]);
+                    k++;
+                }
+            }
+
+            // String requestDataString
+            var requestDataString = requestData.join("");
+
+            // Call HereMap for each runs 
+            uRunData.getHereMapSequence(requestDataString).then(function (data) {
+                // Display error message if there is any
+                if (data.errors != null && data.errors.length > 0) {
+                    alert(data.errors[0]);
+                    $scope.hideAllLoading();
+                    return false;
+                }
+
+                if (data.results != null && data.results.length > 0) {
+
+                    var r = data.results[0];
+
+                    //// remove and start and end point routes
+                    r.waypoints.splice(0, 1);
+                    //r.waypoints.splice(r.waypoints.length - 1, 1);
+
+                    //// remove distance and time from the last job to the base
+                    //r.interconnections.splice(r.interconnections.length - 1, 1);
+
+                    // Get the run from the runsToInsertList
+                    var jobsToUpdate = $scope.runList[runIndex].jobs;
+
+                    var runOrder = 0;
+                    //Insert build index for jobs
+                    for (var j = 0; j < r.waypoints.length; j++) {
+
+                        var referenceJobNumber = r.waypoints[j].id;
+                        var multiboxParentJobBuilderIndex = 0;
+                        // Multiboxes jobs
+                        if (referenceJobNumber.substr(referenceJobNumber.length - 2, 1) == "-") {
+                            // Keep the same pickup order for multiboxes jobs
+                            multiboxParentJobBuilderIndex = $filter('filter')(jobsToUpdate, { JobNumber: r.waypoints[j].id.slice(0, -1) + '1' })[0].BuilderIndex ?? 0;
+
+                            if (multiboxParentJobBuilderIndex > 0 && multiboxParentJobBuilderIndex <= j) {
+                                runOrder = multiboxParentJobBuilderIndex;
+                                jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                            } else {
+                                runOrder++;
+                                // Update A job with the current builder index if it doesn't have one yet
+                                if (jobsToUpdate.find(x => x.JobNumber.toUpperCase() === r.waypoints[j].id.slice(0, -1) + '1')) {
+                                    jobsToUpdate.find(x => x.JobNumber.toUpperCase() === r.waypoints[j].id.slice(0, -1) + '1').BuilderIndex = runOrder;
+                                }
+
+                                jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                            }
+                        } else {
+                            runOrder++;
+                            jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = runOrder;
+                        }
+
+                        //jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = j + 1;
+                        // Add kms and mins for each job
+                        jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).kms = r.interconnections[j].distance / 1000;
+                        jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).mins = parseInt((r.interconnections[j].time / 60).toFixed(0));
+
+                        // Remove jobs from the all jobs list
+                        //$scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = j + 1;
+                        $scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex = jobsToUpdate.find(x => x.JobNumber === r.waypoints[j].id).BuilderIndex;
+                        $scope.runJobsAll.find(x => x.JobNumber === r.waypoints[j].id).inBuilder = 1;
+                    }
+
+                    // Order run jobs by the run sequences
+                    //$scope.runsToInsertList[RunToInsertIndex].jobs = $filter('orderBy')($scope.runsToInsertList[RunToInsertIndex].jobs, "BuilderIndex");
+                    jobsToUpdate.sort((a, b) => (a.BuilderIndex > b.BuilderIndex) ? 1 : ((b.BuilderIndex > a.BuilderIndex) ? -1 : 0));
+
+                    //// Get total kms and mins fo the run
+                    //var totalKms = parseFloat(jobsToUpdate.reduce((total, amount) => total + amount.kms, 0).toFixed(2));
+                    //var totalTime = jobsToUpdate.reduce((total, amount) => total + amount.mins, 0);
+
+                    //// Calculate runs 
+                    //$scope.calc = {};
+                    //var dropExtra = 2 * jobsToUpdate.length;
+                    //var hourlyRate = 25;
+                    //var expPerKm = 0.5;
+
+                    //$scope.calc.totalMins = parseInt(totalTime) + parseInt(dropExtra);
+                    //$scope.calc.totalKms = totalKms;
+                    //$scope.calc.timeAsHourPercent = Math.round($scope.calc.totalMins / 60 * 100) / 100;
+                    //$scope.calc.totalDrops = jobsToUpdate.length;
+                    //$scope.calc.petrolExpense = $scope.calc.totalDrops * expPerKm;
+                    //$scope.calc.totalPayout = Math.round(hourlyRate * $scope.calc.timeAsHourPercent * 100) / 100;
+                    //$scope.calc.revenue = parseInt(jobsToUpdate.reduce((total, amount) => total + amount.Amount, 0));
+                    //$scope.calc.courierPercent = (Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100);
+
+                    //if ($scope.calc.courierPercent > 75) {
+                    //    $scope.calc.courierPercentColour = "red";
+                    //} else if ($scope.calc.courierPercent > 65) {
+                    //    $scope.calc.courierPercentColour = "orange";
+                    //} else {
+                    //    $scope.calc.courierPercentColour = "green";
+                    //}
+
+                    //$scope.calc.courierPercent = $scope.calc.courierPercent + "%";
+
+                    $scope.calculateRunDetails(jobsToUpdate);
+
+                    // Add calculations back to run
+                    $scope.runList[runIndex].jobs = jobsToUpdate;
+                    $scope.runList[runIndex].courierPercent = angular.copy($scope.calc.courierPercent);
+                    $scope.runList[runIndex].mins = angular.copy($scope.calc.totalMins);
+                    $scope.runList[runIndex].kms = angular.copy($scope.calc.totalKms);
+
+                    // Insert and lock run                   
+                    $scope.toggleRunLock($scope.runList[runIndex], true); // true = updateRun
+                }
+            });
+        };
+
+        $scope.calculateRunDetails = function (jobs, mins, kms) {
+            // TODO: Calculate runs based on the settings from tblSettings
+            $scope.calc = {};
+            var dropExtra = 2 * jobs.length;
+            var hourlyRate = 25;
+            var expPerKm = 0.5;
+
+            // Get total kms and mins fo the run
+            var totalKms = kms ?? parseFloat(jobs.reduce((total, amount) => total + amount.kms, 0).toFixed(2)); // if kms is not null then use Kms, otherwise, get it from the jobs
+            var totalTime = mins ?? jobs.reduce((total, amount) => total + amount.mins, 0);
+
+            $scope.calc.totalMins = mins ?? parseInt(totalTime) + parseInt(dropExtra);
+            $scope.calc.totalKms = totalKms;
+            $scope.calc.timeAsHourPercent = Math.round($scope.calc.totalMins / 60 * 100) / 100;
+            $scope.calc.totalDrops = jobs.length;
+
+            // Expenses
+            $scope.calc.petrolExpense = Math.round(totalKms * expPerKm * 100) / 100;
+            // TotalPayout = hourlyRate * hours + Expenses
+            $scope.calc.totalPayout = Math.round(hourlyRate * $scope.calc.timeAsHourPercent * 100) / 100 + $scope.calc.petrolExpense;
+            // Revenue = TotalAmount - PPD
+            $scope.calc.revenue = Math.round(parseFloat(jobs.reduce((total, amount) => total + amount.Amount, 0)) / 1.05 * 100) / 100;
+            // Courier percentage = total payout / revenue
+            //$scope.calc.courierPercent = (Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100) === Infinity ? 0 : Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100; // Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100;
+            $scope.calc.courierPercent = $scope.calc.revenue == 0 ? 0 : Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100; // Math.round(($scope.calc.totalPayout / $scope.calc.revenue * 100) * 100) / 100;
+
+            if ($scope.calc.courierPercent > 75) {
+                $scope.calc.courierPercentColour = "red";
+            } else if ($scope.calc.courierPercent > 65) {
+                $scope.calc.courierPercentColour = "orange";
+            } else {
+                $scope.calc.courierPercentColour = "green";
+            }
+
+            $scope.calc.courierPercent = $scope.calc.courierPercent + "%";
+        };
+
         $scope.updateRunDetails = function (mins, kms, drops, order, googleRouteResponse) {
             if ($filter('filter')($scope.runList, { 'isActive': 1 })) {
                 //console.log($filter('filter')($scope.runList, {'isActive':1})[0]);
                 if ($filter('filter')($scope.runList, { 'isActive': 1 })[0]) {
-                    var dropExtra = 4 * drops;
+                    var dropExtra = 2 * drops;
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].mins = (parseInt(mins) + parseInt(dropExtra));
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].kms = kms;
 
@@ -1567,7 +2270,7 @@ angular
                         var closestJob = $scope.runBuilder[closestIndex[0]];
 
                         //Add run order into the current run builder jobs, start from 1
-                        closestJob.BuilderIndex = key + 1;    
+                        closestJob.BuilderIndex = key + 1;
                     });
 
                     //Find unOrdered jobs in the builder, and match it back from the orders
@@ -1582,7 +2285,7 @@ angular
 
                         var closestIndex = closestLocation(value.toLat, value.toLng, toCompare);
                         //Add run order into the current run builder jobs, start from 1
-                        value.BuilderIndex = closestIndex[0] + 1;    
+                        value.BuilderIndex = closestIndex[0] + 1;
                     });
 
 
@@ -1592,7 +2295,7 @@ angular
                     //for (var i = 0; i < order.length; i++) {
                     //     $scope.runBuilder[order[i] + 1].BuilderIndex = i + 1;
                     //}
-                    
+
                     // Sort jobs by the run order
                     $scope.runBuilder = $filter('orderBy')($scope.runBuilder, "BuilderIndex");
 
@@ -1601,7 +2304,7 @@ angular
 
                     //$filter('filter')($scope.runList, {'isActive':1})[0].GoogleRouteResponse = googleRouteResponse;
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].RunChanged = false;
-                    
+
                     // Auto lock the run after routing 
                     $scope.toggleRunLock($filter('filter')($scope.runList, { 'isActive': 1 })[0]);
 
@@ -1609,7 +2312,7 @@ angular
 
                 }
             }
-        }
+        };
 
         $scope.showRun = function (run, manualRoute) {
 
@@ -1641,11 +2344,11 @@ angular
             $scope.updateRun(run);
             //$scope.getPotentialCouriers();
 
-            if (!localStorage.getItem('runList')) {
+            if (!localStorage.getItem('runList') && manualRoute) {
                 $scope.updatePotentialJobs(manualRoute);
             }
 
-        }
+        };
 
         ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1660,7 +2363,7 @@ angular
 
             $scope.updatePotentialJobs();
 
-        }
+        };
 
         $scope.updatePotentialJobs = function (manualRoute) {
 
@@ -1668,7 +2371,31 @@ angular
 
             angular.forEach($scope.jobList, function (value, key) {
                 if (value.inBuilder != 1 && value.toLat) {
-                    $scope.potentialJobs.push({ "lat": value.toLat, "lng": value.toLng, "jn": value.JobNumber });
+                    $scope.potentialJobs.push({ "lat": value.toLat, "lng": value.toLng, "jn": value.JobNumber, "jobID": value.BulkJobID });
+                }
+            });
+
+            $scope.multiSelectedRuns = []
+            $scope.multiSelectedRunsJobs = []
+            $("#box-runList .active").each(function (index) {
+                var markerColors = ["#ff9000", "#00a3ff", "#ffff00", "#b13cff"]; // blue, purple, orange, yellow
+                let currentRun = $(this).scope().run;
+
+                if (!currentRun.isActive) { //&& currentRun.locked == 1) {   
+                    // Add all selected runs into the dropdown list
+                    $scope.multiSelectedRuns.push({ id: currentRun.ID, label: currentRun.name, color: markerColors[index % markerColors.length] });
+                    if (currentRun.jobs.length > 0) {
+                        angular.forEach(currentRun.jobs, function (job, key) {
+                            if (job.toLat && job.toLng) {
+                                $scope.multiSelectedRunsJobs.push({ lat: job.toLat, lng: job.toLng, ro: job.BuilderIndex, color: markerColors[index % markerColors.length], runid: currentRun.ID, jn: job.JobNumber, jobID: job.BulkJobID, runID: currentRun.ID });
+                            }
+                        });
+                    }
+                    // Set run color
+                    $filter('filter')($scope.runList, { 'ID': currentRun.ID })[0].runColor = { 'background-color': markerColors[index % markerColors.length] };
+                } else {
+                    // Add the current active run into the list with red color
+                    $scope.multiSelectedRuns.push({ id: currentRun.ID, label: currentRun.name, color: "#ea4335" });
                 }
             });
 
@@ -1678,14 +2405,17 @@ angular
                     onlyDrawMarks = false;
                 }
 
+                // Replace with HereMap
                 calcRoute(onlyDrawMarks);
             }, 0);
-        }
+        };
+
+
+
 
         $scope.getData = function (clearStorage) {
 
-
-            if (clearStorage == 1) {
+            if (clearStorage === 1) {
                 localStorage.removeItem('runList');
                 //$scope.localStorage();
             }
@@ -1701,6 +2431,7 @@ angular
             $scope.courierFleets = false;
             $scope.potentialCouriers = false;
             $scope.jobGroups = false;
+            $scope.selectedJobGroups = [];
             $scope.jobsCurrentList = false;
             $scope.currentCourier = false;
             $scope.runNameGroups = [];
@@ -1710,14 +2441,18 @@ angular
             $scope.bulkRuns = {};
             $scope.routeSetting = {
                 "autoRoute": false
-            }
+            };
 
             $("#box-groupedJobs").find(".loading").show();
 
-            $scope.selectedClients = $scope.pickDateService.clients.map(a => a.id);
+            //$scope.selectedClients = $scope.pickDateService.clients.map(a => a.id);
+            var selectedClients = $scope.pickDateService.clients.map(a => a.id);
+            var selectedRegions = $scope.pickDateService.regions.map(a => a.id);
+            var selectedOurRefs = $scope.pickDateService.ourRefs;
+            var selectedSpeeds = $scope.pickDateService.speeds.map(a => a.id);
 
-            uRunData.getRunJobsAll(moment($scope.pickDateService.date), $scope.selectedClients).then(function (data) {
-                $("#box-groupedJobs .loading").fadeOut();
+            uRunData.getRunJobsAll(moment($scope.pickDateService.date), selectedClients, selectedRegions, selectedOurRefs, selectedSpeeds).then(function (data) {
+                //$("#box-groupedJobs .loading").fadeOut();
                 $scope.runJobsAll = data;
                 //$scope.pickClients = data.Clients;
 
@@ -1748,58 +2483,68 @@ angular
                     $("#box-potentialCourierFleets .loading").fadeOut();
 
 
-                    setTimeout(function () { $("#box-groupedJobs .loading").fadeOut(); }, 100);
+                    setTimeout(function () {
+                        //$("#box-groupedJobs .loading").fadeOut();
+                    }, 100);
 
 
                     // Get runs from database
-                    uRunData.doGetAPI("Job/GetBulkRuns?datetime=" + moment($scope.pickDateService.date).format("YYYY-MM-DDThh:mm:ss") + '&clientIds=' + $scope.selectedClients).then(function (data) {
-                        var bulkRuns = data.response;
+                    uRunData.doGetAPI("Job/GetBulkRuns?datetime=" + moment($scope.pickDateService.date).toISOString() + '&clientIds=' + selectedClients + '&regionIds=' + selectedRegions + '&ourRefs=' + selectedOurRefs + '&Speeds=' +
+                        selectedSpeeds).then(function (data) {
+                            var bulkRuns = data.response;
 
-                        // Group runs by ID
-                        var bulkRunGroups = bulkRuns.reduce(function (obj, item) {
-                            obj[item.ID] = obj[item.ID] || [];
-                            obj[item.ID].push(item);
-                            return obj;
-                        }, {});
-                        // Group run jobs by ID
-                        var bulkRunJobsGroups = bulkRuns.reduce(function (obj, item) {
-                            obj[item.ID] = obj[item.ID] || [];
-                            var job = $filter('filter')($scope.runJobsAll, j => j.BulkJobID == item.BulkJobID)[0];
+                            // Group runs by ID
+                            var bulkRunGroups = bulkRuns.reduce(function (obj, item) {
+                                obj[item.ID] = obj[item.ID] || [];
+                                obj[item.ID].push(item);
+                                return obj;
+                            }, {});
+                            // Group run jobs by ID
+                            var bulkRunJobsGroups = bulkRuns.reduce(function (obj, item) {
+                                try {
+                                    obj[item.ID] = obj[item.ID] || [];
+                                    var job = $filter('filter')($scope.runJobsAll, j => j.BulkJobID == item.BulkJobID)[0];
+                                    if (job != null) {
+                                        job.RunOrder = item.RunOrder;
+                                        obj[item.ID].push(job);
+                                    }
+                                } catch (e) {
+                                    throw e.message;
+                                }
 
-                            if (job !== undefined) {
-                                job.RunOrder = item.RunOrder;
-                                obj[item.ID].push(job);
-                            }
+                                return obj;
+                            }, {});
 
-                            return obj;
-                        }, {});
-                        // Conbine runs and jobs
-                        var bulkRunJobsGroupsArray = Object.keys(bulkRunGroups).map(function (key) {
-                            var item = $filter('filter')(bulkRuns, j => j.ID == key)[0];
-                            return {
-                                ID: item.ID,
-                                name: item.name,
-                                courier: {
-                                    courier: item.Courier,
-                                    Fleet: item.Fleet,
-                                    courierID: item.CourierID
-                                },
-                                locked: 1,
-                                courierPercent: item.CourierPercentage,
-                                kms: item.Kms,
-                                mins: item.Mins,
-                                jobs: bulkRunJobsGroups[key]
-                            };
+                            // Conbine runs and jobs
+                            var bulkRunJobsGroupsArray = Object.keys(bulkRunGroups).map(function (key) {
+                                var item = $filter('filter')(bulkRuns, j => j.ID == key)[0];
+                                return {
+                                    ID: item.ID,
+                                    name: item.name,
+                                    courier: {
+                                        courier: item.Courier,
+                                        Fleet: item.Fleet,
+                                        courierID: item.CourierID
+                                    },
+                                    locked: 1,
+                                    courierPercent: item.CourierPercentage,
+                                    kms: item.Kms,
+                                    mins: item.Mins,
+                                    jobs: bulkRunJobsGroups[key],
+                                    status: item.Status
+                                };
+                            });
+
+                            $scope.bulkRuns = bulkRunJobsGroupsArray;
+
+                            //$scope.buildRunByPostalCode();
+
+                            $scope.sortByTime();
+
+                            $scope.localStorage();
+
+                            $("#box-groupedJobs .loading").fadeOut();
                         });
-
-                        $scope.bulkRuns = bulkRunJobsGroupsArray;
-
-                        //$scope.buildRunByPostalCode();
-
-                        $scope.sortByTime();
-
-                        $scope.localStorage();
-                    });
                 });
 
                 //setTimeout(function(){ $("#box-groupedJobs .loading").fadeOut(); }, 100);	
@@ -1807,25 +2552,43 @@ angular
                 //$scope.localStorage();
             });
 
-            $scope.buildRunByPostalCode = function() {
+            $scope.runsToInsertList = [];
+            $scope.buildRunByPostalCode = function () {
+                $("#box-groupedJobs").find(".loading").show();
+                $("#box-runList").find(".loading").show();
+                $("#box-runBuilder").find(".loading").show();
+                $("#box-map").find(".loading").show();
+
+                // Get all selected jobs
+                var selectedGroupJobsList = [];
+                $("#jobsGroup .active").each(function () {
+                    if ($(this).attr("data-isGroup") == 1) {
+                        selectedGroupJobsList.push($(this).scope().grouped.jobs.filter(x => x.inBuilder != 1));
+                    }
+                });
+                var selectedJobs = [].concat.apply([], selectedGroupJobsList);
 
                 // Alert if there is any invalid unlocked jobs
-                if ($filter('filter')($scope.runJobsAll, j=> j.PrefixRunName === null || j.toLat === null || j.ToPostCode === null).length > 0) {
-                    alert("Please fix the invalid jobs before you can build runs");
+                if ($filter('filter')(selectedJobs, j => j.PrefixRunName === null || j.toLat === null || j.ToPostCode === null).length > 0) {
+                    var errorString = "";
+                    var newLine = "\r\n";
+                    // Return detail errors
+                    if ($filter('filter')(selectedJobs, j => j.PrefixRunName === null).length > 0) {
+                        errorString += "No RunName Found with PostCode: " + [...new Set($filter('filter')(selectedJobs, j => j.PrefixRunName === null).map(x => x.ToPostCode))].sort().toString();
+                        errorString += newLine;
+                    }
+
+                    if ($filter('filter')(selectedJobs, j => j.toLat === null || j.ToPostCode === null).length > 0) {
+                        errorString += "No GeoCode with Jobs: " + [...new Set($filter('filter')(selectedJobs, j => j.toLat === null || j.ToPostCode === null).map(x => x.JobNumber))].sort().toString();
+                        errorString += newLine;
+                    }
+
+                    alert(errorString);
                     return false;
                 }
 
                 // Get all un-locked run jobs with Postal Code
-                var unLockedJobs = $filter('filter')($scope.runJobsAll, j => j.PrefixRunName !== null && j.PrefixRunName.trim().length > 0 && j.BulkJobRunID === 0);
-
-                //// Group all jobs by PostalCode
-                //$scope.runJobsAllByPostalCode = unLockedJobs.reduce(function (obj, item) {
-                //    if (item.ToPostCode !== 0) {
-                //        obj[item.ToPostCode] = obj[item.ToPostCode] || [];
-                //        obj[item.ToPostCode].push(item);
-                //    }
-                //    return obj;
-                //}, {});
+                var unLockedJobs = $filter('filter')(selectedJobs, j => typeof j.PrefixRunName !== 'undefined' && j.PrefixRunName && j.BulkJobRunID === 0);
 
                 // Group all jobs by PostalCode
                 $scope.runJobsAllByPostalCodeRunName = unLockedJobs.reduce(function (obj, item, index, array) {
@@ -1836,148 +2599,247 @@ angular
                     return obj;
                 }, {});
 
-                //var runNameGroups = $scope.runNameJobs.reduce(function (obj, item) {
-                //    obj[item.PrefixRunName] = obj[item.PrefixRunName] || [];
-                //    obj[item.PrefixRunName].push(item);
-                //    return obj;
-                //}, {});   
+                // Build runs
+                $scope.getGroupedJobsHereMapSequence();
+            };
 
-                $("#box-groupedJobs").find(".loading").show();
-                console.log("Build all runs start");
+            $scope.hideAllLoading = function () {
+                $("#box-groupedJobs").find(".loading").fadeOut();
+                $("#box-runList").find(".loading").fadeOut();
+                $("#box-runBuilder").find(".loading").fadeOut();
+                $("#box-map").find(".loading").fadeOut();
+                return false;
+            }
 
-                var promises = [];
-                // Filter and map all valid lat lng
-                Object.keys($scope.runJobsAllByPostalCodeRunName).forEach(key => {
-                    var currentJobs = $scope.runJobsAllByPostalCodeRunName[key];
-                    var start = {jobNumber: currentJobs[0].JobNumber,  lat: currentJobs[0].fromLat, lng: currentJobs[0].fromLng}
-                    var checkboxArray = currentJobs.map(x=> { return {jobNumber: x.JobNumber, lat:x.toLat, lng: x.toLng}});
-                    //Add start point and end point into the routesavvy checkpoints
-                    checkboxArray.unshift(start);
-                    checkboxArray.push(start);
+            $scope.getGroupedJobsHereMapSequence = function () {
+                // End the call when runJobsAllByPostalCodeRunName does't have any jobs left
+                if (Object.keys($scope.runJobsAllByPostalCodeRunName).length === 0) {
+                    $scope.hideAllLoading();
+                    return false;
+                }
 
-                    var locations = [];
-                    for (var i = 0; i < checkboxArray.length; i++) {
-                        if (checkboxArray[i] !== "") {
-                            locations.push({
-                                Name: key+ "," + checkboxArray[i].jobNumber,
-                                Latitude: checkboxArray[i].lat,
-                                Longitude: checkboxArray[i].lng,
-                                VisitDurationInMinutes: 2
-                            });
-                        }
-                    }
+                var key = Object.keys($scope.runJobsAllByPostalCodeRunName)[0];
+                var currentJobs = $scope.runJobsAllByPostalCodeRunName[key];
 
+                /// Use RouteSavvy for jobs over 200
+                if (currentJobs.length > 200) {
+                    // Use RouteSavvy to get the orders
+
+                    var locations = currentJobs.map((j) => ({ Name: j.JobNumber, Latitude: j.toLat, Longitude: j.toLng, VisitDurationInMinutes: 0 }));
+                    var start = { Name: currentJobs[0].JobNumber, Latitude: currentJobs[0].fromLat, Longitude: currentJobs[0].fromLng, VisitDurationInMinutes: 0 };
+                    locations.unshift(start);
                     var requestData = JSON.stringify(locations);
-                    var promise = uRunData.getRouteSavvyWithName(requestData).then(function (data) {
-                        if (data.routes.length> 0) {
-                            // remove and start and end point routes
-                            data.routes.splice(0, 1);
-                            data.routes.splice(data.routes.length - 1, 1);
 
-                            var postalCodeKey = data.routes[0].name.split(",")[0];
+                    // Call RouteSavvy
+                    uRunData.getRouteSavvyWithName(requestData).then(function (data) {
+                        if (data !== null && data.routes.length > 0) {
+
+                            var r = data.routes;
+                            // remove start to get actual jobs sequences
+                            r.splice(0, 1);
 
                             //Insert build index for jobs
-                            for (var j = 0; j < data.routes.length; j++) {
-
-                                $scope.runJobsAllByPostalCodeRunName[key].find(x=> x.JobNumber  ==  data.routes[j].name.split(",")[1]).BuilderIndex = j + 1;
-                                
-                                $scope.runJobsAll.find(x => x.JobNumber ==  data.routes[j].name.split(",")[1]).BuilderIndex = j + 1;
-                                $scope.runJobsAll.find(x => x.JobNumber ==  data.routes[j].name.split(",")[1]).inBuilder = 1;
+                            for (var j = 0; j < r.length; j++) {
+                                $scope.runJobsAllByPostalCodeRunName[key].find(x => x.JobNumber == r[j].name).BuilderIndex = j + 1;
                             }
 
                             //Devide runNameGroups jobs into 20 by default for each runs
-                            $scope.runJobsAllByPostalCodeRunName[key] = $filter('orderBy')(  $scope.runJobsAllByPostalCodeRunName[key], "BuilderIndex");
+                            $scope.runJobsAllByPostalCodeRunName[key] = $filter('orderBy')($scope.runJobsAllByPostalCodeRunName[key], "BuilderIndex");
 
                             var dividedRunGroups = [];
                             while ($scope.runJobsAllByPostalCodeRunName[key].length) {
-                                // Merge the last few jobs into the second last run group
-                                if (dividedRunGroups.length &&  $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
-                                    dividedRunGroups[dividedRunGroups.length - 1] = dividedRunGroups[dividedRunGroups.length - 1].concat(
-                                        $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                //// Merge the last few jobs into the second last run group
+                                // Remove merge by Steve request
+                                if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
+                                    if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
+                                        $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
+                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
+                                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                    } else {
+                                        dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                    }
                                 } else {
                                     dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
-                                    }
                                 }
+                            }
 
                             var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-                            var result = dividedRunGroups.map(function(v,i) {
-                                // return  { name: key + "-" + (i+1) , jobs: dividedRunGroups[i]}
-                                var runNameSuffix = labels[ i % labels.length];
-                                var run = { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
+                            var result = dividedRunGroups.map(function (v, i) {
 
-                                // Auto lock the run
-                                $scope.toggleRunLock(run);
+                                var runNameSuffix = labels[i % labels.length];
+                                //// Change to user A1,A2, B1, B2 for run names rather then A1-A, A1-B
+                                //var run = { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
+                                var run = { name: key + runNameSuffix, jobs: dividedRunGroups[i] };
+                                //var run = { name: runNameSuffix + (i+1).toString(), jobs: dividedRunGroups[i] };
+                                // Store runs for insert laters
+                                $scope.runsToInsertList.push(run);
                                 return run;
                             });
 
                             // flatten runNameGroupsArrays; 
                             $scope.runNameJobsGroups = [].concat.apply([], result);
 
-                            // Conbine the empty run with the courier groups run
-                            $scope.runList.push.apply($scope.runList,  $scope.runNameJobsGroups);
+                            // Conbine the empty run with the courier groups run and display in the Run List section
+                            $scope.runList.push.apply($scope.runList, $scope.runNameJobsGroups);
+
+                            // This code runs into a loop and create runs to keep inserting itself
+                            for (var i = 0; i < $scope.runsToInsertList.length; i++) {
+                                $scope.updateRunDetailsFromRun($scope.runsToInsertList[i]);
+                            }
+
+                            // Remove the current jobs from the runJobsAllByPostalCodeRunName
+                            delete $scope.runJobsAllByPostalCodeRunName[key];
+
+                            // Call HereMap again to get each postCode run squences
+                            $scope.getGroupedJobsHereMapSequence();
                         }
                     });
-                    promises.push(promise);
-                });
 
-                // Promsies all done 
-                $q.all(promises).then(function() {
-                        $("#box-groupedJobs").find(".loading").fadeOut();
-                        console.log("Build all runs done");
+                } else {
+                    // User the first jobs start point as start and let HereMap to choose the destination 
+                    var start = encodeURIComponent(currentJobs[0].fromLat + "," + currentJobs[0].fromLng);
+                    //var end = start;
+                    var destinations = currentJobs.map(function (item) { return encodeURIComponent(item.JobNumber + ";" + item.toLat + "," + item.toLng); });
+
+                    // Prepare parameters for HereMap API
+                    var requestData =
+                        [
+                            "&mode=fastest;car;traffic:disabled;"
+                            , "&start=", start
+                            //,"&end=", end // Omit the end location to avoid routing back to base
+                        ];
+
+                    for (var i = 0, k = 0; i < destinations.length; i++) {
+                        if (destinations[i] !== null && destinations[i].trim().length > 0) {
+                            requestData.push("&destination" + (k + 1) + "=", destinations[i]);
+                            k++;
+                        }
                     }
-                );
 
-            }
+                    // String requestDataString
+                    var requestDataString = requestData.join("");
 
-            //$scope.buildRunByPostalCode_callBack = function(routes) {
-            //    $scope.$apply();
-            //}
+                    // Get total squences from Heremap
+                    uRunData.getHereMapSequence(requestDataString).then(function (data) {
+                        // Display error message if there is any
+                        if (data.errors != null && data.errors.length > 0) {
+                            alert(data.errors[0]);
+                            $scope.hideAllLoading();
+                            return false;
+                        }
+
+                        if (data.results !== null && data.results.length > 0) {
+
+                            var r = data.results[0];
+                            // remove start to get actual jobs sequences
+                            r.waypoints.splice(0, 1);
+                            //r.waypoints.splice(r.waypoints.length - 1, 1);
+
+                            // remove distance and time from the location of last job to the base
+                            //r.interconnections.splice(r.interconnections.length - 1, 1);
+
+                            //Insert build index for jobs
+                            for (var j = 0; j < r.waypoints.length; j++) {
+
+                                $scope.runJobsAllByPostalCodeRunName[key].find(x => x.JobNumber == r.waypoints[j].id).BuilderIndex = j + 1;
+                                //$scope.runJobsAll.find(x => x.JobNumber == r.waypoints[j].id).BuilderIndex = j + 1;
+                                //$scope.runJobsAll.find(x => x.JobNumber == r.waypoints[j].id).inBuilder = 1;
+                            }
+
+                            //Devide runNameGroups jobs into 20 by default for each runs
+                            $scope.runJobsAllByPostalCodeRunName[key] = $filter('orderBy')($scope.runJobsAllByPostalCodeRunName[key], "BuilderIndex");
+
+                            var dividedRunGroups = [];
+                            while ($scope.runJobsAllByPostalCodeRunName[key].length) {
+                                //// Merge the last few jobs into the second last run group
+                                // Remove merge by Steve request
+                                if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
+                                    if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
+                                        $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
+                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
+                                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                    } else {
+                                        dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                    }
+                                } else {
+                                    dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                }
+                            }
+
+                            var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                            var result = dividedRunGroups.map(function (v, i) {
+
+                                var runNameSuffix = labels[i % labels.length];
+                                //// Change to user A1,A2, B1, B2 for run names rather then A1-A, A1-B
+                                //var run = { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
+                                var run = { name: key + runNameSuffix, jobs: dividedRunGroups[i] };
+                                //var run = { name: runNameSuffix + (i+1).toString(), jobs: dividedRunGroups[i] };
+                                // Store runs for insert laters
+                                $scope.runsToInsertList.push(run);
+                                return run;
+                            });
+
+                            // flatten runNameGroupsArrays; 
+                            $scope.runNameJobsGroups = [].concat.apply([], result);
+
+                            // Conbine the empty run with the courier groups run and display in the Run List section
+                            $scope.runList.push.apply($scope.runList, $scope.runNameJobsGroups);
+
+                            // This code runs into a loop and create runs to keep inserting itself
+                            for (var i = 0; i < $scope.runsToInsertList.length; i++) {
+                                $scope.updateRunDetailsFromRun($scope.runsToInsertList[i]);
+                            }
+
+                            // Remove the current jobs from the runJobsAllByPostalCodeRunName
+                            delete $scope.runJobsAllByPostalCodeRunName[key];
+
+                            // Call HereMap again to get each postCode run squences
+                            $scope.getGroupedJobsHereMapSequence();
+                        }
+                    });
+                }
+
+            };
 
             $scope.sortByTime = function () {
 
                 var members = $scope.runJobsAll;
 
-                //// Add RunName jobs groups 
-                //$scope.runNameJobs = $filter('filter')(members, j => j.RunName != null && j.RunName.trim().length > 0 && j.BulkJobRunID == 0);
+                //// Move auto group into the build run button function: $scope.buildRunByPostalCode()
+                //// Add RunName jobs groups
+                //$scope.runNameJobs = $filter('filter')(members, j => j.PrefixRunName != null && j.PrefixRunName.trim().length > 0 && j.BulkJobRunID == 0);
                 //// Add jobs into courierJobsGroups
                 //var runNameGroups = $scope.runNameJobs.reduce(function (obj, item) {
-                //    obj[item.RunName] = obj[item.RunName] || [];
-                //    obj[item.RunName].push(item);
+                //    obj[item.PrefixRunName] = obj[item.PrefixRunName] || [];
+                //    obj[item.PrefixRunName].push(item);
                 //    return obj;
-                //}, {});
+                //}, {});               
 
+                ////Devide runNameGroups jobs into 20 by default for each runs
                 //var runNameGroupsArray = Object.keys(runNameGroups).map(function (key) {
-                //    return { name: key, jobs: runNameGroups[key] };
+                //    var dividedRunGroups = [];
+                //    while (runNameGroups[key].length) {
+                //        // Merge the last few jobs into the second last run group
+                //        if (dividedRunGroups.length &&  runNameGroups[key].length && runNameGroups[key].length < runNameGroups[key][0].MaxJobsPerRun) {
+                //            dividedRunGroups[dividedRunGroups.length - 1] = dividedRunGroups[dividedRunGroups.length - 1].concat(
+                //                runNameGroups[key].splice(0, runNameGroups[key][0].MaxJobsPerRun));
+                //        } else {
+                //            dividedRunGroups.push(runNameGroups[key].splice(0, runNameGroups[key][0].MaxJobsPerRun));
+                //            }
+                //        }
+
+                //    var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                //    var result = dividedRunGroups.map(function(v,i) {
+                //        // return  { name: key + "-" + (i+1) , jobs: dividedRunGroups[i]}
+                //        var runNameSuffix = labels[ i % labels.length];
+                //        return { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
+                //    });
+
+                //    return result;
                 //});
 
-                // Add RunName jobs groups
-                $scope.runNameJobs = $filter('filter')(members, j => j.PrefixRunName != null && j.PrefixRunName.trim().length > 0 && j.BulkJobRunID == 0);
-                // Add jobs into courierJobsGroups
-                var runNameGroups = $scope.runNameJobs.reduce(function (obj, item) {
-                    obj[item.PrefixRunName] = obj[item.PrefixRunName] || [];
-                    obj[item.PrefixRunName].push(item);
-                    return obj;
-                }, {});
-
-                //Devide runNameGroups jobs into 20 for each run
-                var runNameGroupsArray = Object.keys(runNameGroups).map(function (key) {
-                    var dividedRunGroups = [];
-                    while (runNameGroups[key].length) {
-                        dividedRunGroups.push(runNameGroups[key].splice(0, runNameGroups[key][0].MaxJobsPerRun));
-                    }
-
-                    var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-                    var result = dividedRunGroups.map(function (v, i) {
-                        // return  { name: key + "-" + (i+1) , jobs: dividedRunGroups[i]}
-                        var runNameSuffix = labels[i % labels.length];
-                        return { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
-                    });
-
-                    return result;
-                });
-
-                // flatten runNameGroupsArrays; 
-                $scope.runNameJobsGroups = [].concat.apply([], runNameGroupsArray);
+                //// flatten runNameGroupsArrays; 
+                //$scope.runNameJobsGroups = [].concat.apply([], runNameGroupsArray);
 
                 // Add courier jobs groups, exclude jobs have runName
                 $scope.courierJobs = $filter('filter')(members, j => j.CourierID != null && j.CourierID > 0 && !j.RunName && j.BulkJobRunID == 0);
@@ -2008,8 +2870,7 @@ angular
 
                 $scope.sortingByTime = true;
 
-            }
-
+            };
 
             $scope.setTime = function () {
                 $scope.filterTimes = [];
@@ -2065,11 +2926,11 @@ angular
                 $scope.filterTimes = [];
                 $scope.sortByTime();
                 $scope.sortingByTime = true;
-            }
+            };
 
             $scope.addTime = function (time) {
                 $scope.filterTimes.push(time);
-            }
+            };
 
             $scope.filterByTimes = function (jobs) {
                 return ($scope.filterTimes.indexOf(jobs.ReadyTime) !== -1);
@@ -2227,8 +3088,8 @@ angular
                     $scope.currentSelection = " for Job " + job.JobNumber;
                     highlightPin($scope.currentJob);
                 }, 0);
-            }
-        }
+            };
+        };
 
         $scope.getData();
 
@@ -2254,11 +3115,11 @@ angular
         //////////////////////////
         // GPS form
         //////////////////////////
-        NgMap.getMap().then(function(map) {
+        NgMap.getMap().then(function (map) {
             $scope.map = map;
             $scope.marker = map.markers[0];
         });
-       
+
 
         $scope.updateGPS = function (field) {
             var suburb = "";
@@ -2321,7 +3182,7 @@ angular
                         "jobID": $scope.currentJob.BulkJobID
                     }
 
-                    var path = "/Job/UpdateGps";
+                    var path = "/Job/UpdateGPS";
                     uRunData.doAPI(path, callData).then(function (data) {
                         if (data.response == "Success") {
                             if (field == "ToAddress") {
@@ -2352,11 +3213,11 @@ angular
                 cancel: function () {
                     $(".gpsForm").hide(0);
                 },
-                placeChanged:  function(place) {
+                placeChanged: function (place) {
                     if (place != null) {
                         $scope.place = place;
                     } else {
-                        $scope.place = this.getPlace();   
+                        $scope.place = this.getPlace();
                     }
 
                     $scope.gpsForm.search = $scope.place.formatted_address;
@@ -2368,20 +3229,20 @@ angular
                     }
                     $scope.map.setCenter($scope.place.geometry.location);
                 },
-                moveMarker: function(event) {
+                moveMarker: function (event) {
                     var latlng = event.latLng;
-                    GeoCoder.geocode({location: latlng})  
+                    GeoCoder.geocode({ location: latlng })
                         .then(function (result) {
                             $scope.marker.setPosition(latlng);
-                        $scope.gpsForm.placeChanged(result[0]);
-                    });
+                            $scope.gpsForm.placeChanged(result[0]);
+                        });
                 },
-                markerDragend: function() {
+                markerDragend: function () {
                     //Geo coder for drag marker
-                        GeoCoder.geocode({ location: $scope.marker.getPosition()})
-                            .then(function (result) {
-                                $scope.gpsForm.placeChanged(result[0]);
-                            });
+                    GeoCoder.geocode({ location: $scope.marker.getPosition() })
+                        .then(function (result) {
+                            $scope.gpsForm.placeChanged(result[0]);
+                        });
                 }
             }
 
@@ -2395,9 +3256,9 @@ angular
                         if ($scope.gpsForm.details.geometry.location) {
                             $scope.gpsForm.data.lat = $scope.gpsForm.details.geometry.location.lat();
                             $scope.gpsForm.data.long = $scope.gpsForm.details.geometry.location.lng();
-                            if ($scope.gpsForm.details.address_components.find(x => x.types[0] == "postal_code")) {
+                            if ($scope.gpsForm.details.address_components.find(x => x.types[0] === "postal_code")) {
                                 $scope.gpsForm.data.postCode = $scope.gpsForm.details.address_components
-                                    .find(x => x.types[0] == "postal_code").long_name;
+                                    .find(x => x.types[0] === "postal_code").long_name;
                             }
                         }
 
@@ -2422,19 +3283,18 @@ angular
 
         $scope.editDetailField = function (fieldName, label, value, jobID, type, options) {
 
-            if (type == "date") {
+            if (type === "date") {
                 if (!(value instanceof Date)) {
                     value = moment(value, 'DD/MM/YYYY').toDate();
                 }
             }
 
-            if (type == "time") {
+            if (type === "time") {
                 value = moment(value, 'h:mm a').toDate();
             }
 
-            if (type == "select") {
-
-            }
+            //if (type === "select") {
+            //}
 
             $scope.gather.form = {
                 id: "editField",
@@ -2464,19 +3324,19 @@ angular
                 "jobID": jobID,
                 "field": field,
                 "value": value
-            }
+            };
 
             uRunData.doAPI("Job/UpdateJobDetail", JSON.stringify(callData)).then(function (data) {
 
-                if (data.response == "Success") {
+                if (data.response === "Success") {
 
                     var vmFields = field;
-                    if (field == "BookDate") vmFields = "DeliveryDate";
-                    if (field == "BookTime") vmFields = "ReadyTime";
-                    if (field == "ToCompany") vmFields = "CompanyName";
-                    if (field == "Qty") vmFields = "Items";
-                    if (field == "ProofOfDeliveryMobile") vmFields = "Mobile";
-                    if (field == "ProofOfDeliveryEmail") vmFields = "Email";
+                    if (field === "BookDate") vmFields = "DeliveryDate";
+                    if (field === "BookTime") vmFields = "ReadyTime";
+                    if (field === "ToCompany") vmFields = "CompanyName";
+                    if (field === "Qty") vmFields = "Items";
+                    if (field === "ProofOfDeliveryMobile") vmFields = "Mobile";
+                    if (field === "ProofOfDeliveryEmail") vmFields = "Email";
 
                     $scope.currentJob[vmFields] = value;
 
@@ -2509,7 +3369,7 @@ angular
             uRunData.getRouteSavvy(requestData).then(function (data) {
                 drawDirectionsMoreThan23Waypoints(data.routes);
             });
-        }
+        };
 
         //// Insert or update run deatil
         //$scope.InsertOrUpdateRun = function(runObj) {
@@ -2535,18 +3395,17 @@ function Deg2Rad(deg) {
 // Get Distance between two lat/lng points using the Haversine function
 // First published by Roger Sinnott in Sky & Telescope magazine in 1984 (“Virtues of the Haversine”)
 //
-function Haversine(lat1, lon1, lat2, lon2)
-{
+function Haversine(lat1, lon1, lat2, lon2) {
     var R = 6372.8; // Earth Radius in Kilometers
 
-    var dLat = Deg2Rad(lat2-lat1);  
-    var dLon = Deg2Rad(lon2-lon1);  
+    var dLat = Deg2Rad(lat2 - lat1);
+    var dLon = Deg2Rad(lon2 - lon1);
 
-    var a = Math.sin(dLat/2) * Math.sin(dLat/2) + 
-        Math.cos(Deg2Rad(lat1)) * Math.cos(Deg2Rad(lat2)) * 
-        Math.sin(dLon/2) * Math.sin(dLon/2);  
-    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    var d = R * c; 
+    var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(Deg2Rad(lat1)) * Math.cos(Deg2Rad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    var d = R * c;
 
     // Return Distance in Kilometers
     return d;
@@ -2570,18 +3429,17 @@ function closestLocation(latitude, longitude, locations) {
     var closest;
 
     //for (index = 0; index < locations.length; ++index) {
-    for(var i = 0; i < locations.length; i++) 
-    {
+    for (var i = 0; i < locations.length; i++) {
         // get the distance between user's location and this point
         //var dif = Haversine( locations[i][1], locations[i][2], latitude, longitude);
-        var dif = Haversine( 
-            parseFloat(locations[i][1].toString().substr(0,9)),
-            parseFloat(locations[i][2].toString().substr(0,9)),
-            parseFloat(latitude.toString().substr(0,9)),
-            parseFloat(longitude.toString().substr(0,9))
+        var dif = Haversine(
+            parseFloat(locations[i][1].toString().substr(0, 9)),
+            parseFloat(locations[i][2].toString().substr(0, 9)),
+            parseFloat(latitude.toString().substr(0, 9)),
+            parseFloat(longitude.toString().substr(0, 9))
         );
         //var dif = PythagorasEquirectangular(latitude, longitude, locations[index][1], locations[index][2]);
-       
+
         if (dif < mindif) {
             closest = i;
             mindif = dif;

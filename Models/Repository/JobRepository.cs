@@ -1,43 +1,31 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Cors.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using Serilog;
+using UCLRun;
 
 
 namespace RunBuilder.Models.Repository
 {
     public class JobRepository(DespatchContext context)
     {
-        public TblBulkJob? GetBulkJobByID(int jobID)
+        public TblBulkJob? GetBulkJobById(int jobId)
         {
-            return context.TblBulkJobs.Find(jobID);
+            return context.TblBulkJobs.Find(jobId);
         }
 
-        
 
-        public async Task<List<UTL_stpJob_tblBulkJobResult>> GetBulkJobsAsync(DateTime? dateTime, string clientIds)
+
+        public async Task<List<UTL_stpJob_tblBulkJobWithFilterResult>> GetBulkJobsAsync(DateTime? dateTime, string clientIds, string regionIds, string ourRefs, string speeds)
         {
 
-            var jobsResult = new List<UTL_stpJob_tblBulkJobResult>();
-
-            if (!string.IsNullOrEmpty(clientIds))
-            {
-
-                var ids = clientIds.Split(',');
-
-                foreach (var id in ids)
-                {
-                    jobsResult.AddRange(await context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, Convert.ToInt32(id)));
-                }
-            }
-            else
-            {
-                jobsResult = await context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, null);
-            }
+            var jobsResult = await context.Procedures.UTL_stpJob_tblBulkJobWithFilterAsync(dateTime, clientIds == "" ? null : clientIds, regionIds == "" ? null : regionIds, ourRefs == "" ? null : ourRefs, speeds == "" ? null : speeds);
 
             return jobsResult;
         }
 
-       
-        
+
+
         public bool Update(TblBulkJob bulkJob, string propertyName, string value)
         {
             var result = false;
@@ -46,7 +34,11 @@ namespace RunBuilder.Models.Repository
                 switch (propertyName)
                 {
                     case "Amount":
+                    case "Weight":
                         context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDecimal(value);
+                        break;
+                    case "Qty":
+                        context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToInt16(value);
                         break;
                     case "BookDate":
                     case "BookTime":
@@ -64,7 +56,7 @@ namespace RunBuilder.Models.Repository
             catch (Exception e)
             {
                 result = false;
-                throw e;
+                throw;
             }
 
             return result;
@@ -73,59 +65,41 @@ namespace RunBuilder.Models.Repository
         public bool UpdateBulkJob(TblBulkJob bulkJob)
         {
             var result = false;
-            try
-            {
-                context.Entry(bulkJob).State = EntityState.Modified;
-                context.SaveChanges();
-                result = true;
-            }
-            catch (Exception e)
-            {
-                throw e;
-                //result = false;
-            }
+            context.Entry(bulkJob).State = EntityState.Modified;
+            context.SaveChanges();
+            result = true;
 
             return result;
         }
 
         public async Task<List<Response>> InsertJobsAsync(IEnumerable<RunJob> runJobs)
         {
-            try
+            var result = new List<Response>();
+            foreach (var run in runJobs)
             {
-                var result = new List<Response>();
-                foreach (var run in runJobs)
-                {
-                    var runName = run.Name;
+                var runName = run.Name;
 
-                    float courierPercentage = 0;
-                    if (run.CourierPercent != null)
-                    {
-                        courierPercentage =  float.Parse(run.CourierPercent.TrimEnd( new char[] { '%', ' ' } ) ) / 100;
-                    }
-                    
-                    var courierID = run.Courier?.courierID;
-                    var runOrder = 1;
-                    foreach (var job in run.Jobs)
-                    {
-                        result.Add( 
-                            await InsertJobAsync(job.BulkJobID, courierID, runName, runOrder++, courierPercentage)
-                        );
-                    }
+                float courierPercentage = 0;
+                if (run.CourierPercent != null)
+                {
+                    courierPercentage = float.Parse(run.CourierPercent.TrimEnd(new char[] { '%', ' ' })) / 100;
                 }
-                return result;
+
+                var courierId = run.Courier?.courierID;
+                var runOrder = 1;
+                foreach (var job in run.Jobs)
+                {
+                    result.Add(await InsertJobAsync(job.BulkJobID, courierId, runName, runOrder++, courierPercentage, run.Status));
+                }
             }
-            catch (Exception e)
-            {
-                throw e;
-            }
-            
+            return result;
         }
 
-        public async Task<Response> InsertJobAsync(int jobID, int? courierID, string runName, int runOrder, float courierPercentage )
+        public async Task<Response> InsertJobAsync(int jobId, int? courierId, string runName, int runOrder, float courierPercentage, int? runStatus)
         {
             try
             {
-                await context.Procedures.UTL_stpJob_InsertFromRunBuilderAsync(jobID, courierID, runName, runOrder, courierPercentage, null );
+                await context.Procedures.UTL_stpJob_InsertFromRunBuilderAsync(jobId, courierId, runName, runOrder, courierPercentage, runStatus);
                 return new Response
                 {
                     Result = "Success"
@@ -141,6 +115,25 @@ namespace RunBuilder.Models.Repository
             }
         }
 
+        public async Task<Response> SyncHDJobs(DateTime date)
+        {
+            try
+            {
+                await context.Procedures.UTL_stpJob_tblBulkJob_SyncHDJobsAsync(date);
+                return new Response
+                {
+                    Result = "Success"
+                };
+            }
+            catch (Exception e)
+            {
+                return new Response
+                {
+                    Result = "Failed",
+                    Message = (e.InnerException == null ? e.Message : e.InnerException.Message)
+                };
+            }
+        }
 
         public async Task<object> GetBulkRunSettingsAsync()
         {
@@ -161,78 +154,216 @@ namespace RunBuilder.Models.Repository
             return result;
         }
 
-        public async Task<List<UTL_stpJob_tblBulkRunResult>> GetBulkRunsAsync(DateTime? datetime, string clientIds)
+        public async Task<List<Region>> GetRegionListAsync(DateTime runDate)
         {
-            var bulkRunResult = new List<UTL_stpJob_tblBulkRunResult>();
-
-            if (!string.IsNullOrEmpty(clientIds))
-            {
-
-                var ids = clientIds.Split(',');
-
-                foreach (var id in ids)
-                {
-                    bulkRunResult.AddRange(await context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, Convert.ToInt32(id)));
-                }
-            }
-            else
-            {
-                bulkRunResult = await context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, null);
-            }
-
-            return bulkRunResult;
+            var result = await context.Procedures.RVW_stpBulkRegionsAsync(runDate);
+            var regions = result.ToList()
+            .Where(x => x.Active == true)
+            .Select(x => new Region() { id = x.siteID, label = x.Name })
+            .ToList();
+            return regions;
         }
 
-        public async Task DeleteBulkRunAsync(int ID)
+        public async Task<List<Speed>> SpeedListAsync(DateTime runDate)
         {
-            await context.Procedures.UTL_stpJob_tblBulkRun_DeleteAsync(ID);
+            var result = await context.Procedures.RVW_stpBulkSpeedsAsync(runDate);
+            var speeds = result.ToList()
+            .Select(x => new Speed() { id = x.SpeedId, label = x.Name })
+            .Distinct()
+            .ToList();
+            return speeds;
+        }
+
+        public async Task<object> GetFilter(DateTime date)
+        {
+            var data = await context.Procedures.UTL_stpJob_tblBulkJobWithFilterAsync(date, null, null, null, null);
+            var refs = data.ToList()
+            .OrderBy(x => x.OurRef)
+            .Select(x => x.OurRef)
+            .Distinct().ToList();
+
+            var result = new { OurRefs = refs };
+
+            return result;
+
+        }
+
+        public async Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> GetBulkRunsAsync(DateTime? datetime, string clientIds, string regionIds, string ourRefs, string speeds)
+        {
+            var data = await context.Procedures.UTL_stpJob_tblBulkRunWithFilterAsync(datetime, clientIds == "" ? null : clientIds, regionIds == "" ? null : regionIds, ourRefs == "" ? null : ourRefs, speeds == "" ? null : speeds);
+
+            return data;
+        }
+
+        public async Task DeleteBulkRunAsync(int id)
+        {
+            // Get run detail
+            var jobs = context.TblBulkJobRuns.Where(jr => jr.RunId == id)
+                .Select(j => j.BulkJob).ToList();
+            var jobNumbers = from j in jobs
+                             select j.JobNumber;
+
+            var run = await context.TblBulkRuns.FindAsync(id);
+            await context.Procedures.UTL_stpJob_tblBulkRun_DeleteAsync(id);
+            Log.Information($"{jobNumbers.Count()} Jobs {JsonConvert.SerializeObject(jobNumbers)} have been removed from the run {run?.Name}");
+            Log.Information($"Run {run?.Name} has been deleted");
         }
 
         public async Task<Response> InsertOrUpdateRunAsync(RunJob run)
         {
-            try
+            float courierPercentage = 0;
+            if (run.CourierPercent != null && run.CourierPercent != "NaN%")
             {
-                float courierPercentage = 0;
-                if (run.CourierPercent != null && run.CourierPercent != "NaN%")
-                {
-                    courierPercentage =  float.Parse(run.CourierPercent.TrimEnd( new char[] { '%', ' ' } ) ) / 100;
-                }
+                courierPercentage = float.Parse(run.CourierPercent.TrimEnd(new char[] { '%', ' ' })) / 100;
+            }
 
-                var googleRouteResponse = JsonConvert.SerializeObject(run.GoogleRouteResponse);
+            var googleRouteResponse = JsonConvert.SerializeObject(run.GoogleRouteResponse);
 
-                // Insert or update the run detail
-                var runResult = await context.Procedures.UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(run.ID, run.Name, run.Mins, run.Kms, run.Courier?.courierID,
+            // Insert or update the run detail
+            var runResult = await context.Procedures.UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(run.ID, run.Name, run.Mins, run.Kms, run.Courier?.courierID,
                 run.Status, run.Revenue, run.Payout, courierPercentage, googleRouteResponse, null);
 
-                if (runResult.Count == 0)
+            if (runResult.Count == 0)
+            {
+                return new Response
+                {
+                    Result = "Failed",
+                    Message = "Run insert/update failed"
+                };
+            }
+
+            // Insert or update the job's run detail
+            foreach (var job in run.Jobs)
+            {
+                // Insert run order into table
+                await context.Procedures.UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(runResult.First().RunID, job.BulkJobID, job.BuilderIndex);
+            }
+            var jobNumbers = from j in run.Jobs
+                             select j.JobNumber;
+            Log.Information($"{run.Jobs.Count()} Jobs {JsonConvert.SerializeObject(jobNumbers)} have been inserted or updated into the run {run.Name}");
+
+            return new Response
+            {
+                Result = "Success",
+
+                Message = runResult.First().RunID.ToString()
+            };
+        }
+
+        public async Task<Response> UpdateRun(RunJob run)
+        {
+
+            float courierPercentage = 0;
+            if (run.CourierPercent != null && run.CourierPercent != "NaN%")
+            {
+                courierPercentage = float.Parse(run.CourierPercent.TrimEnd(new char[] { '%', ' ' })) / 100;
+            }
+
+            var googleRouteResponse = JsonConvert.SerializeObject(run.GoogleRouteResponse);
+
+            var runToUpdate = await context.TblBulkRuns.FindAsync(run.ID);
+
+            if (runToUpdate == null)
+            {
+                return new Response
+                {
+                    Result = "Failed",
+                    Message = "Can not find the run to update!"
+                };
+            }
+
+            runToUpdate.Id = run.ID.Value;
+            runToUpdate.Name = run.Name;
+            runToUpdate.Mins = run.Mins;
+            runToUpdate.Kms = run.Kms;
+            runToUpdate.CourierId = run.Courier?.courierID;
+            runToUpdate.Status = run.Status;
+            runToUpdate.Revenue = run.Revenue;
+            runToUpdate.Payout = run.Payout;
+            runToUpdate.CourierPercentage = courierPercentage;
+            runToUpdate.GoogleRouteResponse = googleRouteResponse;
+            runToUpdate.LastModified = DateTime.Now;
+
+
+            await context.SaveChangesAsync();
+
+
+            Log.Information($"Run {run.Name} has been updated");
+
+            return new Response
+            {
+                Result = "Success",
+                // Store RunID into message
+                Message = runToUpdate.Id.ToString()
+            };
+
+
+        }
+
+        public async Task<Response> UpdateBulkJobRun(int jobId, int? fromRunId, int runId)
+        {
+            var jobRunToUpdate = new TblBulkJobRun { BulkJobId = jobId, RunId = runId };
+            if (fromRunId.HasValue)
+            {
+                jobRunToUpdate = await context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId && x.RunId == fromRunId.Value);
+
+                if (jobRunToUpdate == null)
                 {
                     return new Response
                     {
                         Result = "Failed",
-                        Message = "Run insert/update failed"
+                        Message = "Can not find the run to update!"
                     };
                 }
 
-                // Insert or update the job's run detail
-                foreach (var job in run.Jobs)
+                jobRunToUpdate.RunId = runId;
+                await context.SaveChangesAsync();
+            }
+            else
+            {
+                // Insert only when the bulk job is not in the tblBulkJobRun table
+                var jobRunToInsert = await context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId);
+                if (jobRunToInsert == null)
                 {
-                    // Insert run order into table
-                    await context.Procedures.UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(runResult.First().RunID, job.BulkJobID, job.BuilderIndex);
+                    context.TblBulkJobRuns.Add(jobRunToUpdate);
+                    await context.SaveChangesAsync();
                 }
+            }
 
+            return new Response
+            {
+                Result = "Success",
+                // Store RunID into message
+                Message = jobRunToUpdate.BulkJobId.ToString()
+            };
+        }
+        
+        public async Task<Response> DeleteBulkJobRun(int jobId)
+        {
+            var jobRunToDelete = await context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId);
+
+            if (jobRunToDelete == null)
+            {
                 return new Response
                 {
-                    Result = "Success",
-
-                    Message = runResult.First().RunID.ToString()
+                    Result = "Failed",
+                    Message = "Can not find the job in any runs!"
                 };
-
-            }   
-            catch (Exception e)
-            {
-                throw e;
-
             }
+
+            context.Entry(jobRunToDelete).State = EntityState.Modified;
+            await context.SaveChangesAsync();
+
+            return new Response
+            {
+                Result = "Success",
+                // Store RunID into message
+                Message = "Job has been removed from the run Successfully!"
+            };
+        }
+        public Response InsertRun(RunJob run)
+        {
+            throw new NotImplementedException();
         }
     }
 }

@@ -1,10 +1,10 @@
+ @addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deliver Different - @ViewBag.Title</title>
-
     <!-- Latest compiled and minified CSS -->
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7" crossorigin="anonymous">
     <link href="~/css/jquery.timepicker.min.css" rel="stylesheet" />
@@ -19,25 +19,15 @@
         <link rel="stylesheet" href="~/Scripts/libs/autocomplete/angular-auto-complete.css" asp-append-version="true" />
         <link rel="stylesheet" href="~/Scripts/libs/pickdate/angular-pickadate.css" asp-append-version="true" />
         <link rel="stylesheet" href="~/Scripts/libs/ui-select/select.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/heremap/mapsjs-ui.css" />
+        <link rel="stylesheet" href="~/Scripts/libs/heremap/mapsjs-ui.css" asp-append-version="true"/>
+        <link rel="stylesheet" href="~/Scripts/libs/angular-confirm/angular-confirm.min.css" asp-append-version="true"/>
     </environment>
     <environment exclude="Development">
         <link rel="stylesheet" href="~/css/site.min.css" asp-append-version="true" />
     </environment>
-    @RenderSection("styles", required: false)
+    
 
-    <script type="text/javascript">
-        !function (a, b, c, d, e, f, g, h) {
-            a.RaygunObject = e, a[e] = a[e] || function () {
-                (a[e].o = a[e].o || []).push(arguments)
-            }, f = b.createElement(c), g = b.getElementsByTagName(c)[0],
-                f.async = 1, f.src = d, g.parentNode.insertBefore(f, g), h = a.onerror, a.onerror = function (b, c, d, f, g) {
-                    h && h(b, c, d, f, g), g || (g = new Error(b)), a[e].q = a[e].q || [], a[e].q.push({
-                        e: g
-                    })
-                }
-        }(window, document, "script", "//cdn.raygun.io/raygun4js/raygun.min.js", "rg4js");
-    </script>
+    
     <script>
         function initMap() {
             console.log("maps loaded");
@@ -63,15 +53,13 @@
 <body>
     @RenderBody()
 
-    <script type="text/javascript">
-        rg4js('apiKey', '128Y5Ls20gNxOrW9Jcw8YQ');
-        rg4js('enableCrashReporting', true);
-    </script>
+    
 
     @* <script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?key=AIzaSyC9qU2-Zu7KwkO6TqtY5p-2P4czmpF98nA&libraries=places"></script> *@
     @* <script src="~/Scripts/Scripts.min.js" asp-append-version="true"></script> *@
     <script src="~/scripts/jquery-1.10.2.js"></script>
     <script src="~/scripts/jquery-ui.min.js"></script>
+    <script src="~/scripts/date.min.js"></script>
     <script src="~/scripts/jquery.timepicker.min.js"></script>
     <script src="~/scripts/libs/angular/angular.min.js"></script>
     <script src="~/scripts/libs/ui-select/select.js"></script>
@@ -92,9 +80,11 @@
     <script src="~/scripts/libs/heremap/mapsjs-mapevents.js"></script>
     <script src="~/scripts/libs/heremap/mapsjs-service.js"></script>
     <script src="~/scripts/libs/heremap/mapsjs-ui.js"></script>
+    <script src="~/scripts/libs/angular-confirm/angular-confirm.min.js"></script>
+    <script src="~/scripts/libs/gmaps.js"></script>
     <!-- Latest compiled and minified JavaScript -->
     <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js" integrity="sha384-0mSbJDEHialfmuBBQP6A4Qrprq5OVfW37PRR3j5ELqxss1yVqOtnepnHVP9aJ7xS" crossorigin="anonymous"></script>
-    @RenderSection("scripts", required: false)
+    @await RenderSectionAsync("scripts", required: false)
     
-</body>
+    </body>
 </html>

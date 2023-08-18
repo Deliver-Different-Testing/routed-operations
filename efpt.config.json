@@ -2,7 +2,6 @@
    "CodeGenerationMode": 4,
    "ContextClassName": "DespatchContext",
    "ContextNamespace": null,
-   "DefaultDacpacSchema": null,
    "FilterSchemas": false,
    "IncludeConnectionString": false,
    "ModelNamespace": null,
@@ -20,6 +19,22 @@
          "ObjectType": 0
       },
       {
+         "Name": "[dbo].[tblBulkJobRun]",
+         "ObjectType": 0
+      },
+      {
+         "Name": "[dbo].[tblBulkRun]",
+         "ObjectType": 0
+      },
+      {
+         "Name": "[dbo].[RVW_stpBulkRegions]",
+         "ObjectType": 1
+      },
+      {
+         "Name": "[dbo].[RVW_stpBulkSpeeds]",
+         "ObjectType": 1
+      },
+      {
          "Name": "[dbo].[UTL_stpCourier_Active]",
          "ObjectType": 1
       },
@@ -28,11 +43,19 @@
          "ObjectType": 1
       },
       {
+         "Name": "[dbo].[UTL_stpJob_tblBulkJob_SyncHDJobs]",
+         "ObjectType": 1
+      },
+      {
          "Name": "[dbo].[UTL_stpJob_tblBulkJob]",
          "ObjectType": 1
       },
       {
          "Name": "[dbo].[UTL_stpJob_tblBulkJobRun_InsertOrUpdate]",
+         "ObjectType": 1
+      },
+      {
+         "Name": "[dbo].[UTL_stpJob_tblBulkJobWithFilter]",
          "ObjectType": 1
       },
       {
@@ -50,10 +73,15 @@
       {
          "Name": "[dbo].[UTL_stpJob_tblBulkRunSettings]",
          "ObjectType": 1
+      },
+      {
+         "Name": "[dbo].[UTL_stpJob_tblBulkRunWithFilter]",
+         "ObjectType": 1
       }
    ],
-   "UiHint": "UCLSQL2.DespatchTest",
+   "UiHint": null,
    "UncountableWords": null,
+   "UseAsyncStoredProcedureCalls": true,
    "UseBoolPropertiesWithoutDefaultSql": false,
    "UseDatabaseNames": false,
    "UseDateOnlyTimeOnly": true,

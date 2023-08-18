@@ -7,12 +7,12 @@ namespace RunBuilder.Controllers
     public class JobController(JobRepository repository) : Controller
     {
         [HttpGet]
-        public async Task<ActionResult> Index(DateTime? datetime, string clientIds)
+        public async Task<ActionResult> Index(DateTime? datetime, string clientIds, string regionIds, string ourRefs, string speeds)
         {
             return new JsonResult(new
             {
-                BulkJobs = await repository.GetBulkJobsAsync(datetime, clientIds),
-                MaxJsonLength = Int32.MaxValue
+                BulkJobs = await repository.GetBulkJobsAsync(datetime, clientIds, regionIds, ourRefs, speeds),
+                MaxJsonLength = int.MaxValue
             });
         }
 
@@ -41,7 +41,7 @@ namespace RunBuilder.Controllers
 
                 return Json(new { response = "Invalid run data: " + errors });
             }
-            //return Json(new{response = "Testing done!"});
+
         }
 
         
@@ -60,16 +60,53 @@ namespace RunBuilder.Controllers
             }
         }
 
+
         [HttpGet]
-        [ActionName("GetBulkRuns")]
-        public async Task<ActionResult> GetBulkRuns(DateTime? datetime, string clientIds)
+        public async Task<ActionResult> RegionList(DateTime runDate)
+        {
+            var result = await repository.GetRegionListAsync(runDate);
+            return Json(result);
+        }
+
+        [HttpGet]
+        public async Task<ActionResult> SpeedList(DateTime runDate)
+        {
+            var result = await repository.SpeedListAsync(runDate);
+            return Json(result);
+        }
+
+        [HttpPost]
+        [ActionName("SyncHDJobs")]
+        public async Task<ActionResult> SyncHDJobs(DateTime runDate)
         {
             try
             {
-                var result = await repository.GetBulkRunsAsync(datetime, clientIds);
+                var result = await repository.SyncHDJobs(runDate);
+                return Json(new { response = result });
+            }
+            catch (Exception e)
+            {
+                return Json(new { response = "Sync EH/HD jobs failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
+            }
+        }
+
+        [HttpGet]
+        public async Task<ActionResult> GetFilter(DateTime runDate)
+        {
+            var result = await repository.GetFilter(runDate);
+            return Json(result);
+        }
+        
+        [HttpGet]
+        [ActionName("GetBulkRuns")]
+        public async Task<ActionResult> GetBulkRuns(DateTime? datetime, string clientIds, string regionIds, string ourRefs, string speeds)
+        {
+            try
+            {
+                var result = await repository.GetBulkRunsAsync(datetime, clientIds, regionIds, ourRefs, speeds);
                 return new JsonResult(new {
                     response =  result,
-                    MaxJsonLength =  Int32.MaxValue
+                    MaxJsonLength =  int.MaxValue
                 });   
             }
             catch (Exception e)
@@ -79,7 +116,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> InsertOrUpdateRunAsync(RunJob run)
+        public async Task<ActionResult> InsertOrUpdateRun(RunJob run)
         {
             if (ModelState.IsValid)
             {
@@ -104,6 +141,31 @@ namespace RunBuilder.Controllers
             }
         }
 
+        [HttpPost]
+        public async Task<ActionResult> UpdateRun(RunJob run)
+        {
+            if (ModelState.IsValid)
+            {
+                try
+                {
+                    var result = await repository.UpdateRun(run);
+                    return Json(new { response = result });
+                }
+                catch (Exception e)
+                {
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
+                }
+            }
+            else
+            {
+                var errors = string.Join(" | ",
+                    ModelState.Values
+                        .SelectMany(v => v.Errors)
+                        .Select(e => e.ErrorMessage));
+
+                return Json(new { response = "Invalid run data: " + errors });
+            }
+        }
         [HttpPost]
         public async Task<ActionResult> DeleteRun(int id)
         {
@@ -135,7 +197,7 @@ namespace RunBuilder.Controllers
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = repository.GetBulkJobByID(jobId);
+                var selectedJob = repository.GetBulkJobById(jobId);
 
                 if (selectedJob == null)
                 {
@@ -165,11 +227,52 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
+        public async Task<ActionResult> UpdateJobToRun(int jobId, int? fromRunId, int runId)
+        {
+            if (ModelState.IsValid)
+            {
+                try
+                {
+                    var result = await repository.UpdateBulkJobRun(jobId, fromRunId, runId);
+                    return Json(new { response = result });
+                }
+                catch (Exception e)
+                {
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
+                }
+            }
+            else
+            {
+                var errors = string.Join(" | ",
+                    ModelState.Values
+                        .SelectMany(v => v.Errors)
+                        .Select(e => e.ErrorMessage));
+
+                return Json(new { response = "Invalid job data: " + errors });
+            }
+        }
+
+        [HttpPost]
+        public async Task<ActionResult> DeleteBulkJobRun(int jobId)
+        {
+            try
+            {
+                var result = await repository.DeleteBulkJobRun(jobId);
+                return Json(new { response = result });
+            }
+            catch (Exception e)
+            {
+                return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
+            }
+        }
+
+
+        [HttpPost]
         public ActionResult UpdateGps(int jobId, string address, string lat, string lng, string postCode)
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = repository.GetBulkJobByID(jobId);
+                var selectedJob = repository.GetBulkJobById(jobId);
 
                 if (selectedJob == null)
                 {

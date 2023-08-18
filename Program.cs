@@ -6,11 +6,13 @@ using Microsoft.EntityFrameworkCore;
 using Mindscape.Raygun4Net.AspNetCore;
 using RunBuilder.Models;
 using RunBuilder.Models.Repository;
+using Serilog;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
 builder.Configuration.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+Log.Logger = new LoggerConfiguration().ReadFrom.Configuration(builder.Configuration).WriteTo.Console().CreateLogger();
 // Add services to the container.
 builder.Services.AddDataProtection().PersistKeysToAWSSystemsManager("/Hub/DataProtection").SetApplicationName("DeliverDifferent");
 

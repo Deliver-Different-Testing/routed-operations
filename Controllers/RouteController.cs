@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using RunBuilder.Models;
 using RunBuilder.Models.Repository;
+using Serilog;
 
 namespace RunBuilder.Controllers
 {
@@ -50,6 +51,21 @@ namespace RunBuilder.Controllers
             }        
         }
 
+        [HttpPost]
+        [ActionName("GetHereMapSequence")]
+        public async Task<ActionResult> GetHereMapSequence(HereMapSequenceRequest data)
+        {
+            try
+            {
+                var result = await repository.GetHereMapSequenceAsync(data);
 
+                return Json(result);
+            }
+            catch (Exception e)
+            {
+                Log.Error("GetHereMapSequence Error:", e);
+                throw;
+            }
+        }
     }
 }

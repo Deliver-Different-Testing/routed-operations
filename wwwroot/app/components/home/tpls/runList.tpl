@@ -28,18 +28,18 @@
             <td style="width:10%">{{run.mins}}</td>
             <td style="width:10%">{{run.kms}}</td>
             <td style="width:10%">{{run.courierPercent}}</td>
-            <td style="width:15%">{{run.courier.courier}} <span ng-if="!run.courier.courier">Unassigned</span></td>
+            <td ng-class="run.status == 18 ? 'preassigned': ''" style="width:15%">{{run.courier.courier}} <span ng-if="!run.courier.courier">Unassigned</span></td>
             <td class="selectjob" ng-click="selectGroupForDispatch(grouped); $event.stopPropagation();" title="placeholder selector" style="display:none"></td>
         </tr>
 
-        <tr class="clickable-row noselect empty" ng-repeat="run in runList | filter:{ locked: '1'}" context-menu="runListMenu" data-runid="{{run.ID}}" data-runname="{{run.name}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-click="showRun(run)">
+        <tr class="clickable-row noselect empty droppable-item" ng-repeat="run in runList | filter:{ locked: '1'}" context-menu="runListMenu" data-runid="{{run.ID}}" data-runname="{{run.name}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-style="run.runColor" ng-click="showRun(run)">
             <td style="width:20%">{{run.name}}</td>
             <td style="width:25%">{{runAreas(run)}}</td>
             <td style="width:10%">{{run.jobs.length}}</td>
             <td style="width:10%">{{run.mins}}</td>
             <td style="width:10%">{{run.kms}}</td>
             <td style="width:10%">{{run.courierPercent}}</td>
-            <td style="width:15%">{{run.courier.courier}} <span ng-if="!run.courier.courier">Unassigned</span></td>
+            <td ng-class="run.status == 18 ? 'preassigned': ''" style="width:15%">{{run.courier.courier}} <span ng-if="!run.courier.courier">Unassigned</span></td>
             <td class="selectjob" ng-click="selectGroupForDispatch(grouped); $event.stopPropagation();" title="placeholder selector" style="display:none"></td>
         </tr>
 

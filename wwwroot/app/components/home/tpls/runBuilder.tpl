@@ -48,9 +48,9 @@
         <tbody>
         <tr class="clickable-row draggable-row noselect" id="job-{{job.JobNumber}}" ng-class="{late: !job.toLat}" data-inbuilder="1" ng-repeat="job in runBuilder track by $index" context-menu="runBuilderMenu" data-jobid="{{job.ID}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-mouseup="selectJob(job, true)">
             <td class="icons">
-                <i class="fa fa-flag-checkered" ng-if="job.isEnd == 1"></i>
-               <!-- <i class="fa fa-map-marker" ng-if="job.isEnd != 1 && job.isStart != 1"></i> -->
-			    {{$index + 1}}
+                <i class="fa fa-flag-checkered" ng-if="job.isEnd == 1"></i> 
+			   <!--  {{$index + 1}} -->
+			   {{job.BuilderIndex}}
                 <i class="fa fa-play" ng-if="job.isStart == 1"></i>
 				</td>
             <td>{{job.ClientCode}}</td>
@@ -89,6 +89,13 @@
 
 <div class="no-data" ng-if="runBuilder.length == 0">
     <div class="text">Please select a run with jobs or drop jobs here</div>
+</div>
+
+<div class="loading">
+    <div class="text">
+        <i class="fas fa-spinner fa-spin fa-spin fa-3x fa-fw"></i>
+        <span class="sr-only">Loading...</span>
+    </div>
 </div>
 
 <script>

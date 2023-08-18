@@ -7,7 +7,8 @@
       "wwwroot/Scripts/libs/autocomplete/angular-auto-complete.css",
       "wwwroot/Scripts/libs/pickdate/angular-pickadate.css",
       "wwwroot/Scripts/libs/ui-select/select.css",
-      "wwwroot/Scripts/libs/heremap/*.css"
+      "wwwroot/Scripts/libs/heremap/*.css",
+      "wwwroot/Scripts/libs/angular-confirm/angular-confirm.min.css"
     ]
   },
   
@@ -16,6 +17,7 @@
     "inputFiles": [
       "wwwroot/Scripts/jquery-1.10.2.js",
       "wwwroot/Scripts/jquery-ui.min.js",
+      "wwwroot/Scripts/date.min.js",
       "wwwroot/Scripts/jquery.timepicker.min.js",
       "wwwroot/Scripts/libs/angular/angular.min.js",
       "wwwroot/Scripts/libs/ui-select/select.js",
@@ -35,7 +37,9 @@
       "wwwroot/Scripts/libs/heremap/mapsjs-core.js",
       "wwwroot/Scripts/libs/heremap/mapsjs-mapevents.js",
       "wwwroot/Scripts/libs/heremap/mapsjs-service.js",
-      "wwwroot/Scripts/libs/heremap/mapsjs-ui.js"
+      "wwwroot/Scripts/libs/heremap/mapsjs-ui.js",
+      "wwwroot/Scripts/libs/angular-confirm/angular-confirm.min.js",
+      "wwwroot/Scripts/libs/gmaps.js"
 
 
 

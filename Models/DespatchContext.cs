@@ -15,6 +15,10 @@ public partial class DespatchContext : DbContext
 
     public virtual DbSet<TblBulkJob> TblBulkJobs { get; set; }
 
+    public virtual DbSet<TblBulkJobRun> TblBulkJobRuns { get; set; }
+
+    public virtual DbSet<TblBulkRun> TblBulkRuns { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.UseCollation("SQL_Latin1_General_CP1_CI_AS");
@@ -41,14 +45,18 @@ public partial class DespatchContext : DbContext
 
             entity.HasIndex(e => e.BookDate, "idx_BookDate");
 
+            entity.HasIndex(e => new { e.Done, e.JobId, e.Void, e.BookDate }, "idx_tblBulkJob_Done_JobID_Void_BookDate");
+
             entity.Property(e => e.BulkJobId).HasColumnName("BulkJobID");
             entity.Property(e => e.Amount).HasColumnType("money");
             entity.Property(e => e.Barcode).HasMaxLength(300);
             entity.Property(e => e.BookDate).HasColumnType("datetime");
             entity.Property(e => e.BookTime).HasColumnType("datetime");
+            entity.Property(e => e.BulkParentId).HasColumnName("BulkParentID");
             entity.Property(e => e.BulkRunId).HasColumnName("BulkRunID");
             entity.Property(e => e.ClientCode).HasMaxLength(5);
             entity.Property(e => e.ClientId).HasColumnName("ClientID");
+            entity.Property(e => e.ClientItemIds).HasMaxLength(100);
             entity.Property(e => e.ClientRefa).HasMaxLength(20);
             entity.Property(e => e.ClientRefb).HasMaxLength(15);
             entity.Property(e => e.Contact).HasMaxLength(50);
@@ -109,7 +117,55 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.Width).HasColumnType("numeric(18, 0)");
         });
 
-        OnModelCreatingGeneratedProcedures(modelBuilder);
+        modelBuilder.Entity<TblBulkJobRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__tblBulkJ__3214EC273DACFC9F");
+
+            entity.ToTable("tblBulkJobRun");
+
+            entity.HasIndex(e => e.RunId, "RunID-NonClusteredIndex-20190824-171500");
+
+            entity.HasIndex(e => new { e.BulkJobId, e.RunId }, "idx_tblBulkJobRun_BulkJobID_RunID");
+
+            entity.HasIndex(e => e.BulkJobId, "index_BulkJobID");
+
+            entity.Property(e => e.Id).HasColumnName("ID");
+            entity.Property(e => e.BulkJobId).HasColumnName("BulkJobID");
+            entity.Property(e => e.RunId).HasColumnName("RunID");
+
+            entity.HasOne(d => d.BulkJob).WithMany(p => p.TblBulkJobRuns)
+                .HasForeignKey(d => d.BulkJobId)
+                .HasConstraintName("FK__tblBulkJo__BulkJ__4089694A");
+
+            entity.HasOne(d => d.Run).WithMany(p => p.TblBulkJobRuns)
+                .HasForeignKey(d => d.RunId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK__tblBulkJo__RunID__3F954511");
+        });
+
+        modelBuilder.Entity<TblBulkRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PK__tblBulkR__3214EC2736FFFF10");
+
+            entity.ToTable("tblBulkRun");
+
+            entity.HasIndex(e => new { e.Id, e.DespatchDateTime }, "idx_tblBulkRun_ID");
+
+            entity.Property(e => e.Id).HasColumnName("ID");
+            entity.Property(e => e.CourierId).HasColumnName("CourierID");
+            entity.Property(e => e.Created)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.DespatchDateTime).HasColumnType("datetime");
+            entity.Property(e => e.LastModified)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.Name).HasMaxLength(50);
+            entity.Property(e => e.Payout).HasColumnType("money");
+            entity.Property(e => e.Revenue).HasColumnType("money");
+            entity.Property(e => e.Status).HasDefaultValue(0);
+        });
+
         OnModelCreatingPartial(modelBuilder);
     }
 

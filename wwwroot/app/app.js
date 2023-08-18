@@ -1,21 +1,24 @@
 angular
-	.module('uRuns', [
-		'ui.router',
-		'ct.ui.router.extras',
-		'angularResizable',
-		'ui.sortable',
-		'ui.bootstrap.contextMenu', 
-		'cfp.hotkeys',
-		'ui.timepicker',
+    .module('uRuns', [
+        'ui.router',
+        'ct.ui.router.extras',
+        'angularResizable',
+        'ui.sortable',
+        'ui.bootstrap.contextMenu',
+        'cfp.hotkeys',
+        'ui.timepicker',
         'ngMap',
         'ngMapAutocomplete',
         //'ui.select', 
         //'ngSanitize',
         'pickadate',
-        'angularjs-dropdown-multiselect'
-	])
-	.config(['$urlRouterProvider', '$stateProvider', function($urlRouterProvider, $stateProvider) {
-		$urlRouterProvider.otherwise('/');
+        'angularjs-dropdown-multiselect',
+        'cp.ngConfirm'
+        //,'LocalStorageModule'
+    ])
+    .config(['$urlRouterProvider', '$stateProvider', function ($urlRouterProvider, $stateProvider) {
+        //localStorageServiceProvider.setPrefix('RunBuilder');
+        $urlRouterProvider.otherwise('/');
 
         $stateProvider
             .state('home',
@@ -49,7 +52,7 @@ angular
 
     }]);
 
-	angular.module('utils', []).filter('index', function () {
+angular.module('utils', []).filter('index', function () {
     return function (array, index) {
         if (!index)
             index = 'index';
@@ -58,4 +61,4 @@ angular
         }
         return array;
     };
-	});
+});
