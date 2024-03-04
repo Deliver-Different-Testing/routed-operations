@@ -1,0 +1,30 @@
+﻿@{
+    ViewBag.Title = "Run Builder";
+}
+
+<!--
+    Jquery and Bootstrap CSS, loaded from _Layout.cshtml
+-->
+@section styles{
+
+}
+
+<div ng-app="uRuns">
+    <div class="ui-viewer" ui-view></div>
+</div>
+
+
+<!-- Angular & Dependencies 
+     This will be loaded from _Layout.cshtml
+-->
+
+@section scripts
+{
+    <!-- Angular app -->
+    <script src="~/app/app.js"></script>
+    <script src="~/app/filters.js"></script>
+
+    <!-- Angular home -->
+    <script src="~/app/components/home/homeService.js"></script>
+    <script src="~/app/components/home/homeControl.js"></script>
+}

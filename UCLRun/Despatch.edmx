@@ -1,0 +1,463 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="3.0" xmlns:edmx="http://schemas.microsoft.com/ado/2009/11/edmx">
+  <!-- EF Runtime content -->
+  <edmx:Runtime>
+    <!-- SSDL content -->
+    <edmx:StorageModels>
+    <Schema Namespace="DespatchModel.Store" Provider="System.Data.SqlClient" ProviderManifestToken="2008" Alias="Self" xmlns:store="http://schemas.microsoft.com/ado/2007/12/edm/EntityStoreSchemaGenerator" xmlns:customannotation="http://schemas.microsoft.com/ado/2013/11/edm/customannotation" xmlns="http://schemas.microsoft.com/ado/2009/11/edm/ssdl">
+        <EntityType Name="tblBulkJob">
+          <Key>
+            <PropertyRef Name="BulkJobID" />
+          </Key>
+          <Property Name="BulkJobID" Type="int" StoreGeneratedPattern="Identity" Nullable="false" />
+          <Property Name="JobNumber" Type="nvarchar" MaxLength="20" Nullable="false" />
+          <Property Name="BookDate" Type="datetime" Nullable="false" />
+          <Property Name="BookTime" Type="datetime" Nullable="false" />
+          <Property Name="JobStatus" Type="int" Nullable="false" />
+          <Property Name="ClientID" Type="int" Nullable="false" />
+          <Property Name="ClientCode" Type="nvarchar" MaxLength="5" />
+          <Property Name="Contact" Type="nvarchar" MaxLength="50" />
+          <Property Name="Amount" Type="money" />
+          <Property Name="Speed" Type="int" Nullable="false" />
+          <Property Name="FromCompany" Type="nvarchar" MaxLength="150" />
+          <Property Name="FromAddress" Type="nvarchar" MaxLength="150" />
+          <Property Name="FromSuburb" Type="nvarchar" MaxLength="50" />
+          <Property Name="ToCompany" Type="nvarchar" MaxLength="150" />
+          <Property Name="ToAddress" Type="nvarchar" MaxLength="150" />
+          <Property Name="ToSuburb" Type="nvarchar" MaxLength="50" />
+          <Property Name="Size" Type="smallint" />
+          <Property Name="Qty" Type="smallint" />
+          <Property Name="Weight" Type="decimal" Precision="6" Scale="2" />
+          <Property Name="CourierID" Type="int" />
+          <Property Name="ClientRefa" Type="nvarchar" MaxLength="20" />
+          <Property Name="ClientRefb" Type="nvarchar" MaxLength="15" />
+          <Property Name="OurRef" Type="nvarchar" MaxLength="20" />
+          <Property Name="DeliverToPrivateBusiness" Type="bit" />
+          <Property Name="DeliverToLeaveID" Type="int" />
+          <Property Name="Notes" Type="nvarchar" MaxLength="4000" />
+          <Property Name="RemoteJob" Type="bit" />
+          <Property Name="TrackingMethod" Type="int" />
+          <Property Name="TrackingEmail" Type="nvarchar" MaxLength="500" />
+          <Property Name="TrackingMobile" Type="nvarchar" MaxLength="500" />
+          <Property Name="ProofOfDeliveryMobile" Type="nvarchar" MaxLength="100" />
+          <Property Name="ProofOfDeliveryEmail" Type="nvarchar" MaxLength="500" />
+          <Property Name="PickUpLatitude" Type="nvarchar" MaxLength="50" />
+          <Property Name="PickUpLongitude" Type="nvarchar" MaxLength="50" />
+          <Property Name="DeliveryLatitude" Type="nvarchar" MaxLength="50" />
+          <Property Name="DeliveryLongitude" Type="nvarchar" MaxLength="50" />
+          <Property Name="PrebookJob" Type="bit" />
+          <Property Name="WellingtonJob" Type="bit" />
+          <Property Name="NWDocJob" Type="bit" />
+          <Property Name="Done" Type="bit" Nullable="false" />
+          <Property Name="Void" Type="bit" Nullable="false" />
+          <Property Name="JobID" Type="int" />
+          <Property Name="FromPostCode" Type="int" />
+          <Property Name="ToPostCode" Type="int" />
+          <Property Name="OnHold" Type="bit" Nullable="false" />
+          <Property Name="DeliverToContact" Type="nvarchar" MaxLength="100" />
+          <Property Name="DeliverToPhone" Type="nvarchar" MaxLength="100" />
+          <Property Name="RunName" Type="nvarchar" MaxLength="50" />
+          <Property Name="FromGeoType" Type="int" />
+          <Property Name="ToGeoType" Type="int" />
+          <Property Name="Manifest" Type="nvarchar" MaxLength="50" />
+        </EntityType>
+        <Function Name="UTL_stpCourier_Active" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo" />
+        <Function Name="UTL_stpJob_InsertFromRunBuilder" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="BulkJobID" Type="int" Mode="In" />
+          <Parameter Name="CourierID" Type="int" Mode="In" />
+          <Parameter Name="RunName" Type="nvarchar" Mode="In" />
+          <Parameter Name="RunOrder" Type="int" Mode="In" />
+          <Parameter Name="CourierPercentage" Type="float" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkJob" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="DateTime" Type="datetime" Mode="In" />
+          <Parameter Name="ClientID" Type="int" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkJobRun_InsertOrUpdate" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="RunID" Type="int" Mode="In" />
+          <Parameter Name="BulkJobID" Type="int" Mode="In" />
+          <Parameter Name="RunOrder" Type="int" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkRun" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="DateTime" Type="datetime" Mode="In" />
+          <Parameter Name="ClientID" Type="int" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkRun_Delete" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="RunID" Type="int" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkRun_InsertOrUpdate" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo">
+          <Parameter Name="RunID" Type="int" Mode="In" />
+          <Parameter Name="Name" Type="nvarchar" Mode="In" />
+          <Parameter Name="Mins" Type="int" Mode="In" />
+          <Parameter Name="Kms" Type="float" Mode="In" />
+          <Parameter Name="CourierID" Type="int" Mode="In" />
+          <Parameter Name="Status" Type="int" Mode="In" />
+          <Parameter Name="Revenue" Type="money" Mode="In" />
+          <Parameter Name="Payout" Type="money" Mode="In" />
+          <Parameter Name="CourierPercentage" Type="float" Mode="In" />
+          <Parameter Name="GoogleRouteResponse" Type="nvarchar(max)" Mode="In" />
+        </Function>
+        <Function Name="UTL_stpJob_tblBulkRunSettings" Aggregate="false" BuiltIn="false" NiladicFunction="false" IsComposable="false" ParameterTypeSemantics="AllowImplicitConversion" Schema="dbo" />
+        <EntityContainer Name="DespatchModelStoreContainer">
+          <EntitySet Name="tblBulkJob" EntityType="Self.tblBulkJob" Schema="dbo" store:Type="Tables" />
+        </EntityContainer>
+      </Schema></edmx:StorageModels>
+    <!-- CSDL content -->
+    <edmx:ConceptualModels>
+      <Schema Namespace="DespatchModel" Alias="Self" annotation:UseStrongSpatialTypes="false" xmlns:annotation="http://schemas.microsoft.com/ado/2009/02/edm/annotation" xmlns:customannotation="http://schemas.microsoft.com/ado/2013/11/edm/customannotation" xmlns="http://schemas.microsoft.com/ado/2009/11/edm">
+        <EntityContainer Name="DespatchContext" annotation:LazyLoadingEnabled="true">
+          <FunctionImport Name="GetPotentialCouriers" ReturnType="Collection(DespatchModel.PotentialCouriers)" />
+          <FunctionImport Name="GetBulkJobs" ReturnType="Collection(DespatchModel.BulkJob)" >
+            <Parameter Name="DateTime" Mode="In" Type="DateTime" />
+            <Parameter Name="ClientID" Mode="In" Type="Int32" />
+          </FunctionImport>
+          <FunctionImport Name="InsertJob">
+            <Parameter Name="BulkJobID" Mode="In" Type="Int32" />
+            <Parameter Name="CourierID" Mode="In" Type="Int32" />
+            <Parameter Name="RunName" Mode="In" Type="String" />
+            <Parameter Name="RunOrder" Mode="In" Type="Int32" />
+            <Parameter Name="CourierPercentage" Mode="In" Type="Double" />
+          </FunctionImport>
+          <EntitySet Name="tblBulkJobs" EntityType="DespatchModel.tblBulkJob" />
+          <FunctionImport Name="InsertOrUpdateJobRun">
+            <Parameter Name="RunID" Mode="In" Type="Int32" />
+            <Parameter Name="BulkJobID" Mode="In" Type="Int32" />
+            <Parameter Name="RunOrder" Mode="In" Type="Int32" />
+          </FunctionImport>
+          <FunctionImport Name="InsertOrUpdateRun" ReturnType="Collection(Int32)">
+            <Parameter Name="RunID" Mode="In" Type="Int32" />
+            <Parameter Name="Name" Mode="In" Type="String" />
+            <Parameter Name="Mins" Mode="In" Type="Int32" />
+            <Parameter Name="Kms" Mode="In" Type="Double" />
+            <Parameter Name="CourierID" Mode="In" Type="Int32" />
+            <Parameter Name="Status" Mode="In" Type="Int32" />
+            <Parameter Name="Revenue" Mode="In" Type="Decimal" />
+            <Parameter Name="Payout" Mode="In" Type="Decimal" />
+            <Parameter Name="CourierPercentage" Mode="In" Type="Double" />
+            <Parameter Name="GoogleRouteResponse" Mode="In" Type="String" />
+          </FunctionImport>
+          <FunctionImport Name="GetBulkRun" ReturnType="Collection(DespatchModel.BulkRun)" >
+            <Parameter Name="DateTime" Mode="In" Type="DateTime" />
+            <Parameter Name="ClientID" Mode="In" Type="Int32" />
+          </FunctionImport>
+          <FunctionImport Name="DeleteBulkRun">
+          <Parameter Name="RunID" Mode="In" Type="Int32" />
+          </FunctionImport>
+          <FunctionImport Name="GetBulkRunSettings" ReturnType="Collection(DespatchModel.BulkRunSetting)" />
+        </EntityContainer>
+        <ComplexType Name="PotentialCouriers">
+          <Property Type="Int32" Name="courierID" Nullable="false" />
+          <Property Type="String" Name="courier" Nullable="false" MaxLength="101" />
+          <Property Type="String" Name="Fleet" Nullable="true" MaxLength="50" />
+        </ComplexType>
+        <ComplexType Name="BulkJob">
+          <Property Type="Int32" Name="BulkJobID" Nullable="false" />
+          <Property Type="Int32" Name="ClientID" Nullable="false" />
+          <Property Type="String" Name="ClientCode" Nullable="true" MaxLength="5" />
+          <Property Type="String" Name="JobNumber" Nullable="false" MaxLength="20" />
+          <Property Type="String" Name="DeliveryDate" Nullable="true" MaxLength="30" />
+          <Property Type="String" Name="ReadyTime" Nullable="true" MaxLength="30" />
+          <Property Type="Int32" Name="JobStatus" Nullable="false" />
+          <Property Type="String" Name="CompanyName" Nullable="true" MaxLength="150" />
+          <Property Type="String" Name="ToAddress" Nullable="true" MaxLength="150" />
+          <Property Type="String" Name="ToSuburb" Nullable="true" MaxLength="50" />
+          <Property Type="Int32" Name="CourierID" Nullable="true" />
+          <Property Type="String" Name="FromCompany" Nullable="true" MaxLength="150" />
+          <Property Type="String" Name="FromAddress" Nullable="true" MaxLength="150" />
+          <Property Type="String" Name="FromSuburb" Nullable="true" MaxLength="50" />
+          <Property Type="String" Name="Contact" Nullable="true" MaxLength="50" />
+          <Property Type="Decimal" Name="Amount" Nullable="false" Precision="19" />
+          <Property Type="Int32" Name="SpeedID" Nullable="false" />
+          <Property Type="Int16" Name="Size" Nullable="true" />
+          <Property Type="Int16" Name="Items" Nullable="true" />
+          <Property Type="Decimal" Name="Weight" Nullable="true" Precision="6" Scale="2" />
+          <Property Type="Boolean" Name="RemoteScreen" Nullable="true" />
+          <Property Type="String" Name="ClientRefa" Nullable="true" MaxLength="20" />
+          <Property Type="String" Name="ClientRefb" Nullable="true" MaxLength="15" />
+          <Property Type="String" Name="OurRef" Nullable="true" MaxLength="20" />
+          <Property Type="Boolean" Name="Ok_To_Leave" Nullable="true" />
+          <Property Type="Int32" Name="Location" Nullable="true" />
+          <Property Type="String" Name="Notes" Nullable="true" MaxLength="4000" />
+          <Property Type="Int32" Name="TrackingMethod" Nullable="true" />
+          <Property Type="String" Name="TrackingEmail" Nullable="true" MaxLength="500" />
+          <Property Type="String" Name="TrackingMobile" Nullable="true" MaxLength="500" />
+          <Property Type="String" Name="Mobile" Nullable="true" MaxLength="100" />
+          <Property Type="String" Name="Email" Nullable="true" MaxLength="500" />
+          <Property Type="Double" Name="fromLat" Nullable="true" />
+          <Property Type="Double" Name="fromLng" Nullable="true" />
+          <Property Type="Double" Name="toLng" Nullable="true" />
+          <Property Type="Double" Name="toLat" Nullable="true" />
+          <Property Type="Boolean" Name="PrebookJob" Nullable="true" />
+          <Property Type="Boolean" Name="WellingtonJob" Nullable="true" />
+          <Property Type="Boolean" Name="NWDocJob" Nullable="true" />
+          <Property Type="Boolean" Name="Done" Nullable="false" />
+          <Property Type="Boolean" Name="Void" Nullable="false" />
+          <Property Type="Int32" Name="ToPostCode" Nullable="false" />
+          <Property Type="Int32" Name="FromPostCode" Nullable="true" />
+          <Property Type="String" Name="DeliverToContact" Nullable="true" MaxLength="100" />
+          <Property Type="String" Name="DeliverToPhone" Nullable="true" MaxLength="100" />
+          <Property Type="Int32" Name="FromGeoType" Nullable="true" />
+          <Property Type="Int32" Name="ToGeoType" Nullable="true" />
+          <Property Type="String" Name="RunName" Nullable="true" MaxLength="50" />
+          <Property Type="Int32" Name="BulkJobRunID" Nullable="false" />
+          <Property Type="String" Name="Courier" Nullable="true" MaxLength="101" />
+          <Property Type="Int32" Name="BuilderIndex" Nullable="true" />
+          <Property Type="String" Name="PrefixRunName" Nullable="true" MaxLength="50" />
+          <Property Type="Int32" Name="MaxJobsPerRun" Nullable="false" />
+        </ComplexType>
+        <EntityType Name="tblBulkJob">
+          <Key>
+            <PropertyRef Name="BulkJobID" />
+          </Key>
+          <Property Name="BulkJobID" Type="Int32" Nullable="false" annotation:StoreGeneratedPattern="Identity" />
+          <Property Name="JobNumber" Type="String" Nullable="false" MaxLength="20" FixedLength="false" Unicode="true" />
+          <Property Name="BookDate" Type="DateTime" Nullable="false" Precision="3" />
+          <Property Name="BookTime" Type="DateTime" Nullable="false" Precision="3" />
+          <Property Name="JobStatus" Type="Int32" Nullable="false" />
+          <Property Name="ClientID" Type="Int32" Nullable="false" />
+          <Property Name="ClientCode" Type="String" MaxLength="5" FixedLength="false" Unicode="true" />
+          <Property Name="Contact" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="Amount" Type="Decimal" Precision="19" Scale="4" />
+          <Property Name="Speed" Type="Int32" Nullable="false" />
+          <Property Name="FromCompany" Type="String" MaxLength="150" FixedLength="false" Unicode="true" />
+          <Property Name="FromAddress" Type="String" MaxLength="150" FixedLength="false" Unicode="true" />
+          <Property Name="FromSuburb" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="ToCompany" Type="String" MaxLength="150" FixedLength="false" Unicode="true" />
+          <Property Name="ToAddress" Type="String" MaxLength="150" FixedLength="false" Unicode="true" />
+          <Property Name="ToSuburb" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="Size" Type="Int16" />
+          <Property Name="Qty" Type="Int16" />
+          <Property Name="Weight" Type="Decimal" Precision="6" Scale="2" />
+          <Property Name="CourierID" Type="Int32" />
+          <Property Name="ClientRefa" Type="String" MaxLength="20" FixedLength="false" Unicode="true" />
+          <Property Name="ClientRefb" Type="String" MaxLength="15" FixedLength="false" Unicode="true" />
+          <Property Name="OurRef" Type="String" MaxLength="20" FixedLength="false" Unicode="true" />
+          <Property Name="DeliverToPrivateBusiness" Type="Boolean" />
+          <Property Name="DeliverToLeaveID" Type="Int32" />
+          <Property Name="Notes" Type="String" MaxLength="4000" FixedLength="false" Unicode="true" />
+          <Property Name="RemoteJob" Type="Boolean" />
+          <Property Name="TrackingMethod" Type="Int32" />
+          <Property Name="TrackingEmail" Type="String" MaxLength="500" FixedLength="false" Unicode="true" />
+          <Property Name="TrackingMobile" Type="String" MaxLength="500" FixedLength="false" Unicode="true" />
+          <Property Name="ProofOfDeliveryMobile" Type="String" MaxLength="100" FixedLength="false" Unicode="true" />
+          <Property Name="ProofOfDeliveryEmail" Type="String" MaxLength="500" FixedLength="false" Unicode="true" />
+          <Property Name="PickUpLatitude" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="PickUpLongitude" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="DeliveryLatitude" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="DeliveryLongitude" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="PrebookJob" Type="Boolean" />
+          <Property Name="WellingtonJob" Type="Boolean" />
+          <Property Name="NWDocJob" Type="Boolean" />
+          <Property Name="Done" Type="Boolean" Nullable="false" />
+          <Property Name="Void" Type="Boolean" Nullable="false" />
+          <Property Name="JobID" Type="Int32" />
+          <Property Name="FromPostCode" Type="Int32" />
+          <Property Name="ToPostCode" Type="Int32" />
+          <Property Name="OnHold" Type="Boolean" Nullable="false" />
+          <Property Name="DeliverToContact" Type="String" MaxLength="100" FixedLength="false" Unicode="true" />
+          <Property Name="DeliverToPhone" Type="String" MaxLength="100" FixedLength="false" Unicode="true" />
+          <Property Name="RunName" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+          <Property Name="FromGeoType" Type="Int32" />
+          <Property Name="ToGeoType" Type="Int32" />
+          <Property Name="Manifest" Type="String" MaxLength="50" FixedLength="false" Unicode="true" />
+        </EntityType>
+        <ComplexType Name="BulkRun">
+          <Property Type="Int32" Name="CourierID" Nullable="true" />
+          <Property Type="Int32" Name="BulkJobID" Nullable="false" />
+          <Property Type="Int32" Name="ID" Nullable="false" />
+          <Property Type="String" Name="name" Nullable="true" MaxLength="50" />
+          <Property Type="String" Name="Courier" Nullable="true" MaxLength="101" />
+          <Property Type="String" Name="Fleet" Nullable="true" MaxLength="50" />
+          <Property Type="String" Name="CourierPercentage" Nullable="true" MaxLength="9" />
+          <Property Type="Int32" Name="Mins" Nullable="true" />
+          <Property Type="Double" Name="Kms" Nullable="true" />
+          <Property Type="Int32" Name="RunOrder" Nullable="false" />
+        </ComplexType>
+        <ComplexType Name="BulkRunSetting">
+          <Property Type="Int32" Name="ClientID" Nullable="false" />
+          <Property Type="String" Name="ClientCode" Nullable="true" MaxLength="5" />
+        </ComplexType>
+      </Schema>
+    </edmx:ConceptualModels>
+    <!-- C-S mapping content -->
+    <edmx:Mappings>
+      <Mapping Space="C-S" xmlns="http://schemas.microsoft.com/ado/2009/11/mapping/cs">
+        <EntityContainerMapping StorageEntityContainer="DespatchModelStoreContainer" CdmEntityContainer="DespatchContext">
+          <FunctionImportMapping FunctionImportName="GetPotentialCouriers" FunctionName="DespatchModel.Store.UTL_stpCourier_Active">
+          <ResultMapping>
+              <ComplexTypeMapping TypeName="DespatchModel.PotentialCouriers">
+                <ScalarProperty Name="courierID" ColumnName="courierID" />
+                <ScalarProperty Name="courier" ColumnName="courier" />
+                <ScalarProperty Name="Fleet" ColumnName="Fleet" />
+              </ComplexTypeMapping>
+            </ResultMapping>
+          </FunctionImportMapping>
+          <FunctionImportMapping FunctionImportName="GetBulkJobs" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkJob">
+          <ResultMapping>
+              <ComplexTypeMapping TypeName="DespatchModel.BulkJob">
+                <ScalarProperty Name="BulkJobID" ColumnName="BulkJobID" />
+                <ScalarProperty Name="ClientID" ColumnName="ClientID" />
+                <ScalarProperty Name="ClientCode" ColumnName="ClientCode" />
+                <ScalarProperty Name="JobNumber" ColumnName="JobNumber" />
+                <ScalarProperty Name="DeliveryDate" ColumnName="DeliveryDate" />
+                <ScalarProperty Name="ReadyTime" ColumnName="ReadyTime" />
+                <ScalarProperty Name="JobStatus" ColumnName="JobStatus" />
+                <ScalarProperty Name="CompanyName" ColumnName="CompanyName" />
+                <ScalarProperty Name="ToAddress" ColumnName="ToAddress" />
+                <ScalarProperty Name="ToSuburb" ColumnName="ToSuburb" />
+                <ScalarProperty Name="CourierID" ColumnName="CourierID" />
+                <ScalarProperty Name="FromCompany" ColumnName="FromCompany" />
+                <ScalarProperty Name="FromAddress" ColumnName="FromAddress" />
+                <ScalarProperty Name="FromSuburb" ColumnName="FromSuburb" />
+                <ScalarProperty Name="Contact" ColumnName="Contact" />
+                <ScalarProperty Name="Amount" ColumnName="Amount" />
+                <ScalarProperty Name="SpeedID" ColumnName="SpeedID" />
+                <ScalarProperty Name="Size" ColumnName="Size" />
+                <ScalarProperty Name="Items" ColumnName="Items" />
+                <ScalarProperty Name="Weight" ColumnName="Weight" />
+                <ScalarProperty Name="RemoteScreen" ColumnName="RemoteScreen" />
+                <ScalarProperty Name="ClientRefa" ColumnName="ClientRefa" />
+                <ScalarProperty Name="ClientRefb" ColumnName="ClientRefb" />
+                <ScalarProperty Name="OurRef" ColumnName="OurRef" />
+                <ScalarProperty Name="Ok_To_Leave" ColumnName="Ok_To_Leave" />
+                <ScalarProperty Name="Location" ColumnName="Location" />
+                <ScalarProperty Name="Notes" ColumnName="Notes" />
+                <ScalarProperty Name="TrackingMethod" ColumnName="TrackingMethod" />
+                <ScalarProperty Name="TrackingEmail" ColumnName="TrackingEmail" />
+                <ScalarProperty Name="TrackingMobile" ColumnName="TrackingMobile" />
+                <ScalarProperty Name="Mobile" ColumnName="Mobile" />
+                <ScalarProperty Name="Email" ColumnName="Email" />
+                <ScalarProperty Name="fromLat" ColumnName="fromLat" />
+                <ScalarProperty Name="fromLng" ColumnName="fromLng" />
+                <ScalarProperty Name="toLng" ColumnName="toLng" />
+                <ScalarProperty Name="toLat" ColumnName="toLat" />
+                <ScalarProperty Name="PrebookJob" ColumnName="PrebookJob" />
+                <ScalarProperty Name="WellingtonJob" ColumnName="WellingtonJob" />
+                <ScalarProperty Name="NWDocJob" ColumnName="NWDocJob" />
+                <ScalarProperty Name="Done" ColumnName="Done" />
+                <ScalarProperty Name="Void" ColumnName="Void" />
+                <ScalarProperty Name="ToPostCode" ColumnName="ToPostCode" />
+                <ScalarProperty Name="FromPostCode" ColumnName="FromPostCode" />
+                <ScalarProperty Name="DeliverToContact" ColumnName="DeliverToContact" />
+                <ScalarProperty Name="DeliverToPhone" ColumnName="DeliverToPhone" />
+                <ScalarProperty Name="FromGeoType" ColumnName="FromGeoType" />
+                <ScalarProperty Name="ToGeoType" ColumnName="ToGeoType" />
+                <ScalarProperty Name="RunName" ColumnName="RunName" />
+                <ScalarProperty Name="BulkJobRunID" ColumnName="BulkJobRunID" />
+                <ScalarProperty Name="Courier" ColumnName="Courier" />
+                <ScalarProperty Name="BuilderIndex" ColumnName="BuilderIndex" />
+                <ScalarProperty Name="PrefixRunName" ColumnName="PrefixRunName" />
+                <ScalarProperty Name="MaxJobsPerRun" ColumnName="MaxJobsPerRun" />
+              </ComplexTypeMapping>
+            </ResultMapping>
+          </FunctionImportMapping>
+          <FunctionImportMapping FunctionImportName="InsertJob" FunctionName="DespatchModel.Store.UTL_stpJob_InsertFromRunBuilder" />
+          <EntitySetMapping Name="tblBulkJobs">
+            <EntityTypeMapping TypeName="DespatchModel.tblBulkJob">
+              <MappingFragment StoreEntitySet="tblBulkJob">
+                <ScalarProperty Name="Manifest" ColumnName="Manifest" />
+                <ScalarProperty Name="ToGeoType" ColumnName="ToGeoType" />
+                <ScalarProperty Name="FromGeoType" ColumnName="FromGeoType" />
+                <ScalarProperty Name="RunName" ColumnName="RunName" />
+                <ScalarProperty Name="DeliverToPhone" ColumnName="DeliverToPhone" />
+                <ScalarProperty Name="DeliverToContact" ColumnName="DeliverToContact" />
+                <ScalarProperty Name="OnHold" ColumnName="OnHold" />
+                <ScalarProperty Name="ToPostCode" ColumnName="ToPostCode" />
+                <ScalarProperty Name="FromPostCode" ColumnName="FromPostCode" />
+                <ScalarProperty Name="JobID" ColumnName="JobID" />
+                <ScalarProperty Name="Void" ColumnName="Void" />
+                <ScalarProperty Name="Done" ColumnName="Done" />
+                <ScalarProperty Name="NWDocJob" ColumnName="NWDocJob" />
+                <ScalarProperty Name="WellingtonJob" ColumnName="WellingtonJob" />
+                <ScalarProperty Name="PrebookJob" ColumnName="PrebookJob" />
+                <ScalarProperty Name="DeliveryLongitude" ColumnName="DeliveryLongitude" />
+                <ScalarProperty Name="DeliveryLatitude" ColumnName="DeliveryLatitude" />
+                <ScalarProperty Name="PickUpLongitude" ColumnName="PickUpLongitude" />
+                <ScalarProperty Name="PickUpLatitude" ColumnName="PickUpLatitude" />
+                <ScalarProperty Name="ProofOfDeliveryEmail" ColumnName="ProofOfDeliveryEmail" />
+                <ScalarProperty Name="ProofOfDeliveryMobile" ColumnName="ProofOfDeliveryMobile" />
+                <ScalarProperty Name="TrackingMobile" ColumnName="TrackingMobile" />
+                <ScalarProperty Name="TrackingEmail" ColumnName="TrackingEmail" />
+                <ScalarProperty Name="TrackingMethod" ColumnName="TrackingMethod" />
+                <ScalarProperty Name="RemoteJob" ColumnName="RemoteJob" />
+                <ScalarProperty Name="Notes" ColumnName="Notes" />
+                <ScalarProperty Name="DeliverToLeaveID" ColumnName="DeliverToLeaveID" />
+                <ScalarProperty Name="DeliverToPrivateBusiness" ColumnName="DeliverToPrivateBusiness" />
+                <ScalarProperty Name="OurRef" ColumnName="OurRef" />
+                <ScalarProperty Name="ClientRefb" ColumnName="ClientRefb" />
+                <ScalarProperty Name="ClientRefa" ColumnName="ClientRefa" />
+                <ScalarProperty Name="CourierID" ColumnName="CourierID" />
+                <ScalarProperty Name="Weight" ColumnName="Weight" />
+                <ScalarProperty Name="Qty" ColumnName="Qty" />
+                <ScalarProperty Name="Size" ColumnName="Size" />
+                <ScalarProperty Name="ToSuburb" ColumnName="ToSuburb" />
+                <ScalarProperty Name="ToAddress" ColumnName="ToAddress" />
+                <ScalarProperty Name="ToCompany" ColumnName="ToCompany" />
+                <ScalarProperty Name="FromSuburb" ColumnName="FromSuburb" />
+                <ScalarProperty Name="FromAddress" ColumnName="FromAddress" />
+                <ScalarProperty Name="FromCompany" ColumnName="FromCompany" />
+                <ScalarProperty Name="Speed" ColumnName="Speed" />
+                <ScalarProperty Name="Amount" ColumnName="Amount" />
+                <ScalarProperty Name="Contact" ColumnName="Contact" />
+                <ScalarProperty Name="ClientCode" ColumnName="ClientCode" />
+                <ScalarProperty Name="ClientID" ColumnName="ClientID" />
+                <ScalarProperty Name="JobStatus" ColumnName="JobStatus" />
+                <ScalarProperty Name="BookTime" ColumnName="BookTime" />
+                <ScalarProperty Name="BookDate" ColumnName="BookDate" />
+                <ScalarProperty Name="JobNumber" ColumnName="JobNumber" />
+                <ScalarProperty Name="BulkJobID" ColumnName="BulkJobID" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <FunctionImportMapping FunctionImportName="InsertOrUpdateJobRun" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkJobRun_InsertOrUpdate" />
+          <FunctionImportMapping FunctionImportName="InsertOrUpdateRun" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkRun_InsertOrUpdate" >
+          </FunctionImportMapping>
+          <FunctionImportMapping FunctionImportName="GetBulkRun" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkRun">
+          <ResultMapping>
+              <ComplexTypeMapping TypeName="DespatchModel.BulkRun">
+                <ScalarProperty Name="CourierID" ColumnName="CourierID" />
+                <ScalarProperty Name="BulkJobID" ColumnName="BulkJobID" />
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="name" ColumnName="name" />
+                <ScalarProperty Name="Courier" ColumnName="Courier" />
+                <ScalarProperty Name="Fleet" ColumnName="Fleet" />
+                <ScalarProperty Name="CourierPercentage" ColumnName="CourierPercentage" />
+                <ScalarProperty Name="Mins" ColumnName="Mins" />
+                <ScalarProperty Name="Kms" ColumnName="Kms" />
+                <ScalarProperty Name="RunOrder" ColumnName="RunOrder" />
+              </ComplexTypeMapping>
+            </ResultMapping>
+          </FunctionImportMapping>
+          <FunctionImportMapping FunctionImportName="DeleteBulkRun" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkRun_Delete" />
+          <FunctionImportMapping FunctionImportName="GetBulkRunSettings" FunctionName="DespatchModel.Store.UTL_stpJob_tblBulkRunSettings">
+          <ResultMapping>
+              <ComplexTypeMapping TypeName="DespatchModel.BulkRunSetting">
+                <ScalarProperty Name="ClientID" ColumnName="ClientID" />
+                <ScalarProperty Name="ClientCode" ColumnName="ClientCode" />
+              </ComplexTypeMapping>
+            </ResultMapping>
+          </FunctionImportMapping>
+        </EntityContainerMapping>
+      </Mapping>
+    </edmx:Mappings>
+  </edmx:Runtime>
+  <!-- EF Designer content (DO NOT EDIT MANUALLY BELOW HERE) -->
+  <Designer xmlns="http://schemas.microsoft.com/ado/2009/11/edmx">
+    <Connection>
+      <DesignerInfoPropertySet>
+        <DesignerProperty Name="MetadataArtifactProcessing" Value="EmbedInOutputAssembly" />
+      </DesignerInfoPropertySet>
+    </Connection>
+    <Options>
+      <DesignerInfoPropertySet>
+        <DesignerProperty Name="ValidateOnBuild" Value="true" />
+        <DesignerProperty Name="EnablePluralization" Value="true" />
+        <DesignerProperty Name="IncludeForeignKeysInModel" Value="true" />
+        <DesignerProperty Name="UseLegacyProvider" Value="false" />
+        <DesignerProperty Name="CodeGenerationStrategy" Value="None" />
+      </DesignerInfoPropertySet>
+    </Options>
+    <!-- Diagram content (shape and connector positions) -->
+    <Diagrams></Diagrams>
+  </Designer>
+</edmx:Edmx>

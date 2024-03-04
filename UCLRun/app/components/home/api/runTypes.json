@@ -1,0 +1,45 @@
+{
+  "services":[
+    {
+      "id":1,
+      "label":"Tonight"
+    },
+    {
+      "id":2,
+      "label":"Afternoon"
+    },
+    {
+      "id":3,
+      "label":"Tomorrow"
+    }
+  ],
+  "regions":[
+    {
+      "id":1,
+      "label":"Auckland"
+    },
+    {
+      "id":2,
+      "label":"Waikato"
+    },
+    {
+      "id":3,
+      "label":"Wellington"
+    }
+  ],
+  "statuses":[
+    {
+      "id":1,
+      "label":"Awaiting Pickup"
+    },
+    {
+      "id":2,
+      "label":"Picked Up"
+    },
+    {
+      "id":3,
+      "label":"En Route"
+    }
+  ]
+
+}

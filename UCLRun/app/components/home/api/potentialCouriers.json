@@ -1,0 +1,74 @@
+[
+  {
+    "courier": "88 Mark",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 1",
+    "del": "Shallow Shore 3 | Deep Shore 2",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "95 John",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 2",
+    "del": "Shallow Shore 3 | Deep Shore 3",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "85 Peter",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 3",
+    "del": "Shallow Shore 3 | Deep Shore 4",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "88 Mark",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 4",
+    "del": "Shallow Shore 3 | Deep Shore 5",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "95 John",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 5",
+    "del": "Shallow Shore 3 | Deep Shore 6",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "85 Peter",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 6",
+    "del": "Shallow Shore 3 | Deep Shore 7",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "88 Mark",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 7",
+    "del": "Shallow Shore 3 | Deep Shore 8",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "95 John",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 8",
+    "del": "Shallow Shore 3 | Deep Shore 9",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  },
+  {
+    "courier": "85 Peter",
+    "location": "Penrose 373 Neilson St",
+    "pu": "Central 9",
+    "del": "Shallow Shore 3 | Deep Shore 10",
+    "lrm": "36 Min",
+    "eta2lrm": "25 Min"
+  }
+]
