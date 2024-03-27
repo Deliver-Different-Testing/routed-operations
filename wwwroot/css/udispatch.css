@@ -1,12 +1,12 @@
 ﻿.btn-primary {
-  background-color: #fddd00;
-  border-color: #cab000;
+  background-color: #76EAFE;
+  border-color: #43e2fe;
   color: #000;
 }
 .btn-primary:hover {
   color: #000;
-  background-color: #cab000;
-  border-color: #a18d00;
+  background-color: #43e2fe;
+  border-color: #1bdcfd;
 }
 .multi-element .btn {
   min-width: 190px;
@@ -19,7 +19,7 @@ body {
   top: 0;
   left: 0;
   width: 100%;
-  background: #191919;
+  background: #3EAFC247;
   z-index: 100;
   height: 40px;
 }
@@ -48,11 +48,11 @@ body {
   color: #e0e0e0;
 }
 .top-bar .btn-group .topBarActive {
-  background-color: #fddd00;
+  background-color: #76EAFE;
   color: #000;
 }
 .top-bar .btn-group .topBarActive:hover {
-  background-color: #fddd00;
+  background-color: #76EAFE;
   color: #000;
 }
 .top-bar .btn-group .topBarActive:active {
