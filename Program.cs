@@ -17,7 +17,7 @@ builder.Services.AddDataProtection().PersistKeysToAWSSystemsManager("/Hub/DataPr
 builder.Services.AddRaygun(builder.Configuration);
 // Add services to the container.
 builder.Services.AddControllersWithViews().AddJsonOptions(options =>
-    options.JsonSerializerOptions.PropertyNamingPolicy = null); ;
+    options.JsonSerializerOptions.PropertyNamingPolicy = null); 
 builder.Services.AddScoped<JobRepository, JobRepository>();
 builder.Services.AddScoped<RouteRepository, RouteRepository>();
 builder.Services.AddScoped<CourierRepository, CourierRepository>();
@@ -33,6 +33,7 @@ builder.Services.AddHealthChecks().AddSqlServer(connectionString);
 builder.Services.AddDbContext<DespatchContext>(x =>
 {
     x.UseSqlServer(connectionString);
+    //x.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(120));
 #if DEBUG
     x.UseLoggerFactory(LoggerFactory.Create(c => c.AddDebug()));
 #endif

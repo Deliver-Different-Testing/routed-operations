@@ -4,18 +4,11 @@ using Newtonsoft.Json;
 
 namespace RunBuilder.Models.Repository
 {
-    public class JobRepository 
+    public class JobRepository(DespatchContext context)
     {
-        private readonly DespatchContext _context;
-        
-        public JobRepository(DespatchContext context)
-        {
-            _context =context;
-        }
-
         public TblBulkJob? GetBulkJobByID(int jobID)
         {
-            return _context.TblBulkJobs.Find(jobID);
+            return context.TblBulkJobs.Find(jobID);
         }
 
         
@@ -32,12 +25,12 @@ namespace RunBuilder.Models.Repository
 
                 foreach (var id in ids)
                 {
-                    jobsResult.AddRange(await _context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, Convert.ToInt32(id)));
+                    jobsResult.AddRange(await context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, Convert.ToInt32(id)));
                 }
             }
             else
             {
-                jobsResult = await _context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, null);
+                jobsResult = await context.Procedures.UTL_stpJob_tblBulkJobAsync(dateTime, null);
             }
 
             return jobsResult;
@@ -53,19 +46,19 @@ namespace RunBuilder.Models.Repository
                 switch (propertyName)
                 {
                     case "Amount":
-                        _context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDecimal(value);
+                        context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDecimal(value);
                         break;
                     case "BookDate":
                     case "BookTime":
-                        _context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDateTime(value);
+                        context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDateTime(value);
                         break;
                     default:
-                        _context.Entry(bulkJob).Property(propertyName).CurrentValue = value;
+                        context.Entry(bulkJob).Property(propertyName).CurrentValue = value;
                         break;
                 }
 
-                _context.Entry(bulkJob).State = EntityState.Modified;
-                _context.SaveChanges();
+                context.Entry(bulkJob).State = EntityState.Modified;
+                context.SaveChanges();
                 result = true;
             }
             catch (Exception e)
@@ -82,8 +75,8 @@ namespace RunBuilder.Models.Repository
             var result = false;
             try
             {
-                _context.Entry(bulkJob).State = EntityState.Modified;
-                _context.SaveChanges();
+                context.Entry(bulkJob).State = EntityState.Modified;
+                context.SaveChanges();
                 result = true;
             }
             catch (Exception e)
@@ -132,7 +125,7 @@ namespace RunBuilder.Models.Repository
         {
             try
             {
-                await _context.Procedures.UTL_stpJob_InsertFromRunBuilderAsync(jobID, courierID, runName, runOrder, courierPercentage, null );
+                await context.Procedures.UTL_stpJob_InsertFromRunBuilderAsync(jobID, courierID, runName, runOrder, courierPercentage, null );
                 return new Response
                 {
                     Result = "Success"
@@ -151,7 +144,7 @@ namespace RunBuilder.Models.Repository
 
         public async Task<object> GetBulkRunSettingsAsync()
         {
-            var settings = await _context.Procedures.UTL_stpJob_tblBulkRunSettingsAsync();
+            var settings = await context.Procedures.UTL_stpJob_tblBulkRunSettingsAsync();
 
             var clientResult = settings.Select(r => new
             {
@@ -179,12 +172,12 @@ namespace RunBuilder.Models.Repository
 
                 foreach (var id in ids)
                 {
-                    bulkRunResult.AddRange(await _context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, Convert.ToInt32(id)));
+                    bulkRunResult.AddRange(await context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, Convert.ToInt32(id)));
                 }
             }
             else
             {
-                bulkRunResult = await _context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, null);
+                bulkRunResult = await context.Procedures.UTL_stpJob_tblBulkRunAsync(datetime, null);
             }
 
             return bulkRunResult;
@@ -192,7 +185,7 @@ namespace RunBuilder.Models.Repository
 
         public async Task DeleteBulkRunAsync(int ID)
         {
-            await _context.Procedures.UTL_stpJob_tblBulkRun_DeleteAsync(ID);
+            await context.Procedures.UTL_stpJob_tblBulkRun_DeleteAsync(ID);
         }
 
         public async Task<Response> InsertOrUpdateRunAsync(RunJob run)
@@ -208,7 +201,7 @@ namespace RunBuilder.Models.Repository
                 var googleRouteResponse = JsonConvert.SerializeObject(run.GoogleRouteResponse);
 
                 // Insert or update the run detail
-                var runResult = await _context.Procedures.UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(run.ID, run.Name, run.Mins, run.Kms, run.Courier?.courierID,
+                var runResult = await context.Procedures.UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(run.ID, run.Name, run.Mins, run.Kms, run.Courier?.courierID,
                 run.Status, run.Revenue, run.Payout, courierPercentage, googleRouteResponse, null);
 
                 if (runResult.Count == 0)
@@ -224,7 +217,7 @@ namespace RunBuilder.Models.Repository
                 foreach (var job in run.Jobs)
                 {
                     // Insert run order into table
-                    await _context.Procedures.UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(runResult.First().RunID, job.BulkJobID, job.BuilderIndex);
+                    await context.Procedures.UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(runResult.First().RunID, job.BulkJobID, job.BuilderIndex);
                 }
 
                 return new Response

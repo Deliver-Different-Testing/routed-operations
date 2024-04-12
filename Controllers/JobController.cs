@@ -4,22 +4,14 @@ using RunBuilder.Models.Repository;
 
 namespace RunBuilder.Controllers
 {
-    public class JobController : Controller
+    public class JobController(JobRepository repository) : Controller
     {
-
-        private readonly JobRepository _repo;
-
-        public JobController(JobRepository repository) 
-        {
-            _repo = repository;
-        }        
-
         [HttpGet]
         public async Task<ActionResult> Index(DateTime? datetime, string clientIds)
         {
             return new JsonResult(new
             {
-                BulkJobs = await _repo.GetBulkJobsAsync(datetime, clientIds),
+                BulkJobs = await repository.GetBulkJobsAsync(datetime, clientIds),
                 MaxJsonLength = Int32.MaxValue
             });
         }
@@ -32,7 +24,7 @@ namespace RunBuilder.Controllers
             {
                 try
                 {
-                    var result = await _repo.InsertJobsAsync(runJobs);
+                    var result = await repository.InsertJobsAsync(runJobs);
                     return Json(new { response = result });
                 }
                 catch (Exception e)
@@ -59,7 +51,7 @@ namespace RunBuilder.Controllers
         {
             try
             {
-                var result = await _repo.GetBulkRunSettingsAsync();
+                var result = await repository.GetBulkRunSettingsAsync();
                 return Json(new{response = result});   
             }
             catch (Exception e)
@@ -74,7 +66,7 @@ namespace RunBuilder.Controllers
         {
             try
             {
-                var result = await _repo.GetBulkRunsAsync(datetime, clientIds);
+                var result = await repository.GetBulkRunsAsync(datetime, clientIds);
                 return new JsonResult(new {
                     response =  result,
                     MaxJsonLength =  Int32.MaxValue
@@ -93,7 +85,7 @@ namespace RunBuilder.Controllers
             {
                 try
                 {
-                    var result = await _repo.InsertOrUpdateRunAsync(run);
+                    var result = await repository.InsertOrUpdateRunAsync(run);
                     return Json(new{response = result});   
                 }
                 catch (Exception e)
@@ -119,7 +111,7 @@ namespace RunBuilder.Controllers
             {
                 try
                 {
-                    await _repo.DeleteBulkRunAsync(id);
+                    await repository.DeleteBulkRunAsync(id);
                     return Json(new{response = "Success"});   
                 }
                 catch (Exception e)
@@ -143,7 +135,7 @@ namespace RunBuilder.Controllers
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = _repo.GetBulkJobByID(jobId);
+                var selectedJob = repository.GetBulkJobByID(jobId);
 
                 if (selectedJob == null)
                 {
@@ -152,7 +144,7 @@ namespace RunBuilder.Controllers
 
                 try
                 {
-                    var response = _repo.Update(selectedJob, field, value);
+                    var response = repository.Update(selectedJob, field, value);
 
                     return Json(response ? new{response = "Success"} : new{response = "Failed"});
                 }
@@ -177,7 +169,7 @@ namespace RunBuilder.Controllers
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = _repo.GetBulkJobByID(jobId);
+                var selectedJob = repository.GetBulkJobByID(jobId);
 
                 if (selectedJob == null)
                 {
@@ -199,7 +191,7 @@ namespace RunBuilder.Controllers
 
                 try
                 {
-                    var response = _repo.UpdateBulkJob(selectedJob);
+                    var response = repository.UpdateBulkJob(selectedJob);
 
                     if (response)
                     {

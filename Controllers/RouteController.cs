@@ -4,17 +4,9 @@ using RunBuilder.Models.Repository;
 
 namespace RunBuilder.Controllers
 {
-    public class RouteController : Controller
+    public class RouteController(RouteRepository repository, GoogleDirectionRepository googleRepository)
+        : Controller
     {
-        private readonly RouteRepository _repo;
-        private readonly GoogleDirectionRepository _googleRepo;
-
-        public RouteController(RouteRepository repository, GoogleDirectionRepository googleRepository)
-        {
-            _repo = repository;
-            _googleRepo = googleRepository;
-        }
-
         public ActionResult Index()
         {
             
@@ -27,9 +19,9 @@ namespace RunBuilder.Controllers
         {
             try
             {
-                RouteSavvyResponse savvyResponse = await _repo.FetchBulkRouteAsync(waypoints);
+                RouteSavvyResponse savvyResponse = await repository.FetchBulkRouteAsync(waypoints);
                 //var result = _googleRepo.GetDirectionsResponseFromRouteSavvy(savvyResponse);
-                var result = _googleRepo.GetOrderedWaypoints(savvyResponse);
+                var result = googleRepository.GetOrderedWaypoints(savvyResponse);
                 return Json(new { routes = result });
             }
             catch (Exception e)
@@ -46,9 +38,9 @@ namespace RunBuilder.Controllers
         {
             try
             {
-                RouteSavvyResponse savvyResponse = await _repo.FetchBulkRouteAsync(waypoints);
+                RouteSavvyResponse savvyResponse = await repository.FetchBulkRouteAsync(waypoints);
                 //var result = _googleRepo.GetDirectionsResponseFromRouteSavvy(savvyResponse);
-                var result = _googleRepo.GetOrderedWaypointsWithName(savvyResponse);
+                var result = googleRepository.GetOrderedWaypointsWithName(savvyResponse);
                 return Json(new { routes = result });
             }
             catch (Exception e)
