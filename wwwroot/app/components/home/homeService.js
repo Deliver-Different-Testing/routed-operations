@@ -19,7 +19,7 @@ angular
 	          });
 	      },
         getRegionList: function (runDate) {
-			return $http.get('/Job/RegionList?runDate=' + runDate.format("YYYY-MM-DDThh:mm:ss")).then(function (response) {
+			return $http.get('/Job/RegionList?runDate=' + runDate.format("YYYY-MM-DD")).then(function (response) {
                 return response.data;
             });
         },
@@ -31,7 +31,7 @@ angular
 	      },
 	      getRunJobsAll: function(date,clientIds) {
               // JobController/Index
-			  return $http.get('/Job?datetime=' + date.format("YYYY-MM-DDThh:mm:ss") + '&clientIds=' + clientIds).then(function(response) {
+			  return $http.get('/Job?datetime=' + date.format("YYYY-MM-DD") + '&clientIds=' + clientIds).then(function(response) {
 	              return response.data.BulkJobs;
 	          });
 
