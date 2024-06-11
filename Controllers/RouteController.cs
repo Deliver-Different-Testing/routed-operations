@@ -16,7 +16,7 @@ namespace RunBuilder.Controllers
 
         // GET: Route
         [HttpPost]
-        public async Task<ActionResult> Index(List<SavvyLocation> waypoints)
+        public async Task<ActionResult> Index([FromBody] List<SavvyLocation> waypoints)
         {
             try
             {
@@ -35,7 +35,7 @@ namespace RunBuilder.Controllers
         // GET: Route
         [HttpPost]
         //[ActionName("RouteWithName")]
-        public async Task<ActionResult> RouteWithName(List<SavvyLocation> waypoints)
+        public async Task<ActionResult> RouteWithName([FromBody] List<SavvyLocation> waypoints)
         {
             try
             {
@@ -53,11 +53,11 @@ namespace RunBuilder.Controllers
 
         [HttpPost]
         [ActionName("GetHereMapSequence")]
-        public async Task<ActionResult> GetHereMapSequence(HereMapSequenceRequest data)
+        public async Task<ActionResult> GetHereMapSequence([FromBody]HereMapSequenceRequest requestData)
         {
             try
             {
-                var result = await repository.GetHereMapSequenceAsync(data);
+                var result = await repository.GetHereMapSequenceAsync(requestData);
 
                 return Json(result);
             }

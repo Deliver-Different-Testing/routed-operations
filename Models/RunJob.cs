@@ -11,9 +11,9 @@ namespace RunBuilder.Models
         public int? Status { get; set; }
         public decimal? Revenue { get; set; }
         public decimal? Payout { get; set; }
-        public Courier Courier { get; set; }
+        public Courier? Courier { get; set; }
         public string CourierPercent { get; set; }
-        public GoogleDirectionsResponse GoogleRouteResponse { get; set; }
+        public GoogleDirectionsResponse? GoogleRouteResponse { get; set; }
         public IEnumerable<Job> Jobs { get; set; }
     }
 

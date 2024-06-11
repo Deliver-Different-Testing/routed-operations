@@ -18,7 +18,7 @@ namespace RunBuilder.Controllers
 
         // POST: Job
         [HttpPost]
-        public async Task<ActionResult> InsertRunJobs(IEnumerable<RunJob> runJobs)
+        public async Task<ActionResult> InsertRunJobs([FromBody]IEnumerable<RunJob> runJobs)
         {
             if (ModelState.IsValid)
             {
@@ -116,7 +116,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> InsertOrUpdateRun(RunJob run)
+        public async Task<ActionResult> InsertOrUpdateRun([FromBody]RunJob run)
         {
             if (ModelState.IsValid)
             {
@@ -142,7 +142,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> UpdateRun(RunJob run)
+        public async Task<ActionResult> UpdateRun([FromBody]RunJob run)
         {
             if (ModelState.IsValid)
             {
@@ -167,7 +167,7 @@ namespace RunBuilder.Controllers
             }
         }
         [HttpPost]
-        public async Task<ActionResult> DeleteRun(int id)
+        public async Task<ActionResult> DeleteRun([FromBody]int id)
         {
             if (ModelState.IsValid)
             {
@@ -193,7 +193,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public ActionResult UpdateJobDetail(int jobId, string field, string value)
+        public ActionResult UpdateJobDetail([FromBody]int jobId, [FromBody]string field, [FromBody]string value)
         {
             if (ModelState.IsValid)
             {
@@ -227,7 +227,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> UpdateJobToRun(int jobId, int? fromRunId, int runId)
+        public async Task<ActionResult> UpdateJobToRun([FromBody] int jobId, [FromBody]int? fromRunId, [FromBody]int runId)
         {
             if (ModelState.IsValid)
             {
@@ -253,7 +253,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> DeleteBulkJobRun(int jobId)
+        public async Task<ActionResult> DeleteBulkJobRun([FromBody]int jobId)
         {
             try
             {
@@ -268,7 +268,7 @@ namespace RunBuilder.Controllers
 
 
         [HttpPost]
-        public ActionResult UpdateGps(int jobId, string address, string lat, string lng, string postCode)
+        public ActionResult UpdateGps([FromBody]int jobId, [FromBody]string address, [FromBody] string lat, [FromBody] string lng, [FromBody] string postCode)
         {
             if (ModelState.IsValid)
             {

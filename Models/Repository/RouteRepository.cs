@@ -1,4 +1,6 @@
-﻿using RestSharp;
+﻿using System.Runtime.InteropServices.JavaScript;
+using RestSharp;
+using Serilog;
 
 namespace RunBuilder.Models.Repository
 {
@@ -43,6 +45,10 @@ namespace RunBuilder.Models.Repository
             };
 
             var restResponse = await client.ExecuteAsync<HereMapSequenceResponse>(request);
+            if (!restResponse.IsSuccessful)
+            {
+                Log.Error($"{nameof(GetHereMapSequenceAsync)} Error: {restResponse.StatusCode} {restResponse.ErrorMessage} {restResponse.Content}", restResponse.ErrorException );
+            }
             return restResponse.Data;
         }
 
