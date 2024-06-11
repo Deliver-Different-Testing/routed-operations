@@ -1,4 +1,5 @@
 ﻿using System.Runtime.InteropServices.JavaScript;
+using Amazon.Runtime.Internal;
 using RestSharp;
 using Serilog;
 
@@ -45,6 +46,7 @@ namespace RunBuilder.Models.Repository
             };
 
             var restResponse = await client.ExecuteAsync<HereMapSequenceResponse>(request);
+            Log.Debug($"Start {nameof(GetHereMapSequenceAsync)}: ResponseCode: {restResponse.StatusCode}  Err: {restResponse.ErrorMessage}  Content:{restResponse.Content} Data: {restResponse.Data}");
             if (!restResponse.IsSuccessful)
             {
                 Log.Error($"{nameof(GetHereMapSequenceAsync)} Error: {restResponse.StatusCode} {restResponse.ErrorMessage} {restResponse.Content}", restResponse.ErrorException );

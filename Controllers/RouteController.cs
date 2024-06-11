@@ -57,6 +57,7 @@ namespace RunBuilder.Controllers
         {
             try
             {
+                Log.Debug($"Start {nameof(GetHereMapSequence)}: requestData: {requestData}");
                 var result = await repository.GetHereMapSequenceAsync(requestData);
 
                 return Json(result);
