@@ -12,7 +12,7 @@ namespace RunBuilder.Models
         public decimal? Revenue { get; set; }
         public decimal? Payout { get; set; }
         public Courier? Courier { get; set; }
-        public string CourierPercent { get; set; }
+        public string? CourierPercent { get; set; }
         public GoogleDirectionsResponse? GoogleRouteResponse { get; set; }
         public IEnumerable<Job> Jobs { get; set; }
     }
