@@ -16,17 +16,17 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Amazon.AspNetCore.DataProtection.SSM" Version="3.2.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.3" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.3" />
-    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.3" />
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="8.0.3" />
-    <PackageReference Include="Mindscape.Raygun4Net.AspNetCore" Version="10.1.0" />
-    <PackageReference Include="RestSharp" Version="110.2.0" />
+    <PackageReference Include="Amazon.AspNetCore.DataProtection.SSM" Version="3.2.1" />
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.7" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.0.7" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="8.0.7" />
+    <PackageReference Include="Mindscape.Raygun4Net.AspNetCore" Version="11.0.3" />
+    <PackageReference Include="RestSharp" Version="111.4.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Serilog" Version="4.0.0" />
-    <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.1" />
+    <PackageReference Include="Serilog" Version="4.0.1" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="8.0.2" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
   </ItemGroup>
 
