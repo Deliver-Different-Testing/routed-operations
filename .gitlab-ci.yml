@@ -94,7 +94,7 @@ crossroadscourier-staging:
       when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
-    - if: "$CROSSROADSCOURIER_ENABLED"
+    - if: "$CROSSROADSCOURIER_STAGING_ENABLED"
       when: manual
 
 crossroadscourier-prod:
