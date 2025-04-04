@@ -76,10 +76,6 @@ builder.Services.AddHttpClient<RouteRepository>(client =>
 
 builder.Services.AddHttpContextAccessor();
 
-builder.Services.AddScoped<JobRepository, JobRepository>();
-builder.Services.AddScoped<RouteRepository, RouteRepository>();
-builder.Services.AddScoped<CourierRepository, CourierRepository>();
-builder.Services.AddScoped<GoogleDirectionRepository, GoogleDirectionRepository>();
 
 
 builder.Services.AddDbContextFactory<DespatchContext>(options =>
@@ -111,6 +107,15 @@ builder.Services.AddStackExchangeRedisCache(redisCacheConfig =>
     redisCacheConfig.ConfigurationOptions = redisConfigurationOptions;
 });
 
+try 
+{
+    var redis = ConnectionMultiplexer.Connect(redisConfigurationOptions);
+    Log.Information("Redis connection successful");
+}
+catch (Exception ex)
+{
+    Log.Error(ex, "Redis connection failed");
+}
 builder.Services.AddAuthentication("Identity.Application")
     .AddCookie("Identity.Application", options =>
     {
@@ -136,6 +141,12 @@ builder.Services.AddSession(options => {
     options.Cookie.Name = "hub_session";
     options.IdleTimeout = TimeSpan.FromMinutes(60 * 24);
 });
+
+
+builder.Services.AddScoped<JobRepository, JobRepository>();
+builder.Services.AddScoped<RouteRepository, RouteRepository>();
+builder.Services.AddScoped<CourierRepository, CourierRepository>();
+builder.Services.AddScoped<GoogleDirectionRepository, GoogleDirectionRepository>();
 
 var app = builder.Build();
 

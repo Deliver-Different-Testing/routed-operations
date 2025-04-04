@@ -8,6 +8,22 @@ namespace RunBuilder.Controllers
     {
         public async Task<ActionResult> Index()
         {
+            Log.Information("Index method called");
+
+    
+            if (HttpContext?.User?.Identity == null)
+            {
+                Log.Error("HttpContext.User.Identity is null");
+            }
+            else if (!HttpContext.User.Identity.IsAuthenticated)
+            {
+                Log.Error("User is not authenticated");
+            }
+            else
+            {
+                Log.Information($"User authenticated as: {HttpContext.User.Identity.Name}");
+                Log.Information($"Claims found: {string.Join(", ", HttpContext.User.Claims.Select(c => c.Type))}");
+            }
             var connectionString = HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "Connection")?.Value;
             var tenantId = HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "CurrentTenantID")?.Value;
             
