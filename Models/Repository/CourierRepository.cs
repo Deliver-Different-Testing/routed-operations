@@ -1,12 +1,13 @@
-﻿using System.Collections;
+﻿using Microsoft.EntityFrameworkCore;
+using System.Collections;
 
 namespace RunBuilder.Models.Repository
 {
-    public class CourierRepository(DespatchContext context)
+    public class CourierRepository(IDbContextFactory<DynamicDespatchDbContext> contextFactory) : BaseRepository(contextFactory)
     {
         public async Task<IEnumerable> GetPotentialCouriersAsync()
         {
-            var result = await context.Procedures.UTL_stpCourier_ActiveAsync();
+            var result = await Context.Procedures.UTL_stpCourier_ActiveAsync();
             return result;
         }
     }
