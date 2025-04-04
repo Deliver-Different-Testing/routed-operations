@@ -23,7 +23,7 @@ namespace RunBuilder.Controllers
             }
             await connectionStringManager.SetConnectionStringAsync($"{tenantId}-RunBuilder-Connection", connectionString+credentials);
 
-            var maskedConnectionString = MaskSensitiveInfo(connectionString);
+            var maskedConnectionString = MaskSensitiveInfo(connectionString ?? "");
             Log.Debug($"Connection String Set: {maskedConnectionString}"); 
             return View();
         }
