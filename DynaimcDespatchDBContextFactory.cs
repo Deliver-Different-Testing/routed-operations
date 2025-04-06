@@ -15,7 +15,7 @@ namespace RunBuilder
 
         public  DynamicDespatchDbContext CreateDbContext()
         {
-            var tenantId = contextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "TenantID")?.Value;
+            var tenantId = contextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "CurrentTenantID")?.Value;
             var connectionString = connectionStringManager.GetConnectionStringAsync($"{tenantId}-RunBuilder-Connection").GetAwaiter().GetResult();
         
             if (string.IsNullOrEmpty(connectionString))
