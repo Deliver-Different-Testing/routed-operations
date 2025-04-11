@@ -1,12 +1,12 @@
 # Default values for chart.
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
-replicaCount: 2
+replicaCount: 1
 
 hpa:
   enabled: true
-  minReplicas: 2
-  maxReplicas: 3
+  minReplicas: 1
+  maxReplicas: 2
   targetCPUUtilizationPercentage: 80
 
 ingress:
@@ -28,22 +28,22 @@ service:
   internalPort: 8080
 
 livenessProbe:
-  path: "/"
-  initialDelaySeconds: 15
+  path: "/healthz"
+  initialDelaySeconds: 25
   timeoutSeconds: 15
   scheme: "HTTP"
   probeType: "httpGet"
 readinessProbe:
-  path: "/"
-  initialDelaySeconds: 5
+  path: "/healthz"
+  initialDelaySeconds: 30
   timeoutSeconds: 3
   scheme: "HTTP"
   probeType: "httpGet"
 
 resources:
-  limits:
-    cpu: 1
-    memory: 2048M
   requests:
+    memory: 256Mi
     cpu: 100m
-    memory: 64M
+  limits:
+    memory: 512Mi
+    cpu: 500m

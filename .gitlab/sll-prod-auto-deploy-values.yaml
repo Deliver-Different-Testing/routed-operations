@@ -28,22 +28,22 @@ service:
   internalPort: 8080
 
 livenessProbe:
-  path: "/"
-  initialDelaySeconds: 15
+  path: "/healthz"
+  initialDelaySeconds: 25
   timeoutSeconds: 15
   scheme: "HTTP"
   probeType: "httpGet"
 readinessProbe:
-  path: "/"
-  initialDelaySeconds: 5
+  path: "/healthz"
+  initialDelaySeconds: 30
   timeoutSeconds: 3
   scheme: "HTTP"
   probeType: "httpGet"
 
 resources:
-  limits:
-    cpu: 500m
-    memory: 1024M
   requests:
+    memory: 256Mi
     cpu: 100m
-    memory: 64M
+  limits:
+    memory: 512Mi
+    cpu: 500m
