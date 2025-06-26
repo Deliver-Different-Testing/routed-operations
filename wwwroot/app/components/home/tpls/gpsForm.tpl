@@ -30,21 +30,15 @@
         </div>
 		  <div class="col-md-4">
             <div class="form-group">
-              <label for="PostCode">Post Code:</label>
+              <label for="PostCode">ZipCode:</label>
               <input type="text" ng-model="gpsForm.data.postCode" class="form-control" />
             </div>
         </div>
         <div class="col-md-12">
-
-         <!-- <div class="form-group">
-            <label for="jobNum">Search Address:</label>
-            <input type="text" id="gpsSearch" ng-map-autocomplete ng-model="gpsForm.search" options='{"watchEnter":true, "country":"nz"}' ng-model-options='{"debounce": 1000}' details="gpsForm.details" class="form-control" />
-          </div>
-		  -->
 		   <input class="form-control" 
 		    places-auto-complete 
 			ng-model="gpsForm.search"
-			component-restrictions="{country:'nz'}"
+			component-restrictions="{country:'us'}"
 			types="['address']"
 			on-place-changed="gpsForm.placeChanged()" />
           

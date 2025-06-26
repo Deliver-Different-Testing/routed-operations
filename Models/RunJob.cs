@@ -25,6 +25,6 @@ namespace RunBuilder.Models
     public class Courier
     {
         public int? courierID { get; set; }
-        public string courier { get; set; }
+        public string? courier { get; set; }
     }
 }

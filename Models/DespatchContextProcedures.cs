@@ -43,7 +43,7 @@ namespace RunBuilder.Models
             _context = context;
         }
 
-        public virtual async Task<List<RVW_stpBulkRegionsResult>> RVW_stpBulkRegionsAsync(DateTime? RunDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<RVW_stpBulkRegionsResult>> RVW_stpBulkRegionsAsync(DateTime? runDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -57,7 +57,7 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "RunDate",
-                    Value = RunDate ?? Convert.DBNull,
+                    Value = runDate ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 parameterreturnValue,
@@ -69,7 +69,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<RVW_stpBulkSpeedsResult>> RVW_stpBulkSpeedsAsync(DateTime? RunDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<RVW_stpBulkSpeedsResult>> RVW_stpBulkSpeedsAsync(DateTime? runDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -83,7 +83,7 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "RunDate",
-                    Value = RunDate ?? Convert.DBNull,
+                    Value = runDate ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 parameterreturnValue,
@@ -115,7 +115,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<int> UTL_stpJob_InsertFromRunBuilderAsync(int? BulkJobID, int? CourierID, string RunName, int? RunOrder, double? CourierPercentage, int? RunStatus, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<int> UTL_stpJob_InsertFromRunBuilderAsync(int? bulkJobID, int? courierID, string runName, int? runOrder, double? courierPercentage, int? runStatus, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -129,38 +129,38 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "BulkJobID",
-                    Value = BulkJobID ?? Convert.DBNull,
+                    Value = bulkJobID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "CourierID",
-                    Value = CourierID ?? Convert.DBNull,
+                    Value = courierID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "RunName",
                     Size = 100,
-                    Value = RunName ?? Convert.DBNull,
+                    Value = runName ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "RunOrder",
-                    Value = RunOrder ?? Convert.DBNull,
+                    Value = runOrder ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "CourierPercentage",
-                    Value = CourierPercentage ?? Convert.DBNull,
+                    Value = courierPercentage ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Float,
                 },
                 new SqlParameter
                 {
                     ParameterName = "RunStatus",
-                    Value = RunStatus ?? Convert.DBNull,
+                    Value = runStatus ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 parameterreturnValue,
@@ -172,7 +172,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<UTL_stpJob_tblBulkJobResult>> UTL_stpJob_tblBulkJobAsync(DateTime? DateTime, int? ClientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<UTL_stpJob_tblBulkJobResult>> UTL_stpJob_tblBulkJobAsync(DateTime? dateTime, int? clientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -186,13 +186,13 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "DateTime",
-                    Value = DateTime ?? Convert.DBNull,
+                    Value = dateTime ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 new SqlParameter
                 {
                     ParameterName = "ClientID",
-                    Value = ClientID ?? Convert.DBNull,
+                    Value = clientID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 parameterreturnValue,
@@ -204,7 +204,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<int> UTL_stpJob_tblBulkJob_SyncHDJobsAsync(DateTime? BookDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<int> UTL_stpJob_tblBulkJob_SyncHDJobsAsync(DateTime? bookDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -218,7 +218,7 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "BookDate",
-                    Value = BookDate ?? Convert.DBNull,
+                    Value = bookDate ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 parameterreturnValue,
@@ -230,7 +230,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<int> UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(int? RunID, int? BulkJobID, int? RunOrder, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<int> UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(int? runID, int? bulkJobID, int? runOrder, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -244,19 +244,19 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "RunID",
-                    Value = RunID ?? Convert.DBNull,
+                    Value = runID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "BulkJobID",
-                    Value = BulkJobID ?? Convert.DBNull,
+                    Value = bulkJobID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "RunOrder",
-                    Value = RunOrder ?? Convert.DBNull,
+                    Value = runOrder ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 parameterreturnValue,
@@ -268,7 +268,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<UTL_stpJob_tblBulkJobWithFilterResult>> UTL_stpJob_tblBulkJobWithFilterAsync(DateTime? DateTime, string ClientIDs, string Regions, string OurRefs, string Speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<UTL_stpJob_tblBulkJobWithFilterResult>> UTL_stpJob_tblBulkJobWithFilterAsync(DateTime? dateTime, string clientIDs, string regions, string ourRefs, string speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -282,35 +282,35 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "DateTime",
-                    Value = DateTime ?? Convert.DBNull,
+                    Value = dateTime ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 new SqlParameter
                 {
                     ParameterName = "ClientIDs",
                     Size = 8000,
-                    Value = ClientIDs ?? Convert.DBNull,
+                    Value = clientIDs ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Regions",
                     Size = 8000,
-                    Value = Regions ?? Convert.DBNull,
+                    Value = regions ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "OurRefs",
                     Size = 8000,
-                    Value = OurRefs ?? Convert.DBNull,
+                    Value = ourRefs ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Speeds",
                     Size = 8000,
-                    Value = Speeds ?? Convert.DBNull,
+                    Value = speeds ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 parameterreturnValue,
@@ -322,7 +322,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<UTL_stpJob_tblBulkRunResult>> UTL_stpJob_tblBulkRunAsync(DateTime? DateTime, int? ClientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<UTL_stpJob_tblBulkRunResult>> UTL_stpJob_tblBulkRunAsync(DateTime? dateTime, int? clientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -336,13 +336,13 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "DateTime",
-                    Value = DateTime ?? Convert.DBNull,
+                    Value = dateTime ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 new SqlParameter
                 {
                     ParameterName = "ClientID",
-                    Value = ClientID ?? Convert.DBNull,
+                    Value = clientID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 parameterreturnValue,
@@ -354,7 +354,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<int> UTL_stpJob_tblBulkRun_DeleteAsync(int? RunID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<int> UTL_stpJob_tblBulkRun_DeleteAsync(int? runID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -368,7 +368,7 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "RunID",
-                    Value = RunID ?? Convert.DBNull,
+                    Value = runID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 parameterreturnValue,
@@ -380,7 +380,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>> UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(int? RunID, string Name, int? Mins, double? Kms, int? CourierID, int? Status, decimal? Revenue, decimal? Payout, double? CourierPercentage, string GoogleRouteResponse, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>> UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(int? runID, string name, int? mins, double? kms, int? courierID, int? status, decimal? revenue, decimal? payout, double? courierPercentage, string googleRouteResponse, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -394,38 +394,38 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "RunID",
-                    Value = RunID ?? Convert.DBNull,
+                    Value = runID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Name",
                     Size = 100,
-                    Value = Name ?? Convert.DBNull,
+                    Value = name ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Mins",
-                    Value = Mins ?? Convert.DBNull,
+                    Value = mins ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Kms",
-                    Value = Kms ?? Convert.DBNull,
+                    Value = kms ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Float,
                 },
                 new SqlParameter
                 {
                     ParameterName = "CourierID",
-                    Value = CourierID ?? Convert.DBNull,
+                    Value = courierID ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Status",
-                    Value = Status ?? Convert.DBNull,
+                    Value = status ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Int,
                 },
                 new SqlParameter
@@ -433,7 +433,7 @@ namespace RunBuilder.Models
                     ParameterName = "Revenue",
                     Precision = 19,
                     Scale = 4,
-                    Value = Revenue ?? Convert.DBNull,
+                    Value = revenue ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Money,
                 },
                 new SqlParameter
@@ -441,20 +441,20 @@ namespace RunBuilder.Models
                     ParameterName = "Payout",
                     Precision = 19,
                     Scale = 4,
-                    Value = Payout ?? Convert.DBNull,
+                    Value = payout ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Money,
                 },
                 new SqlParameter
                 {
                     ParameterName = "CourierPercentage",
-                    Value = CourierPercentage ?? Convert.DBNull,
+                    Value = courierPercentage ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.Float,
                 },
                 new SqlParameter
                 {
                     ParameterName = "GoogleRouteResponse",
                     Size = -1,
-                    Value = GoogleRouteResponse ?? Convert.DBNull,
+                    Value = googleRouteResponse ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 parameterreturnValue,
@@ -486,7 +486,7 @@ namespace RunBuilder.Models
             return _;
         }
 
-        public virtual async Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> UTL_stpJob_tblBulkRunWithFilterAsync(DateTime? DateTime, string ClientIDs, string Regions, string OurRefs, string Speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
+        public virtual async Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> UTL_stpJob_tblBulkRunWithFilterAsync(DateTime? dateTime, string clientIDs, string regions, string ourRefs, string speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default)
         {
             var parameterreturnValue = new SqlParameter
             {
@@ -500,35 +500,35 @@ namespace RunBuilder.Models
                 new SqlParameter
                 {
                     ParameterName = "DateTime",
-                    Value = DateTime ?? Convert.DBNull,
+                    Value = dateTime ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.DateTime,
                 },
                 new SqlParameter
                 {
                     ParameterName = "ClientIDs",
                     Size = 8000,
-                    Value = ClientIDs ?? Convert.DBNull,
+                    Value = clientIDs ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Regions",
                     Size = 8000,
-                    Value = Regions ?? Convert.DBNull,
+                    Value = regions ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "OurRefs",
                     Size = 8000,
-                    Value = OurRefs ?? Convert.DBNull,
+                    Value = ourRefs ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 new SqlParameter
                 {
                     ParameterName = "Speeds",
                     Size = 8000,
-                    Value = Speeds ?? Convert.DBNull,
+                    Value = speeds ?? Convert.DBNull,
                     SqlDbType = System.Data.SqlDbType.NVarChar,
                 },
                 parameterreturnValue,
