@@ -2,6 +2,11 @@ angular
     .module('uRuns')
     .controller('HomeControl', ['$scope', 'uRunData', "$state", "$filter", '$parse', "hotkeys", 'NgMap', 'GeoCoder', '$timeout', '$q', '$ngConfirm', function ($scope, uRunData, $state, $filter, $parse, hotkeys, NgMap, GeoCoder, $timeout, $q, $ngConfirm) {
 
+        NgMap.getMap().then(function (map) {
+            $scope.map = map;
+            $scope.marker = map.markers[0];
+        });
+
         $scope.gather = {
             submit: function () {
                 $scope.gather.form.onSubmit();
@@ -81,7 +86,7 @@ angular
                     //	"name":"RunMoreThan100"
                     //},
                     {
-                        "label": "PostCode",
+                        "label": "ZipCode",
                         "name": "ToPostCode"
                     },
                     {
@@ -155,7 +160,7 @@ angular
                     //	"name":"RunMoreThan100"
                     //},
                     {
-                        "label": "PostCode",
+                        "label": "ZipCode",
                         "name": "ToPostCode"
                     },
                     {
@@ -1692,7 +1697,7 @@ angular
         $scope.DeleteRun = function (run) {
             //  Store ID back into run  
             //uRunData.doAPI("Job/DeleteRun", JSON.stringify(run)).then(function (data) {
-            uRunData.doAPI("Job/DeleteRun?ID=" + run.ID).then(function (data) {
+            uRunData.doAPI("Job/DeleteRun", run.ID).then(function (data) {
                 $("#box-map").find(".loading").fadeOut();
                 $("#box-runList").find(".loading").fadeOut();
 
@@ -2489,7 +2494,7 @@ angular
 
 
                     // Get runs from database
-                    uRunData.doGetAPI("Job/GetBulkRuns?datetime=" + moment($scope.pickDateService.date).toISOString() + '&clientIds=' + selectedClients + '&regionIds=' + selectedRegions + '&ourRefs=' + selectedOurRefs + '&Speeds=' +
+                    uRunData.doGetAPI("Job/GetBulkRuns?datetime=" + moment($scope.pickDateService.date).format("YYYY-MM-DD") + '&clientIds=' + selectedClients + '&regionIds=' + selectedRegions + '&ourRefs=' + selectedOurRefs + '&Speeds=' +
                         selectedSpeeds).then(function (data) {
                             var bulkRuns = data.response;
 
@@ -3115,12 +3120,6 @@ angular
         //////////////////////////
         // GPS form
         //////////////////////////
-        NgMap.getMap().then(function (map) {
-            $scope.map = map;
-            $scope.marker = map.markers[0];
-        });
-
-
         $scope.updateGPS = function (field) {
             var suburb = "";
             if (field == "ToAddress") {
@@ -3174,16 +3173,22 @@ angular
                         }
                     }
 
-                    var callData = {
-                        "address": field,
-                        "lat": location.lat(),
-                        "lng": location.lng(),
-                        "postCode": postCode,
-                        "jobID": $scope.currentJob.BulkJobID
-                    }
+                    //var callData = {
+                    //    "address": field,
+                    //    "lat": location.lat(),
+                    //    "lng": location.lng(),
+                    //    "postCode": postCode,
+                    //    "jobID": $scope.currentJob.BulkJobID
+                    //}
 
                     var path = "/Job/UpdateGPS";
-                    uRunData.doAPI(path, callData).then(function (data) {
+                    uRunData.doAPI(path, {
+                        JobId: $scope.currentJob.BulkJobID,
+                        Address: field,
+                        Lat: location.lat().toString(),
+                        Lng: location.lng().toString(),
+                        PostCode: postCode
+                        }).then(function (data) {
                         if (data.response == "Success") {
                             if (field == "ToAddress") {
                                 $scope.currentJob.toLat = location.lat();
@@ -3227,7 +3232,10 @@ angular
                         $scope.gpsForm.data.postCode = $scope.place.address_components
                             .find(x => x.types[0] == "postal_code").long_name;
                     }
-                    $scope.map.setCenter($scope.place.geometry.location);
+                    if ($scope.map && $scope.place.geometry && $scope.place.geometry.location) {
+                        $scope.map.setCenter($scope.place.geometry.location);
+                    }
+
                 },
                 moveMarker: function (event) {
                     var latlng = event.latLng;
@@ -3237,11 +3245,27 @@ angular
                             $scope.gpsForm.placeChanged(result[0]);
                         });
                 },
-                markerDragend: function () {
+                markerDragend: function (event) {
+                    //GeoCoder.geocode({ location: $scope.marker.getPosition() })
+                    //    .then(function (result) {
+                    //        $scope.gpsForm.placeChanged(result[0]);
+                    //    });
+
                     //Geo coder for drag marker
-                    GeoCoder.geocode({ location: $scope.marker.getPosition() })
+                    var position = event.latLng;
+                    if (!position) {
+                        console.warn('No position data available from marker drag event');
+                        return;
+                    }
+
+                    GeoCoder.geocode({ location: position })
                         .then(function (result) {
-                            $scope.gpsForm.placeChanged(result[0]);
+                            if (result && result.length > 0) {
+                                $scope.gpsForm.placeChanged(result[0]);
+                            }
+                        })
+                        .catch(function (error) {
+                            console.error('Geocoding failed:', error);
                         });
                 }
             }

@@ -183,5 +183,49 @@ public partial class TblBulkJob
 
     public int? BulkParentId { get; set; }
 
+    public bool? DocRequired { get; set; }
+
+    public string PickupAddressLine1 { get; set; }
+
+    public string PickupAddressLine2 { get; set; }
+
+    public string PickupAddressLine3 { get; set; }
+
+    public string PickupAddressLine4 { get; set; }
+
+    public string PickupAddressLine5 { get; set; }
+
+    public string PickupAddressLine6 { get; set; }
+
+    public string PickupAddressLine7 { get; set; }
+
+    public string PickupAddressLine8 { get; set; }
+
+    public string DeliveryAddressLine1 { get; set; }
+
+    public string DeliveryAddressLine2 { get; set; }
+
+    public string DeliveryAddressLine3 { get; set; }
+
+    public string DeliveryAddressLine4 { get; set; }
+
+    public string DeliveryAddressLine5 { get; set; }
+
+    public string DeliveryAddressLine6 { get; set; }
+
+    public string DeliveryAddressLine7 { get; set; }
+
+    public string DeliveryAddressLine8 { get; set; }
+
+    public string PickupFromContact { get; set; }
+
+    public string PickupFromPhone { get; set; }
+
+    public int? PickupTimeZoneId { get; set; }
+
+    public decimal? TotalDistance { get; set; }
+
+    public int? DeliverByTimeZoneId { get; set; }
+
     public virtual ICollection<TblBulkJobRun> TblBulkJobRuns { get; set; } = new List<TblBulkJobRun>();
 }

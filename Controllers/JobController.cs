@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using RunBuilder.Models;
 using RunBuilder.Models.Repository;
+using RunBuilder.Models.Requests;
 
 namespace RunBuilder.Controllers
 {
@@ -18,18 +19,24 @@ namespace RunBuilder.Controllers
 
         // POST: Job
         [HttpPost]
-        public async Task<ActionResult> InsertRunJobs([FromBody]IEnumerable<RunJob> runJobs)
+        public async Task<ActionResult> InsertRunJobs([FromBody] IEnumerable<RunJob> runJobs)
         {
             if (ModelState.IsValid)
             {
                 try
                 {
                     var result = await repository.InsertJobsAsync(runJobs);
+                    if (result == null)
+                    {
+                        return Json(new { response = new[] { new { Result = "Failed", Message = "No jobs were inserted from the InsertJobsAsync" } } });
+                    }
+
                     return Json(new { response = result });
                 }
                 catch (Exception e)
                 {
-                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
+                    var errorMessage = e.InnerException == null ? e.Message : e.InnerException.Message;
+                    return Json(new { response = new[] { new {  Result = "Failed", Message = errorMessage}} });
                 }
             }
             else
@@ -39,12 +46,11 @@ namespace RunBuilder.Controllers
                         .SelectMany(v => v.Errors)
                         .Select(e => e.ErrorMessage));
 
-                return Json(new { response = "Invalid run data: " + errors });
+                return Json(new { response = new[] {new {Result = "Failed",Message = "Invalid run data: " + errors}}});
             }
 
         }
 
-        
         [HttpGet]
         [ActionName("GetRunSettings")]
         public async Task<ActionResult> GetRunSettings()
@@ -52,11 +58,11 @@ namespace RunBuilder.Controllers
             try
             {
                 var result = await repository.GetBulkRunSettingsAsync();
-                return Json(new{response = result});   
+                return Json(new { response = result });
             }
             catch (Exception e)
             {
-                return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
             }
         }
 
@@ -96,7 +102,7 @@ namespace RunBuilder.Controllers
             var result = await repository.GetFilter(runDate);
             return Json(result);
         }
-        
+
         [HttpGet]
         [ActionName("GetBulkRuns")]
         public async Task<ActionResult> GetBulkRuns(DateTime? datetime, string clientIds, string regionIds, string ourRefs, string speeds)
@@ -104,30 +110,31 @@ namespace RunBuilder.Controllers
             try
             {
                 var result = await repository.GetBulkRunsAsync(datetime, clientIds, regionIds, ourRefs, speeds);
-                return new JsonResult(new {
-                    response =  result,
-                    MaxJsonLength =  int.MaxValue
-                });   
+                return new JsonResult(new
+                {
+                    response = result,
+                    MaxJsonLength = int.MaxValue
+                });
             }
             catch (Exception e)
             {
-                return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
             }
         }
 
         [HttpPost]
-        public async Task<ActionResult> InsertOrUpdateRun([FromBody]RunJob run)
+        public async Task<ActionResult> InsertOrUpdateRun([FromBody] RunJob run)
         {
             if (ModelState.IsValid)
             {
                 try
                 {
                     var result = await repository.InsertOrUpdateRunAsync(run);
-                    return Json(new{response = result});   
+                    return Json(new { response = result });
                 }
                 catch (Exception e)
                 {
-                    return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
                 }
             }
             else
@@ -137,12 +144,12 @@ namespace RunBuilder.Controllers
                         .SelectMany(v => v.Errors)
                         .Select(e => e.ErrorMessage));
 
-                return Json(new{response = "Invalid run data: " + errors}); 
+                return Json(new { response = "Invalid run data: " + errors });
             }
         }
 
         [HttpPost]
-        public async Task<ActionResult> UpdateRun([FromBody]RunJob run)
+        public async Task<ActionResult> UpdateRun([FromBody] RunJob run)
         {
             if (ModelState.IsValid)
             {
@@ -167,18 +174,18 @@ namespace RunBuilder.Controllers
             }
         }
         [HttpPost]
-        public async Task<ActionResult> DeleteRun([FromBody]int id)
+        public async Task<ActionResult> DeleteRun([FromBody] int id)
         {
             if (ModelState.IsValid)
             {
                 try
                 {
                     await repository.DeleteBulkRunAsync(id);
-                    return Json(new{response = "Success"});   
+                    return Json(new { response = "Success" });
                 }
                 catch (Exception e)
                 {
-                    return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
                 }
             }
             else
@@ -188,16 +195,16 @@ namespace RunBuilder.Controllers
                         .SelectMany(v => v.Errors)
                         .Select(e => e.ErrorMessage));
 
-                return Json(new{response = "Invalid run data: " + errors}); 
+                return Json(new { response = "Invalid run data: " + errors });
             }
         }
 
         [HttpPost]
-        public ActionResult UpdateJobDetail([FromBody]int jobId, [FromBody]string field, [FromBody]string value)
+        public ActionResult UpdateJobDetail([FromBody] UpdateJobDetailRequest request)
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = repository.GetBulkJobById(jobId);
+                var selectedJob = repository.GetBulkJobById(request.JobId);
 
                 if (selectedJob == null)
                 {
@@ -206,13 +213,12 @@ namespace RunBuilder.Controllers
 
                 try
                 {
-                    var response = repository.Update(selectedJob, field, value);
-
-                    return Json(response ? new{response = "Success"} : new{response = "Failed"});
+                    var response = repository.Update(selectedJob, request.Field, request.Value);
+                    return Json(response ? new { response = "Success" } : new { response = "Failed" });
                 }
                 catch (Exception e)
                 {
-                    return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
                 }
             }
             else
@@ -222,18 +228,18 @@ namespace RunBuilder.Controllers
                         .SelectMany(v => v.Errors)
                         .Select(e => e.ErrorMessage));
 
-                return Json(new{response = "Invalid job data: " + errors}); 
+                return Json(new { response = "Invalid job data: " + errors });
             }
         }
 
         [HttpPost]
-        public async Task<ActionResult> UpdateJobToRun([FromBody] int jobId, [FromBody]int? fromRunId, [FromBody]int runId)
+        public async Task<ActionResult> UpdateJobToRun([FromBody] UpdateJobToRunRequest request)
         {
             if (ModelState.IsValid)
             {
                 try
                 {
-                    var result = await repository.UpdateBulkJobRun(jobId, fromRunId, runId);
+                    var result = await repository.UpdateBulkJobRun(request.JobId, request.FromRunId, request.RunId);
                     return Json(new { response = result });
                 }
                 catch (Exception e)
@@ -253,7 +259,7 @@ namespace RunBuilder.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> DeleteBulkJobRun([FromBody]int jobId)
+        public async Task<ActionResult> DeleteBulkJobRun([FromBody] int jobId)
         {
             try
             {
@@ -268,28 +274,28 @@ namespace RunBuilder.Controllers
 
 
         [HttpPost]
-        public ActionResult UpdateGps([FromBody]int jobId, [FromBody]string address, [FromBody] string lat, [FromBody] string lng, [FromBody] string postCode)
+        public ActionResult UpdateGps([FromBody] UpdateGpsRequest request)
         {
             if (ModelState.IsValid)
             {
-                var selectedJob = repository.GetBulkJobById(jobId);
+                var selectedJob = repository.GetBulkJobById(request.JobId);
 
                 if (selectedJob == null)
                 {
                     return NotFound();
                 }
 
-                if (address == "ToAddress")
+                if (request.Address == "ToAddress")
                 {
-                    selectedJob.DeliveryLatitude = lat;
-                    selectedJob.DeliveryLongitude = lng;
-                    selectedJob.ToPostCode = string.IsNullOrEmpty(postCode) ? 0 : int.Parse(postCode);
+                    selectedJob.DeliveryLatitude = request.Lat;
+                    selectedJob.DeliveryLongitude = request.Lng;
+                    selectedJob.ToPostCode = string.IsNullOrEmpty(request.PostCode) ? 0 : int.Parse(request.PostCode);
                 }
                 else
                 {
-                    selectedJob.PickUpLatitude = lat;
-                    selectedJob.PickUpLongitude = lng;
-                    selectedJob.FromPostCode =  string.IsNullOrEmpty(postCode) ? 0: int.Parse(postCode);
+                    selectedJob.PickUpLatitude = request.Lat;
+                    selectedJob.PickUpLongitude = request.Lng;
+                    selectedJob.FromPostCode = string.IsNullOrEmpty(request.PostCode) ? 0 : int.Parse(request.PostCode);
                 }
 
                 try
@@ -298,18 +304,17 @@ namespace RunBuilder.Controllers
 
                     if (response)
                     {
-                        return Json(new{response = "Success"});    
+                        return Json(new { response = "Success" });
                     }
                     else
                     {
-                        return Json(new{response = "Failed"});      
+                        return Json(new { response = "Failed" });
                     }
                 }
                 catch (Exception e)
                 {
-                    return Json(new{response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message)});
+                    return Json(new { response = "Failed: " + (e.InnerException == null ? e.Message : e.InnerException.Message) });
                 }
-               
             }
             else
             {
@@ -318,7 +323,7 @@ namespace RunBuilder.Controllers
                         .SelectMany(v => v.Errors)
                         .Select(e => e.ErrorMessage));
 
-                return Json(new{response = "Invalid run data: " + errors}); 
+                return Json(new { response = "Invalid run data: " + errors });
             }
         }
     }

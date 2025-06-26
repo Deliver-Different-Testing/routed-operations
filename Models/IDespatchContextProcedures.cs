@@ -13,18 +13,18 @@ namespace RunBuilder.Models
 {
     public partial interface IDespatchContextProcedures
     {
-        Task<List<RVW_stpBulkRegionsResult>> RVW_stpBulkRegionsAsync(DateTime? RunDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<RVW_stpBulkSpeedsResult>> RVW_stpBulkSpeedsAsync(DateTime? RunDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<RVW_stpBulkRegionsResult>> RVW_stpBulkRegionsAsync(DateTime? runDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<RVW_stpBulkSpeedsResult>> RVW_stpBulkSpeedsAsync(DateTime? runDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
         Task<List<UTL_stpCourier_ActiveResult>> UTL_stpCourier_ActiveAsync(OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<int> UTL_stpJob_InsertFromRunBuilderAsync(int? BulkJobID, int? CourierID, string RunName, int? RunOrder, double? CourierPercentage, int? RunStatus, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<UTL_stpJob_tblBulkJobResult>> UTL_stpJob_tblBulkJobAsync(DateTime? DateTime, int? ClientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<int> UTL_stpJob_tblBulkJob_SyncHDJobsAsync(DateTime? BookDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<int> UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(int? RunID, int? BulkJobID, int? RunOrder, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<UTL_stpJob_tblBulkJobWithFilterResult>> UTL_stpJob_tblBulkJobWithFilterAsync(DateTime? DateTime, string ClientIDs, string Regions, string OurRefs, string Speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<UTL_stpJob_tblBulkRunResult>> UTL_stpJob_tblBulkRunAsync(DateTime? DateTime, int? ClientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<int> UTL_stpJob_tblBulkRun_DeleteAsync(int? RunID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>> UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(int? RunID, string Name, int? Mins, double? Kms, int? CourierID, int? Status, decimal? Revenue, decimal? Payout, double? CourierPercentage, string GoogleRouteResponse, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<int> UTL_stpJob_InsertFromRunBuilderAsync(int? bulkJobID, int? courierID, string runName, int? runOrder, double? courierPercentage, int? runStatus, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<UTL_stpJob_tblBulkJobResult>> UTL_stpJob_tblBulkJobAsync(DateTime? dateTime, int? clientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<int> UTL_stpJob_tblBulkJob_SyncHDJobsAsync(DateTime? bookDate, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<int> UTL_stpJob_tblBulkJobRun_InsertOrUpdateAsync(int? runID, int? bulkJobID, int? runOrder, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<UTL_stpJob_tblBulkJobWithFilterResult>> UTL_stpJob_tblBulkJobWithFilterAsync(DateTime? dateTime, string clientIDs, string regions, string ourRefs, string speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<UTL_stpJob_tblBulkRunResult>> UTL_stpJob_tblBulkRunAsync(DateTime? dateTime, int? clientID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<int> UTL_stpJob_tblBulkRun_DeleteAsync(int? runID, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>> UTL_stpJob_tblBulkRun_InsertOrUpdateAsync(int? runID, string name, int? mins, double? kms, int? courierID, int? status, decimal? revenue, decimal? payout, double? courierPercentage, string googleRouteResponse, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
         Task<List<UTL_stpJob_tblBulkRunSettingsResult>> UTL_stpJob_tblBulkRunSettingsAsync(OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
-        Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> UTL_stpJob_tblBulkRunWithFilterAsync(DateTime? DateTime, string ClientIDs, string Regions, string OurRefs, string Speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
+        Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> UTL_stpJob_tblBulkRunWithFilterAsync(DateTime? dateTime, string clientIDs, string regions, string ourRefs, string speeds, OutputParameter<int> returnValue = null, CancellationToken cancellationToken = default);
     }
 }

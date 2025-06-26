@@ -19,13 +19,23 @@ public partial class DespatchContext : DbContext
 
     public virtual DbSet<TblBulkRun> TblBulkRuns { get; set; }
 
+    public virtual DbSet<ZipPolygon> ZipPolygons { get; set; }
+
+    public virtual DbSet<ZoneCombo> ZoneCombos { get; set; }
+
+    public virtual DbSet<ZoneGroup> ZoneGroups { get; set; }
+
+    public virtual DbSet<ZoneName> ZoneNames { get; set; }
+
+    public virtual DbSet<ZoneZip> ZoneZips { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.UseCollation("SQL_Latin1_General_CP1_CI_AS");
+        modelBuilder.UseCollation("Latin1_General_CI_AS");
 
         modelBuilder.Entity<TblBulkJob>(entity =>
         {
-            entity.HasKey(e => e.BulkJobId).HasName("PK__tblBulkJ__1B2363F00EF20DB6");
+            entity.HasKey(e => e.BulkJobId).HasName("PK__tblBulkJ__1B2363F0324172E1");
 
             entity.ToTable("tblBulkJob", tb =>
                 {
@@ -41,11 +51,13 @@ public partial class DespatchContext : DbContext
 
             entity.HasIndex(e => new { e.ShopId, e.ShopRef1, e.ShopRef2, e.ShopRef3, e.ShopRef4, e.ShopRef5 }, "IX_Shop");
 
+            entity.HasIndex(e => new { e.BulkJobId, e.ParentId, e.MultiboxParentId, e.BulkParentId }, "IX_tblBulkJob_Composite");
+
+            entity.HasIndex(e => e.JobId, "IX_tblBulkJob_JobID");
+
             entity.HasIndex(e => e.JobId, "JobId-NonClusteredIndex-20190417-112100").IsDescending();
 
             entity.HasIndex(e => e.BookDate, "idx_BookDate");
-
-            entity.HasIndex(e => new { e.Done, e.JobId, e.Void, e.BookDate }, "idx_tblBulkJob_Done_JobID_Void_BookDate");
 
             entity.Property(e => e.BulkJobId).HasColumnName("BulkJobID");
             entity.Property(e => e.Amount).HasColumnType("money");
@@ -63,9 +75,18 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.CourierId).HasColumnName("CourierID");
             entity.Property(e => e.CourierPayment).HasColumnType("money");
             entity.Property(e => e.CourierPercentageOverride).HasColumnType("numeric(5, 4)");
+            entity.Property(e => e.DeliverByTimeZoneId).HasColumnName("DeliverByTimeZoneID");
             entity.Property(e => e.DeliverToContact).HasMaxLength(100);
             entity.Property(e => e.DeliverToLeaveId).HasColumnName("DeliverToLeaveID");
             entity.Property(e => e.DeliverToPhone).HasMaxLength(100);
+            entity.Property(e => e.DeliveryAddressLine1).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine2).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine3).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine4).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine5).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine6).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine7).HasMaxLength(255);
+            entity.Property(e => e.DeliveryAddressLine8).HasMaxLength(255);
             entity.Property(e => e.DeliveryLatitude).HasMaxLength(50);
             entity.Property(e => e.DeliveryLongitude).HasMaxLength(50);
             entity.Property(e => e.DropOffLocationId).HasColumnName("DropOffLocationID");
@@ -75,9 +96,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.Height).HasColumnType("numeric(18, 0)");
             entity.Property(e => e.InformationParentId).HasColumnName("InformationParentID");
             entity.Property(e => e.JobId).HasColumnName("JobID");
-            entity.Property(e => e.JobNumber)
-                .IsRequired()
-                .HasMaxLength(20);
+            entity.Property(e => e.JobNumber).HasMaxLength(50);
             entity.Property(e => e.JobRelationshipTypeId).HasColumnName("JobRelationshipTypeID");
             entity.Property(e => e.Length).HasColumnType("numeric(18, 0)");
             entity.Property(e => e.LinehaulRunId).HasColumnName("LinehaulRunID");
@@ -91,7 +110,18 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ParentId).HasColumnName("ParentID");
             entity.Property(e => e.PickUpLatitude).HasMaxLength(50);
             entity.Property(e => e.PickUpLongitude).HasMaxLength(50);
+            entity.Property(e => e.PickupAddressLine1).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine2).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine3).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine4).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine5).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine6).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine7).HasMaxLength(255);
+            entity.Property(e => e.PickupAddressLine8).HasMaxLength(255);
+            entity.Property(e => e.PickupFromContact).HasMaxLength(100);
+            entity.Property(e => e.PickupFromPhone).HasMaxLength(100);
             entity.Property(e => e.PickupReadyDateTime).HasColumnType("datetime");
+            entity.Property(e => e.PickupTimeZoneId).HasColumnName("PickupTimeZoneID");
             entity.Property(e => e.ProofOfDeliveryEmail).HasMaxLength(500);
             entity.Property(e => e.ProofOfDeliveryMobile).HasMaxLength(100);
             entity.Property(e => e.RegionId).HasColumnName("RegionID");
@@ -111,6 +141,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ToAddress).HasMaxLength(150);
             entity.Property(e => e.ToCompany).HasMaxLength(150);
             entity.Property(e => e.ToSuburb).HasMaxLength(50);
+            entity.Property(e => e.TotalDistance).HasColumnType("decimal(18, 4)");
             entity.Property(e => e.TrackingEmail).HasMaxLength(500);
             entity.Property(e => e.TrackingMobile).HasMaxLength(500);
             entity.Property(e => e.Weight).HasColumnType("decimal(6, 2)");
@@ -119,13 +150,13 @@ public partial class DespatchContext : DbContext
 
         modelBuilder.Entity<TblBulkJobRun>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__tblBulkJ__3214EC273DACFC9F");
+            entity.HasKey(e => e.Id).HasName("PK__tblBulkJ__3214EC2739E294A9");
 
             entity.ToTable("tblBulkJobRun");
 
-            entity.HasIndex(e => e.RunId, "RunID-NonClusteredIndex-20190824-171500");
+            entity.HasIndex(e => e.BulkJobId, "IX_tblBulkJobRun_BulkJobID");
 
-            entity.HasIndex(e => new { e.BulkJobId, e.RunId }, "idx_tblBulkJobRun_BulkJobID_RunID");
+            entity.HasIndex(e => e.RunId, "RunID-NonClusteredIndex-20190824-171500");
 
             entity.HasIndex(e => e.BulkJobId, "index_BulkJobID");
 
@@ -135,7 +166,7 @@ public partial class DespatchContext : DbContext
 
             entity.HasOne(d => d.BulkJob).WithMany(p => p.TblBulkJobRuns)
                 .HasForeignKey(d => d.BulkJobId)
-                .HasConstraintName("FK__tblBulkJo__BulkJ__4089694A");
+                .HasConstraintName("FK__tblBulkJo__BulkJ__0876219E");
 
             entity.HasOne(d => d.Run).WithMany(p => p.TblBulkJobRuns)
                 .HasForeignKey(d => d.RunId)
@@ -145,11 +176,9 @@ public partial class DespatchContext : DbContext
 
         modelBuilder.Entity<TblBulkRun>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("PK__tblBulkR__3214EC2736FFFF10");
+            entity.HasKey(e => e.Id).HasName("PK__tblBulkR__3214EC274CF5691D");
 
             entity.ToTable("tblBulkRun");
-
-            entity.HasIndex(e => new { e.Id, e.DespatchDateTime }, "idx_tblBulkRun_ID");
 
             entity.Property(e => e.Id).HasColumnName("ID");
             entity.Property(e => e.CourierId).HasColumnName("CourierID");
@@ -164,6 +193,133 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.Payout).HasColumnType("money");
             entity.Property(e => e.Revenue).HasColumnType("money");
             entity.Property(e => e.Status).HasDefaultValue(0);
+        });
+
+        modelBuilder.Entity<ZipPolygon>(entity =>
+        {
+            entity.HasKey(e => e.ZipPolygonId).HasName("PK__ZipPolyg__6A8AEEE3127F7A1C");
+
+            entity.ToTable("ZipPolygon");
+
+            entity.HasIndex(e => e.Zip, "IX_ZipPolygon_Zip");
+
+            entity.Property(e => e.ZipPolygonId).HasColumnName("ZipPolygonID");
+            entity.Property(e => e.Latitude).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.Longitude).HasColumnType("decimal(18, 8)");
+            entity.Property(e => e.Wkt).HasColumnName("WKT");
+            entity.Property(e => e.Zip)
+                .HasMaxLength(20)
+                .IsUnicode(false);
+        });
+
+        modelBuilder.Entity<ZoneCombo>(entity =>
+        {
+            entity.HasKey(e => e.ZoneComboId).HasName("PK__ZoneComb__1250D47322EAEC0F");
+
+            entity.ToTable("ZoneCombo");
+
+            entity.Property(e => e.ZoneComboId).HasColumnName("ZoneComboID");
+            entity.Property(e => e.ChargeRate).HasColumnType("decimal(18, 4)");
+            entity.Property(e => e.ClientId).HasColumnName("ClientID");
+            entity.Property(e => e.Created)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.CreatedBy).HasMaxLength(255);
+            entity.Property(e => e.DriverRate).HasColumnType("decimal(18, 4)");
+            entity.Property(e => e.ExtraChargeId).HasColumnName("ExtraChargeID");
+            entity.Property(e => e.FromZoneZipId).HasColumnName("FromZoneZipID");
+            entity.Property(e => e.LastModified)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
+            entity.Property(e => e.RateCardId).HasColumnName("RateCardID");
+            entity.Property(e => e.SpeedId).HasColumnName("SpeedID");
+            entity.Property(e => e.ToZoneZipId).HasColumnName("ToZoneZipID");
+            entity.Property(e => e.VehicleSizeId).HasColumnName("VehicleSizeID");
+            entity.Property(e => e.WeightFrom).HasColumnType("decimal(18, 4)");
+            entity.Property(e => e.WeightTo).HasColumnType("decimal(18, 4)");
+            entity.Property(e => e.ZoneComboName).HasMaxLength(255);
+
+            entity.HasOne(d => d.FromZoneZip).WithMany(p => p.ZoneComboFromZoneZips)
+                .HasForeignKey(d => d.FromZoneZipId)
+                .HasConstraintName("FK__ZoneCombo__LastM__26BB7CF3");
+
+            entity.HasOne(d => d.ToZoneZip).WithMany(p => p.ZoneComboToZoneZips)
+                .HasForeignKey(d => d.ToZoneZipId)
+                .HasConstraintName("FK__ZoneCombo__ToZon__27AFA12C");
+        });
+
+        modelBuilder.Entity<ZoneGroup>(entity =>
+        {
+            entity.HasKey(e => e.ZoneGroupId).HasName("PK__ZoneGrou__958F80BF0189F844");
+
+            entity.ToTable("ZoneGroup");
+
+            entity.HasIndex(e => e.ClearListAreaId, "IX_ZoneGroup_ClearListAreaId");
+
+            entity.Property(e => e.ZoneGroupId).HasColumnName("ZoneGroupID");
+            entity.Property(e => e.Created)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.CreatedBy).HasMaxLength(255);
+            entity.Property(e => e.LastModified)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
+            entity.Property(e => e.Name).HasMaxLength(255);
+        });
+
+        modelBuilder.Entity<ZoneName>(entity =>
+        {
+            entity.HasKey(e => e.ZoneNameId).HasName("PK__ZoneName__86588D1C0742D19A");
+
+            entity.ToTable("ZoneName");
+
+            entity.Property(e => e.ZoneNameId).HasColumnName("ZoneNameID");
+            entity.Property(e => e.Created)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.CreatedBy).HasMaxLength(255);
+            entity.Property(e => e.GeoPolygonId).HasColumnName("GeoPolygonID");
+            entity.Property(e => e.LastModified)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
+            entity.Property(e => e.LocationId).HasColumnName("LocationID");
+            entity.Property(e => e.ZoneGroupId).HasColumnName("ZoneGroupID");
+            entity.Property(e => e.ZoneName1)
+                .HasMaxLength(255)
+                .HasColumnName("ZoneName");
+
+            entity.HasOne(d => d.ZoneGroup).WithMany(p => p.ZoneNames)
+                .HasForeignKey(d => d.ZoneGroupId)
+                .HasConstraintName("FK__ZoneName__LastMo__0B13627E");
+        });
+
+        modelBuilder.Entity<ZoneZip>(entity =>
+        {
+            entity.HasKey(e => e.ZoneZipId).HasName("PK__ZoneZip__76E657120DEFCF29");
+
+            entity.ToTable("ZoneZip");
+
+            entity.Property(e => e.ZoneZipId).HasColumnName("ZoneZipID");
+            entity.Property(e => e.ClientId).HasColumnName("ClientID");
+            entity.Property(e => e.Created)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.CreatedBy).HasMaxLength(255);
+            entity.Property(e => e.LastModified)
+                .HasDefaultValueSql("(getdate())")
+                .HasColumnType("datetime");
+            entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
+            entity.Property(e => e.Zip)
+                .IsRequired()
+                .HasMaxLength(20);
+            entity.Property(e => e.ZoneNameId).HasColumnName("ZoneNameID");
+
+            entity.HasOne(d => d.ZoneName).WithMany(p => p.ZoneZips)
+                .HasForeignKey(d => d.ZoneNameId)
+                .HasConstraintName("FK__ZoneZip__LastMod__11C0600D");
         });
 
         OnModelCreatingPartial(modelBuilder);

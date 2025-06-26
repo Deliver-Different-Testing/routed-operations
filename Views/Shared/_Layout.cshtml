@@ -14,39 +14,16 @@
     <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.1/css/all.css" integrity="sha384-50oBUHEmvpQ+1lW4y57PTFmhCaXp0ML5d60M1M7uH2+nqUivzIebhndOJK28anvf" crossorigin="anonymous">
     <link rel="stylesheet" href="~/css/udispatch.min.css">
     <environment include="Development">
-        <link rel="stylesheet" href="~/Scripts/libs/resizable/angular-resizable.min.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/hotkeys/hotkeys.min.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/autocomplete/angular-auto-complete.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/pickdate/angular-pickadate.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/ui-select/select.css" asp-append-version="true" />
-        <link rel="stylesheet" href="~/Scripts/libs/heremap/mapsjs-ui.css" asp-append-version="true"/>
-        <link rel="stylesheet" href="~/Scripts/libs/angular-confirm/angular-confirm.min.css" asp-append-version="true"/>
+        <link rel="stylesheet" href="~/scripts/libs/resizable/angular-resizable.min.css" asp-append-version="true" />
+        <link rel="stylesheet" href="~/scripts/libs/hotkeys/hotkeys.min.css" asp-append-version="true" />
+        <link rel="stylesheet" href="~/scripts/libs/autocomplete/angular-auto-complete.css" asp-append-version="true" />
+        <link rel="stylesheet" href="~/scripts/libs/pickdate/angular-pickadate.css" asp-append-version="true" />
+        <link rel="stylesheet" href="~/scripts/libs/ui-select/select.css" asp-append-version="true" />
+        <link rel="stylesheet" href="~/scripts/libs/heremap/mapsjs-ui.css" asp-append-version="true"/>
+        <link rel="stylesheet" href="~/scripts/libs/angular-confirm/angular-confirm.min.css" asp-append-version="true"/>
     </environment>
     <environment exclude="Development">
         <link rel="stylesheet" href="~/css/site.min.css" asp-append-version="true" />
-    </environment>
-    
-
-    
-    <script>
-        function initMap() {
-            console.log("maps loaded");
-        }
-    </script>
-    <environment exclude="Development">
-        @{
-            var googleMapsApiKey = "https://maps.googleapis.com/maps/api/js?&libraries=places&loading=async&callback=initMap&key=" + Environment.GetEnvironmentVariable("GoogleMapsKey");
-            <script type="text/javascript" async defer src='@googleMapsApiKey'></script>
-
-
-        }
-    </environment>
-    <environment include="Development">
-        @{
-
-            var googleMapsApiKey = "https://maps.googleapis.com/maps/api/js?&libraries=places&loading=async&callback=initMap&key=" + Environment.GetEnvironmentVariable("GoogleMapsDevKey");
-            <script type="text/javascript" async defer src='@googleMapsApiKey'></script>
-        }
     </environment>
 </head>
 
@@ -56,7 +33,29 @@
     
 
     @* <script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?key=AIzaSyC9qU2-Zu7KwkO6TqtY5p-2P4czmpF98nA&libraries=places"></script> *@
-    @* <script src="~/Scripts/Scripts.min.js" asp-append-version="true"></script> *@
+    @* <script src="~/scripts/scripts.min.js" asp-append-version="true"></script> *@
+   
+     <script>
+        function initMap() {
+            console.log("maps loaded");
+        }
+    </script>
+    <environment exclude="Development">
+        @{
+            var googleMapsApiKey = "https://maps.googleapis.com/maps/api/js?&libraries=places&callback=initMap&key=" + Environment.GetEnvironmentVariable("GoogleMapsKey");
+            <script type="text/javascript" src='@googleMapsApiKey'></script>
+
+
+        }
+    </environment>
+    <environment include="Development">
+        @{
+
+            var googleMapsApiKey = "https://maps.googleapis.com/maps/api/js?&libraries=places&callback=initMap&key=" + Environment.GetEnvironmentVariable("GoogleMapsDevKey");
+            <script type="text/javascript" src='@googleMapsApiKey'></script>
+        }
+    </environment>
+
     <script src="~/scripts/jquery-1.10.2.js"></script>
     <script src="~/scripts/jquery-ui.min.js"></script>
     <script src="~/scripts/date.min.js"></script>
