@@ -2,6 +2,15 @@
     ViewBag.Title = "Run Builder";
 }
 
+<script>
+     @{
+         var timezone = ViewBag.TimeZone;
+         var isUsTenant = ViewBag.IsUsTenant;
+      }
+    var TimeZone = '@timezone';
+    var IsUsTenant = '@isUsTenant';
+</script>
+
 <div ng-app="uRuns">
     <div class="ui-viewer" ui-view></div>
 </div>

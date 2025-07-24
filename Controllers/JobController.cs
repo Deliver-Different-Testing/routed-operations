@@ -326,5 +326,47 @@ namespace RunBuilder.Controllers
                 return Json(new { response = "Invalid run data: " + errors });
             }
         }
+
+        [HttpPost]
+        public async Task<ActionResult> BulkUpdateRouteDate([FromBody] BulkUpdateRouteDateRequest request)
+        {
+            if (ModelState.IsValid)
+            {
+                try
+                {
+                    var result = await repository.BulkUpdateRouteDateAsync(request);
+                    return Json(new { response = result });
+                }
+                catch (Exception e)
+                {
+                    return Json(new
+                    {
+                        response = new
+                        {
+                            Success = 0,
+                            Failed = request.JobIds?.Count ?? 0,
+                            Message = "Bulk update failed: " + (e.InnerException?.Message ?? e.Message)
+                        }
+                    });
+                }
+            }
+            else
+            {
+                var errors = string.Join(" | ",
+                    ModelState.Values
+                        .SelectMany(v => v.Errors)
+                        .Select(e => e.ErrorMessage));
+
+                return Json(new
+                {
+                    response = new
+                    {
+                        Success = 0,
+                        Failed = request.JobIds?.Count ?? 0,
+                        Message = "Invalid request data: " + errors
+                    }
+                });
+            }
+        }
     }
 }

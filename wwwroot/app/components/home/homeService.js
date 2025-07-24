@@ -2,6 +2,11 @@ angular
     .module('uRuns')
     .factory('uRunData', ['$http', function ($http) {
         return {
+            bulkUpdateRouteDate: function (data) {
+                return $http.post('/Job/BulkUpdateRouteDate', data).then(function (response) {
+                    return response.data;
+                });
+            },
             getJobs: function () {
                 return $http.get('app/components/home/api/jobsList.php').then(function (response) {
                     return response.data;
