@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using RunBuilder.Models.Requests;
 using Serilog;
 using UCLRun;
 
@@ -364,6 +365,101 @@ namespace RunBuilder.Models.Repository
         public Response InsertRun(RunJob run)
         {
             throw new NotImplementedException();
+        }
+
+        public async Task<object> BulkUpdateRouteDateAsync(BulkUpdateRouteDateRequest request)
+        {
+            var results = new List<Response>();
+            var successCount = 0;
+            var failureCount = 0;
+
+            using var transaction = await Context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var jobsToUpdate = Context.TblBulkJobs
+                    .Where(job => request.JobIds.Contains(job.BulkJobId))
+                    .ToList();
+
+                var foundJobIds = jobsToUpdate.Select(j => j.BulkJobId).ToList();
+                var notFoundJobIds = request.JobIds.Except(foundJobIds).ToList();
+
+                // Add failure results for jobs not found
+                foreach (var notFoundId in notFoundJobIds)
+                {
+                    results.Add(new Response
+                    {
+                        Result = "Failed",
+                        Message = $"Job with ID {notFoundId} not found"
+                    });
+                    failureCount++;
+                }
+
+                // Update found jobs
+                foreach (var job in jobsToUpdate)
+                {
+                    try
+                    {
+                        job.BookDate = request.NewDate;
+                        Context.Entry(job).State = EntityState.Modified;
+
+                        results.Add(new Response
+                        {
+                            Result = "Success",
+                            Message = $"Job {job.BulkJobId} updated successfully"
+                        });
+                        successCount++;
+                    }
+                    catch (Exception jobException)
+                    {
+                        results.Add(new Response
+                        {
+                            Result = "Failed",
+                            Message = $"Error updating job {job.BulkJobId}: " + (jobException.InnerException?.Message ?? jobException.Message)
+                        });
+                        failureCount++;
+                    }
+                }
+
+                // Save all changes in a single transaction
+                if (successCount > 0)
+                {
+                    await Context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                }
+                else
+                {
+                    await transaction.RollbackAsync();
+                }
+
+                // Log the bulk update operation
+                Log.Information($"Bulk route date update completed for run '{request.RunName}': {successCount} successful, {failureCount} failed");
+
+                return new
+                {
+                    Success = successCount,
+                    Failed = failureCount,
+                    Details = results,
+                    Message = $"Updated {successCount} jobs successfully, {failureCount} failed",
+                    RunName = request.RunName,
+                    NewDate = request.NewDate.ToString("dd/MM/yyyy")
+                };
+            }
+            catch (Exception e)
+            {
+                await transaction.RollbackAsync();
+                Log.Error(e, $"Bulk route date update failed for run '{request.RunName}'");
+
+                return new
+                {
+                    Success = 0,
+                    Failed = request.JobIds.Count,
+                    Details = new List<Response>(),
+                    Message = "Bulk update operation failed: " + (e.InnerException?.Message ?? e.Message),
+                    RunName = request.RunName,
+                    NewDate = request.NewDate.ToString("dd/MM/yyyy")
+                };
+            }
         }
     }
 }

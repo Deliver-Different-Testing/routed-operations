@@ -1,5 +1,6 @@
 ﻿using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using RunBuilder.Models;
 using Serilog;
 
 namespace RunBuilder.Controllers
@@ -26,7 +27,11 @@ namespace RunBuilder.Controllers
             }
             var connectionString = HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "Connection")?.Value;
             var tenantId = HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "CurrentTenantID")?.Value;
-            
+            var countryCode = HttpContext.User.Claims.FirstOrDefault(x => x.Type == "CountryCode")?.Value;
+            var tenantTimeZone = HttpContext.User.Claims.FirstOrDefault(x => x.Type == "TimeZone")?.Value;
+            var usa = Country.Us.GetDescription();
+            var isUsTenantFlag = countryCode?.ToUpper().Equals(usa);
+
             if (string.IsNullOrEmpty(connectionString))
             {
                 Log.Error("Authentication Failed. No Connection String.");
@@ -40,7 +45,40 @@ namespace RunBuilder.Controllers
             await connectionStringManager.SetConnectionStringAsync($"{tenantId}-RunBuilder-Connection", connectionString+credentials);
 
             var maskedConnectionString = MaskSensitiveInfo(connectionString ?? "");
-            Log.Debug($"Connection String Set: {maskedConnectionString}"); 
+            Log.Debug($"Connection String Set: {maskedConnectionString}");
+
+            //var cid = HttpContext.User.Claims.FirstOrDefault(x => x.Type == "ContactID")?.Value;
+
+            //if (!string.IsNullOrEmpty(cid))
+            //{
+            //var contactDetail = repo.GetContact(int.Parse(cid));
+            //var clientDetail = repo.GetClient(contactDetail.ClientId);
+
+            //var availableClients = repo.GetAvailableClients(int.Parse(cid));
+            //string availableClientsString = null;
+            //if (availableClients.Count > 1)
+            //{
+            //    availableClientsString = "";
+
+            //    for (int i = 0; i < availableClients.Count; i++)
+            //    {
+            //        availableClientsString += availableClients[i].ClientId + ", ";
+            //    }
+            //}
+
+            //ViewBag.ClientCount = contactDetail.ContactCount;
+            //ViewBag.ClientString = availableClientsString?.TrimEnd([',', ' ']);
+            //ViewBag.ContactID = cid;
+            //ViewBag.ClientName = clientDetail.Name;
+            //ViewBag.ClientInternal = clientDetail.Internal;
+            //ViewBag.ClientID = contactDetail.ClientId;
+            //ViewBag.Email = clientDetail.Email;
+            //ViewBag.Created = ((DateTimeOffset)clientDetail.Created).ToUnixTimeSeconds();            
+            //}
+
+            ViewBag.IsUsTenant = isUsTenantFlag ?? false;
+            ViewBag.TimeZone = tenantTimeZone;
+
             return View();
         }
 

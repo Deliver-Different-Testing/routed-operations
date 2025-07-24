@@ -1387,6 +1387,86 @@ angular
                 //    return true;
                 //}
             },
+            {
+                text: 'Edit Route Date',
+                click: function ($itemScope, $event, modelValue, text, $li) {
+                    // Get the current date from the first job in the run, or use today's date as fallback
+                    var currentDateString = moment().format("YYYY-MM-DD");
+                    var currentDateObj = new Date();
+
+                    if ($itemScope.run.jobs && $itemScope.run.jobs.length > 0) {
+                        var firstJobDate = $itemScope.run.jobs[0].DeliveryDate;
+                        if (firstJobDate) {
+                            // Parse the DD/MM/YYYY format and convert to Date object
+                            var parsedMoment = moment(firstJobDate, 'DD/MM/YYYY');
+                            if (parsedMoment.isValid()) {
+                                currentDateString = parsedMoment.format("YYYY-MM-DD");
+                                currentDateObj = parsedMoment.toDate();
+                            }
+                        }
+                    }
+
+                    $scope.gather.form = {
+                        id: "editRouteDate",
+                        title: "Edit Route Date",
+                        fields: [
+                            {
+                                "name": "routeDate",
+                                "label": "Route Date",
+                                "value": currentDateObj, // Always use Date object
+                                "type": "date",
+                                "runId": $itemScope.run.ID,
+                                "jobCount": $itemScope.run.jobs ? $itemScope.run.jobs.length : 0
+                            }
+                        ],
+                        onSubmit: function () {
+                            var newDateValue = $scope.gather.form.fields[0].value;
+                            var runId = $scope.gather.form.fields[0].runId;
+                            var jobCount = $scope.gather.form.fields[0].jobCount;
+
+                            if (jobCount === 0) {
+                                alert("No jobs in this run to update.");
+                                return;
+                            }
+
+                            // Ensure we have a valid Date object
+                            var dateForProcessing;
+                            if (newDateValue instanceof Date) {
+                                dateForProcessing = newDateValue;
+                            } else if (typeof newDateValue === 'string') {
+                                dateForProcessing = new Date(newDateValue);
+                            } else {
+                                alert("Invalid date selected. Please try again.");
+                                return;
+                            }
+
+                            // Validate the date
+                            if (isNaN(dateForProcessing.getTime())) {
+                                alert("Invalid date selected. Please try again.");
+                                return;
+                            }
+
+                            // Convert to API format (YYYY-MM-DD)
+                            var dateForApi = moment(dateForProcessing).format("YYYY-MM-DD");
+
+                            // Confirm the bulk update
+                            var confirmMessage = "Are you sure you want to update the delivery date for all " +
+                                jobCount + " jobs in run '" + $itemScope.run.name + "' to " +
+                                moment(dateForProcessing).format("DD/MM/YYYY") + "?";
+
+                            if (confirm(confirmMessage)) {
+                                $scope.bulkUpdateRouteDate($itemScope.run, dateForApi);
+                            }
+                        },
+                        submitValue: "Update Date"
+                    };
+                    $scope.gather.showForm();
+                },
+                // Only show for runs that have jobs
+                enabled: function ($itemScope, $event, modelValue, text, $li) {
+                    return $itemScope.run.jobs && $itemScope.run.jobs.length > 0;
+                }
+            },
             // Merge selected run to another run
             {
                 text: 'Merge selected run to another run',
@@ -1599,6 +1679,87 @@ angular
                 }
             }
         ];
+
+        $scope.parseJobDate = function (dateString) {
+            if (!dateString) return new Date();
+
+            // Try parsing DD/MM/YYYY format first
+            var parsed = moment(dateString, 'DD/MM/YYYY', true);
+            if (parsed.isValid()) {
+                return parsed.toDate();
+            }
+
+            // Try parsing YYYY-MM-DD format
+            parsed = moment(dateString, 'YYYY-MM-DD', true);
+            if (parsed.isValid()) {
+                return parsed.toDate();
+            }
+
+            // Fallback to JavaScript Date parsing
+            var fallback = new Date(dateString);
+            if (!isNaN(fallback.getTime())) {
+                return fallback;
+            }
+
+            // If all else fails, return today's date
+            return new Date();
+        };
+
+        $scope.bulkUpdateRouteDate = function (run, newDate) {
+            if (!run.jobs || run.jobs.length === 0) {
+                alert("No jobs in this run to update.");
+                return;
+            }
+
+            // Show loading indicator
+            $("#box-runList").find(".loading").show();
+
+            // Prepare the request data
+            var jobIds = run.jobs.map(function (job) {
+                return job.BulkJobID;
+            });
+
+            var requestData = {
+                JobIds: jobIds,
+                NewDate: newDate,
+                RunName: run.name
+            };
+
+            // Call the bulk update API
+            uRunData.doAPI("Job/BulkUpdateRouteDate", JSON.stringify(requestData)).then(function (data) {
+                $("#box-runList").find(".loading").fadeOut();
+
+                if (data && data.response) {
+                    var result = data.response;
+                    var message = result.Message || "Date update completed!";
+
+                    // Show detailed results if there were any failures
+                    if (result.Failed > 0) {
+                        message += "\n\nFailed jobs:";
+                        if (result.Details) {
+                            var failedJobs = result.Details.filter(function (d) { return d.Result === "Failed"; });
+                            failedJobs.forEach(function (failure) {
+                                message += "\n- " + failure.Message;
+                            });
+                        }
+                    }
+
+                    alert(message);
+
+                    // Always refresh all data after the update (successful or not)
+                    console.log("Performing complete data refresh after bulk date update");
+                    $scope.getData(1); // Pass 1 to clear storage and completely refresh
+
+                } else {
+                    console.error("Unexpected response format:", data);
+                    alert("Unexpected response from server. Please try again.");
+                }
+            }).catch(function (error) {
+                $("#box-runList").find(".loading").fadeOut();
+                console.error("Error during bulk date update:", error);
+                alert("An error occurred while updating dates. Please check the console for details.");
+            });
+        };
 
         // Lock run
         $scope.toggleRunLock = function (run, updateRunOnly) {

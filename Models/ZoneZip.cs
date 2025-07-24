@@ -27,6 +27,8 @@ public partial class ZoneZip
 
     public bool? ApplyCongestion { get; set; }
 
+    public int? ZoneZipGroupId { get; set; }
+
     public virtual ICollection<ZoneCombo> ZoneComboFromZoneZips { get; set; } = new List<ZoneCombo>();
 
     public virtual ICollection<ZoneCombo> ZoneComboToZoneZips { get; set; } = new List<ZoneCombo>();
