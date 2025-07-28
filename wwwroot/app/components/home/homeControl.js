@@ -3188,7 +3188,94 @@ angular
             }
 
             $scope.groupedJobsMenu = [
-                // NEW IMPLEMENTATION
+                {
+                    text: 'Edit Group Date',
+                    click: function ($itemScope, $event, modelValue, text, $li) {
+                        var jobs = $itemScope.grouped.jobs;
+
+                        if (!jobs || jobs.length === 0) {
+                            alert("No jobs in this group to update.");
+                            return;
+                        }
+
+                        // Get the current date from the first job in the group, or use today's date as fallback
+                        var currentDateString = moment().format("YYYY-MM-DD");
+                        var currentDateObj = new Date();
+
+                        if (jobs.length > 0) {
+                            var firstJobDate = jobs[0].DeliveryDate;
+                            if (firstJobDate) {
+                                // Parse the DD/MM/YYYY format and convert to Date object
+                                var parsedMoment = moment(firstJobDate, 'DD/MM/YYYY');
+                                if (parsedMoment.isValid()) {
+                                    currentDateString = parsedMoment.format("YYYY-MM-DD");
+                                    currentDateObj = parsedMoment.toDate();
+                                }
+                            }
+                        }
+
+                        $scope.gather.form = {
+                            id: "editGroupRouteDate",
+                            title: "Edit Group Date",
+                            fields: [
+                                {
+                                    "name": "groupRouteDate",
+                                    "label": "Group Date",
+                                    "value": currentDateObj, // Always use Date object
+                                    "type": "date",
+                                    "groupName": $itemScope.grouped.name,
+                                    "jobCount": jobs.length
+                                }
+                            ],
+                            onSubmit: function () {
+                                var newDateValue = $scope.gather.form.fields[0].value;
+                                var groupName = $scope.gather.form.fields[0].groupName;
+                                var jobCount = $scope.gather.form.fields[0].jobCount;
+
+                                if (jobCount === 0) {
+                                    alert("No jobs in this group to update.");
+                                    return;
+                                }
+
+                                // Ensure we have a valid Date object
+                                var dateForProcessing;
+                                if (newDateValue instanceof Date) {
+                                    dateForProcessing = newDateValue;
+                                } else if (typeof newDateValue === 'string') {
+                                    dateForProcessing = new Date(newDateValue);
+                                } else {
+                                    alert("Invalid date selected. Please try again.");
+                                    return;
+                                }
+
+                                // Validate the date
+                                if (isNaN(dateForProcessing.getTime())) {
+                                    alert("Invalid date selected. Please try again.");
+                                    return;
+                                }
+
+                                // Convert to API format (YYYY-MM-DD)
+                                var dateForApi = moment(dateForProcessing).format("YYYY-MM-DD");
+
+                                // Confirm the bulk update
+                                var confirmMessage = "Are you sure you want to update the delivery date for all " +
+                                    jobCount + " jobs in group '" + groupName + "' to " +
+                                    moment(dateForProcessing).format("DD/MM/YYYY") + "?";
+
+                                if (confirm(confirmMessage)) {
+                                    $scope.bulkUpdateGroupRouteDate(jobs, groupName, dateForApi);
+                                }
+                            },
+                            submitValue: "Update Date"
+                        };
+                        $scope.gather.showForm();
+                    },
+                    // Only show for groups that have jobs
+                    enabled: function ($itemScope, $event, modelValue, text, $li) {
+                        return $itemScope.grouped.jobs && $itemScope.grouped.jobs.length > 0;
+                    }
+                },
+                // Existing: Create run from group
                 {
                     text: 'Create run from group',
                     click: function ($itemScope, $event, modelValue, text, $li) {
@@ -3197,8 +3284,158 @@ angular
                 }
             ];
 
+            // Add this new function to handle bulk update for grouped jobs
+            $scope.bulkUpdateGroupRouteDate = function (jobs, groupName, newDate) {
+                if (!jobs || jobs.length === 0) {
+                    alert("No jobs in this group to update.");
+                    return;
+                }
+
+                // Show loading indicator
+                $("#box-groupedJobs").find(".loading").show();
+
+                // Prepare the request data
+                var jobIds = jobs.map(function (job) {
+                    return job.BulkJobID;
+                });
+
+                var requestData = {
+                    JobIds: jobIds,
+                    NewDate: newDate,
+                    RunName: groupName + " Group" // Add "Group" to distinguish from runs
+                };
+
+                console.log("Sending bulk group update request:", requestData);
+
+                // Call the bulk update API
+                uRunData.doAPI("Job/BulkUpdateRouteDate", JSON.stringify(requestData)).then(function (data) {
+                    $("#box-groupedJobs").find(".loading").fadeOut();
+
+                    if (data && data.response) {
+                        var result = data.response;
+                        var message = result.Message || "Date update completed!";
+                        var successCount = result.Success || 0;
+                        var failedCount = result.Failed || 0;
+
+                        // Show detailed results if there were any failures
+                        if (failedCount > 0) {
+                            message += "\n\nFailed jobs:";
+                            if (result.Details) {
+                                var failedJobs = result.Details.filter(function (d) { return d.Result === "Failed"; });
+                                failedJobs.forEach(function (failure) {
+                                    message += "\n- " + failure.Message;
+                                });
+                            }
+                        }
+
+                        alert(message);
+
+                        // If any jobs were successfully updated, refresh all data
+                        if (successCount > 0) {
+                            console.log("Refreshing all data after successful group bulk date update");
+                            $scope.getData(1); // Complete refresh
+                        }
+                    } else {
+                        console.error("Unexpected response format:", data);
+                        alert("Unexpected response from server. Please try again.");
+                    }
+                }).catch(function (error) {
+                    $("#box-groupedJobs").find(".loading").fadeOut();
+                    console.error("Error during group bulk date update:", error);
+                    alert("An error occurred while updating dates. Please check the console for details.");
+                });
+            };
+
             $scope.groupedTimeMenu = [
-                // NEW IMPLEMENTATION
+                // NEW: Edit Route Date
+                {
+                    text: 'Edit Group Date',
+                    click: function ($itemScope, $event, modelValue, text, $li) {
+                        var jobs = $itemScope.grouped.jobs;
+
+                        if (!jobs || jobs.length === 0) {
+                            alert("No jobs in this time group to update.");
+                            return;
+                        }
+
+                        // Get the current date from the first job in the group, or use today's date as fallback
+                        var currentDateString = moment().format("YYYY-MM-DD");
+                        var currentDateObj = new Date();
+
+                        if (jobs.length > 0) {
+                            var firstJobDate = jobs[0].DeliveryDate;
+                            if (firstJobDate) {
+                                // Parse the DD/MM/YYYY format and convert to Date object
+                                var parsedMoment = moment(firstJobDate, 'DD/MM/YYYY');
+                                if (parsedMoment.isValid()) {
+                                    currentDateString = parsedMoment.format("YYYY-MM-DD");
+                                    currentDateObj = parsedMoment.toDate();
+                                }
+                            }
+                        }
+
+                        $scope.gather.form = {
+                            id: "editTimeGroupRouteDate",
+                            title: "Edit Group Date",
+                            fields: [
+                                {
+                                    "name": "timeGroupRouteDate",
+                                    "label": "Group Date",
+                                    "value": currentDateObj, // Always use Date object
+                                    "type": "date",
+                                    "groupName": $itemScope.grouped.name,
+                                    "jobCount": jobs.length
+                                }
+                            ],
+                            onSubmit: function () {
+                                var newDateValue = $scope.gather.form.fields[0].value;
+                                var groupName = $scope.gather.form.fields[0].groupName;
+                                var jobCount = $scope.gather.form.fields[0].jobCount;
+
+                                if (jobCount === 0) {
+                                    alert("No jobs in this time group to update.");
+                                    return;
+                                }
+
+                                // Ensure we have a valid Date object
+                                var dateForProcessing;
+                                if (newDateValue instanceof Date) {
+                                    dateForProcessing = newDateValue;
+                                } else if (typeof newDateValue === 'string') {
+                                    dateForProcessing = new Date(newDateValue);
+                                } else {
+                                    alert("Invalid date selected. Please try again.");
+                                    return;
+                                }
+
+                                // Validate the date
+                                if (isNaN(dateForProcessing.getTime())) {
+                                    alert("Invalid date selected. Please try again.");
+                                    return;
+                                }
+
+                                // Convert to API format (YYYY-MM-DD)
+                                var dateForApi = moment(dateForProcessing).format("YYYY-MM-DD");
+
+                                // Confirm the bulk update
+                                var confirmMessage = "Are you sure you want to update the delivery date for all " +
+                                    jobCount + " jobs in time group '" + groupName + "' to " +
+                                    moment(dateForProcessing).format("DD/MM/YYYY") + "?";
+
+                                if (confirm(confirmMessage)) {
+                                    $scope.bulkUpdateGroupRouteDate(jobs, groupName + " Time Group", dateForApi);
+                                }
+                            },
+                            submitValue: "Update Date"
+                        };
+                        $scope.gather.showForm();
+                    },
+                    // Only show for time groups that have jobs
+                    enabled: function ($itemScope, $event, modelValue, text, $li) {
+                        return $itemScope.grouped.jobs && $itemScope.grouped.jobs.length > 0;
+                    }
+                },
+                // Existing: Open these times
                 {
                     text: 'Open these times',
                     click: function ($itemScope, $event, modelValue, text, $li) {
@@ -3461,25 +3698,67 @@ angular
                 //$scope.gpsForm.search = angular.copy($scope.gpsForm.data.address);
                 $("#gpsSearch").focus();
             }
-
-
         };
-
 
         $scope.editDetailField = function (fieldName, label, value, jobID, type, options) {
 
-            if (type === "date") {
-                if (!(value instanceof Date)) {
-                    value = moment(value, 'DD/MM/YYYY').toDate();
+            console.log("Editing field:", fieldName, "with value:", value, "type:", type);
+
+            var processedValue = value;
+
+            try {
+                if (type === "date") {
+                    // Handle date conversion properly
+                    if (typeof value === 'string') {
+                        // Handle various date formats
+                        var formats = ['DD/MM/YYYY', 'YYYY-MM-DD', 'MM/DD/YYYY'];
+                        var parsed = null;
+
+                        for (var i = 0; i < formats.length; i++) {
+                            parsed = moment(value, formats[i], true);
+                            if (parsed.isValid()) break;
+                        }
+
+                        if (!parsed || !parsed.isValid()) {
+                            // Try automatic parsing as last resort
+                            parsed = moment(value);
+                        }
+
+                        if (parsed && parsed.isValid()) {
+                            processedValue = parsed.toDate();
+                        } else {
+                            console.warn("Could not parse date:", value, "using today's date");
+                            processedValue = new Date();
+                        }
+                    } else if (value instanceof Date) {
+                        processedValue = value;
+                    } else {
+                        console.warn("Invalid date value:", value, "using today's date");
+                        processedValue = new Date();
+                    }
                 }
-            }
 
-            if (type === "time") {
-                value = moment(value, 'h:mm a').toDate();
-            }
+                if (type === "time") {
+                    if (typeof value === 'string') {
+                        // Parse various time formats
+                        var timeFormats = ['HH:mm:ss', 'HH:mm', 'h:mm a', 'h:mm:ss a'];
+                        var timeParsed = moment(value, timeFormats, true);
 
-            //if (type === "select") {
-            //}
+                        if (timeParsed.isValid()) {
+                            processedValue = timeParsed.toDate();
+                        } else {
+                            console.warn("Could not parse time:", value, "using current time");
+                            processedValue = new Date();
+                        }
+                    } else if (!(value instanceof Date)) {
+                        console.warn("Invalid time value:", value, "using current time");
+                        processedValue = new Date();
+                    }
+                }
+            } catch (error) {
+                console.error("Error processing field value:", error);
+                processedValue = type === "date" || type === "time" ? new Date() : value;
+            }
 
             $scope.gather.form = {
                 id: "editField",
@@ -3488,20 +3767,46 @@ angular
                     {
                         "name": fieldName,
                         "label": label + "...",
-                        "value": value,
+                        "value": processedValue,
                         "jobID": jobID,
                         "type": type,
-                        "options": options
+                        "options": options,
+                        "originalValue": value // Store original for debugging
                     }
                 ],
                 onSubmit: function () {
-                    $scope.updateDetailField($scope.gather.form.fields[0].name, $scope.gather.form.fields[0].value, $scope.gather.form.fields[0].jobID);
+                    var fieldValue = $scope.gather.form.fields[0].value;
+                    var finalValue = fieldValue;
+
+                    try {
+                        // Convert Date objects back to the format expected by the API
+                        if (type === "date" && fieldValue instanceof Date) {
+                            // Convert to DD/MM/YYYY format for the API
+                            finalValue = moment(fieldValue).format("DD/MM/YYYY");
+                        } else if (type === "time" && fieldValue instanceof Date) {
+                            // Convert to HH:mm:ss format for the API
+                            finalValue = moment(fieldValue).format("HH:mm:ss");
+                        }
+
+                        console.log("Submitting field update:", {
+                            field: fieldName,
+                            originalValue: $scope.gather.form.fields[0].originalValue,
+                            processedValue: fieldValue,
+                            finalValue: finalValue,
+                            jobID: $scope.gather.form.fields[0].jobID
+                        });
+
+                        $scope.updateDetailField($scope.gather.form.fields[0].name, finalValue, $scope.gather.form.fields[0].jobID);
+
+                    } catch (error) {
+                        console.error("Error preparing field value for submission:", error);
+                        alert("Error preparing the value for update. Please try again.");
+                    }
                 },
                 submitValue: "Update Field"
             }
             $scope.gather.showForm();
-
-        }
+        };
 
         $scope.updateDetailField = function (field, value, jobID) {
 
@@ -3511,7 +3816,14 @@ angular
                 "value": value
             };
 
+            console.log("Sending update request:", callData);
+
+            // Show loading indicator for the detail section
+            $("#box-jobDetail .loading").show();
+
             uRunData.doAPI("Job/UpdateJobDetail", JSON.stringify(callData)).then(function (data) {
+
+                $("#box-jobDetail .loading").fadeOut();
 
                 if (data.response === "Success") {
 
@@ -3523,15 +3835,156 @@ angular
                     if (field === "ProofOfDeliveryMobile") vmFields = "Mobile";
                     if (field === "ProofOfDeliveryEmail") vmFields = "Email";
 
+                    // Update the current job with the value in the correct format
                     $scope.currentJob[vmFields] = value;
+
+                    console.log("Successfully updated", vmFields, "to", value);
+
+                    // Check if this is a date or time field that might affect grouping/sorting
+                    var shouldRefreshAll = (field === "BookDate" || field === "BookTime");
+
+                    if (shouldRefreshAll) {
+                        // For date/time changes, do a complete refresh as it affects grouping
+                        console.log("Date/Time field updated, performing complete data refresh");
+
+                        // Store the current job selection to restore after refresh
+                        var currentJobNumber = $scope.currentJob ? $scope.currentJob.JobNumber : null;
+
+                        // Perform complete refresh
+                        $scope.getData(1);
+
+                        // After a brief delay, try to restore the job selection
+                        if (currentJobNumber) {
+                            setTimeout(function () {
+                                // Find and select the updated job
+                                var updatedJob = null;
+
+                                // Search in runJobsAll first
+                                if ($scope.runJobsAll) {
+                                    updatedJob = $scope.runJobsAll.find(function (job) {
+                                        return job.JobNumber === currentJobNumber;
+                                    });
+                                }
+
+                                if (updatedJob) {
+                                    $scope.selectJob(updatedJob, true);
+                                    console.log("Restored job selection after refresh:", currentJobNumber);
+                                }
+                            }, 2000); // Wait 2 seconds for data to load
+                        }
+                    } else {
+                        // For other fields, just update across all lists without full refresh
+                        $scope.updateJobInAllLists(jobID, vmFields, value);
+                    }
 
                 } else {
                     alert(data.response);
                 }
 
+            }).catch(function (error) {
+                $("#box-jobDetail .loading").fadeOut();
+                console.error("Error updating job detail:", error);
+                alert("An error occurred while updating the job. Please try again.");
             });
+        };
 
-        }
+        // Helper function to update the job in all data structures
+        $scope.updateJobInAllLists = function (jobID, fieldName, value) {
+            try {
+                // Update in runJobsAll
+                if ($scope.runJobsAll) {
+                    var jobInAll = $scope.runJobsAll.find(function (job) { return job.BulkJobID === jobID; });
+                    if (jobInAll) {
+                        jobInAll[fieldName] = value;
+                    }
+                }
+
+                // Update in jobList
+                if ($scope.jobList) {
+                    var jobInList = $scope.jobList.find(function (job) { return job.BulkJobID === jobID; });
+                    if (jobInList) {
+                        jobInList[fieldName] = value;
+                    }
+                }
+
+                // Update in groupedJobs
+                if ($scope.groupedJobs) {
+                    $scope.groupedJobs.forEach(function (group) {
+                        if (group.jobs) {
+                            var jobInGroup = group.jobs.find(function (job) { return job.BulkJobID === jobID; });
+                            if (jobInGroup) {
+                                jobInGroup[fieldName] = value;
+                            }
+                        }
+                    });
+                }
+
+                // Update in runList and runBuilder
+                if ($scope.runList) {
+                    $scope.runList.forEach(function (run) {
+                        if (run.jobs) {
+                            var jobInRun = run.jobs.find(function (job) { return job.BulkJobID === jobID; });
+                            if (jobInRun) {
+                                jobInRun[fieldName] = value;
+                            }
+                        }
+                    });
+                }
+
+                // Update in runBuilder if it exists
+                if ($scope.runBuilder) {
+                    var jobInBuilder = $scope.runBuilder.find(function (job) { return job.BulkJobID === jobID; });
+                    if (jobInBuilder) {
+                        jobInBuilder[fieldName] = value;
+                    }
+                }
+
+                // Apply the changes
+                $scope.$apply();
+
+            } catch (error) {
+                console.error("Error updating job in all lists:", error);
+            }
+        };
+
+        $scope.formatDateForDisplay = function (dateValue) {
+            if (!dateValue) return '';
+
+            // If it's already in DD/MM/YYYY format, return as is
+            if (typeof dateValue === 'string' && /^\d{2}\/\d{2}\/\d{4}$/.test(dateValue)) {
+                return dateValue;
+            }
+
+            // If it's an ISO string or other format, convert to DD/MM/YYYY
+            var parsed = moment(dateValue);
+            if (parsed.isValid()) {
+                return parsed.format("DD/MM/YYYY");
+            }
+
+            return dateValue; // Return original if parsing fails
+        };
+
+        $scope.formatTimeForDisplay = function (timeValue) {
+            if (!timeValue) return '';
+
+            // If it's already in HH:mm:ss format, return as is
+            if (typeof timeValue === 'string' && /^\d{2}:\d{2}:\d{2}$/.test(timeValue)) {
+                return timeValue;
+            }
+
+            // If it's in HH:mm format, return as is (common for time display)
+            if (typeof timeValue === 'string' && /^\d{2}:\d{2}$/.test(timeValue)) {
+                return timeValue;
+            }
+
+            // Handle time parsing for various formats
+            var parsed = moment(timeValue, ['HH:mm:ss', 'HH:mm', 'h:mm a', 'h:mm:ss a'], true);
+            if (parsed.isValid()) {
+                return parsed.format("HH:mm");
+            }
+
+            return timeValue; // Return original if parsing fails
+        };
 
         /// RUN Route ///
         $scope.callRouteSavvy = function (locationArray) {
