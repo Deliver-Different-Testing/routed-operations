@@ -120,11 +120,11 @@
 						</div>
 						<div class="field" ng-click="editDetailField('BookDate','Date',currentJob.DeliveryDate,currentJob.BulkJobID, 'date')">
 							<label>Date</label>
-							<div class="value">{{currentJob.DeliveryDate | date : "dd/MM/yyyy"}}</div>
+							<div class="value">{{formatDateForDisplay(currentJob.DeliveryDate)}}</div>
 						</div>
 						<div class="field" ng-click="editDetailField('BookTime','Time',currentJob.ReadyTime,currentJob.BulkJobID,'time')">
 							<label>Log time</label>
-							<div class="value">{{currentJob.ReadyTime | date : "shortTime"}}</div>
+							<div class="value">{{formatTimeForDisplay(currentJob.ReadyTime)}}</div>
 						</div>
 						<!--
 						<div class="field" ng-click="editDetailField('DispatchTime','Dispatch Time',currentJob.DispatchTime,currentJob.BulkJobID,'time')">
