@@ -3,6 +3,16 @@
 # Declare variables to be passed into your templates.
 replicaCount: 1
 
+nodeSelector:
+  tenant: shipspry
+
+tolerations:
+  - key: tenant
+    operator: Equal
+    value: shipspry
+    effect: NoSchedule
+
+
 hpa:
   enabled: true
   minReplicas: 1

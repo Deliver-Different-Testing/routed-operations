@@ -3,6 +3,16 @@
 # Declare variables to be passed into your templates.
 replicaCount: 1
 
+nodeSelector:
+  tenant: crossroads
+
+tolerations:
+  - key: tenant
+    operator: Equal
+    value: crossroads
+    effect: NoSchedule
+
+
 hpa:
   enabled: true
   minReplicas: 1

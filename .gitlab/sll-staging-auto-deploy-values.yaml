@@ -3,6 +3,16 @@
 # Declare variables to be passed into your templates.
 replicaCount: 1
 
+nodeSelector:
+  tenant: sll
+
+tolerations:
+  - key: tenant
+    operator: Equal
+    value: sll
+    effect: NoSchedule
+
+
 hpa:
   enabled: true
   minReplicas: 1
@@ -26,22 +36,19 @@ ingress:
 service:
   externalPort: 5000
   internalPort: 8080
+
 livenessProbe:
-  probeType: exec
-  command:
-    - /bin/sh
-    - -c
-    - "[ $(find /tmp/healthy -mmin -1 | wc -l) -eq 1 ] || false"
-  initialDelaySeconds: 5
-  timeoutSeconds: 10
+  path: "/healthz"
+  initialDelaySeconds: 25
+  timeoutSeconds: 15
+  scheme: "HTTP"
+  probeType: "httpGet"
 readinessProbe:
-  probeType: exec
-  command:
-    - /bin/sh
-    - -c
-    - "[ $(find /tmp/healthy -mmin -1 | wc -l) -eq 1 ] || false"
-  initialDelaySeconds: 15
-  timeoutSeconds: 10
+  path: "/healthz"
+  initialDelaySeconds: 30
+  timeoutSeconds: 3
+  scheme: "HTTP"
+  probeType: "httpGet"
 
 resources:
   requests:
