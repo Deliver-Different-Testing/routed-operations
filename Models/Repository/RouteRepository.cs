@@ -49,9 +49,10 @@ public class RouteRepository(HttpClient httpClient, ILogger<RouteRepository> log
 
     public async Task<HereMapSequenceResponse> GetHereMapSequenceAsync(HereMapSequenceRequest data)
     {
-        var url = $"https://wse.api.here.com/2/findsequence.json?app_id={Environment.GetEnvironmentVariable("HeremapAppId")}&app_code={Environment.GetEnvironmentVariable("HeremapAppCode")}{data.requestData}";
-        
-        var response = await httpClient.GetAsync(url);
+        //var url = $"https://wse.api.here.com/2/findsequence.json?app_id={Environment.GetEnvironmentVariable("HeremapAppId")}&app_code={Environment.GetEnvironmentVariable("HeremapAppCode")}{data.requestData}";
+        var url = $"https://wps.hereapi.com/v8/findsequence2?&apiKey={Environment.GetEnvironmentVariable("HeremapApiKey")}{data.requestData}";
+
+            var response = await httpClient.GetAsync(url);
         
         logger.LogDebug($"Start {nameof(GetHereMapSequenceAsync)}: ResponseCode: {response.StatusCode}");
         
