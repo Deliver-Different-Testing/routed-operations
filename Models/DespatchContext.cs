@@ -31,8 +31,6 @@ public partial class DespatchContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.UseCollation("Latin1_General_CI_AS");
-
         modelBuilder.Entity<TblBulkJob>(entity =>
         {
             entity.HasKey(e => e.BulkJobId).HasName("PK__tblBulkJ__1B2363F0324172E1");
@@ -89,6 +87,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.DeliveryAddressLine8).HasMaxLength(255);
             entity.Property(e => e.DeliveryLatitude).HasMaxLength(50);
             entity.Property(e => e.DeliveryLongitude).HasMaxLength(50);
+            entity.Property(e => e.Done).HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkJob__Done__30992191");
             entity.Property(e => e.DropOffLocationId).HasColumnName("DropOffLocationID");
             entity.Property(e => e.FromAddress).HasMaxLength(150);
             entity.Property(e => e.FromCompany).HasMaxLength(150);
@@ -98,6 +97,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.JobId).HasColumnName("JobID");
             entity.Property(e => e.JobNumber).HasMaxLength(50);
             entity.Property(e => e.JobRelationshipTypeId).HasColumnName("JobRelationshipTypeID");
+            entity.Property(e => e.JobStatus).HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkJo__JobSt__2EB0D91F");
             entity.Property(e => e.Length).HasColumnType("numeric(18, 0)");
             entity.Property(e => e.LinehaulRunId).HasColumnName("LinehaulRunID");
             entity.Property(e => e.LoggedInContactId).HasColumnName("LoggedInContactID");
@@ -105,6 +105,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.MultiboxParentId).HasColumnName("MultiboxParentID");
             entity.Property(e => e.Notes).HasMaxLength(4000);
             entity.Property(e => e.NwdocJob).HasColumnName("NWDocJob");
+            entity.Property(e => e.OnHold).HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkJo__OnHol__2FA4FD58");
             entity.Property(e => e.OrderRef).HasMaxLength(50);
             entity.Property(e => e.OurRef).HasMaxLength(20);
             entity.Property(e => e.ParentId).HasColumnName("ParentID");
@@ -144,6 +145,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.TotalDistance).HasColumnType("decimal(18, 4)");
             entity.Property(e => e.TrackingEmail).HasMaxLength(500);
             entity.Property(e => e.TrackingMobile).HasMaxLength(500);
+            entity.Property(e => e.Void).HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkJob__Void__318D45CA");
             entity.Property(e => e.Weight).HasColumnType("decimal(6, 2)");
             entity.Property(e => e.Width).HasColumnType("numeric(18, 0)");
         });
@@ -184,15 +186,19 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.CourierId).HasColumnName("CourierID");
             entity.Property(e => e.Created)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkRu__Creat__355DD6AE")
                 .HasColumnType("datetime");
             entity.Property(e => e.DespatchDateTime).HasColumnType("datetime");
             entity.Property(e => e.LastModified)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkRu__LastM__3651FAE7")
                 .HasColumnType("datetime");
             entity.Property(e => e.Name).HasMaxLength(50);
             entity.Property(e => e.Payout).HasColumnType("money");
             entity.Property(e => e.Revenue).HasColumnType("money");
-            entity.Property(e => e.Status).HasDefaultValue(0);
+            entity.Property(e => e.Status)
+                .HasDefaultValue(0)
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__tblBulkRu__Statu__3469B275");
         });
 
         modelBuilder.Entity<ZipPolygon>(entity =>
@@ -200,8 +206,6 @@ public partial class DespatchContext : DbContext
             entity.HasKey(e => e.ZipPolygonId).HasName("PK__ZipPolyg__6A8AEEE3127F7A1C");
 
             entity.ToTable("ZipPolygon");
-
-            entity.HasIndex(e => e.Zip, "IX_ZipPolygon_Zip");
 
             entity.Property(e => e.ZipPolygonId).HasColumnName("ZipPolygonID");
             entity.Property(e => e.Latitude).HasColumnType("decimal(18, 8)");
@@ -223,6 +227,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ClientId).HasColumnName("ClientID");
             entity.Property(e => e.Created)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneCombo__Creat__24D33481")
                 .HasColumnType("datetime");
             entity.Property(e => e.CreatedBy).HasMaxLength(255);
             entity.Property(e => e.DriverRate).HasColumnType("decimal(18, 4)");
@@ -230,6 +235,7 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.FromZoneZipId).HasColumnName("FromZoneZipID");
             entity.Property(e => e.LastModified)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneCombo__LastM__25C758BA")
                 .HasColumnType("datetime");
             entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
             entity.Property(e => e.RateCardId).HasColumnName("RateCardID");
@@ -260,10 +266,12 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ZoneGroupId).HasColumnName("ZoneGroupID");
             entity.Property(e => e.Created)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneGroup__Creat__037240B6")
                 .HasColumnType("datetime");
             entity.Property(e => e.CreatedBy).HasMaxLength(255);
             entity.Property(e => e.LastModified)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneGroup__LastM__046664EF")
                 .HasColumnType("datetime");
             entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
             entity.Property(e => e.Name).HasMaxLength(255);
@@ -278,11 +286,13 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ZoneNameId).HasColumnName("ZoneNameID");
             entity.Property(e => e.Created)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneName__Create__092B1A0C")
                 .HasColumnType("datetime");
             entity.Property(e => e.CreatedBy).HasMaxLength(255);
             entity.Property(e => e.GeoPolygonId).HasColumnName("GeoPolygonID");
             entity.Property(e => e.LastModified)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneName__LastMo__0A1F3E45")
                 .HasColumnType("datetime");
             entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
             entity.Property(e => e.LocationId).HasColumnName("LocationID");
@@ -306,16 +316,19 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ClientId).HasColumnName("ClientID");
             entity.Property(e => e.Created)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneZip__Created__0FD8179B")
                 .HasColumnType("datetime");
             entity.Property(e => e.CreatedBy).HasMaxLength(255);
             entity.Property(e => e.LastModified)
                 .HasDefaultValueSql("(getdate())")
+                .HasAnnotation("Relational:DefaultConstraintName", "DF__ZoneZip__LastMod__10CC3BD4")
                 .HasColumnType("datetime");
             entity.Property(e => e.LastModifiedBy).HasMaxLength(255);
             entity.Property(e => e.Zip)
                 .IsRequired()
                 .HasMaxLength(20);
             entity.Property(e => e.ZoneNameId).HasColumnName("ZoneNameID");
+            entity.Property(e => e.ZoneZipGroupId).HasColumnName("ZoneZipGroupID");
 
             entity.HasOne(d => d.ZoneName).WithMany(p => p.ZoneZips)
                 .HasForeignKey(d => d.ZoneNameId)

@@ -39,7 +39,7 @@ namespace RunBuilder.Models
         [Column("Amount", TypeName = "money")]
         public decimal Amount { get; set; }
         public int SpeedID { get; set; }
-        public short? Size { get; set; }
+        public int? Size { get; set; }
         public short? Items { get; set; }
         [Column("Weight", TypeName = "decimal(6,2)")]
         public decimal? Weight { get; set; }

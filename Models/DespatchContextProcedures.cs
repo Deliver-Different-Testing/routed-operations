@@ -62,7 +62,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<RVW_stpBulkRegionsResult>("EXEC @returnValue = [dbo].[RVW_stpBulkRegions] @RunDate = @RunDate", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<RVW_stpBulkRegionsResult>("EXEC @returnValue = [dbo].[RVW_stpBulkRegions] @RunDate = @RunDate", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -88,7 +88,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<RVW_stpBulkSpeedsResult>("EXEC @returnValue = [dbo].[RVW_stpBulkSpeeds] @RunDate = @RunDate", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<RVW_stpBulkSpeedsResult>("EXEC @returnValue = [dbo].[RVW_stpBulkSpeeds] @RunDate = @RunDate", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -108,7 +108,7 @@ namespace RunBuilder.Models
             {
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpCourier_ActiveResult>("EXEC @returnValue = [dbo].[UTL_stpCourier_Active]", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpCourier_ActiveResult>("EXEC @returnValue = [dbo].[UTL_stpCourier_Active]", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -197,7 +197,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkJobResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkJob] @DateTime = @DateTime, @ClientID = @ClientID", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkJobResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkJob] @DateTime = @DateTime, @ClientID = @ClientID", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -315,7 +315,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkJobWithFilterResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkJobWithFilter] @DateTime = @DateTime, @ClientIDs = @ClientIDs, @Regions = @Regions, @OurRefs = @OurRefs, @Speeds = @Speeds", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkJobWithFilterResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkJobWithFilter] @DateTime = @DateTime, @ClientIDs = @ClientIDs, @Regions = @Regions, @OurRefs = @OurRefs, @Speeds = @Speeds", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -347,7 +347,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkRunResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRun] @DateTime = @DateTime, @ClientID = @ClientID", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkRunResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRun] @DateTime = @DateTime, @ClientID = @ClientID", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -459,7 +459,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRun_InsertOrUpdate] @RunID = @RunID, @Name = @Name, @Mins = @Mins, @Kms = @Kms, @CourierID = @CourierID, @Status = @Status, @Revenue = @Revenue, @Payout = @Payout, @CourierPercentage = @CourierPercentage, @GoogleRouteResponse = @GoogleRouteResponse", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkRun_InsertOrUpdateResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRun_InsertOrUpdate] @RunID = @RunID, @Name = @Name, @Mins = @Mins, @Kms = @Kms, @CourierID = @CourierID, @Status = @Status, @Revenue = @Revenue, @Payout = @Payout, @CourierPercentage = @CourierPercentage, @GoogleRouteResponse = @GoogleRouteResponse", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -479,7 +479,7 @@ namespace RunBuilder.Models
             {
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkRunSettingsResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRunSettings]", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkRunSettingsResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRunSettings]", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
@@ -533,7 +533,7 @@ namespace RunBuilder.Models
                 },
                 parameterreturnValue,
             };
-            var _ = await _context.SqlQueryAsync<UTL_stpJob_tblBulkRunWithFilterResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRunWithFilter] @DateTime = @DateTime, @ClientIDs = @ClientIDs, @Regions = @Regions, @OurRefs = @OurRefs, @Speeds = @Speeds", sqlParameters, cancellationToken);
+            var _ = await _context.SqlQueryToListAsync<UTL_stpJob_tblBulkRunWithFilterResult>("EXEC @returnValue = [dbo].[UTL_stpJob_tblBulkRunWithFilter] @DateTime = @DateTime, @ClientIDs = @ClientIDs, @Regions = @Regions, @OurRefs = @OurRefs, @Speeds = @Speeds", sqlParameters, cancellationToken);
 
             returnValue?.SetValue(parameterreturnValue.Value);
 
