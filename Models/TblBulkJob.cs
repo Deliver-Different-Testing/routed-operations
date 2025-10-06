@@ -43,7 +43,7 @@ public partial class TblBulkJob
 
     public int? ToPostCode { get; set; }
 
-    public short? Size { get; set; }
+    public int? Size { get; set; }
 
     public short? Qty { get; set; }
 
