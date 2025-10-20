@@ -42,8 +42,37 @@ namespace RunBuilder.Models.Repository
                         Context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToInt16(value);
                         break;
                     case "BookDate":
+                        // Parse date in DD/MM/YYYY format (as sent from frontend)
+                        DateTime bookDate;
+                        if (DateTime.TryParseExact(value, "dd/MM/yyyy",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out bookDate))
+                        {
+                            Context.Entry(bulkJob).Property(propertyName).CurrentValue = bookDate;
+                        }
+                        else
+                        {
+                            // Fallback: try other common formats
+                            Context.Entry(bulkJob).Property(propertyName).CurrentValue = DateTime.Parse(value,
+                                System.Globalization.CultureInfo.InvariantCulture);
+                        }
+                        break;
                     case "BookTime":
-                        Context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToDateTime(value);
+                        // Parse time in HH:mm:ss format (as sent from frontend)
+                        DateTime bookTime;
+                        var timeFormats = new[] { "HH:mm:ss", "HH:mm", "h:mm tt", "h:mm:ss tt" };
+                        if (DateTime.TryParseExact(value, timeFormats,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out bookTime))
+                        {
+                            Context.Entry(bulkJob).Property(propertyName).CurrentValue = bookTime;
+                        }
+                        else
+                        {
+                            // Fallback: try parsing as a full datetime
+                            Context.Entry(bulkJob).Property(propertyName).CurrentValue = DateTime.Parse(value,
+                                System.Globalization.CultureInfo.InvariantCulture);
+                        }
                         break;
                     default:
                         Context.Entry(bulkJob).Property(propertyName).CurrentValue = value;
