@@ -3556,12 +3556,70 @@ angular
                     "postCode": postCode
 
                 },
+                "country": (typeof IsUsTenant !== 'undefined' && IsUsTenant === 'True') ? 'us' : 'nz',
+                validateLatLng: function () {
+                    if (!$scope.gpsUpdateForm) return;
+
+                    var lat = $scope.gpsForm.data.lat;
+                    var lng = $scope.gpsForm.data.long;
+
+                    // Validate latitude range (-90 to 90)
+                    if (lat !== "" && lat !== null && lat !== undefined) {
+                        var latNum = parseFloat(lat);
+                        if (isNaN(latNum) || latNum < -90 || latNum > 90) {
+                            $scope.gpsUpdateForm.latitude.$setValidity('range', false);
+                        } else {
+                            $scope.gpsUpdateForm.latitude.$setValidity('range', true);
+                        }
+                    } else {
+                        $scope.gpsUpdateForm.latitude.$setValidity('range', true);
+                    }
+
+                    // Validate longitude range (-180 to 180)
+                    if (lng !== "" && lng !== null && lng !== undefined) {
+                        var lngNum = parseFloat(lng);
+                        if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+                            $scope.gpsUpdateForm.longitude.$setValidity('range', false);
+                        } else {
+                            $scope.gpsUpdateForm.longitude.$setValidity('range', true);
+                        }
+                    } else {
+                        $scope.gpsUpdateForm.longitude.$setValidity('range', true);
+                    }
+                },
                 submit: function (response) {
                     var location;
                     var postCode = null;
                     // Custom GPS Location
                     if (!response) {
-                        location = new google.maps.LatLng($scope.gpsForm.data.lat, $scope.gpsForm.data.long);
+                        // Validate lat/lng format before creating location
+                        var lat = $scope.gpsForm.data.lat;
+                        var lng = $scope.gpsForm.data.long;
+
+                        if (!lat || !lng || lat === "" || lng === "") {
+                            alert("Please enter valid latitude and longitude values.");
+                            return;
+                        }
+
+                        var latNum = parseFloat(lat);
+                        var lngNum = parseFloat(lng);
+
+                        if (isNaN(latNum) || isNaN(lngNum)) {
+                            alert("Invalid latitude or longitude format. Please enter decimal numbers.");
+                            return;
+                        }
+
+                        if (latNum < -90 || latNum > 90) {
+                            alert("Latitude must be between -90 and 90 degrees.");
+                            return;
+                        }
+
+                        if (lngNum < -180 || lngNum > 180) {
+                            alert("Longitude must be between -180 and 180 degrees.");
+                            return;
+                        }
+
+                        location = new google.maps.LatLng(latNum, lngNum);
                         postCode = $scope.gpsForm.data.postCode;
                     } else {
                         location = response.geometry.location;
@@ -4031,7 +4089,7 @@ function Deg2Rad(deg) {
 
 
 // Get Distance between two lat/lng points using the Haversine function
-// First published by Roger Sinnott in Sky & Telescope magazine in 1984 (“Virtues of the Haversine”)
+// First published by Roger Sinnott in Sky & Telescope magazine in 1984 (ï¿½Virtues of the Haversineï¿½)
 //
 function Haversine(lat1, lon1, lat2, lon2) {
     var R = 6372.8; // Earth Radius in Kilometers
