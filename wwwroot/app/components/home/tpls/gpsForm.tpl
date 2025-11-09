@@ -4,6 +4,7 @@
   <div class="gps-box">
     UPDATE GPS
     <div class="container-fluid">
+      <form name="gpsUpdateForm" novalidate>
       <div class="row">
         <div class="col-md-12">
           <div class="form-group">
@@ -17,15 +18,39 @@
           </div>
         </div>
         <div class="col-md-4">
-            <div class="form-group">
-              <label for="jobNum">Latitude:</label>
-              <input type="text" ng-model="gpsForm.data.lat" class="form-control" />
+            <div class="form-group" ng-class="{'has-error': gpsUpdateForm.latitude.$invalid && gpsUpdateForm.latitude.$touched}">
+              <label for="latitude">Latitude:</label>
+              <input type="text"
+                     name="latitude"
+                     ng-model="gpsForm.data.lat"
+                     class="form-control"
+                     ng-pattern="/^$|^-?\d+\.?\d*$/"
+                     ng-change="gpsForm.validateLatLng()"
+                     ng-blur="gpsForm.validateLatLng()" />
+              <span class="help-block" ng-show="gpsUpdateForm.latitude.$error.pattern">
+                Invalid format. Must be a decimal number (e.g., -36.850657)
+              </span>
+              <span class="help-block" ng-show="gpsUpdateForm.latitude.$error.range">
+                Latitude must be between -90 and 90 degrees
+              </span>
             </div>
         </div>
         <div class="col-md-4">
-            <div class="form-group">
-              <label for="jobNum">Longtitude:</label>
-              <input type="text" ng-model="gpsForm.data.long" class="form-control" />
+            <div class="form-group" ng-class="{'has-error': gpsUpdateForm.longitude.$invalid && gpsUpdateForm.longitude.$touched}">
+              <label for="longitude">Longtitude:</label>
+              <input type="text"
+                     name="longitude"
+                     ng-model="gpsForm.data.long"
+                     class="form-control"
+                     ng-pattern="/^$|^-?\d+\.?\d*$/"
+                     ng-change="gpsForm.validateLatLng()"
+                     ng-blur="gpsForm.validateLatLng()" />
+              <span class="help-block" ng-show="gpsUpdateForm.longitude.$error.pattern">
+                Invalid format. Must be a decimal number (e.g., 174.764660)
+              </span>
+              <span class="help-block" ng-show="gpsUpdateForm.longitude.$error.range">
+                Longitude must be between -180 and 180 degrees
+              </span>
             </div>
         </div>
 		  <div class="col-md-4">
@@ -35,10 +60,10 @@
             </div>
         </div>
         <div class="col-md-12">
-		   <input class="form-control" 
-		    places-auto-complete 
+		   <input class="form-control"
+		    places-auto-complete
 			ng-model="gpsForm.search"
-			component-restrictions="{country:'us'}"
+			component-restrictions="{country:'{{gpsForm.country}}'}"
 			types="['address']"
 			on-place-changed="gpsForm.placeChanged()" />
           
@@ -63,11 +88,12 @@
             </iframe>
           </div> -->
 
-        <button class="btn btn-primary" ng-click="gpsForm.submit(gpsForm.details)">UPDATE</button>
+        <button class="btn btn-primary" ng-click="gpsForm.submit(gpsForm.details)" ng-disabled="gpsUpdateForm.$invalid">UPDATE</button>
         <button class="btn btn-default" ng-click="gpsForm.cancel()">Cancel</button>
 
         </div>
       </div>
+      </form>
     </div>
   </div>
 </div>
