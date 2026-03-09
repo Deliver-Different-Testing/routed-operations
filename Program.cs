@@ -156,6 +156,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/healthz", new HealthCheckOptions
 {
     ResponseWriter = async (context, report) =>
