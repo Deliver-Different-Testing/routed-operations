@@ -41,6 +41,9 @@ namespace RunBuilder.Models.Repository
                     case "Qty":
                         Context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToInt16(value);
                         break;
+                    case "Speed":
+                        Context.Entry(bulkJob).Property(propertyName).CurrentValue = Convert.ToInt32(value);
+                        break;
                     case "BookDate":
                         // Parse date in DD/MM/YYYY format (as sent from frontend)
                         DateTime bookDate;
@@ -201,6 +204,16 @@ namespace RunBuilder.Models.Repository
             .Select(x => new Speed() { id = x.SpeedId, label = x.Name })
             .Distinct()
             .ToList();
+            return speeds;
+        }
+
+        public async Task<List<Speed>> AllSpeedsAsync()
+        {
+            var result = await Context.SqlQueryToListAsync<RVW_stpBulkSpeedsResult>(
+                "SELECT ucjtID AS SpeedId, ucjtName AS Name FROM tucJobType ORDER BY ucjtName");
+            var speeds = result
+                .Select(x => new Speed() { id = x.SpeedId, label = x.Name })
+                .ToList();
             return speeds;
         }
 

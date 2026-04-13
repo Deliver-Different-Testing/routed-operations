@@ -38,6 +38,11 @@ angular
                     return response.data;
                 });
             },
+            getAllSpeeds: function () {
+                return $http.get('/Job/AllSpeeds').then(function (response) {
+                    return response.data;
+                });
+            },
             getFilter: function (runDate) {
                 return $http.get('/Job/GetFilter?runDate=' + runDate.format("YYYY-MM-DD")).then(function (response) {
                     return response.data;

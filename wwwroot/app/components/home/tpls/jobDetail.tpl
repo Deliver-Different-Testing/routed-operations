@@ -106,6 +106,10 @@
 							<label>Courier</label>
 							<div class="value">{{currentJob.Courier}}</div>
 						</div>
+						<div class="field" ng-click="editDetailField('Speed','Speed','' + currentJob.SpeedID,currentJob.BulkJobID, 'select', getSpeedOptions())">
+							<label>Speed</label>
+							<div class="value">{{getSpeedLabel(currentJob.SpeedID)}}</div>
+						</div>
 					</div>
 					<div class="col-md-4">
 					<!--
