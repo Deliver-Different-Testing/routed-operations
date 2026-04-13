@@ -21,7 +21,7 @@
            <!-- <td>{{job.RunMoreThan100}}</td> -->
             <td>{{job.ToPostCode}}</td>
             <td>{{job.CourierID}} </td>
-            <td>{{job.SpeedID}} </td>
+            <td>{{getSpeedLabel(job.SpeedID)}} </td>
             <td class="selectjob" ng-click="addToRunBuilder(job); $event.stopPropagation();" title="placeholder selector" style="display:none"></td>
         </tr>
         <tr style="opacity:0">

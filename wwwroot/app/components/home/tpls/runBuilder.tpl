@@ -62,7 +62,7 @@
            <!-- <td>{{job.RunMoreThan100}}</td> -->
             <td>{{job.ToPostCode}}</td>
             <td>{{job.CourierID}} </td>
-            <td>{{job.SpeedID}} </td>
+            <td>{{getSpeedLabel(job.SpeedID)}} </td>
             <td class="selectjob" ng-click="selectForDispatch(job); $event.stopPropagation();" title="placeholder selector" style="display:none"></td>
             <td class="delete-row" ng-click="deleteFromRun(job,1); $event.stopPropagation();" title="placeholder selector" style="display:none"></td>
         </tr>
