@@ -81,6 +81,13 @@ namespace RunBuilder.Controllers
             return Json(result);
         }
 
+        [HttpGet]
+        public async Task<ActionResult> AllSpeeds()
+        {
+            var result = await repository.AllSpeedsAsync();
+            return Json(result);
+        }
+
         [HttpPost]
         [ActionName("SyncHDJobs")]
         public async Task<ActionResult> SyncHDJobs(DateTime runDate)

@@ -430,6 +430,7 @@ angular
         // Refresh the ourRef list
         $scope.$watch('pickDateService.date', function (newValue, oldValue, scope) {
             $scope.getFilter();
+            $scope.getSpeeds();
         }, true);
 
         $scope.doPickDateService = function () {
@@ -476,6 +477,33 @@ angular
             uRunData.getSpeedList(moment($scope.pickDateService.date)).then(function (data) {
                 $scope.pickSpeeds = data;
             });
+        };
+
+        // Load all available speeds (full list from tucJobType)
+        $scope.allSpeeds = [];
+        $scope.loadAllSpeeds = function () {
+            uRunData.getAllSpeeds().then(function (data) {
+                $scope.allSpeeds = data;
+            });
+        };
+        $scope.loadAllSpeeds();
+
+        // Build speed options array for the select dropdown in editDetailField
+        $scope.getSpeedOptions = function () {
+            if (!$scope.allSpeeds || $scope.allSpeeds.length === 0) return [];
+            return $scope.allSpeeds.map(function (s) {
+                return { id: s.id, label: s.label };
+            });
+        };
+
+        // Get speed label from speed ID for display
+        $scope.getSpeedLabel = function (speedId) {
+            if (!speedId) return speedId;
+            if ($scope.allSpeeds && $scope.allSpeeds.length > 0) {
+                var speed = $scope.allSpeeds.find(function (s) { return s.id == speedId; });
+                if (speed) return speed.label;
+            }
+            return speedId;
         };
 
         // Sync EH and HD jobs by creating a copy of bulk job with JobID
@@ -3892,6 +3920,7 @@ angular
                     if (field === "Qty") vmFields = "Items";
                     if (field === "ProofOfDeliveryMobile") vmFields = "Mobile";
                     if (field === "ProofOfDeliveryEmail") vmFields = "Email";
+                    if (field === "Speed") vmFields = "SpeedID";
 
                     // Update the current job with the value in the correct format
                     $scope.currentJob[vmFields] = value;
@@ -3899,7 +3928,7 @@ angular
                     console.log("Successfully updated", vmFields, "to", value);
 
                     // Check if this is a date or time field that might affect grouping/sorting
-                    var shouldRefreshAll = (field === "BookDate" || field === "BookTime");
+                    var shouldRefreshAll = (field === "BookDate" || field === "BookTime" || field === "Speed");
 
                     if (shouldRefreshAll) {
                         // For date/time changes, do a complete refresh as it affects grouping
