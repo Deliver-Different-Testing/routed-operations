@@ -1003,3 +1003,34 @@ a.uline {
         padding-right: 0 !important;
     }
 }
+
+// Void Jobs dialog button layout
+.jconfirm .jconfirm-box .jconfirm-buttons {
+    display: flex;
+    justify-content: space-between;
+
+    .btn-default {
+        margin-left: auto;
+    }
+}
+
+// Void Jobs run styling
+table.table tr.void-run {
+    background-color: #f8d7da !important;
+    color: #721c24;
+    border-left: 4px solid #dc3545;
+    font-style: italic;
+
+    &:hover {
+        background-color: #f5c6cb !important;
+    }
+
+    &.active {
+        background-color: #f1b0b7 !important;
+    }
+
+    td:first-child i.fa-ban {
+        margin-right: 5px;
+        color: #dc3545;
+    }
+}

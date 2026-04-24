@@ -66,5 +66,8 @@ namespace UCLRun
         public Nullable<int> BuilderIndex { get; set; }
         public string PrefixRunName { get; set; }
         public int MaxJobsPerRun { get; set; }
+        public Nullable<int> MultiboxParentID { get; set; }
+        public Nullable<int> ParentId { get; set; }
+        public Nullable<int> JobRelationshipTypeId { get; set; }
     }
 }
