@@ -143,6 +143,11 @@ angular
                 return $http.post('/Job/DeleteBulkJobRun', data).then(function (response) {
                     return response.data;
                 });
+            },
+            voidJobs: function (data) {
+                return $http.post('/Job/VoidJobs', data).then(function (response) {
+                    return response.data;
+                });
             }
         };
     }]);   

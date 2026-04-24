@@ -375,5 +375,61 @@ namespace RunBuilder.Controllers
                 });
             }
         }
+
+        [HttpPost]
+        public async Task<ActionResult> VoidJobs([FromBody] VoidJobsRequest request)
+        {
+            if (ModelState.IsValid)
+            {
+                try
+                {
+                    var result = await repository.VoidJobsAsync(request);
+                    return Json(new { response = result });
+                }
+                catch (Exception e)
+                {
+                    return Json(new
+                    {
+                        response = new
+                        {
+                            Success = 0,
+                            Failed = request.JobIds?.Count ?? 0,
+                            Message = $"Bulk {(request.IsVoid ? "void" : "un-void")} failed: " + (e.InnerException?.Message ?? e.Message)
+                        }
+                    });
+                }
+            }
+            else
+            {
+                var errors = string.Join(" | ",
+                    ModelState.Values
+                        .SelectMany(v => v.Errors)
+                        .Select(e => e.ErrorMessage));
+
+                return Json(new
+                {
+                    response = new
+                    {
+                        Success = 0,
+                        Failed = request.JobIds?.Count ?? 0,
+                        Message = "Invalid request data: " + errors
+                    }
+                });
+            }
+        }
+
+        [HttpGet]
+        public ActionResult GetMultiboxChildren(int parentJobId)
+        {
+            try
+            {
+                var childIds = repository.GetMultiboxChildJobIds(parentJobId);
+                return Json(new { response = childIds });
+            }
+            catch (Exception e)
+            {
+                return Json(new { response = new List<int>(), error = e.InnerException?.Message ?? e.Message });
+            }
+        }
     }
 }

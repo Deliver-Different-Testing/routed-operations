@@ -982,9 +982,38 @@ angular
                     }, 0);
 
                 }
+            },
+            {
+                text: 'Void',
+                click: function ($itemScope, $event, modelValue, text, $li) {
+                    $scope.voidSelectedJobs('runBuilder', $itemScope.job);
+                }
             }
 
         ];
+
+        // Context menu for the Job List
+        $scope.jobListMenu = [
+            {
+                text: 'Void',
+                click: function ($itemScope, $event, modelValue, text, $li) {
+                    $scope.voidSelectedJobs('jobList', $itemScope.job);
+                }
+            }
+        ];
+
+        // Context menu for the Void Jobs run (un-void only)
+        $scope.voidRunBuilderMenu = [
+            {
+                text: 'Un-void',
+                click: function ($itemScope, $event, modelValue, text, $li) {
+                    $scope.unvoidSelectedJobs($itemScope.job);
+                }
+            }
+        ];
+
+        // Track if the currently active run is the Void Jobs run
+        $scope.isVoidRunActive = false;
 
         $scope.deleteFromRun = function (job, fromBuilder) {
             var jobToRemoveFromRun = $filter('filter')($scope.runJobsAll, { 'JobNumber': job.JobNumber }, true)[0];
@@ -1020,6 +1049,425 @@ angular
                 $scope.updateRun();
             });
         };
+
+        // =============================================
+        // VOID JOBS FUNCTIONALITY
+        // =============================================
+
+        // Ensure the "Void Jobs" run exists in the run list when there are voided jobs.
+        // Only creates/displays the run when voided jobs exist. Returns the void run or null.
+        $scope.ensureVoidJobsRun = function () {
+            var voidRun = $scope.runList.find(function (r) { return r.isVoidRun === true; });
+
+            // Collect voided jobs from runJobsAll
+            var voidedJobs = [];
+            if ($scope.runJobsAll) {
+                angular.forEach($scope.runJobsAll, function (job) {
+                    if (job.Void === true || job.Void === 1) {
+                        job.inBuilder = 1;
+                        voidedJobs.push(job);
+                    }
+                });
+            }
+
+            // If no voided jobs and no existing void run with jobs, don't create one
+            if (voidedJobs.length === 0 && (!voidRun || voidRun.jobs.length === 0)) {
+                // Remove empty void run if it exists
+                if (voidRun) {
+                    var removeIdx = $scope.runList.indexOf(voidRun);
+                    if (removeIdx >= 0) {
+                        $scope.runList.splice(removeIdx, 1);
+                    }
+                }
+                return null;
+            }
+
+            // Create void run if it doesn't exist
+            if (!voidRun) {
+                voidRun = {
+                    ID: null,
+                    name: "Void Jobs",
+                    jobs: [],
+                    mins: 0,
+                    kms: 0,
+                    isVoidRun: true,
+                    locked: 1,
+                    courier: { courier: null, Fleet: null, courierID: null },
+                    status: null,
+                    courierPercent: '0%',
+                    revenue: 0,
+                    payout: 0
+                };
+                $scope.runList.push(voidRun);
+            } else {
+                // Move to end of list if not already there
+                var idx = $scope.runList.indexOf(voidRun);
+                if (idx >= 0 && idx !== $scope.runList.length - 1) {
+                    $scope.runList.splice(idx, 1);
+                    $scope.runList.push(voidRun);
+                }
+            }
+
+            // Add voided jobs that aren't already in the void run
+            angular.forEach(voidedJobs, function (job) {
+                var alreadyInVoidRun = voidRun.jobs.find(function (j) { return j.BulkJobID === job.BulkJobID; });
+                if (!alreadyInVoidRun) {
+                    voidRun.jobs.push(job);
+                }
+            });
+
+            return voidRun;
+        };
+
+        // Collect selected job IDs from active rows in a table
+        $scope.getSelectedJobIds = function (sourceTable, fallbackJob) {
+            var selectedJobIds = [];
+            $("#" + sourceTable).find("tr.active").each(function () {
+                var jobId = parseInt($(this).attr("data-jobid"));
+                if (jobId && !isNaN(jobId)) {
+                    selectedJobIds.push(jobId);
+                }
+            });
+
+            // Fallback to the right-clicked job if no active selections
+            if (selectedJobIds.length === 0 && fallbackJob) {
+                selectedJobIds.push(fallbackJob.BulkJobID);
+            }
+
+            return selectedJobIds;
+        };
+
+        // Main void function - handles parent/child detection and confirmation dialogs
+        $scope.voidSelectedJobs = function (sourceTable, fallbackJob) {
+            var selectedJobIds = $scope.getSelectedJobIds(sourceTable, fallbackJob);
+            if (selectedJobIds.length === 0) return;
+
+            // Check if any selected jobs have parent/child relationships
+            var hasRelationship = false;
+            var relationshipJobs = [];
+
+            angular.forEach(selectedJobIds, function (jobId) {
+                var job = $filter('filter')($scope.runJobsAll, function (j) { return j.BulkJobID === jobId; })[0];
+                if (!job) return;
+
+                // Check BulkChild (type 20) - has a parent
+                if (job.JobRelationshipTypeId === 20 && job.ParentId) {
+                    hasRelationship = true;
+                    relationshipJobs.push({ job: job, type: 'bulkChild' });
+                }
+                // Check Multibox - has siblings
+                else if (job.MultiboxParentID) {
+                    hasRelationship = true;
+                    relationshipJobs.push({ job: job, type: 'multibox' });
+                }
+            });
+
+            if (hasRelationship) {
+                $scope.showVoidRelationshipDialog(selectedJobIds, relationshipJobs, sourceTable);
+            } else {
+                $scope.executeVoid(selectedJobIds);
+            }
+        };
+
+        // Show confirmation dialog for jobs with parent/child relationships
+        $scope.showVoidRelationshipDialog = function (selectedJobIds, relationshipJobs, sourceTable) {
+            var hasBulkChild = relationshipJobs.some(function (r) { return r.type === 'bulkChild'; });
+            var hasMultibox = relationshipJobs.some(function (r) { return r.type === 'multibox'; });
+
+            var title = 'Void Related Jobs';
+            var content = '';
+            var buttons = {};
+
+            if (hasBulkChild && hasMultibox) {
+                content = 'The selected job(s) have parent jobs and/or multiple parts. How would you like to proceed?';
+            } else if (hasBulkChild) {
+                content = 'The selected job(s) have a parent job (pickup). Would you like to void the parent job as well?';
+            } else {
+                content = 'The selected job(s) have multiple parts. Would you like to void all parts?';
+            }
+
+            if (hasBulkChild) {
+                buttons.voidWithParent = {
+                    text: 'Void Parent + Child',
+                    btnClass: 'btn-red',
+                    action: function () {
+                        var allJobIds = selectedJobIds.slice();
+                        angular.forEach(relationshipJobs, function (r) {
+                            if (r.type === 'bulkChild' && r.job.ParentId) {
+                                if (allJobIds.indexOf(r.job.ParentId) < 0) {
+                                    allJobIds.push(r.job.ParentId);
+                                }
+                            }
+                        });
+                        // Also expand multibox siblings if applicable
+                        if (hasMultibox) {
+                            allJobIds = $scope.expandMultiboxSiblings(allJobIds);
+                        }
+                        $scope.executeVoid(allJobIds);
+                    }
+                };
+            }
+
+            if (hasMultibox) {
+                buttons.voidAllParts = {
+                    text: 'Void All Parts',
+                    btnClass: 'btn-orange',
+                    action: function () {
+                        var allJobIds = $scope.expandMultiboxSiblings(selectedJobIds);
+                        $scope.executeVoid(allJobIds);
+                    }
+                };
+            }
+
+            buttons.voidSelectedOnly = {
+                text: hasBulkChild ? 'Void Child Only' : 'Void Selected Only',
+                btnClass: 'btn-blue',
+                action: function () {
+                    $scope.executeVoid(selectedJobIds);
+                }
+            };
+
+            buttons.cancel = {
+                text: 'Cancel',
+                action: function () {
+                    // Do nothing
+                }
+            };
+
+            $ngConfirm({
+                title: title,
+                content: content,
+                columnClass: 'col-md-6 col-md-offset-3',
+                scope: $scope,
+                buttons: buttons
+            });
+        };
+
+        // Expand job IDs to include all multibox siblings
+        $scope.expandMultiboxSiblings = function (jobIds) {
+            var expandedIds = jobIds.slice();
+            angular.forEach(jobIds, function (jobId) {
+                var job = $filter('filter')($scope.runJobsAll, function (j) { return j.BulkJobID === jobId; })[0];
+                if (job && job.MultiboxParentID) {
+                    // Find all siblings with the same MultiboxParentID
+                    var siblings = $filter('filter')($scope.runJobsAll, function (j) {
+                        return j.MultiboxParentID === job.MultiboxParentID;
+                    });
+                    angular.forEach(siblings, function (sibling) {
+                        if (expandedIds.indexOf(sibling.BulkJobID) < 0) {
+                            expandedIds.push(sibling.BulkJobID);
+                        }
+                    });
+                }
+            });
+            return expandedIds;
+        };
+
+        // Execute the void operation via API and update UI
+        $scope.executeVoid = function (jobIds) {
+            uRunData.voidJobs({ JobIds: jobIds, IsVoid: true, RunDate: moment($scope.pickDateService.date).format("YYYY-MM-DD") }).then(function (data) {
+                if (data.response && data.response.Success > 0) {
+                    // Update job properties in the frontend
+                    angular.forEach(jobIds, function (jobId) {
+                        var job = $filter('filter')($scope.runJobsAll, function (j) { return j.BulkJobID === jobId; })[0];
+                        if (job) {
+                            job.Void = true;
+                            job.JobStatus = 1000;
+                            job.inBuilder = 1;
+
+                            // Remove from any current non-void run
+                            angular.forEach($scope.runList, function (run) {
+                                if (!run.isVoidRun) {
+                                    var idx = run.jobs.indexOf(job);
+                                    if (idx >= 0) {
+                                        run.jobs.splice(idx, 1);
+                                    }
+                                }
+                            });
+
+                            // Remove from runBuilder if currently displayed and not void run
+                            if (!$scope.isVoidRunActive) {
+                                var rbIdx = $scope.runBuilder.indexOf(job);
+                                if (rbIdx >= 0) {
+                                    $scope.runBuilder.splice(rbIdx, 1);
+                                }
+                            }
+                        }
+                    });
+
+                    // Create/get the Void Jobs run in the frontend (backend already persisted it)
+                    var voidRun = $scope.ensureVoidJobsRun();
+                    // Set the DB ID from the backend response
+                    if (voidRun && data.response.VoidRunId) {
+                        voidRun.ID = data.response.VoidRunId;
+                    }
+
+                    $scope.updateRun();
+                } else {
+                    var msg = (data.response && data.response.Message) ? data.response.Message : 'Void operation failed';
+                    alert(msg);
+                }
+            });
+        };
+
+        // Un-void selected jobs from the Void Jobs run
+        // Un-void: check for parent/child relationships first, then confirm
+        $scope.unvoidSelectedJobs = function (fallbackJob) {
+            var selectedJobIds = $scope.getSelectedJobIds('runBuilder', fallbackJob);
+            if (selectedJobIds.length === 0) return;
+
+            // Check if any selected jobs have parent/child relationships
+            var hasRelationship = false;
+            var relationshipJobs = [];
+
+            angular.forEach(selectedJobIds, function (jobId) {
+                var job = $filter('filter')($scope.runJobsAll, function (j) { return j.BulkJobID === jobId; })[0];
+                if (!job) return;
+
+                // Check BulkChild (type 20) - has a parent
+                if (job.JobRelationshipTypeId === 20 && job.ParentId) {
+                    hasRelationship = true;
+                    relationshipJobs.push({ job: job, type: 'bulkChild' });
+                }
+                // Check Multibox - has siblings
+                else if (job.MultiboxParentID) {
+                    hasRelationship = true;
+                    relationshipJobs.push({ job: job, type: 'multibox' });
+                }
+            });
+
+            if (hasRelationship) {
+                $scope.showUnvoidRelationshipDialog(selectedJobIds, relationshipJobs);
+            } else {
+                $scope.executeUnvoid(selectedJobIds);
+            }
+        };
+
+        // Show confirmation dialog for un-voiding jobs with parent/child relationships
+        $scope.showUnvoidRelationshipDialog = function (selectedJobIds, relationshipJobs) {
+            var hasBulkChild = relationshipJobs.some(function (r) { return r.type === 'bulkChild'; });
+            var hasMultibox = relationshipJobs.some(function (r) { return r.type === 'multibox'; });
+
+            var title = 'Un-void Related Jobs';
+            var content = '';
+            var buttons = {};
+
+            if (hasBulkChild && hasMultibox) {
+                content = 'The selected job(s) have parent jobs and/or multiple parts. How would you like to proceed?';
+            } else if (hasBulkChild) {
+                content = 'The selected job(s) have a parent job (pickup). Would you like to un-void the parent job as well?';
+            } else {
+                content = 'The selected job(s) have multiple parts. Would you like to un-void all parts?';
+            }
+
+            if (hasBulkChild) {
+                buttons.unvoidWithParent = {
+                    text: 'Un-void Parent + Child',
+                    btnClass: 'btn-green',
+                    action: function () {
+                        var allJobIds = selectedJobIds.slice();
+                        angular.forEach(relationshipJobs, function (r) {
+                            if (r.type === 'bulkChild' && r.job.ParentId) {
+                                if (allJobIds.indexOf(r.job.ParentId) < 0) {
+                                    allJobIds.push(r.job.ParentId);
+                                }
+                            }
+                        });
+                        if (hasMultibox) {
+                            allJobIds = $scope.expandMultiboxSiblings(allJobIds);
+                        }
+                        $scope.executeUnvoid(allJobIds);
+                    }
+                };
+            }
+
+            if (hasMultibox) {
+                buttons.unvoidAllParts = {
+                    text: 'Un-void All Parts',
+                    btnClass: 'btn-orange',
+                    action: function () {
+                        var allJobIds = $scope.expandMultiboxSiblings(selectedJobIds);
+                        $scope.executeUnvoid(allJobIds);
+                    }
+                };
+            }
+
+            buttons.unvoidSelectedOnly = {
+                text: hasBulkChild ? 'Un-void Child Only' : 'Un-void Selected Only',
+                btnClass: 'btn-blue',
+                action: function () {
+                    $scope.executeUnvoid(selectedJobIds);
+                }
+            };
+
+            buttons.cancel = {
+                text: 'Cancel',
+                action: function () {
+                    // Do nothing
+                }
+            };
+
+            $ngConfirm({
+                title: title,
+                content: content,
+                columnClass: 'col-md-6 col-md-offset-3',
+                scope: $scope,
+                buttons: buttons
+            });
+        };
+
+        // Execute the un-void operation via API and update UI
+        $scope.executeUnvoid = function (jobIds) {
+            uRunData.voidJobs({ JobIds: jobIds, IsVoid: false, RunDate: moment($scope.pickDateService.date).format("YYYY-MM-DD") }).then(function (data) {
+                if (data.response && data.response.Success > 0) {
+                    var voidRun = $scope.runList.find(function (r) { return r.isVoidRun === true; });
+
+                    angular.forEach(jobIds, function (jobId) {
+                        var job = $filter('filter')($scope.runJobsAll, function (j) { return j.BulkJobID === jobId; })[0];
+                        if (job) {
+                            job.Void = false;
+                            job.JobStatus = 0;
+                            job.inBuilder = 0;
+
+                            // Remove from void run
+                            if (voidRun) {
+                                var idx = voidRun.jobs.indexOf(job);
+                                if (idx >= 0) {
+                                    voidRun.jobs.splice(idx, 1);
+                                }
+                            }
+
+                            // Remove from runBuilder display
+                            var rbIdx = $scope.runBuilder.indexOf(job);
+                            if (rbIdx >= 0) {
+                                $scope.runBuilder.splice(rbIdx, 1);
+                            }
+                        }
+                    });
+
+                    // Backend already cleaned up the run if empty.
+                    // Remove void run from frontend list if empty.
+                    if (voidRun && voidRun.jobs.length === 0) {
+                        var removeIdx = $scope.runList.indexOf(voidRun);
+                        if (removeIdx >= 0) {
+                            $scope.runList.splice(removeIdx, 1);
+                        }
+                        // Switch to first run if we were viewing the void run
+                        if ($scope.isVoidRunActive && $scope.runList.length > 0) {
+                            $scope.showRun($scope.runList[0]);
+                        }
+                    }
+                    $scope.updateRun();
+                } else {
+                    var msg = (data.response && data.response.Message) ? data.response.Message : 'Un-void operation failed';
+                    alert(msg);
+                }
+            });
+        };
+
+        // =============================================
+        // END VOID JOBS FUNCTIONALITY
+        // =============================================
 
         $scope.addToRunBuilder = function (job) {
 
@@ -1136,6 +1584,9 @@ angular
                 });
             });
 
+            // Ensure the Void Jobs run exists and collect voided jobs into it
+            $scope.ensureVoidJobsRun();
+
 
             //} else {
 
@@ -1177,8 +1628,8 @@ angular
         $scope.sendTo = function (path) {
             $("#box-runList").find(".loading").show();
 
-            // Check any unlocked runs in the list
-            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null)).length > 0) {
+            // Check any unlocked runs in the list (exclude Void Jobs run)
+            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null) && !runs.isVoidRun).length > 0) {
                 alert("Unlocked runs found! Please make sure all runs are locked and try it again!");
                 $("#box-runList").find(".loading").fadeOut();
                 return false;
@@ -1223,8 +1674,8 @@ angular
                     });
             }
 
-            // copy real job array from runlist
-            var buildedRunList = $scope.runList.filter(r => r.jobs.length > 0);
+            // copy real job array from runlist (exclude Void Jobs run)
+            var buildedRunList = $scope.runList.filter(r => r.jobs.length > 0 && !r.isVoidRun);
             // Replace Jobs to just what we need
             angular.forEach(buildedRunList, function (run, key) {
                 run.jobs = run.jobs.map(x => {
@@ -1285,8 +1736,8 @@ angular
                 return false;
             }
 
-            // Check any unlocked runs in the list
-            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null)).length > 0) {
+            // Check any unlocked runs in the list (exclude Void Jobs run)
+            if ($scope.runList.filter(runs => runs.jobs.length > 0 && (runs.locked == 0 || runs.ID == null) && !runs.isVoidRun).length > 0) {
                 alert("Unlocked runs found! Please make sure all runs are locked and try it again!");
                 $("#box-runList").find(".loading").fadeOut();
                 return false;
@@ -1323,7 +1774,7 @@ angular
             var selectedBuildedRunList = [];
             $("#box-runList .active").each(function () {
                 let currentRun = $(this).scope().run;
-                if (currentRun.jobs.length > 0 && currentRun.locked == 1) {
+                if (currentRun.jobs.length > 0 && currentRun.locked == 1 && !currentRun.isVoidRun) {
                     selectedBuildedRunList.push(currentRun);
                     totalJobs += currentRun.jobs.length;
                 };
@@ -2515,6 +2966,7 @@ angular
             $scope.runBuilder = $filter('orderBy')($scope.runBuilder, "BuilderIndex");
 
             $scope.activeRunName = run.name;
+            $scope.isVoidRunActive = (run.isVoidRun === true);
 
             var isDraggable = $(".droppable-box").hasClass("ui-draggable");
             if (run.locked == 1) {
@@ -2712,6 +3164,7 @@ angular
                             // Conbine runs and jobs
                             var bulkRunJobsGroupsArray = Object.keys(bulkRunGroups).map(function (key) {
                                 var item = $filter('filter')(bulkRuns, j => j.ID == key)[0];
+                                var isVoid = (item.name === "Void Jobs");
                                 return {
                                     ID: item.ID,
                                     name: item.name,
@@ -2725,7 +3178,8 @@ angular
                                     kms: item.Kms,
                                     mins: item.Mins,
                                     jobs: bulkRunJobsGroups[key],
-                                    status: item.Status
+                                    status: item.Status,
+                                    isVoidRun: isVoid
                                 };
                             });
 
@@ -2997,7 +3451,8 @@ angular
 
             $scope.sortByTime = function () {
 
-                var members = $scope.runJobsAll;
+                // Exclude voided jobs from grouping
+                var members = $filter('filter')($scope.runJobsAll, function (j) { return !j.Void; });
 
                 //// Move auto group into the build run button function: $scope.buildRunByPostalCode()
                 //// Add RunName jobs groups

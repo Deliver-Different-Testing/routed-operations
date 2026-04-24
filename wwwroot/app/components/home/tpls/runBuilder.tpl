@@ -46,7 +46,7 @@
 
     <table class="table table-striped table-responsive table-rows builder" id="runBuilder" data-group="runBuilder">
         <tbody>
-        <tr class="clickable-row draggable-row noselect" id="job-{{job.JobNumber}}" ng-class="{late: !job.toLat}" data-inbuilder="1" ng-repeat="job in runBuilder track by $index" context-menu="runBuilderMenu" data-jobid="{{job.ID}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-mouseup="selectJob(job, true)">
+        <tr class="clickable-row draggable-row noselect" id="job-{{job.JobNumber}}" ng-class="{late: !job.toLat}" data-inbuilder="1" ng-repeat="job in runBuilder track by $index" context-menu="isVoidRunActive ? voidRunBuilderMenu : runBuilderMenu" data-jobid="{{job.BulkJobID}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-mouseup="selectJob(job, true)">
             <td class="icons">
                 <i class="fa fa-flag-checkered" ng-if="job.isEnd == 1"></i> 
 			   <!--  {{$index + 1}} -->

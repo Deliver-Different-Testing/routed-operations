@@ -90,5 +90,8 @@ namespace RunBuilder.Models
         public string PostCodeMergeTo { get; set; }
         public int RunSequence { get; set; }
         public int MaxJobsPerRun { get; set; }
+        public int? MultiboxParentID { get; set; }
+        public int? ParentId { get; set; }
+        public int? JobRelationshipTypeId { get; set; }
     }
 }

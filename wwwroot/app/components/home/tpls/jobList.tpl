@@ -11,7 +11,7 @@
 
     <table class="table table-striped table-responsive table-rows" id="jobList" data-group="jobsGroup">
         <tbody>
-        <tr class="clickable-row draggable-row noselect" ng-class="{late: !job.toLat}" ng-repeat="job in jobList | filter: box.searchBox | filter:{inBuilder: '!1'} as filtered" data-jobid="{{job.ID}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-mouseup="selectJob(job, true)">
+        <tr class="clickable-row draggable-row noselect" ng-class="{late: !job.toLat}" ng-repeat="job in jobList | filter: box.searchBox | filter:{inBuilder: '!1', Void: '!1'} as filtered" context-menu="jobListMenu" data-jobid="{{job.BulkJobID}}" data-jobno="{{job.JobNo}}" data-index="{{$index}}" ng-mouseup="selectJob(job, true)">
             <td>{{job.ClientCode}}</td>
             <td>{{job.JobNumber}}</td>
             <td>{{job.DeliveryDate}}</td>
