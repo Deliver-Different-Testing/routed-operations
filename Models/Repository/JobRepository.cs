@@ -345,42 +345,50 @@ namespace RunBuilder.Models.Repository
 
         public async Task<Response> UpdateBulkJobRun(int jobId, int? fromRunId, int runId)
         {
-            var jobRunToUpdate = new TblBulkJobRun { BulkJobId = jobId, RunId = runId };
-            if (fromRunId.HasValue)
+            // Anchor on BulkJobID. The DB has a unique filtered index on BulkJobID and the
+            // upsert SP MERGEs under HOLDLOCK, so concurrent move-job-to-run callers can't
+            // both observe "not exists" and double-insert, and a stale fromRunId can't
+            // leave the row pointing at an old run.
+            var existing = await Context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId);
+
+            if (fromRunId.HasValue && existing != null && existing.RunId != fromRunId.Value)
             {
-                jobRunToUpdate = await Context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId && x.RunId == fromRunId.Value);
-
-                if (jobRunToUpdate == null)
+                // Caller asserted the job was on fromRunId; another operator has already
+                // moved it. Surface the conflict so the FE can refresh instead of silently
+                // overwriting the other user's edit.
+                Log.Warning($"UpdateBulkJobRun conflict: BulkJobID {jobId} expected on RunID {fromRunId} but is on RunID {existing.RunId}; not moved to RunID {runId}");
+                return new Response
                 {
-                    return new Response
-                    {
-                        Result = "Failed",
-                        Message = "Can not find the run to update!"
-                    };
-                }
-
-                jobRunToUpdate.RunId = runId;
-                await Context.SaveChangesAsync();
+                    Result = "Failed",
+                    Message = "Job has been moved by another user. Please refresh."
+                };
             }
-            else
+
+            int? previousRunId = existing?.RunId;
+
+            if (existing != null)
             {
-                // Insert only when the bulk job is not in the tblBulkJobRun table
-                var jobRunToInsert = await Context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId);
-                if (jobRunToInsert == null)
+                if (existing.RunId != runId)
                 {
-                    Context.TblBulkJobRuns.Add(jobRunToUpdate);
+                    existing.RunId = runId;
                     await Context.SaveChangesAsync();
                 }
             }
+            else
+            {
+                Context.TblBulkJobRuns.Add(new TblBulkJobRun { BulkJobId = jobId, RunId = runId });
+                await Context.SaveChangesAsync();
+            }
+
+            Log.Information($"BulkJobID {jobId} moved to RunID {runId} (previousRunID: {previousRunId?.ToString() ?? "none"})");
 
             return new Response
             {
                 Result = "Success",
-                // Store RunID into message
-                Message = jobRunToUpdate.BulkJobId.ToString()
+                Message = jobId.ToString()
             };
         }
-        
+
         public async Task<Response> DeleteBulkJobRun(int jobId)
         {
             var jobRunToDelete = await Context.TblBulkJobRuns.FirstOrDefaultAsync(x => x.BulkJobId == jobId);
@@ -394,13 +402,16 @@ namespace RunBuilder.Models.Repository
                 };
             }
 
-            Context.Entry(jobRunToDelete).State = EntityState.Modified;
+            int? previousRunId = jobRunToDelete.RunId;
+
+            Context.TblBulkJobRuns.Remove(jobRunToDelete);
             await Context.SaveChangesAsync();
+
+            Log.Information($"BulkJobID {jobId} removed from RunID {previousRunId?.ToString() ?? "none"}");
 
             return new Response
             {
                 Result = "Success",
-                // Store RunID into message
                 Message = "Job has been removed from the run Successfully!"
             };
         }
