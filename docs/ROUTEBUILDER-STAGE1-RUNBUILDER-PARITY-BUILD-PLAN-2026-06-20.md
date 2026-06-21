@@ -24,6 +24,7 @@ That means Stage 1 is:
 - make `RoutesPage` real
 - preserve current Runbuilder operational behaviour
 - move the backend logic into the new application layer where practical
+- add the route-building criteria/locking controls dispatch needs in the RoutesPage right-hand popout
 - **defer new modules** until the core route-building workflow works end-to-end
 
 ## 2. Explicit staging decision
@@ -272,7 +273,40 @@ Need to support:
 - stamp order back into jobs
 - refresh run metrics
 
-#### 6. Lock/unlock lifecycle
+#### 6. Route-building criteria in the RoutesPage right-hand popout
+This is now part of Phase 1 / Stage 1 scope, not a later enhancement.
+
+The right-hand popout on `RoutesPage` needs to surface the route-building method/settings before dispatch finalises a run.
+
+Current/required criteria set:
+1. **A-B** — route from base/depot to the furthest point
+2. **A-A** — circuit route starting at depot and finishing back at depot
+3. **Finish at specific stop** — make a nominated stop last, then build the most logical route to that point
+4. **Fixed delivery targets per route** or delivery windows
+5. **Fixed pickup windows** for inbound routes where relevant
+6. **Fix/lock the route before sending to a driver** so the driver cannot reroute it from the driver app
+
+Implementation expectation:
+- these controls are surfaced in the RH popout of `RoutesPage`
+- the selected routing mode/constraints are stored against the run/build request, not treated as temporary front-end-only state
+- sequencing respects the selected criteria when route optimisation runs
+- route lock/fix state survives save/send-to-driver flow
+
+Minimum backend shape:
+- run-level routing mode
+- optional fixed-end-stop target
+- optional delivery-window constraints
+- optional pickup-window constraints
+- explicit fixed-route / driver-reroute-disabled flag
+
+Acceptance:
+- dispatcher can choose the routing method from the RH popout before sequencing
+- dispatcher can apply fixed delivery or pickup timing constraints where required
+- dispatcher can nominate a forced-last stop where required
+- dispatcher can fix/lock the route before sending it to the driver
+- once fixed and sent, the driver app cannot recalculate/reroute that run
+
+#### 7. Lock/unlock lifecycle
 Legacy source:
 - `toggleRunLock`
 
@@ -283,6 +317,7 @@ Need to support:
 - draft
 - locked/persisted
 - unlock if allowed
+- interaction with fixed-route / driver-reroute-disabled state
 
 This matters because send-to-live depends on it.
 
@@ -291,6 +326,9 @@ At the end of Phase 2:
 - dispatcher can build and save runs in the new UI
 - jobs can be allocated/moved/ordered
 - routing works
+- route-building criteria are configurable from the RH popout
+- fixed delivery/pickup constraints can be applied where needed
+- runs can be fixed/locked before driver send-out
 - run totals work
 - runs can be locked
 
@@ -418,6 +456,7 @@ Not by copying the templates, but by replacing their behaviour inside the new co
 - `HereMap.tsx`
 - `JobDetailModal.tsx`
 - `EditRunScopeModal.tsx`
+- RH popout/settings components around `RoutesPage`
 - settings/filter components around RoutesPage
 
 ## Not primary for Stage 1
@@ -441,12 +480,13 @@ Kevin should prioritise backend work in this order:
 6. run upsert/delete
 7. job assignment/move
 8. route optimisation
-9. lock state
-10. commit/send-to-live
-11. HD sync
-12. GPS correction
-13. bulk route-date updates
-14. saved filters/settings
+9. route-criteria / timing-constraint model + RH popout wiring
+10. fixed-route / driver-reroute lock state
+11. commit/send-to-live
+12. HD sync
+13. GPS correction
+14. bulk route-date updates
+15. saved filters/settings
 
 That order keeps the UI moving toward real usability as fast as possible.
 
@@ -497,8 +537,9 @@ Concretely:
 4. wire filtered runs
 5. wire fleets/couriers
 6. remove mock dependency from the core route-building path
+7. wire the RH popout route-criteria model so sequencing is built on the real settings, not hard-coded defaults
 
-Once that is done, move straight into run CRUD + assignment + sequencing.
+Once that is done, move straight into run CRUD + assignment + sequencing with the real route-criteria controls in place.
 
 ---
 
