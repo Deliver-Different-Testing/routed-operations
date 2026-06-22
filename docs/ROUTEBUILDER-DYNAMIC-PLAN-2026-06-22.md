@@ -129,6 +129,11 @@ For each `tucJob` in `ToRoute`, the planner should determine whether to:
 4. **re-optimise** an existing draft route
 5. **leave it manual** because constraints or confidence are poor
 
+A major part of this decision is whether adding the job would push the route beyond:
+- its max route time
+- its permitted dispatch window
+- its safe completion threshold
+
 This planner logic should live in the **application layer**, not in the legacy SPs.
 
 ---
@@ -139,9 +144,28 @@ Dynamic mode must treat these as first-class routing constraints:
 
 - fixed times
 - target delivery times / delivery windows
+- **maximum route time / route window**
 - furthest destination logic
 - round trip required
 - fixed final destination
+
+### Maximum route time / route window
+
+This is a key build parameter for prospective tenants.
+
+Example:
+- route window: **9:00 AM to 12:00 PM**
+- maximum route time: **3 hours**
+
+The planner should pack as many deliveries into that route as possible **without exceeding the safe end of the window**.
+
+This means dynamic mode must consider not just stop count or shortest distance, but whether the total projected route can still:
+- start within the allowed window
+- complete within the max route duration
+- finish before the route end time
+- maintain enough buffer that the route is still operationally safe, not mathematically perfect only on paper
+
+This should be treated as a hard or near-hard planning constraint depending on tenant configuration.
 
 These constraints are the main reason dynamic mode should not be forced through the old postcode-group planning assumptions.
 
@@ -245,6 +269,7 @@ Suggested DTOs / models:
 - `DraftRouteCandidateDto`
 - `PlanningRecommendationDto`
 - `RouteConstraintProfileDto`
+- `RouteWindowProfileDto`
 
 Minimum job data the planner should understand:
 
@@ -259,6 +284,14 @@ Minimum job data the planner should understand:
 - round-trip required flag
 - fixed final destination
 - fixed sequencing flags if needed
+
+Minimum route/tenant planning parameters the planner should understand:
+
+- route start window
+- route end window
+- maximum route time
+- minimum completion buffer
+- tenant rule for whether max route time is hard-stop or soft-stop
 
 ---
 
@@ -286,6 +319,11 @@ Recommended UI elements:
   - Suggested
   - Locked
   - Dispatched
+- visible route-capacity indicators per draft route:
+  - projected route duration
+  - route window (e.g. 9:00–12:00)
+  - remaining safe capacity
+  - warning state when adding another stop would breach the configured limit
 
 Planning and UI work can begin before the full optimisation logic exists.
 Using mocked recommendation responses for workflow discovery is acceptable as long as they are clearly labelled as dynamic-mode scaffolding.
@@ -343,6 +381,7 @@ It is now a dispatch-planning problem.
 - implement deterministic recommendation logic first
 - hold / append / create route / re-optimise decisions
 - support core hard constraints
+- enforce max route time / route window evaluation as a core recommendation input
 
 ### Phase 5 — optimisation maturity
 - evaluate OR-Tools / VROOM / similar for in-house constrained optimisation
