@@ -180,6 +180,106 @@ End state: parity for the postcode-group route-building flow. DF Admin can start
 - Operator settings, defaults, courier-percentage etc.
 - Any AngularJS-specific UX patterns (event form, GPS form, gather form) that genuinely need React equivalents — confirm with Steve which still matter before building them.
 
+### Phase 3 — Dynamic / rolling route-building mode (new planning mode, not a replacement for batch mode)
+
+**Why this phase exists.** The legacy RunBuilder was built for **batch/prebuild planning**: large datasets received well ahead of delivery day, routes built outbound from depot, and runs optimised in advance. RouteBuilder must still preserve that mode, but it also now needs a second **dynamic / rolling** mode where delivery data accumulates from multiple sources and draft runs evolve over time.
+
+#### 3.1 Product rule
+
+RouteBuilder must support **two planning strategies on the same domain model**:
+
+1. **Batch / Prebuild mode** — current RunBuilder parity
+   - operator has a known working set for a future date
+   - postcode groups / region filters still matter
+   - bulk runs are built ahead of service
+   - full-run optimisation + lock/commit flow remains valid
+
+2. **Dynamic / Rolling mode** — new capability
+   - jobs arrive progressively from multiple inbound sources
+   - jobs may need to sit in a staging pool before assignment
+   - the system should recommend whether to hold, append to a draft run, or create a new draft run
+   - re-optimisation should happen selectively, not on every single new stop
+   - fixed times, target delivery windows, furthest-destination rules, round-trip rules, and fixed-final-destination rules must be first-class constraints
+
+**Important:** do **not** try to force dynamic-mode decisioning into the legacy postcode-group SP logic. Preserve batch parity, but implement dynamic planning logic as a new application-layer planner.
+
+#### 3.2 Backend scope for Phase 3
+
+Add a planning layer alongside the parity-lift services:
+
+- `PlanningMode` enum / strategy selection (`Batch`, `Dynamic`)
+- `DynamicPlanningService`
+- `DraftRunRecommendationService`
+- `RunReoptimizationService`
+- `InboundJobIngestionService` (only if needed now; otherwise define the interface and DTOs)
+- `ConstraintScoringService` (or equivalent internal helper)
+
+Suggested new DTO/domain concepts:
+
+- `InboundStopDto`
+- `DynamicPlanningRequest`
+- `DraftRunCandidateDto`
+- `RunConstraintProfileDto`
+- `PlanningRecommendationDto`
+
+Minimum new job/stop data the planner must understand:
+
+- source system
+- received timestamp
+- geocoded address / lat-lng
+- ready-from / target-delivery / deliver-by values
+- service minutes
+- priority
+- origin/depot
+- round-trip required flag
+- fixed final destination
+- sequence constraints (must-be-first / must-be-last if applicable)
+
+#### 3.3 Frontend / UI scope for Phase 3
+
+We can and should do planning + UX work here **before** the full optimiser exists.
+
+Add a dynamic-mode planning surface in the React app:
+
+- mode switch or separate entry point: `Batch` vs `Dynamic`
+- **Unplanned / inbound jobs rail**
+- **Draft runs rail**
+- recommendation panel showing:
+  - hold for density
+  - add to existing draft run
+  - create new run
+  - re-optimise draft run
+- run state badges: `Unplanned`, `Draft`, `Suggested`, `Confirmed`, `Locked`, `Dispatched`
+- explicit operator controls for:
+  - accept recommendation
+  - force assignment manually
+  - freeze/lock a draft run
+  - exclude a run from auto-replan
+
+This UI can be scaffolded with mocked planner recommendations initially, as long as the doc clearly marks it as **dynamic-mode scaffolding** rather than fake parity work.
+
+#### 3.4 Recommended order inside Phase 3
+
+1. **Domain + DTO pass**
+   - add planning-mode enum and dynamic planner interfaces
+   - define job/run constraint DTOs
+2. **UI discovery / operator workflow pass**
+   - build the dynamic-mode screen states with mocked recommendation responses
+   - confirm the operator workflow with Steve before deep algorithm work
+3. **Decision engine pass**
+   - implement assignment/hold/create-new-run recommendation logic in the application layer
+   - start with deterministic heuristic scoring, not full autonomous optimisation
+4. **Optimiser pass**
+   - evaluate whether external optimisation remains only a distance/time provider while run decisioning becomes in-house
+   - assess OR-Tools / VROOM / similar options for internal constrained optimisation
+5. **Integration pass**
+   - connect live inbound data sources
+   - persist draft-run states and re-optimisation rules
+
+#### 3.5 Explicit Kevin instruction
+
+For Kevin: **finish batch parity first enough that the current operational RunBuilder use case is preserved, but start Phase 3 planning/UI work in parallel where it does not block parity delivery.** Dynamic mode is an additive planning strategy, not a rewrite of the batch mode.
+
 ---
 
 ## 5. What's NOT being ported (deliberately)

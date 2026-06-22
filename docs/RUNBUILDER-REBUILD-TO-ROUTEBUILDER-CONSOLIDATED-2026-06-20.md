@@ -698,6 +698,32 @@ The new repo now has the right structure, but these are still open:
 - fully real Scheduled Routes
 - fully real Polygon Builder
 
+### Phase E — dynamic / rolling route-building mode
+- preserve the existing **batch/prebuild** route-building use case as a first-class planning strategy
+- add a second **dynamic/rolling** planning strategy for progressively arriving delivery data
+- keep the shared domain model (jobs, runs, couriers, depots, constraints, route results), but do **not** force both strategies through the same legacy SP-shaped planning logic
+- introduce application-layer planner services for:
+  - inbound/unplanned job assessment
+  - draft-run recommendations
+  - selective re-optimisation
+  - lock/freeze rules
+  - fixed-time / target-time / furthest-destination / round-trip / fixed-final-destination constraints
+- do planning and UI work in parallel with the backend design:
+  - dynamic-mode screen or mode switch
+  - inbound jobs rail
+  - draft runs rail
+  - recommendation panel
+  - operator accept/override/freeze controls
+- treat external mapping/ETA providers separately from the planner itself: map, geocode, and distance/time can stay external; the run-decision brain should move in-house over time if the constraint set keeps growing
+
+### Explicit sequencing rule
+- **Do not stop the current parity path.** The batch/prebuild mode still has real operational value and must ship.
+- **Do not bury the new dynamic mode in a vague backlog note either.** It is now an explicit implementation phase for Kevin.
+- The intended order is:
+  1. deliver enough batch parity to replace the current Runbuilder use case
+  2. in parallel, define dynamic-mode DTOs, planner interfaces, and UX
+  3. then implement the dynamic planner incrementally on the same RouteBuilder foundation
+
 ---
 
 ## 13. Final decision statement
@@ -708,6 +734,7 @@ If it can do the current operational work cleanly **and** absorb:
 - Quoting
 - Scheduled Routes
 - Polygon Builder
+- a second dynamic / rolling planning mode
 
 then it becomes the right long-term replacement.
 
