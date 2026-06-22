@@ -13,8 +13,8 @@ export default function ScheduledRoutes() {
       groups={mockGroupsDelivery}
       runs={mockRunsDelivery}
       fleets={mockFleetsDelivery}
-      mapCenter={[-43.56, 172.50]}
-      mapZoom={11}
+      mapCenter={[42.3601, -71.0589]}
+      mapZoom={12}
       regularRoutes={mockRecurringRoutes}
       zipPolygons={zipPolygons}
     />

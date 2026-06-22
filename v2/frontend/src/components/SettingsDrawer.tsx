@@ -11,6 +11,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   const [vehicle, setVehicle] = useState('Van');
   const [pkgSize, setPkgSize] = useState(2.5);
   const [windowMins, setWindowMins] = useState(120);
+  const [maxRouteMins, setMaxRouteMins] = useState(180);
   const [maxJobs, setMaxJobs] = useState(25);
   const [maxKm, setMaxKm] = useState(150);
   const [returnToDepot, setReturnToDepot] = useState(true);
@@ -67,6 +68,16 @@ export default function SettingsDrawer({ open, onClose }: Props) {
                 <span className="text-xs font-semibold text-brand-dark w-12 text-right">{windowMins}m</span>
               </div>
             </Field>
+            <Field label="Max route time (mins)">
+              <div className="flex items-center gap-2">
+                <input
+                  type="range" min={30} max={480} step={15} value={maxRouteMins}
+                  onChange={e => setMaxRouteMins(parseInt(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="text-xs font-semibold text-brand-dark w-12 text-right">{maxRouteMins}m</span>
+              </div>
+            </Field>
             <Field label="Max jobs per route">
               <div className="flex items-center gap-2">
                 <input
@@ -100,7 +111,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
           <hr className="border-gray-100" />
 
           <section className="text-[10px] text-gray-500 leading-relaxed bg-gray-50 border border-gray-200 rounded p-2">
-            Saved per tenant on <code className="bg-white px-1 rounded">tblBulkRunSetting</code>. The build engine reads these on every Auto-Routing pass.
+            Saved per tenant on <code className="bg-white px-1 rounded">tblBulkRunSetting</code>. The build engine reads max route time, route window, distance and load constraints on every Auto-Routing pass.
           </section>
         </div>
 

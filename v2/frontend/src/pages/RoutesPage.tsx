@@ -89,8 +89,8 @@ export default function RoutesPage() {
         groups={groups}
         runs={runs}
         fleets={fleets}
-        mapCenter={[-43.56, 172.50]}
-        mapZoom={11}
+        mapCenter={[42.3601, -71.0589]}
+        mapZoom={12}
         regularRoutes={mode === 'dynamic' ? mockRecurringRoutes : undefined}
         zipPolygons={mode === 'dynamic' ? zipPolygons : undefined}
       />
