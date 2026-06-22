@@ -354,7 +354,7 @@ export default function CockpitPage({
 
     runlist: useRegularRoutes && regularRoutes ? (
       <Panel
-        title="Scheduled Routes"
+        title="Dynamic Routes"
         actions={
           <>
             <MoveHandle panelId="runlist" />
@@ -456,13 +456,13 @@ export default function CockpitPage({
     run: (
       <Panel
         title={useRegularRoutes
-          ? (focusedScheduledRoute ? `Scheduled Route — ${focusedScheduledRoute.name}` : 'Scheduled Route')
+          ? (focusedScheduledRoute ? `Dynamic Route — ${focusedScheduledRoute.name}` : 'Dynamic Route')
           : (focusedRun ? `Run - ${focusedRun.id}` : 'Run')}
         actions={<MoveHandle panelId="run" />}
       >
         {useRegularRoutes ? (
           !focusedScheduledRoute ? (
-            <div className="text-xs text-gray-400 text-center p-6">Tick a scheduled route above to inspect its stops + financials.</div>
+            <div className="text-xs text-gray-400 text-center p-6">Select a dynamic route above to inspect its stops + financials.</div>
           ) : (
             <div className="p-3 space-y-3">
               <div className="grid grid-cols-4 gap-1.5 text-xs">
@@ -487,7 +487,7 @@ export default function CockpitPage({
                 </thead>
                 <tbody>
                   {scheduledRouteJobs.length === 0 ? (
-                    <tr><td colSpan={9} className="px-2 py-3 text-center text-gray-400 italic text-[10px]">No stops in this scheduled route's zips today.</td></tr>
+                    <tr><td colSpan={9} className="px-2 py-3 text-center text-gray-400 italic text-[10px]">No stops in this dynamic route zone today.</td></tr>
                   ) : scheduledRouteJobs.map((j, i) => (
                     <tr key={j.id} onContextMenu={e => openMenu(e, jobInRunMenu(j))} className={`hover:bg-gray-50 ${j.type === 'pickup' ? 'bg-purple-50/40' : ''}`}>
                       <td className="px-1.5 py-1">{i + 1}</td>

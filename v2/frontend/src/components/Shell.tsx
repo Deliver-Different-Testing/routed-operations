@@ -2,9 +2,8 @@ import { NavLink, Outlet } from 'react-router-dom';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: '🏠', end: true },
-  { to: '/routes', label: 'Routes', icon: '📦', end: false },
+  { to: '/routes', label: 'Route Building', icon: '📦', end: false },
   { to: '/quoting', label: 'Quoting', icon: '💰', end: false, badge: 'NEW' },
-  { to: '/scheduled-routes', label: 'Scheduled Routes', icon: '⏱️', end: false, badge: 'NEW' },
   { to: '/polygons', label: 'Polygon Builder', icon: '🗺️', end: false, badge: 'NEW' },
 ];
 

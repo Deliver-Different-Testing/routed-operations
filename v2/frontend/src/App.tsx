@@ -3,7 +3,6 @@ import Shell from './components/Shell';
 import Dashboard from './pages/Dashboard';
 import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
-import ScheduledRoutes from './pages/ScheduledRoutes';
 import PolygonBuilder from './pages/PolygonBuilder';
 
 export default function App() {
@@ -16,8 +15,8 @@ export default function App() {
         <Route path="delivery-runs" element={<Navigate to="/routes" replace />} />
         <Route path="pickup-runs" element={<Navigate to="/routes" replace />} />
         <Route path="quoting" element={<Quoting />} />
-        <Route path="scheduled-routes" element={<ScheduledRoutes />} />
-        <Route path="auto-build" element={<Navigate to="/scheduled-routes" replace />} />
+        <Route path="scheduled-routes" element={<Navigate to="/routes?mode=dynamic" replace />} />
+        <Route path="auto-build" element={<Navigate to="/routes?mode=dynamic" replace />} />
         <Route path="polygons" element={<PolygonBuilder />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

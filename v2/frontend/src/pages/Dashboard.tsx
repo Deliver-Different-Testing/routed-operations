@@ -10,9 +10,8 @@ const stats = [
 ];
 
 const features = [
-  { to: '/routes', emoji: '📦', name: 'Routes', desc: 'Build delivery + pickup routes from tblBulkJob, tucJob and tucJobBooking. Pickups zip-match to runs automatically.' },
+  { to: '/routes', emoji: '📦', name: 'Route Building', desc: 'Batch + Dynamic route building in one cockpit. Pickups zip-match to runs automatically and dynamic mode reuses the scheduled-route board patterns.' },
   { to: '/quoting', emoji: '💰', name: 'Quoting', desc: 'NEW. Upload a dataset and route-build it on tblQuoteJob.' },
-  { to: '/scheduled-routes', emoji: '⏱️', name: 'Scheduled Routes', desc: 'NEW. Scheduled routes with zip polygons highlighted on the map.' },
   { to: '/polygons', emoji: '🗺️', name: 'Polygon Builder', desc: 'NEW. Draw + save zones on a map.' },
 ];
 
@@ -89,7 +88,7 @@ export default function Dashboard() {
         {/* Build surfaces panel — sharp-corner squared tiles */}
         <div className="col-span-12">
           <Panel title="Build surfaces in this mockup">
-            <div className="grid grid-cols-4 gap-px bg-gray-200">
+            <div className="grid grid-cols-3 gap-px bg-gray-200">
               {features.map(f => (
                 <Link
                   key={f.to}
