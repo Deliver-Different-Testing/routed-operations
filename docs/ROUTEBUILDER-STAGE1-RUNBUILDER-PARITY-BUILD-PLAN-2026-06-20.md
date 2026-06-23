@@ -1,22 +1,30 @@
 ---
-title: RouteBuilder Stage 1 — Runbuilder parity build plan
+title: Routed Operations Stage 1 — Route Builder parity build plan
 date: 2026-06-20
 audience: Kevin
 status: Active priority brief
-purpose: Get the existing Runbuilder capability working in the new React UI as fast as possible before expanding into Quoting, Scheduled Routes, or Polygon Builder.
+purpose: Establish the correct Routed Operations vision while shipping Route Builder first. Stage 1 gets the existing Runbuilder capability working in the new React UI as fast as possible, while the existing Route Viewer and Bulk Uploader continue to carry those capabilities in early release stages.
 related_docs:
   - RUNBUILDER-REBUILD-TO-ROUTEBUILDER-CONSOLIDATED-2026-06-20.md
   - STEVE-ROUTEBUILDER-V2-PARITY-LIFT-PLAN-KEVIN-2026-06-20.md
   - STEVE-RUNBUILDER-V2-SCOPING-2026-06-13.md
 legacy_reference_repo: https://git.customd.com/urgent-couriers/runbuilder.git
-rebuild_repo: https://github.com/Deliver-Different-Testing/routebuilder
+rebuild_repo_name: routed-operations
+current_rebuild_repo: https://github.com/Deliver-Different-Testing/routebuilder
 ---
 
-# RouteBuilder Stage 1 — Runbuilder parity build plan
+# Routed Operations Stage 1 — Route Builder parity build plan
 
 ## 1. Goal
 
-The immediate goal is **not** to broaden RouteBuilder.
+The broader product vision is now **Routed Operations**.
+
+For Kevin, that means:
+- **product / repo direction:** `Routed Operations`
+- **first release / first module:** `Route Builder`
+- **early-stage dependency surfaces that remain in place:** existing `Route Viewer` and existing `Bulk Uploader`
+
+So the immediate goal is **not** to rebuild every routed-operations surface at once.
 
 The immediate goal is to get the **existing Runbuilder workflow** working in the **new React UI** as quickly as possible.
 
@@ -25,22 +33,36 @@ That means Stage 1 is:
 - preserve current Runbuilder operational behaviour
 - move the backend logic into the new application layer where practical
 - add the route-building criteria/locking controls dispatch needs in the RoutesPage right-hand popout
-- **defer new modules** until the core route-building workflow works end-to-end
+- integrate cleanly with the current Route Viewer / Bulk Uploader flow where required
+- **defer rebuilding those other surfaces** until the core route-building workflow works end-to-end
 
 ## 2. Explicit staging decision
 
+### Product frame
+`Routed Operations` is the umbrella product for routed-work operations.
+
+Its core operational module set is:
+1. **Route Builder**
+2. **Bulk Uploader**
+3. **Route Viewer**
+
 ### Build now
-1. existing Runbuilder route-building workflow in new React UI
-2. existing run creation / job allocation / routing / commit flow
-3. existing operator tools needed to make that workflow usable
+1. Route Builder as the first release module
+2. existing Runbuilder route-building workflow in new React UI
+3. existing run creation / job allocation / routing / commit flow
+4. existing operator tools needed to make that workflow usable
 
-### Defer until after parity
-1. Quoting as a real production module
-2. Scheduled Routes as a real production module
-3. Polygon Builder as a real production module
-4. broader route-planning enhancements beyond legacy capability
+### Keep in place for early release stages
+1. existing Bulk Uploader app
+2. existing Route Viewer app
 
-Those modules can stay in the repo and keep their scaffolded UI, but they are **not the focus of the build sequence** right now.
+### Defer until after parity / first release
+1. rebuild Bulk Uploader inside Routed Operations
+2. rebuild Route Viewer inside Routed Operations
+3. broader route-planning enhancements beyond legacy capability
+4. optional adjacent modules such as Quoting, Scheduled Routes, or Polygon Builder
+
+Those other surfaces can remain in the broader vision, but they are **not the focus of the build sequence** right now.
 
 ---
 
@@ -76,7 +98,7 @@ Do not let these expand the first delivery scope:
 - broad redesign of dispatch workflow
 - non-essential dashboard/reporting extras
 
-The fastest path is to make the current Runbuilder job → run → route → live workflow work in the new UI.
+The fastest path is to make the current Runbuilder job → run → route → live workflow work in the new UI, while leaving the existing Route Viewer and Bulk Uploader in place for early release stages.
 
 ---
 

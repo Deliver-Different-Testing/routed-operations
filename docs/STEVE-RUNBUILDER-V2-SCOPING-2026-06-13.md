@@ -5,7 +5,7 @@
 **Audience:** Kevin
 **Sibling docs:** None — this is the kickoff scoping doc for the RunBuilder v2 rebuild.
 
-> **TL;DR.** Rebuild RunBuilder as a React 19 + **.NET 9** app **inside this same repo, in `/v2/`, alongside the legacy app at root**, behind DF-Admin-controlled cutover. Legacy code stays at the repo root (untouched, still deployed from GitLab, still working). The new code goes in `/v2/`. New app name is **RouteBuilder**. **GitLab remains the source of truth** — Kevin clones the built v2 back into a `v2` branch on GitLab. Cutover is controlled by DF Admin per tenant; rollback = DF Admin flips the gate back. Single tenant per deployment (DF's stack-wide rule). This doc captures decisions + the scoping inputs to the Phase 1 skeleton spec.
+> **TL;DR.** The broader product direction is now **Routed Operations**. Release 1 is still a React 19 + **.NET 9** rebuild of RunBuilder as **RouteBuilder**, built **inside this same repo, in `/v2/`, alongside the legacy app at root**, behind DF-Admin-controlled cutover. Legacy code stays at the repo root (untouched, still deployed from GitLab, still working). The new code goes in `/v2/`. **Route Viewer** and **Bulk Uploader** remain in place for the early release stages rather than being rebuilt immediately. **GitLab remains the source of truth** — Kevin clones the built v2 back into a `v2` branch on GitLab. Cutover is controlled by DF Admin per tenant; rollback = DF Admin flips the gate back. Single tenant per deployment (DF's stack-wide rule). This doc captures the scoping inputs, with the 2026-06-23 naming/scope update folded in.
 
 ---
 
@@ -35,7 +35,7 @@ In **this same repo**:
 | `/.github/workflows/` | Optional v2 CI lane on GitHub during dev; legacy CI continues on GitLab. | Independent. |
 
 **Source of truth.** GitLab stays primary throughout per [[project-gitlab-source-of-truth]]. The flow:
-- GitHub (`Deliver-Different-Testing/runbuilder`) is where Kevin can iterate with GitHub PR + review.
+- GitHub should use the broader Routed Operations repo naming for the rebuild (`Deliver-Different-Testing/routed-operations`) so the repo reflects the actual long-term product direction, even though Route Builder is the first release surface.
 - Kevin clones the v2 work back into a **`v2` branch on GitLab** as he goes.
 - Legacy continues to ship from GitLab master.
 - At cutover, v2 graduates from the GitLab `v2` branch into whatever deploy target DF Admin promotes it to.
@@ -61,8 +61,10 @@ In **this same repo**:
 
 ### 3.1 Naming
 
-- **App name in v2 is "RouteBuilder"** (not RunBuilder). Replace the legacy name in the v2 UI, package names, project names (`RouteBuilder.csproj` / `RouteBuilder.sln`), Hub menu entries, and DFRNT design system asset references.
-- **Repo name stays `runbuilder`** — it holds both. Legacy still self-identifies as RunBuilder; v2 self-identifies as RouteBuilder. No history rewrite.
+- **Umbrella product / repo direction is `Routed Operations`.** Kevin should use that as the rebuild repo name and top-level product framing.
+- **First release app/module name in v2 is `RouteBuilder`** (not RunBuilder). Replace the legacy name in the v2 UI, package names, project names (`RouteBuilder.csproj` / `RouteBuilder.sln`), Hub menu entries, and DFRNT design system asset references.
+- **Legacy remains `runbuilder`.** No history rewrite is required on the legacy repo; this naming change is about the rebuild direction.
+- **Stage 1 dependency note:** existing `Route Viewer` and existing `Bulk Uploader` stay in service for early release stages; they do not need to be rebuilt before Route Builder ships.
 
 ### 3.2 Jobs surfaced in v2 (per Q6 addendum)
 
@@ -86,8 +88,9 @@ Both should appear in the route-builder UI as candidate jobs to assemble into a 
 | **4 — Bulk Runs write** | Create / edit / delete a bulk run; bulk job assignments | Pilot runs side-by-side |
 | **5 — Couriers assignment** | Re-implement `PotentialCouriers` matcher in the app layer (no SP); assign couriers to a run | Pilot extends |
 | **6 — Settings + reports** | Bulk run settings + reporting surfaces (via DFRNT Reporting Engine nuget per [[project-dfrnt-reporting-engine]] — not legacy `TblReport`) | Parity status visible to DF Admin |
-| **7 — Cutover per tenant** | DF Admin flips a tenant from the legacy RunBuilder deployment to the RouteBuilder deployment | Tenants migrate one by one |
-| **8 — Legacy retirement** | After last tenant migrates, archive root-level legacy code under `/legacy-archive/` + decommission its deploy | Done |
+| **7 — Cutover per tenant** | DF Admin flips a tenant from the legacy RunBuilder deployment to the RouteBuilder deployment while existing Route Viewer / Bulk Uploader remain available as needed | Tenants migrate one by one |
+| **8 — Routed Operations consolidation** | Fold Bulk Uploader and Route Viewer into Routed Operations only after Route Builder is operationally solid | Product surfaces converge |
+| **9 — Legacy retirement** | After last tenant migrates, archive root-level legacy code under `/legacy-archive/` + decommission its deploy | Done |
 
 ---
 

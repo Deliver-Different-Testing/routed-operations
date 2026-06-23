@@ -3,6 +3,8 @@
 
 # RouteBuilder rebuild — Kevin handover
 
+> **Naming update (2026-06-23):** the broader forward product direction is now **Routed Operations**. Treat this file as historical RouteBuilder-scope handover context. For current Kevin-forward scope and naming, use `HANDOVER-KEVIN-ROUTED-OPERATIONS-2026-06-23.md` first.
+
 ## Claude Code steps
 
 ```bash

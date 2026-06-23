@@ -1,17 +1,24 @@
-# RouteBuilder
+# Routed Operations
 
-This repo is the active GitHub workspace for the RouteBuilder rebuild.
+This repo is the forward workspace for the **Routed Operations** rebuild.
+
+## Current product shape
+
+- **Umbrella product:** Routed Operations
+- **Release 1 / first module:** Route Builder
+- **Existing apps retained in early stages:** Bulk Uploader, Route Viewer
 
 ## What is in here
 
-- the current rebuilt UI/application snapshot that had been living in the older `runbuilder` GitHub repo
+- the current rebuilt UI/application snapshot that had been living in the RouteBuilder workspace
 - the v2 backend/frontend scaffold under `v2/`
-- the current RouteBuilder scoping and parity-lift docs
-- the updated legacy-parity handover:
-  - `docs/HANDOVER-KEVIN-ROUTEBUILDER-REBUILD-2026-06-14.md`
+- the current Routed Operations scoping, parity, and handover docs
+- the updated Kevin-forward handover:
+  - `docs/HANDOVER-KEVIN-ROUTED-OPERATIONS-2026-06-23.md`
 
 ## Key implementation docs
 
+- [Kevin handover](docs/HANDOVER-KEVIN-ROUTED-OPERATIONS-2026-06-23.md)
 - [Consolidated handover](docs/RUNBUILDER-REBUILD-TO-ROUTEBUILDER-CONSOLIDATED-2026-06-20.md)
 - [Parity lift plan (SPs → application layer)](docs/STEVE-ROUTEBUILDER-V2-PARITY-LIFT-PLAN-KEVIN-2026-06-20.md)
 - [Dynamic mode plan](docs/ROUTEBUILDER-DYNAMIC-PLAN-2026-06-22.md)
@@ -25,7 +32,8 @@ The untouched legacy source-of-truth repo is:
 
 That repo stays as the reference for current behaviour.
 
-## Intent
+## Naming rule
 
-- `runbuilder` on GitLab = legacy reference
-- `routebuilder` on GitHub = active rebuild repo Kevin can clone back into GitLab for implementation work
+- `Routed Operations` = umbrella product / repo direction
+- `Route Builder` = first release module
+- `RunBuilder` = legacy app being replaced

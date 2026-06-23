@@ -30,11 +30,19 @@ It combines:
 
 **RouteBuilder is not just a recurring-routes UI.**
 
-It is the rebuild of the current operational **Runbuilder** tool into a cleaner DFRNT-style app, while preserving the real dispatch/run-building behaviours that exist today.
+The broader product direction is now **Routed Operations**.
 
-The rebuild target is:
-1. **legacy Runbuilder parity first**
-2. then extension with:
+Within that:
+- **Route Builder** is the first release module and rebuild target now
+- **Bulk Uploader** and **Route Viewer** are part of the intended product shape
+- the existing Bulk Uploader and Route Viewer apps remain in place for early release stages
+
+So the rebuild target is:
+1. **legacy Runbuilder parity first via Route Builder**
+2. then broader Routed Operations consolidation of:
+   - **Bulk Uploader**
+   - **Route Viewer**
+3. then optional adjacent modules such as:
    - **Quoting**
    - **Scheduled Routes**
    - **Polygon Builder**
@@ -48,13 +56,14 @@ The rebuild target is:
 - Purpose: untouched source-of-truth for current behaviour
 
 ### Active rebuild repo
-- GitHub rebuild repo: `https://github.com/Deliver-Different-Testing/routebuilder`
-- Purpose: active RouteBuilder rebuild workspace Kevin can clone into GitLab for real dev work
+- Target rebuild repo name: `routed-operations`
+- Current GitHub rebuild workspace: `https://github.com/Deliver-Different-Testing/routebuilder`
+- Purpose: active rebuild workspace for the Route Builder first release, under the broader Routed Operations direction Kevin can clone into GitLab for real dev work
 
 ### Rule
 - **Do not mutate the legacy clone to become the rebuild.**
 - Keep legacy intact for parity checks.
-- Move new work into RouteBuilder.
+- Move new work into the Routed Operations rebuild, with Route Builder as the first release module.
 
 ---
 
