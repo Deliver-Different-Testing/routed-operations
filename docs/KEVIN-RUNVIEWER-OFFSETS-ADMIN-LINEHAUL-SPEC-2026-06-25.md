@@ -15,11 +15,12 @@ related_docs:
 This is a **new** follow-on spec.
 Do not append this work into `KEVIN-LEGACY-RUNBUILDER-FIXES-SPEC-2026-06-23.md` because Steve has confirmed that earlier spec is already complete.
 
-This batch covers three linked areas:
+This batch covers four linked areas:
 
 1. **Persist pickup / delivery early-late offset values on the operational job lifecycle tables** so breach reporting is historically stable.
 2. **Add Admin Manager edit capability** for service/speed offset minutes using the existing service maintenance screen.
-3. **Tidy the linehaul dash run detail grid** so delivery location is not visually duplicated.
+3. **Preserve the user-selected recurring booking ready time** into `tucJobBooking` and `tucJob` instead of collapsing back to the schedule start time.
+4. **Tidy the linehaul dash run detail grid** so delivery location is not visually duplicated.
 
 ---
 
@@ -35,6 +36,7 @@ These are not open questions anymore:
 - Update the **archive process** if required so the values carry through unchanged.
 - Admin users must be able to maintain the service/speed offset minutes in **Admin Manager** first.
 - RouteViewer already shows at least the **pickup window** in job detail, so this is not a blank-slate display feature.
+- In recurring booking creation, the **user-selected ready time is authoritative** and must persist into `tucJobBooking` and `tucJob`; do not replace it with the recurring schedule start time.
 
 ---
 
@@ -188,7 +190,54 @@ Display helpers may format friendly strings, but reporting and operational breac
 
 ---
 
-## 5. Linehaul dash run detail tweak
+## 5. Preserve user-selected recurring ready time
+
+## Steve test evidence
+
+Steve's test case shows a concrete mismatch:
+
+- booking was created with **16:00** ready time
+- recurring list later showed **15:45**
+- RouteViewer later showed **15:45**
+- **15:45 is the recurring schedule start time, not the user-selected booking ready time**
+
+So somewhere in the recurring booking creation path, the chosen booking time is being replaced by the schedule start time.
+
+## Required rule
+
+For recurring booking creation, the **user-selected ready time** must persist into the created operational records.
+The recurring schedule start time may still be used for schedule grouping / recurrence logic, but it must not overwrite the chosen booking ready time.
+
+## Minimum persistence requirement
+
+At minimum, preserve the chosen ready time into:
+
+- `tucJobBooking`
+- `tucJob`
+
+If the system uses an intermediate recurring/prebook row before those tables, Kevin must trace and fix the overwrite there too.
+
+## Likely source to inspect
+
+Steve's suspicion is probably right: this is likely in the recurring booking SP path.
+Inspect:
+
+- recurring booking stored procedure(s)
+- recurring-job promotion stored procedure(s)
+- any `tucJobPrebook` / recurring-source mapping if involved
+- any API/UI payload mapping where both schedule start and ready time are present
+
+## Acceptance
+
+- A booking created with **16:00** stores **16:00** in `tucJobBooking`.
+- The resulting job stores **16:00** in `tucJob`.
+- RouteViewer shows **16:00** for the job unless deliberately rendering a separate schedule field.
+- The recurring list shows the chosen booking ready time, not the schedule start time.
+- Schedule grouping can still use the schedule start as a separate concept.
+
+---
+
+## 6. Linehaul dash run detail tweak
 
 ## Steve screenshot instruction
 
@@ -236,7 +285,7 @@ In the **linehaul dash run detail grid**, remove the redundant delivery-location
 
 ---
 
-## 6. Recommended implementation order
+## 7. Recommended implementation order
 
 1. Add DB columns and update models/wrappers
 2. Stamp resolved values into `tucJobBooking`
@@ -244,8 +293,9 @@ In the **linehaul dash run detail grid**, remove the redundant delivery-location
 4. stamp/preserve in `tucJob`
 5. copy unchanged into `tucJobArchive`
 6. add Admin Manager editing for service defaults
-7. update RouteViewer read paths to prefer stamped values
-8. apply linehaul grid duplication fix
+7. fix recurring booking creation so chosen ready time survives into `tucJobBooking` and `tucJob`
+8. update RouteViewer read paths to prefer stamped values
+9. apply linehaul grid duplication fix
 
 ---
 
@@ -277,5 +327,7 @@ This follow-on work belongs in this new spec.
 4. Push a job through booking -> bulk/run -> live -> archive and confirm values survive unchanged.
 5. Verify RouteViewer job detail still shows pickup window correctly.
 6. Verify any delivery-side window/breach display reads stamped values.
-7. Verify linehaul grid no longer duplicates delivery location.
-8. Verify the abbreviated right-hand destination detail remains.
+7. Create a recurring booking with a ready time different from the schedule start time and confirm the chosen ready time survives into `tucJobBooking` and `tucJob`.
+8. Verify RouteViewer and the recurring list show the chosen ready time rather than the schedule start time.
+9. Verify linehaul grid no longer duplicates delivery location.
+10. Verify the abbreviated right-hand destination detail remains.
