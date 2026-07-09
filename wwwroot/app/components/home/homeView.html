@@ -1,3 +1,21 @@
+<style>
+    /* Mode indicator button in box header. The compiled `.box-details .btn`
+       rule expands into an 8-class nested selector (specificity 80) which
+       out-wins any short selector we could write here. Use !important so
+       our cyan fill + hover state actually apply. */
+    .rb-mode-btn {
+        background-color: #76EAFE !important;
+        border-color: #48deff !important;
+        color: #000 !important;
+    }
+    .rb-mode-btn:hover,
+    .rb-mode-btn:focus {
+        background-color: #48deff !important;
+        border-color: #33d1e9 !important;
+        color: #000 !important;
+    }
+</style>
+
 <div class="top-bar">
     <img src="../../../img/DFRNT-logo.png" class="logo" />
 
@@ -58,6 +76,12 @@
                                     <button type="button" class="btn btn-sm btn-secondary" title="Sort By Post Code" ng-click="sortByPostCode()"><i class="fa fa-arrow-down"></i></button>
                                     <button type="button" class="btn btn-sm btn-secondary" title="Build Runs" ng-click="buildRunByPostalCode()"><i class="fas fa-route"></i></button>
                                 </div>
+
+                                <button type="button" class="btn btn-sm rb-mode-btn" style="margin-left:6px;"
+                                        title="Build Runs configuration"
+                                        ng-click="buildRunByPostalCode()"
+                                        ng-bind="buildModeLabel()">
+                                </button>
 
                             </div>
 
@@ -238,13 +262,18 @@
                         $(this).addClass('active');
                     }
                 } else {
-                    if (!$(this).hasClass("active")) {
-
-                        var group = $(this).parents(".table-rows").attr("data-group");
-                        $('*[data-group="' + group + '"]').each(function () {
-                            $(this).find('.active').removeClass('active');
-                        });
-
+                    // Plain click (no ctrl):
+                    //  - If this row was already active -> deselect it
+                    //    (clear all group actives including this row).
+                    //  - Otherwise clear group actives and select this row.
+                    // Net effect: clicking the same row twice toggles it off;
+                    // clicking a different row switches selection.
+                    var group = $(this).parents(".table-rows").attr("data-group");
+                    var wasActive = $(this).hasClass("active");
+                    $('*[data-group="' + group + '"]').each(function () {
+                        $(this).find('.active').removeClass('active');
+                    });
+                    if (!wasActive) {
                         $(this).addClass('active');
                     }
                 }
@@ -290,19 +319,10 @@
             $(".rightActiveTable").removeClass("rightActiveTable");
             $(this).parents(".table").addClass("rightActiveTable");
         }
-        if (!event.ctrlKey) {
-
-            if ($(this).hasClass("active")) {
-            } else {
-                var group = $(this).parents(".table-rows").attr("data-group");
-
-                $('*[data-group="' + group + '"]').each(function () {
-                    $(this).find('.active').removeClass('active');
-                });
-                $(this).addClass('active');
-            }
-
-        }
+        // Plain-click selection state is set entirely in mousedown (see
+        // above). We intentionally do NOT re-touch .active here on mouseup
+        // - doing so would immediately undo mousedown's toggle-off when
+        // the user single-clicks an already-active row.
 
     });
 

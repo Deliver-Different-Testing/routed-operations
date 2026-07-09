@@ -93,5 +93,12 @@ namespace RunBuilder.Models
         public int? MultiboxParentID { get; set; }
         public int? ParentId { get; set; }
         public int? JobRelationshipTypeId { get; set; }
+        public int? ScheduleID { get; set; }
+        [StringLength(200)]
+        public string ScheduleName { get; set; }
+        public DateTime? ScheduleWindowStart { get; set; }
+        public DateTime? ScheduleWindowEnd { get; set; }
+        [Column("JobCubicM3", TypeName = "decimal(18,6)")]
+        public decimal? JobCubicM3 { get; set; }
     }
 }
