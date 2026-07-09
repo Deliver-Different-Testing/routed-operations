@@ -43,6 +43,11 @@ angular
                     return response.data;
                 });
             },
+            getVehicleSizes: function () {
+                return $http.get('/Job/VehicleSizes').then(function (response) {
+                    return response.data;
+                });
+            },
             getFilter: function (runDate) {
                 return $http.get('/Job/GetFilter?runDate=' + runDate.format("YYYY-MM-DD")).then(function (response) {
                     return response.data;
