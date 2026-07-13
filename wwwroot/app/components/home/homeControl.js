@@ -3565,13 +3565,23 @@ angular
                     var showMultiWindow = windowKeys.length >= 2;
 
                     var proceedWithDeliveryWindowBuild = function () {
-                        // Group by PrefixRunName + WindowStart (per 2026-07-08 amendment).
+                        // Delivery Window mode: one bucket per WindowStart, regardless of
+                        // postcode. A single run can span multiple postcodes as long as it
+                        // fits inside the time window and vehicle cubic capacity - splits
+                        // are decided purely by those caps (see splitOrderedJobsByConstraints).
+                        // Jobs are pre-sorted by ToPostCode so HERE sees geographically
+                        // adjacent input; HERE then optimises the actual sequence.
                         $scope.runJobsAllByPostalCodeRunName = validJobs.reduce(function (obj, item) {
-                            var key = item.PrefixRunName + '|' + item.ScheduleWindowStart;
+                            var key = String(item.ScheduleWindowStart);
                             obj[key] = obj[key] || [];
                             obj[key].push(item);
                             return obj;
                         }, {});
+                        Object.keys($scope.runJobsAllByPostalCodeRunName).forEach(function (k) {
+                            $scope.runJobsAllByPostalCodeRunName[k].sort(function (a, b) {
+                                return (a.ToPostCode || 0) - (b.ToPostCode || 0);
+                            });
+                        });
                         $scope.getGroupedJobsHereMapSequence();
                     };
 
@@ -3817,7 +3827,10 @@ angular
                                         var d = new Date(winStart);
                                         hhmm = ('0' + d.getUTCHours()).slice(-2) + ('0' + d.getUTCMinutes()).slice(-2);
                                     }
-                                    visibleBase = firstJob.PrefixRunName + hhmm;
+                                    // DW mode: a run can span multiple postcodes, so no single
+                                    // PrefixRunName represents it. Use DW<HHMM> to make it
+                                    // visually distinct from postcode-scoped Max-Boxes runs.
+                                    visibleBase = 'DW' + hhmm;
                                 }
                                 var run = { name: visibleBase + runNameSuffix, jobs: dividedRunGroups[i] };
                                 // Store runs for insert laters
@@ -3978,7 +3991,10 @@ angular
                                         var d = new Date(winStart);
                                         hhmm = ('0' + d.getUTCHours()).slice(-2) + ('0' + d.getUTCMinutes()).slice(-2);
                                     }
-                                    visibleBase = firstJob.PrefixRunName + hhmm;
+                                    // DW mode: a run can span multiple postcodes, so no single
+                                    // PrefixRunName represents it. Use DW<HHMM> to make it
+                                    // visually distinct from postcode-scoped Max-Boxes runs.
+                                    visibleBase = 'DW' + hhmm;
                                 }
                                 var run = { name: visibleBase + runNameSuffix, jobs: dividedRunGroups[i] };
                                 // Store runs for insert laters
