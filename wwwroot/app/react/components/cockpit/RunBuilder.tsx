@@ -6,6 +6,8 @@ import { runBuilderTotals } from '../../lib/runFinancials';
 
 interface Props {
   run: Run | null;
+  selectedJobId?: number | null;
+  onSelectJob?: (jobId: number) => void;
   onRemoveJob: (jobId: number) => void;
   onOptimize: () => void;
   onToggleStart?: (job: RunJob, run: Run) => void;
@@ -42,6 +44,8 @@ interface Props {
  */
 export function RunBuilder({
   run,
+  selectedJobId,
+  onSelectJob,
   onRemoveJob,
   onOptimize,
   onToggleStart,
@@ -151,14 +155,15 @@ export function RunBuilder({
             return (
               <tr
                 key={j.bulkJobId}
-                className={`border-t border-border-light hover:bg-surface-cream ${
+                className={`cursor-pointer border-t border-border-light hover:bg-surface-cream ${
                   missingGps ? 'text-error' : ''
-                }`}
+                } ${selectedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : ''}`}
+                onClick={() => onSelectJob?.(j.bulkJobId)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setCtx({ x: e.clientX, y: e.clientY, job: j });
                 }}
-                title="Right-click for more actions"
+                title="Click to select. Right-click for more actions. Del to remove."
               >
                 <td className="px-1 py-1">
                   {j.isStart && <span title="Start point" className="text-brand-cyan">▶</span>}
