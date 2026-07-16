@@ -21,6 +21,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<VehicleSize> VehicleSizes { get; set; }
     public virtual DbSet<TucClient> TucClients { get; set; }
     public virtual DbSet<TblBulkScheduleLinehaul> TblBulkScheduleLinehauls { get; set; }
+    public virtual DbSet<TblBulkPostCodeRunName> TblBulkPostCodeRunNames { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +98,11 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         });
 
         modelBuilder.Entity<TblBulkScheduleLinehaul>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+        });
+
+        modelBuilder.Entity<TblBulkPostCodeRunName>(entity =>
         {
             entity.HasKey(e => e.Id);
         });

@@ -91,6 +91,14 @@ export interface BulkJob {
   // "Respect pickup cutoff" option in the build config.
   applyPickupCutoff: boolean | null;
   pickupCutoffHours: number | null;
+  // Postcode run-name lookup (legacy TblBulkPostCodeRunName). PrefixRunName is
+  // used by Build Runs Max Boxes mode to group jobs; PostCodeMergeTo folds two
+  // postcodes into the same run.
+  prefixRunName: string | null;
+  postCodeMergeTo: string | null;
+  runSequence: number;
+  // ID of the tblBulkJobRun link row. 0 when the job is not on a run.
+  bulkJobRunId: number;
 }
 
 export interface VehicleSize {
@@ -164,6 +172,8 @@ export interface Run {
   finishAtBulkJobId: number | null; // only meaningful when routingMode === 2
   // Marks the special "Void Jobs" run. Rendered locked with a ban icon.
   isVoidRun: boolean;
+  // Fleet name for the assigned courier (from tucCourierFleet.UccfName).
+  fleet: string | null;
   jobs: RunJob[];
 }
 

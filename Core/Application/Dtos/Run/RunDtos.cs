@@ -26,6 +26,10 @@ public class RunDto
     // Special "Void Jobs" run marker per legacy homeControl.js:1259.
     // Always rendered locked, with a ban icon prefix.
     public bool IsVoidRun { get; set; }
+    // Fleet name for the assigned courier (from tucCourierFleet.UccfName).
+    // Legacy SP surfaces this on the run row so operators can filter runs
+    // by fleet without cross-referencing the courier list.
+    public string? Fleet { get; set; }
     public List<RunJobDto> Jobs { get; set; } = new();
 }
 

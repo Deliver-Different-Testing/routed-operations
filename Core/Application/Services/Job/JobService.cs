@@ -83,6 +83,20 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             // build mode. Legacy fallback ISNULL(...,20) is applied client-side.
             join cli in Context.TucClients on j.ClientId equals cli.UcclId into clientJoin
             from cli in clientJoin.DefaultIfEmpty()
+            // Postcode -> RunName / MergeTo / Sequence lookup. Legacy SP:
+            // LEFT JOIN TblBulkPostCodeRunName rn ON rn.PostCode = ToPostCode.
+            // Nullable + defensive: `rn.PostCode` in DB is nvarchar so we compare
+            // against `ToPostCode.ToString()` to stay type-safe in LINQ.
+            join rn in Context.TblBulkPostCodeRunNames
+                on (j.ToPostCode != null ? j.ToPostCode.Value.ToString() : null) equals rn.PostCode
+                into postcodeRunJoin
+            from rn in postcodeRunJoin.DefaultIfEmpty()
+            // BulkJobRun link (holds PickRunOrder + gives BulkJobRunId). Legacy
+            // SP: LEFT JOIN tblBulkJobRun r ON r.BulkJobID = tblBulkJob.BulkJobID.
+            // Unique per BulkJobID (filtered index), so no fan-out.
+            join r in Context.TblBulkJobRuns on j.BulkJobId equals r.BulkJobId
+                into bjrJoin
+            from r in bjrJoin.DefaultIfEmpty()
             // Booked-against schedule (may be for a different weekday than the target).
             join s in Context.TblBulkRunSchedules on j.ScheduleId equals s.BulkRunScheduleId into schedJoin
             from s in schedJoin.DefaultIfEmpty()
@@ -165,7 +179,11 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 Done = j.Done,
                 BulkRunId = j.BulkRunId,
                 RunName = j.RunName,
-                RunOrder = j.RunOrder,
+                // Legacy SP: r.PickRunOrder AS BuilderIndex. We prefer the join-
+                // table row (more authoritative under concurrent writes) and
+                // fall back to the tblBulkJob.RunOrder denorm when the row is
+                // missing (defensive - happens after a delete that didn't cascade).
+                RunOrder = r != null ? r.PickRunOrder : j.RunOrder,
                 MultiboxParentId = j.MultiboxParentId,
                 ParentId = j.ParentId,
                 RegionId = j.RegionId,
@@ -205,17 +223,35 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 // value is present AND the operator ticks the option.
                 ApplyPickupCutoff = sw != null ? sw.ApplyPickupCutoff : (bool?)null,
                 PickupCutoffHours = sw != null ? sw.PickupCutoff : (int?)null,
+                // Postcode-run-name projections. Legacy SP:
+                //   ISNULL(rn.RunName, ToPostCode) AS PrefixRunName
+                //   rn.PostCodeMergeTo
+                //   ISNULL(rn.RunSequence, 0) AS RunSequence
+                PrefixRunName = rn != null && rn.RunName != null
+                    ? rn.RunName
+                    : (j.ToPostCode != null ? j.ToPostCode.Value.ToString() : null),
+                PostCodeMergeTo = rn != null ? rn.PostCodeMergeTo : null,
+                RunSequence = rn != null && rn.RunSequence.HasValue ? rn.RunSequence.Value : 0,
+                BulkJobRunId = r != null ? r.Id : 0,
                 }
             };
 
         var materialised = await joined.ToListAsync();
         var baseDate = new DateTime(1900, 1, 1);
-        return materialised.Select(x =>
-        {
-            if (x.WindowStart.HasValue) x.Dto.ScheduleWindowStart = baseDate.Add(x.WindowStart.Value);
-            if (x.WindowEnd.HasValue) x.Dto.ScheduleWindowEnd = baseDate.Add(x.WindowEnd.Value);
-            return x.Dto;
-        }).ToList();
+        return materialised
+            // Legacy SP: ORDER BY BookTime, PrefixRunName, BuilderIndex.
+            // Sort in-memory after projection so the client renders in the
+            // same order operators are used to.
+            .OrderBy(x => x.Dto.BookTime)
+            .ThenBy(x => x.Dto.PrefixRunName)
+            .ThenBy(x => x.Dto.RunOrder ?? int.MaxValue)
+            .Select(x =>
+            {
+                if (x.WindowStart.HasValue) x.Dto.ScheduleWindowStart = baseDate.Add(x.WindowStart.Value);
+                if (x.WindowEnd.HasValue) x.Dto.ScheduleWindowEnd = baseDate.Add(x.WindowEnd.Value);
+                return x.Dto;
+            })
+            .ToList();
     }
 
     /// <summary>

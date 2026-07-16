@@ -84,4 +84,16 @@ public class BulkJobDto
     // when the operator ticks "Respect pickup cutoff" in the build config.
     public bool? ApplyPickupCutoff { get; set; }
     public int? PickupCutoffHours { get; set; }
+    // Postcode-run-name lookup surfaced from TblBulkPostCodeRunName. Legacy
+    // SP: ISNULL(rn.RunName, ToPostCode) AS PrefixRunName, rn.PostCodeMergeTo,
+    // ISNULL(rn.RunSequence, 0). PrefixRunName is used by Max Boxes build
+    // mode to group jobs by RunName; PostCodeMergeTo folds two adjacent
+    // postcodes into a single run bucket.
+    public string? PrefixRunName { get; set; }
+    public string? PostCodeMergeTo { get; set; }
+    public int RunSequence { get; set; }
+    // ID of the tblBulkJobRun link row. Used by legacy transfer flow to
+    // detect membership without another round-trip. 0 when the job isn't
+    // on a run.
+    public int BulkJobRunId { get; set; }
 }

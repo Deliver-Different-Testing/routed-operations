@@ -109,6 +109,17 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             .ToListAsync();
         var courierById = couriers.ToDictionary(c => c.UccrId, c => (c.Code + " " + c.UccrName).Trim());
 
+        // Fleet name lookup for the run's assigned courier. Legacy SP: LEFT
+        // JOIN tucCourierFleet f ON c.CourierFleetID = f.UccfID -> f.UccfName.
+        var fleetIds = couriers.Where(c => c.CourierFleetId.HasValue)
+            .Select(c => c.CourierFleetId!.Value).Distinct().ToList();
+        var fleets = await Context.TucCourierFleets
+            .Where(f => fleetIds.Contains(f.UccfId))
+            .ToDictionaryAsync(f => f.UccfId, f => f.UccfName);
+        var fleetByCourier = couriers
+            .Where(c => c.CourierFleetId.HasValue && fleets.ContainsKey(c.CourierFleetId.Value))
+            .ToDictionary(c => c.UccrId, c => fleets[c.CourierFleetId!.Value]);
+
         // Speed name lookup for the Run Builder Speed column.
         var speedIds = jobs.Select(j => j.Speed).Distinct().ToList();
         var speedNames = await Context.TucJobTypes
@@ -128,6 +139,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             x => (x.IsStart, x.IsEnd));
 
         return runs
+            .OrderBy(r => r.Id) // Legacy SP: ORDER BY r.ID
             .Select(r => new RunDto
             {
                 Id = r.Id,
@@ -137,6 +149,9 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 CourierId = r.CourierId,
                 CourierName = r.CourierId.HasValue && courierById.TryGetValue(r.CourierId.Value, out var cn)
                     ? cn
+                    : null,
+                Fleet = r.CourierId.HasValue && fleetByCourier.TryGetValue(r.CourierId.Value, out var flt)
+                    ? flt
                     : null,
                 Status = r.Status,
                 Revenue = r.Revenue,
@@ -317,7 +332,10 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<(string Result, string Message)> DeleteAsync(int id)
     {
         var run = await Context.TblBulkRuns.FindAsync(id);
-        if (run == null) return ("Failed", "Run not found");
+        // Legacy SP silently no-ops for missing run ids (delete is idempotent).
+        // Return Success so callers can retry / re-issue without seeing spurious
+        // failures - matches UTL_stpJob_tblBulkRun_Delete contract.
+        if (run == null) return ("Success", "Run already deleted");
 
         var jobRuns = await Context.TblBulkJobRuns
             .Where(jr => jr.RunId == id)
