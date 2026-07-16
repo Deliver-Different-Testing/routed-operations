@@ -8,7 +8,7 @@ import { JobDetail } from './JobDetail';
 import { RunList } from './RunList';
 import { RunBuilder } from './RunBuilder';
 import { FleetsPanel } from './FleetsPanel';
-import { HereMap } from './HereMap';
+import { GoogleMap } from './GoogleMap';
 import { MapContextMenu, type MapContextTarget } from './MapContextMenu';
 import { ActionToolbar } from './ActionToolbar';
 import { BulkMoveDateModal } from './BulkMoveDateModal';
@@ -30,6 +30,7 @@ import type { BuildConfig, BulkJob, Courier, JobFilters, Run, RunJob, VehicleSiz
 import { useToast } from '../../context/ToastContext';
 import { bucketJobs, buildModeLabel, loadBuildConfig, saveBuildConfig, splitOrderedJobsByConstraints, windowMinutes } from '../../lib/buildConfig';
 import { expandMultiboxSiblings } from '../../lib/multibox';
+import { VoidRelationshipDialog, type VoidRelationshipContext } from './VoidRelationshipDialog';
 import { sortJobs, sortRuns } from '../../lib/sortLists';
 import { RunActionToolbar } from './RunActionToolbar';
 import type { ContextMenuItem } from './RowContextMenu';
@@ -50,6 +51,7 @@ export function CockpitPage() {
   const [buildConfigModal, setBuildConfigModal] = useState<{ open: boolean; onConfirm?: () => void }>({ open: false });
   const [mapContext, setMapContext] = useState<MapContextTarget | null>(null);
   const [gpsFixJob, setGpsFixJob] = useState<BulkJob | null>(null);
+  const [voidDialog, setVoidDialog] = useState<VoidRelationshipContext | null>(null);
   const [layouts, setLayouts] = useState<CockpitLayout[]>(() => loadLayouts());
   const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(() => loadFilterPresets());
   const horizontalRef = useRef<ImperativePanelGroupHandle | null>(null);
@@ -109,7 +111,11 @@ export function CockpitPage() {
   }, [state.filters.date, state.filters.regionIds.join(','), state.filters.speeds.join(','), state.filters.clientIds.join(','), state.filters.ourRefs.join(',')]);
 
   const displayedJobs = (() => {
-    let out = state.jobs;
+    // Legacy jobList.tpl: filter:{inBuilder: '!1', Void: '!1'} - jobs already
+    // assigned to a run (BulkRunID set) disappear from the Jobs list, so
+    // operators see only what's still up for grabs. Void filter is handled
+    // server-side in GetBulkJobsAsync.
+    let out = state.jobs.filter((j) => j.bulkRunId == null);
     if (state.sizeFilter === 'moreThan100Cubic') {
       out = out.filter((j) => (j.jobCubicM3 ?? 0) > 100);
     }
@@ -172,18 +178,32 @@ export function CockpitPage() {
 
   const handleVoid = async (isVoid: boolean) => {
     if (state.selectedJobIds.length === 0) return;
-    // Expand to include multibox siblings + children so voiding a parent
-    // takes its children with it (and vice versa). Matches legacy.
     const expanded = expandMultiboxSiblings(state.selectedJobIds, state.jobs);
-    const extra = expanded.length - state.selectedJobIds.length;
-    const label = extra > 0
-      ? `${state.selectedJobIds.length} job(s) + ${extra} multibox sibling(s)`
-      : `${state.selectedJobIds.length} job(s)`;
-    if (!confirm(`${isVoid ? 'Void' : 'Un-void'} ${label}?`)) return;
+    const hasFamily = expanded.length > state.selectedJobIds.length;
+    // Legacy showVoidRelationshipDialog: only prompt when there's a family to
+    // choose from. Single-job or already-full-family selections skip the
+    // dialog and use a plain confirm.
+    if (hasFamily) {
+      const jobNumbersById = new Map<number, string>();
+      state.jobs.forEach((j) => jobNumbersById.set(j.bulkJobId, j.jobNumber ?? String(j.bulkJobId)));
+      setVoidDialog({
+        selectedIds: state.selectedJobIds,
+        expandedIds: expanded,
+        isVoid,
+        jobNumbersById,
+      });
+      return;
+    }
+    if (!confirm(`${isVoid ? 'Void' : 'Un-void'} ${state.selectedJobIds.length} job(s)?`)) return;
+    await executeVoid(state.selectedJobIds, isVoid);
+  };
+
+  const executeVoid = async (ids: number[], isVoid: boolean) => {
     try {
-      await jobService.void(expanded, isVoid, state.filters.date);
-      toast.show(`${isVoid ? 'Voided' : 'Un-voided'} ${expanded.length} job(s)`, 'success');
+      await jobService.void(ids, isVoid, state.filters.date);
+      toast.show(`${isVoid ? 'Voided' : 'Un-voided'} ${ids.length} job(s)`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
+      setVoidDialog(null);
       await loadJobsAndRuns(state.filters);
     } catch (e) {
       toast.show((e as Error).message, 'error');
@@ -339,6 +359,42 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
+  };
+
+  // Toggle start / end markers on a run's job (legacy runBuilderMenu items).
+  const handleToggleStart = async (job: RunJob, run: Run) => {
+    try {
+      const res = await runService.setJobStartEnd(run.id, job.bulkJobId, { isStart: !job.isStart });
+      if (res.response.result === 'Success') {
+        toast.show(job.isStart ? 'Start point cleared' : 'Start point set', 'success');
+        await loadJobsAndRuns(state.filters);
+      } else {
+        toast.show(res.response.message ?? 'Toggle failed', 'error');
+      }
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
+  const handleToggleEnd = async (job: RunJob, run: Run) => {
+    try {
+      const res = await runService.setJobStartEnd(run.id, job.bulkJobId, { isEnd: !job.isEnd });
+      if (res.response.result === 'Success') {
+        toast.show(job.isEnd ? 'End point cleared' : 'End point set', 'success');
+        await loadJobsAndRuns(state.filters);
+      } else {
+        toast.show(res.response.message ?? 'Toggle failed', 'error');
+      }
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
+  // Void a single job from within the Run Builder. Uses the same
+  // multibox-expanding path as bulk void.
+  const handleVoidRunBuilderJob = async (job: RunJob, _run: Run) => {
+    dispatch({ type: 'REPLACE_MULTISELECT', payload: [job.bulkJobId] });
+    await handleVoid(true);
+  };
+  const handleUnvoidRunBuilderJob = async (job: RunJob, _run: Run) => {
+    dispatch({ type: 'REPLACE_MULTISELECT', payload: [job.bulkJobId] });
+    await handleVoid(false);
   };
 
   const handleOptimizeRun = async () => {
@@ -947,6 +1003,17 @@ export function CockpitPage() {
         void handleRemoveJobFromRun(selectedJob.bulkJobId);
       }
     },
+    // Legacy: Enter submits whichever modal is open. In practice each modal
+    // already binds its own Enter key on primary buttons; this handler covers
+    // the case where the focus isn't inside the modal's input (e.g. after
+    // the modal opened but before the operator clicked into a field).
+    onEnter: () => {
+      const modal = document.querySelector<HTMLElement>('[data-modal-open="true"]');
+      if (!modal) return;
+      const primaryBtn = modal.querySelector<HTMLButtonElement>('button[data-primary="true"]')
+        ?? modal.querySelector<HTMLButtonElement>('button.bg-brand-purple, button.bg-brand-cyan, button.bg-error');
+      primaryBtn?.click();
+    },
   });
 
   const runBuilderContextMenu = (job: RunJob, _run: Run): ContextMenuItem[] => [
@@ -1113,7 +1180,10 @@ export function CockpitPage() {
                   run={selectedRun}
                   onRemoveJob={handleRemoveJobFromRun}
                   onOptimize={handleOptimizeRun}
-                  onContextMenuItems={(job, run) => runBuilderContextMenu(job, run)}
+                  onToggleStart={handleToggleStart}
+                  onToggleEnd={handleToggleEnd}
+                  onVoidJob={handleVoidRunBuilderJob}
+                  onUnvoidJob={handleUnvoidRunBuilderJob}
                 />
               </Panel>
             </PanelGroup>
@@ -1132,8 +1202,12 @@ export function CockpitPage() {
           <PanelResizeHandle className="w-1" />
 
           <Panel defaultSize={32} minSize={20}>
-            <HereMap
-              jobs={displayedJobs}
+            <GoogleMap
+              // Pass the full jobs list (not displayedJobs) so the map can show
+              // both unassigned pins (grey) AND pins for jobs already on runs
+              // (coloured). Legacy also renders both sets - the Jobs list
+              // filter only affects the LIST, not the map.
+              jobs={state.jobs}
               selectedRun={selectedRun}
               onPinClick={(jobId) => dispatch({ type: 'SELECT_JOB', payload: jobId })}
               onPinContextMenu={(t) => setMapContext(t)}
@@ -1178,6 +1252,17 @@ export function CockpitPage() {
         onAddToRun={(jobId, runId) => assignJobsToRun(runId, [jobId])}
         onRemoveFromRun={(jobId) => handleRemoveJobFromRun(jobId)}
         onTransferToRun={(jobId, _from, toRunId) => assignJobsToRun(toRunId, [jobId])}
+        onSetEnd={async (jobId, runId) => {
+          const run = state.runs.find((r) => r.id === runId);
+          const job = run?.jobs.find((j) => j.bulkJobId === jobId);
+          if (run && job) await handleToggleEnd(job, run);
+        }}
+      />
+
+      <VoidRelationshipDialog
+        context={voidDialog}
+        onConfirm={(ids) => executeVoid(ids, voidDialog?.isVoid ?? true)}
+        onCancel={() => setVoidDialog(null)}
       />
 
       <FixGpsModal

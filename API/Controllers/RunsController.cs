@@ -79,6 +79,15 @@ public class RunsController(
         return Ok(new { response = new { Result = result, Message = message } });
     }
 
+    // POST /api/runs/{runId}/jobs/{jobId}/start-end   body: SetJobStartEndRequest
+    [HttpPost("{runId:int}/jobs/{jobId:int}/start-end")]
+    [Authorize(Policy = "RouteBuilder.Build")]
+    public async Task<IActionResult> SetJobStartEnd(int runId, int jobId, [FromBody] SetJobStartEndRequest body)
+    {
+        var (result, message) = await runService.SetJobStartEndAsync(runId, jobId, body.IsStart, body.IsEnd);
+        return Ok(new { response = new { Result = result, Message = message } });
+    }
+
     // POST /api/runs/dispatch     body: DispatchRunsRequest
     // Send-to-live: wraps UTL_stpJob_InsertFromRunBuilder via Dapper (see RunCommitService).
     [HttpPost("dispatch")]

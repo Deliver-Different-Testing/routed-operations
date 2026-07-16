@@ -17,10 +17,17 @@ public class AppSettings
     public string RouteSavvyAppId { get; set; } = string.Empty;
 
     /// <summary>
-    /// HERE Maps API key used by the server-side findsequence2 proxy and
-    /// surfaced to the SPA for map-tile rendering. Bound from env var
-    /// `HeremapApiKey`. Empty value disables the HERE proxy and hides the
-    /// map from the cockpit.
+    /// HERE Maps API key used by the server-side findsequence2 proxy for the
+    /// Delivery Window build mode. Bound from env var `HeremapApiKey`. Kept
+    /// server-side only - never exposed to the SPA.
     /// </summary>
     public string HereMapsApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Google Maps JavaScript API key used by the cockpit map component. Bound
+    /// from env var `GoogleMapsKey` (matches legacy RunBuilder). Surfaced to the
+    /// SPA via HomeController's AuthConfig payload. Empty value renders a
+    /// diagnostic placeholder instead of the map.
+    /// </summary>
+    public string GoogleMapsKey { get; set; } = string.Empty;
 }

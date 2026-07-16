@@ -120,6 +120,7 @@ var appSettings = new AppSettings
 {
     RouteSavvyAppId = builder.Configuration["RouteSavyID"] ?? string.Empty,
     HereMapsApiKey = builder.Configuration["HeremapApiKey"] ?? string.Empty,
+    GoogleMapsKey = builder.Configuration["GoogleMapsKey"] ?? string.Empty,
 };
 builder.Services.AddSingleton(appSettings);
 
@@ -365,11 +366,11 @@ app.Use(async (context, next) =>
 
     var csp =
         "default-src 'self'; " +
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.api.here.com; " +
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://js.api.here.com; " +
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.api.here.com https://maps.googleapis.com https://maps.gstatic.com; " +
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://js.api.here.com https://maps.googleapis.com; " +
         "img-src 'self' data: blob: https:; " +
         "font-src 'self' https://fonts.gstatic.com data:; " +
-        "connect-src 'self' blob: wss: ws: https://*.hereapi.com https://*.here.com https://*.base.maps.ls.hereapi.com" +
+        "connect-src 'self' blob: wss: ws: https://*.hereapi.com https://*.here.com https://*.base.maps.ls.hereapi.com https://maps.googleapis.com https://maps.gstatic.com" +
             (app.Environment.IsDevelopment() ? " http://localhost:*" : "") + "; " +
         "worker-src 'self' blob:; " +
         "frame-ancestors 'none'; " +

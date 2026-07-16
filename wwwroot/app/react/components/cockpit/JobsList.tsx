@@ -49,9 +49,12 @@ export function JobsList({
   const columns: { field: string; label: string }[] = [
     { field: 'clientCode', label: 'Client' },
     { field: 'jobNumber', label: 'Job #' },
+    { field: 'bookDate', label: 'D Date' },
+    { field: 'bookTime', label: 'R Time' },
+    { field: 'toAddress', label: 'To' },
     { field: 'toSuburb', label: 'Suburb' },
     { field: 'toPostCode', label: 'Zip' },
-    { field: 'bookTime', label: 'Time' },
+    { field: 'courierName', label: 'Courier' },
     { field: 'speedName', label: 'Speed' },
     { field: 'runName', label: 'Run' },
   ];
@@ -107,7 +110,9 @@ export function JobsList({
           </tr>
         </thead>
         <tbody>
-          {jobs.map((j) => (
+          {jobs.map((j) => {
+            const missingGps = !j.deliveryLatitude;
+            return (
             <tr
               key={j.bulkJobId}
               draggable
@@ -119,8 +124,10 @@ export function JobsList({
               }}
               className={`cursor-move border-t border-border-light hover:bg-surface-cream ${
                 selectedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : ''
-              }`}
-              title="Drag onto a run - right-click for more"
+              } ${missingGps ? 'text-error' : ''}`}
+              title={missingGps
+                ? 'Job is missing GPS coordinates - right-click and Fix GPS'
+                : 'Drag onto a run - right-click for more'}
             >
               <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                 <input
@@ -131,14 +138,21 @@ export function JobsList({
                 />
               </td>
               <td className="px-2 py-1">{j.clientCode}</td>
-              <td className="px-2 py-1 font-medium">{j.jobNumber}</td>
+              <td className="px-2 py-1 font-medium">
+                {j.jobNumber}
+                {missingGps && <span title="Missing GPS coordinates" className="ml-1">!</span>}
+              </td>
+              <td className="px-2 py-1">{j.bookDate ? formatDate(j.bookDate) : ''}</td>
+              <td className="px-2 py-1">{j.bookTime ? formatTime(j.bookTime) : ''}</td>
+              <td className="px-2 py-1 truncate max-w-32" title={j.toAddress ?? ''}>{j.toAddress ?? ''}</td>
               <td className="px-2 py-1">{j.toSuburb}</td>
               <td className="px-2 py-1">{j.toPostCode}</td>
-              <td className="px-2 py-1">{j.bookTime ? formatTime(j.bookTime) : ''}</td>
+              <td className="px-2 py-1 truncate max-w-24" title={j.courierName ?? ''}>{j.courierName ?? ''}</td>
               <td className="px-2 py-1">{j.speedName ?? j.speed}</td>
               <td className="px-2 py-1">{j.runName ?? ''}</td>
             </tr>
-          ))}
+          );
+          })}
           {jobs.length === 0 && (
             <tr>
               <td colSpan={columns.length + 1} className="px-2 py-4 text-center text-text-muted">
@@ -163,6 +177,15 @@ function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
     return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  } catch {
+    return '';
+  }
+}
+
+function formatDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
   } catch {
     return '';
   }

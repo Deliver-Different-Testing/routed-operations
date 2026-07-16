@@ -9,6 +9,7 @@ const defaultUser: AppUser = {
   countryCode: null,
   isUsTenant: false,
   hereMapsApiKey: null,
+  googleMapsKey: null,
 };
 
 const AuthContext = createContext<AppUser>(defaultUser);

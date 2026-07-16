@@ -23,6 +23,10 @@ public partial class TblBulkRun
     public bool NoReroute { get; set; }
     public byte RoutingMode { get; set; }
     public int? FinishAtBulkJobId { get; set; }
+    // Marks the special "Void Jobs" run per legacy homeControl.js:1224-1285.
+    // Voided jobs land here; it's always displayed as locked and shows a ban
+    // icon prefix in the Runs list. Added by migration 20260717090000.
+    public bool IsVoidRun { get; set; }
 
     public virtual ICollection<TblBulkJobRun> TblBulkJobRuns { get; set; } = new List<TblBulkJobRun>();
 }

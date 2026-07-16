@@ -103,6 +103,7 @@ export function RunList({
     { field: 'jobs', label: 'Jobs', width: 'w-14' },
     { field: 'mins', label: 'Min', width: 'w-14' },
     { field: 'kms', label: 'Km', width: 'w-14' },
+    { field: 'courierPercentage', label: '%', width: 'w-12' },
     { field: 'courierName', label: 'Courier' },
     { field: 'status', label: 'Status', width: 'w-16' },
   ];
@@ -226,6 +227,12 @@ export function RunList({
                   />
                 ) : (
                   <span className="inline-flex items-center gap-1">
+                    {r.isVoidRun && (
+                      <span
+                        className="text-error"
+                        title="Void Jobs run - operators cannot dispatch or modify"
+                      >⊘</span>
+                    )}
                     <span>{r.name}</span>
                     {/* Routing-mode + no-reroute indicator badges. Tooltips
                         spell out the meaning; icons stay compact. */}
@@ -254,10 +261,21 @@ export function RunList({
               <td className="px-2 py-1">{r.jobs.length}</td>
               <td className="px-2 py-1">{r.mins ?? 0}</td>
               <td className="px-2 py-1">{r.kms?.toFixed(1) ?? '0.0'}</td>
-              <td className="px-2 py-1 truncate max-w-32">{r.courierName ?? ''}</td>
+              <td className={`px-2 py-1 ${
+                r.courierPercentage != null && r.courierPercentage * 100 > 75 ? 'text-error font-medium'
+                  : r.courierPercentage != null && r.courierPercentage * 100 > 65 ? 'text-warning font-medium'
+                  : r.courierPercentage != null ? 'text-success font-medium'
+                  : 'text-text-muted'
+              }`}>
+                {r.courierPercentage != null ? `${(r.courierPercentage * 100).toFixed(0)}%` : '-'}
+              </td>
+              {/* Preassigned CSS class per legacy runList.tpl:31 - a light amber
+                  background when the run's Status = 18 (dispatcher has pre-
+                  attached a courier before the operator locked the run). */}
+              <td className={`px-2 py-1 truncate max-w-32 ${r.status === 18 ? 'bg-warning-bg' : ''}`}>{r.courierName ?? ''}</td>
               <td className="px-2 py-1">
                 <StatusBadge
-                  label={r.status && r.status > 0 ? 'Locked' : 'Building'}
+                  label={r.status && r.status > 0 ? 'Locked' : 'Ready'}
                   kind={r.status && r.status > 0 ? 'success' : 'info'}
                 />
               </td>

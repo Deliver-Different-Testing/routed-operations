@@ -18,6 +18,9 @@ interface Props {
   onAddToRun: (jobId: number, runId: number) => void;
   onRemoveFromRun: (jobId: number) => void;
   onTransferToRun: (jobId: number, fromRunId: number | null, toRunId: number) => void;
+  // Optional Set End - only shown when the pin belongs to a real run (runId
+  // is non-null). Legacy analogue: setJobEndFromMap in HereMap.tpl:144-148.
+  onSetEnd?: (jobId: number, runId: number) => void;
 }
 
 /**
@@ -34,6 +37,7 @@ export function MapContextMenu({
   onAddToRun,
   onRemoveFromRun,
   onTransferToRun,
+  onSetEnd,
 }: Props) {
   useEffect(() => {
     if (!target) return;
@@ -72,6 +76,12 @@ export function MapContextMenu({
 
       {target.runId != null ? (
         <>
+          {onSetEnd && (
+            <MenuItem
+              label="Set as end point"
+              onClick={() => { onSetEnd(target.bulkJobId, target.runId!); onClose(); }}
+            />
+          )}
           <MenuItem
             label="Remove from current run"
             danger

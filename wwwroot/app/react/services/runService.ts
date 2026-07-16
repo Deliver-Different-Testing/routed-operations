@@ -64,6 +64,15 @@ export const runService = {
       method: 'DELETE',
     }),
 
+  setJobStartEnd: (runId: number, jobId: number, opts: { isStart?: boolean; isEnd?: boolean }) =>
+    request<{ response: { result: string; message: string } }>(`/runs/${runId}/jobs/${jobId}/start-end`, {
+      method: 'POST',
+      body: JSON.stringify({
+        isStart: opts.isStart,
+        isEnd: opts.isEnd,
+      }),
+    }),
+
   dispatch: (runs: InsertOrUpdateRunBody[]) =>
     request<{ response: { result: string; message: string | null }[] }>('/runs/dispatch', {
       method: 'POST',

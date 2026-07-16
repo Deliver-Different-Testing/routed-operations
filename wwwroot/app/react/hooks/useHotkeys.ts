@@ -17,6 +17,11 @@ export interface Hotkeys {
   onSelectAll?: () => void;
   onEscape?: () => void;
   onDelete?: () => void;
+  // Enter key inside inputs = native form-submit, so we only fire this when
+  // no input is focused. Handler should trigger the currently open modal's
+  // primary button (Save / Build / Confirm / etc). Legacy analogue:
+  // gather.submit() bound to the Enter hotkey.
+  onEnter?: () => void;
 }
 
 export function useHotkeys(bindings: Hotkeys) {
@@ -64,9 +69,16 @@ export function useHotkeys(bindings: Hotkeys) {
         }
         return;
       }
+      if (e.key === 'Enter') {
+        if (bindings.onEnter) {
+          e.preventDefault();
+          bindings.onEnter();
+        }
+        return;
+      }
     };
 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [bindings.onDispatch, bindings.onSelectAll, bindings.onEscape, bindings.onDelete]);
+  }, [bindings.onDispatch, bindings.onSelectAll, bindings.onEscape, bindings.onDelete, bindings.onEnter]);
 }

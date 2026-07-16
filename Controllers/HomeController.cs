@@ -14,7 +14,8 @@ public record AppUserBootstrap(
     string? TimeZone,
     string? CountryCode,
     bool IsUsTenant,
-    string? HereMapsApiKey);
+    string? HereMapsApiKey,
+    string? GoogleMapsKey);
 
 /// <summary>
 /// SPA fallback + tenant claim enrichment. Also seeds the tenant Despatch
@@ -78,7 +79,8 @@ public class HomeController(
             TimeZone: timeZone,
             CountryCode: countryCode,
             IsUsTenant: string.Equals(countryCode, "US", StringComparison.OrdinalIgnoreCase),
-            HereMapsApiKey: appSettings.HereMapsApiKey);
+            HereMapsApiKey: appSettings.HereMapsApiKey,
+            GoogleMapsKey: appSettings.GoogleMapsKey);
 
         return View(bootstrap);
     }

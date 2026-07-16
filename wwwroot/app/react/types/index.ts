@@ -9,15 +9,19 @@ export interface AppUser {
   countryCode: string | null;
   isUsTenant: boolean;
   hereMapsApiKey: string | null;
+  googleMapsKey: string | null;
 }
 
 declare global {
   interface Window {
     __APP_USER__?: AppUser;
-    // HERE Maps JS API loads at Views/Home/Index.cshtml, exposes global H.
-    // Typed as `any` on purpose - HERE doesn't ship a TS package, and the
-    // cockpit only uses a handful of factory calls we type inline.
+    // HERE Maps JS API - still loaded by the Razor host for the Fix GPS modal
+    // geocoding path. Cockpit map switched to Google Maps for parity with
+    // legacy RunBuilder.
     H?: any;
+    // Google Maps JS API loaded by the Razor host when GoogleMapsKey is set.
+    // Typed as `any` because the SDK's own types aren't imported.
+    google?: any;
   }
 }
 
@@ -124,6 +128,20 @@ export interface RunJob {
   bulkJobId: number;
   builderIndex: number | null;
   jobNumber: string | null;
+  // Per-run-per-job start / end markers (legacy runBuilder.tpl:50-54).
+  isStart: boolean;
+  isEnd: boolean;
+  // Enriched fields the Run Builder pane displays.
+  clientCode: string | null;
+  deliveryDate: string | null;
+  bookTime: string | null;
+  toAddress: string | null;
+  toSuburb: string | null;
+  toPostCode: number | null;
+  courierName: string | null;
+  speedName: string | null;
+  deliveryLatitude: string | null;
+  amount: number | null;
 }
 
 export interface Run {
@@ -144,6 +162,8 @@ export interface Run {
   noReroute: boolean;
   routingMode: number;              // 0=A-B, 1=A-A, 2=FinishAtStop
   finishAtBulkJobId: number | null; // only meaningful when routingMode === 2
+  // Marks the special "Void Jobs" run. Rendered locked with a ban icon.
+  isVoidRun: boolean;
   jobs: RunJob[];
 }
 

@@ -12,6 +12,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
     <div
       className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40"
       onClick={onClose}
+      data-modal-open="true"
     >
       <div
         className="bg-surface-white rounded-lg shadow-lg max-w-lg w-full mx-4"

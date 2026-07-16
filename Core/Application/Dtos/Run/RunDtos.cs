@@ -23,6 +23,9 @@ public class RunDto
     public bool NoReroute { get; set; }
     public byte RoutingMode { get; set; }
     public int? FinishAtBulkJobId { get; set; }
+    // Special "Void Jobs" run marker per legacy homeControl.js:1259.
+    // Always rendered locked, with a ban icon prefix.
+    public bool IsVoidRun { get; set; }
     public List<RunJobDto> Jobs { get; set; } = new();
 }
 
@@ -31,6 +34,22 @@ public class RunJobDto
     public int BulkJobId { get; set; }
     public int? BuilderIndex { get; set; }
     public string? JobNumber { get; set; }
+    // Per-run-per-job start/end markers per legacy runBuilder.tpl:50-54.
+    public bool IsStart { get; set; }
+    public bool IsEnd { get; set; }
+    // Extra display fields the Run Builder pane surfaces so operators see the
+    // full row context, not just Job # + Order. Legacy runBuilder.tpl:56-65.
+    public string? ClientCode { get; set; }
+    public DateTime? DeliveryDate { get; set; }
+    public string? BookTime { get; set; }
+    public string? ToAddress { get; set; }
+    public string? ToSuburb { get; set; }
+    public int? ToPostCode { get; set; }
+    public string? CourierName { get; set; }
+    public string? SpeedName { get; set; }
+    public string? DeliveryLatitude { get; set; }
+    // Job amount is used by the Run Builder totals (Revenue = SUM of Amount).
+    public decimal? Amount { get; set; }
 }
 
 public class CourierRefDto
@@ -74,6 +93,14 @@ public class UpdateJobToRunRequest
     public int JobId { get; set; }
     public int? FromRunId { get; set; }
     public int RunId { get; set; }
+}
+
+public class SetJobStartEndRequest
+{
+    // Either flag can be null - service only updates the flags that are set.
+    // Setting IsStart = true clears any other start on the run; same for IsEnd.
+    public bool? IsStart { get; set; }
+    public bool? IsEnd { get; set; }
 }
 
 public class DispatchRunsRequest

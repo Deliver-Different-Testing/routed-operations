@@ -1,17 +1,57 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Run, RunJob } from '../../types';
 import { Panel } from '../common/Panel';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
+import { runBuilderTotals } from '../../lib/runFinancials';
 
 interface Props {
   run: Run | null;
   onRemoveJob: (jobId: number) => void;
   onOptimize: () => void;
-  onContextMenuItems?: (job: RunJob, run: Run) => ContextMenuItem[];
+  onToggleStart?: (job: RunJob, run: Run) => void;
+  onToggleEnd?: (job: RunJob, run: Run) => void;
+  onVoidJob?: (job: RunJob, run: Run) => void;
+  onUnvoidJob?: (job: RunJob, run: Run) => void;
 }
 
-export function RunBuilder({ run, onRemoveJob, onOptimize, onContextMenuItems }: Props) {
+/**
+ * Run Builder pane. Direct port of the legacy runBuilder.tpl (columns) +
+ * runBuilderTotals (calculator strip) + the runBuilderMenu context items.
+ *
+ * Columns (legacy runBuilder.tpl:50-65):
+ *   icons  (isStart play / isEnd flag-checkered)
+ *   Client
+ *   Job #
+ *   D Date
+ *   R Time
+ *   To (address, red if !toLat)
+ *   Suburb
+ *   ZipCode
+ *   Courier
+ *   Speed
+ *   Order (BuilderIndex)
+ *
+ * Calculator strip (legacy runBuilder.tpl:18-41):
+ *   Total Mins | Total KMs | Total Drops | Hour % | Revenue | Total Exp |
+ *   Courier %  (green <=65, orange 66-75, red >75) | Hourly Rate ($25 hardcoded) |
+ *   Total Payout
+ *
+ * Row context menu (legacy runBuilderMenu, homeControl.js:1120-1178):
+ *   Toggle end point | Toggle start point | Remove | Void  (regular run)
+ *   Un-void                                                  (Void Jobs run)
+ */
+export function RunBuilder({
+  run,
+  onRemoveJob,
+  onOptimize,
+  onToggleStart,
+  onToggleEnd,
+  onVoidJob,
+  onUnvoidJob,
+}: Props) {
   const [ctx, setCtx] = useState<{ x: number; y: number; job: RunJob } | null>(null);
+
+  const totals = useMemo(() => run ? runBuilderTotals(run) : null, [run]);
 
   if (!run) {
     return (
@@ -23,60 +63,135 @@ export function RunBuilder({ run, onRemoveJob, onOptimize, onContextMenuItems }:
     );
   }
 
+  const contextItems = (job: RunJob): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [];
+    if (run.isVoidRun) {
+      if (onUnvoidJob) items.push({ label: 'Un-void job', onClick: () => onUnvoidJob(job, run) });
+    } else {
+      if (onToggleEnd) items.push({
+        label: job.isEnd ? 'Clear end point' : 'Set as end point',
+        onClick: () => onToggleEnd(job, run),
+      });
+      if (onToggleStart) items.push({
+        label: job.isStart ? 'Clear start point' : 'Set as start point',
+        onClick: () => onToggleStart(job, run),
+      });
+      items.push({ label: 'Remove from run', onClick: () => onRemoveJob(job.bulkJobId), danger: true, separatorAfter: true });
+      if (onVoidJob) items.push({ label: 'Void job', onClick: () => onVoidJob(job, run), danger: true });
+    }
+    return items;
+  };
+
+  const courierPctClass =
+    totals && totals.courierPct != null
+      ? totals.courierPct > 75
+        ? 'text-error'
+        : totals.courierPct > 65
+        ? 'text-warning'
+        : 'text-success'
+      : 'text-text-muted';
+
   return (
     <Panel
-      title={`Run: ${run.name}`}
+      title={run.isVoidRun ? `Run: ${run.name}` : `Run: ${run.name}`}
       actions={
         <button
           type="button"
           onClick={onOptimize}
-          disabled={run.jobs.length < 2}
+          disabled={run.jobs.length < 2 || run.isVoidRun}
           className="px-2 py-0.5 text-xs bg-brand-purple text-white rounded disabled:opacity-50"
-          title={run.jobs.length < 2 ? 'Need 2+ jobs to optimise' : 'Optimise sequence via RouteSavvy'}
+          title={
+            run.isVoidRun ? 'Cannot optimise a Void Jobs run'
+              : run.jobs.length < 2 ? 'Need 2+ jobs to optimise'
+              : 'Optimise sequence via HERE / RouteSavvy'
+          }
         >
           Optimise
         </button>
       }
     >
+      {/* Calculator strip (legacy runBuilder.tpl:18-41) */}
+      {totals && !run.isVoidRun && (
+        <div className="grid grid-cols-9 gap-1 px-2 py-1 bg-surface-cream border-b border-border-light text-[11px]">
+          <Stat label="Mins" value={String(run.mins ?? 0)} />
+          <Stat label="Kms" value={(run.kms ?? 0).toFixed(1)} />
+          <Stat label="Drops" value={String(run.jobs.length)} />
+          <Stat label="Hour %" value={`${totals.hourPct.toFixed(0)}%`} />
+          <Stat label="Revenue" value={`$${totals.revenue.toFixed(0)}`} />
+          <Stat label="Exp" value={`$${totals.exp.toFixed(0)}`} />
+          <Stat
+            label="Cour %"
+            value={totals.courierPct != null ? `${totals.courierPct.toFixed(0)}%` : '-'}
+            valueClass={courierPctClass}
+          />
+          <Stat label="Rate" value="$25.00" />
+          <Stat label="Payout" value={`$${totals.payout.toFixed(0)}`} />
+        </div>
+      )}
+
       <table className="w-full text-xs">
         <thead className="bg-surface-cream sticky top-0">
           <tr className="text-left text-text-muted">
-            <th className="px-2 py-1 w-10">Order</th>
-            <th className="px-2 py-1">Job #</th>
-            <th className="px-2 py-1">Job ID</th>
-            <th className="px-2 py-1 w-16"></th>
+            <th className="px-1 py-1 w-6"></th>
+            <th className="px-1 py-1 w-8">#</th>
+            <th className="px-1 py-1">Client</th>
+            <th className="px-1 py-1">Job #</th>
+            <th className="px-1 py-1">Time</th>
+            <th className="px-1 py-1">To</th>
+            <th className="px-1 py-1">Suburb</th>
+            <th className="px-1 py-1">Zip</th>
+            <th className="px-1 py-1">Courier</th>
+            <th className="px-1 py-1">Speed</th>
+            <th className="px-1 py-1 w-12"></th>
           </tr>
         </thead>
         <tbody>
-          {run.jobs.map((j) => (
-            <tr
-              key={j.bulkJobId}
-              className="border-t border-border-light hover:bg-surface-cream"
-              onContextMenu={(e) => {
-                if (!onContextMenuItems) return;
-                e.preventDefault();
-                setCtx({ x: e.clientX, y: e.clientY, job: j });
-              }}
-              title={onContextMenuItems ? 'Right-click for more actions' : undefined}
-            >
-              <td className="px-2 py-1">{j.builderIndex ?? '-'}</td>
-              <td className="px-2 py-1 font-medium">{j.jobNumber}</td>
-              <td className="px-2 py-1">{j.bulkJobId}</td>
-              <td className="px-2 py-1">
-                <button
-                  type="button"
-                  onClick={() => onRemoveJob(j.bulkJobId)}
-                  className="text-xs text-error hover:underline"
-                  title="Remove from run"
-                >
-                  Remove
-                </button>
-              </td>
-            </tr>
-          ))}
+          {run.jobs.map((j) => {
+            const missingGps = !j.deliveryLatitude;
+            return (
+              <tr
+                key={j.bulkJobId}
+                className={`border-t border-border-light hover:bg-surface-cream ${
+                  missingGps ? 'text-error' : ''
+                }`}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setCtx({ x: e.clientX, y: e.clientY, job: j });
+                }}
+                title="Right-click for more actions"
+              >
+                <td className="px-1 py-1">
+                  {j.isStart && <span title="Start point" className="text-brand-cyan">▶</span>}
+                  {j.isEnd && <span title="End point" className="text-brand-orange">⚑</span>}
+                </td>
+                <td className="px-1 py-1">{j.builderIndex ?? '-'}</td>
+                <td className="px-1 py-1">{j.clientCode ?? ''}</td>
+                <td className="px-1 py-1 font-medium">
+                  {j.jobNumber}
+                  {missingGps && <span title="Missing GPS coordinates" className="ml-1">!</span>}
+                </td>
+                <td className="px-1 py-1">{formatTime(j.bookTime)}</td>
+                <td className="px-1 py-1 truncate max-w-32">{j.toAddress ?? ''}</td>
+                <td className="px-1 py-1">{j.toSuburb ?? ''}</td>
+                <td className="px-1 py-1">{j.toPostCode ?? ''}</td>
+                <td className="px-1 py-1 truncate max-w-24">{j.courierName ?? ''}</td>
+                <td className="px-1 py-1 truncate max-w-24">{j.speedName ?? ''}</td>
+                <td className="px-1 py-1">
+                  <button
+                    type="button"
+                    onClick={() => onRemoveJob(j.bulkJobId)}
+                    className="text-xs text-error hover:underline"
+                    title="Remove from run"
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
           {run.jobs.length === 0 && (
             <tr>
-              <td colSpan={4} className="px-2 py-4 text-center text-text-muted">
+              <td colSpan={11} className="px-2 py-4 text-center text-text-muted">
                 Run is empty. Select jobs in the Jobs pane and use the "+ job(s)" button on this run.
               </td>
             </tr>
@@ -87,9 +202,30 @@ export function RunBuilder({ run, onRemoveJob, onOptimize, onContextMenuItems }:
         clientX={ctx?.x ?? null}
         clientY={ctx?.y ?? null}
         title={ctx ? `Job ${ctx.job.jobNumber}` : undefined}
-        items={ctx && onContextMenuItems ? onContextMenuItems(ctx.job, run) : []}
+        items={ctx ? contextItems(ctx.job) : []}
         onClose={() => setCtx(null)}
       />
     </Panel>
   );
+}
+
+function Stat({ label, value, valueClass }: { label: string; value: string; valueClass?: string }) {
+  return (
+    <div className="flex flex-col items-center">
+      <span className="text-text-muted uppercase tracking-wide text-[9px]">{label}</span>
+      <span className={`font-semibold ${valueClass ?? 'text-text-primary'}`}>{value}</span>
+    </div>
+  );
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return '';
+  // RunJobDto.BookTime arrives as "HH:MM:SS" (see RunService.cs projection).
+  // BulkJobDto.bookTime arrives as an ISO datetime string. Handle both.
+  if (/^\d{2}:\d{2}/.test(iso)) return iso.slice(0, 5);
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  } catch { return ''; }
 }

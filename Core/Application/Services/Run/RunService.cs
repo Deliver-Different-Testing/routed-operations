@@ -87,9 +87,32 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var runs = await runQuery.ToListAsync();
 
         var courierIds = runs.Where(r => r.CourierId.HasValue).Select(r => r.CourierId!.Value).ToList();
+        // Add every per-job courier id too so the Run Builder pane can render
+        // the Courier column on each row without a second round-trip.
+        var jobCourierIds = jobs.Where(j => j.CourierId.HasValue).Select(j => j.CourierId!.Value).Distinct();
+        var allCourierIds = courierIds.Concat(jobCourierIds).Distinct().ToList();
         var couriers = await Context.TucCouriers
-            .Where(c => courierIds.Contains(c.UccrId))
+            .Where(c => allCourierIds.Contains(c.UccrId))
             .ToListAsync();
+        var courierById = couriers.ToDictionary(c => c.UccrId, c => (c.Code + " " + c.UccrName).Trim());
+
+        // Speed name lookup for the Run Builder Speed column.
+        var speedIds = jobs.Select(j => j.Speed).Distinct().ToList();
+        var speedNames = await Context.TucJobTypes
+            .Where(s => speedIds.Contains(s.UcjtId))
+            .ToDictionaryAsync(s => s.UcjtId, s => s.UcjtName);
+
+        // Per-run-per-job IsStart / IsEnd flags. Loaded once, indexed by
+        // (BulkJobId, RunId) so the per-run projection can pick them up.
+        var runIds = runs.Select(r => r.Id).ToList();
+        var jobRuns = await Context.TblBulkJobRuns
+            .Where(jr => jr.RunId.HasValue && runIds.Contains(jr.RunId.Value)
+                      && jr.BulkJobId.HasValue)
+            .Select(jr => new { jr.BulkJobId, jr.RunId, jr.IsStart, jr.IsEnd })
+            .ToListAsync();
+        var startEndByRunJob = jobRuns.ToDictionary(
+            x => (x.RunId!.Value, x.BulkJobId!.Value),
+            x => (x.IsStart, x.IsEnd));
 
         return runs
             .Select(r => new RunDto
@@ -99,8 +122,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 Mins = r.Mins,
                 Kms = r.Kms,
                 CourierId = r.CourierId,
-                CourierName = couriers.FirstOrDefault(c => c.UccrId == r.CourierId) is { } c
-                    ? (c.Code + " " + c.UccrName).Trim()
+                CourierName = r.CourierId.HasValue && courierById.TryGetValue(r.CourierId.Value, out var cn)
+                    ? cn
                     : null,
                 Status = r.Status,
                 Revenue = r.Revenue,
@@ -111,6 +134,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 NoReroute = r.NoReroute,
                 RoutingMode = r.RoutingMode,
                 FinishAtBulkJobId = r.FinishAtBulkJobId,
+                IsVoidRun = r.IsVoidRun,
                 // Filter out invisible parent EH/HD jobs so the Run Builder
                 // panel only shows the child rows the operator can actually see
                 // in the Jobs list. Matches the parent filter in JobService.
@@ -122,7 +146,21 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                     {
                         BulkJobId = j.BulkJobId,
                         BuilderIndex = j.RunOrder,
-                        JobNumber = j.JobNumber
+                        JobNumber = j.JobNumber,
+                        IsStart = startEndByRunJob.TryGetValue((r.Id, j.BulkJobId), out var se) && se.IsStart,
+                        IsEnd = startEndByRunJob.TryGetValue((r.Id, j.BulkJobId), out var se2) && se2.IsEnd,
+                        ClientCode = j.ClientCode,
+                        DeliveryDate = j.BookDate,
+                        BookTime = j.BookTime.ToString("HH:mm:ss"),
+                        ToAddress = j.ToAddress,
+                        ToSuburb = j.ToSuburb,
+                        ToPostCode = j.ToPostCode,
+                        CourierName = j.CourierId.HasValue && courierById.TryGetValue(j.CourierId.Value, out var jcn)
+                            ? jcn
+                            : null,
+                        SpeedName = speedNames.TryGetValue(j.Speed, out var sn) ? sn : null,
+                        DeliveryLatitude = j.DeliveryLatitude,
+                        Amount = j.Amount,
                     })
                     .ToList()
             })
@@ -305,6 +343,46 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var jobRow = await Context.TblBulkJobs.FindAsync(jobId);
         if (jobRow != null) jobRow.BulkRunId = runId;
 
+        await Context.SaveChangesAsync();
+        return ("Success", jobId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Set (or clear) the isStart / isEnd flags on a single tblBulkJobRun row.
+    /// Legacy analogue: $scope.setJobEndFromMap / setJobStartFromMap +
+    /// runBuilderMenu Toggle end point / Toggle start point.
+    /// Only one row per run can be flagged Start; same for End. Setting one
+    /// clears any previous Start (or End) on the same run.
+    /// </summary>
+    public async Task<(string Result, string Message)> SetJobStartEndAsync(int runId, int jobId, bool? isStart, bool? isEnd)
+    {
+        var jobRuns = await Context.TblBulkJobRuns
+            .Where(jr => jr.RunId == runId)
+            .ToListAsync();
+        var target = jobRuns.FirstOrDefault(x => x.BulkJobId == jobId);
+        if (target == null) return ("Failed", "Job is not on the run");
+
+        if (isStart.HasValue)
+        {
+            var newValue = isStart.Value;
+            // Clear any other start on this run first.
+            if (newValue)
+            {
+                foreach (var jr in jobRuns.Where(x => x.BulkJobId != jobId && x.IsStart))
+                    jr.IsStart = false;
+            }
+            target.IsStart = newValue;
+        }
+        if (isEnd.HasValue)
+        {
+            var newValue = isEnd.Value;
+            if (newValue)
+            {
+                foreach (var jr in jobRuns.Where(x => x.BulkJobId != jobId && x.IsEnd))
+                    jr.IsEnd = false;
+            }
+            target.IsEnd = newValue;
+        }
         await Context.SaveChangesAsync();
         return ("Success", jobId.ToString(CultureInfo.InvariantCulture));
     }

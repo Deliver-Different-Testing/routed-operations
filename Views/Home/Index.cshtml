@@ -13,14 +13,22 @@
     <title>Routed Operations</title>
     <link rel="icon" href="/favicon.ico" />
     <link rel="stylesheet" href="/dist/app.css" />
-    <!-- HERE Maps JS v3 - the cockpit map surface loads these on demand and
-         binds against window.H once ready. Also pulls the UI CSS the info
-         bubbles use. -->
+    <!-- HERE Maps JS v3 - still loaded because the Fix GPS modal uses HERE
+         geocoding. The main cockpit map surface uses Google Maps instead
+         (see the script tag below) for parity with the legacy RunBuilder. -->
     <link rel="stylesheet" type="text/css" href="https://js.api.here.com/v3/3.1/mapsjs-ui.css" />
     <script src="https://js.api.here.com/v3/3.1/mapsjs-core.js" type="text/javascript" charset="utf-8"></script>
     <script src="https://js.api.here.com/v3/3.1/mapsjs-service.js" type="text/javascript" charset="utf-8"></script>
     <script src="https://js.api.here.com/v3/3.1/mapsjs-ui.js" type="text/javascript" charset="utf-8"></script>
     <script src="https://js.api.here.com/v3/3.1/mapsjs-mapevents.js" type="text/javascript" charset="utf-8"></script>
+    @if (!string.IsNullOrEmpty(Model?.GoogleMapsKey))
+    {
+        <!-- Google Maps SDK for the cockpit map surface. Matches the legacy
+             RunBuilder which loaded google.maps + Directions + Places. The
+             async attribute lets the SPA mount first; the map component
+             re-checks window.google.maps before rendering. -->
+        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places" async defer></script>
+    }
 </head>
 <body>
     <div id="routed-operations-root"></div>

@@ -61,3 +61,41 @@ export function recalcFromRun(run: Run, minutesPerStop: number, courierPercentag
     courierPercentage,
   });
 }
+
+export interface RunTotals {
+  hourPct: number;
+  revenue: number;
+  exp: number;
+  courierPct: number | null;
+  payout: number;
+}
+
+/**
+ * Display-side totals for the Run Builder calculator strip. Uses the run's
+ * existing mins + kms (server-authoritative after optimise/dispatch) and its
+ * per-job Amount to compute:
+ *   Revenue = sum of job.amount (fallback: mins/60 * RATE if no amounts)
+ *   Exp     = kms * RUN_EXP_PER_KM
+ *   HourPct = (mins / 60) / 8 * 100  (8h working day)
+ *   Payout  = (mins/60 * RATE) * courierPct
+ *   CourPct = payout / revenue * 100
+ * Matches the legacy $scope.calculateRunDetails output the Run Builder
+ * calculator strip renders.
+ */
+export function runBuilderTotals(run: Run): RunTotals {
+  const mins = run.mins ?? 0;
+  const kms = run.kms ?? 0;
+  const revenue = run.jobs.reduce((sum, j) => sum + (j.amount ?? 0), 0)
+    || (mins / 60) * RUN_HOURLY_RATE;
+  const exp = kms * RUN_EXP_PER_KM;
+  const payout = (mins / 60) * RUN_HOURLY_RATE * (run.courierPercentage ?? 0);
+  const courierPct = revenue > 0 ? (payout / revenue) * 100 : null;
+  const hourPct = (mins / 60 / 8) * 100;
+  return {
+    hourPct: Math.max(0, hourPct),
+    revenue,
+    exp,
+    courierPct,
+    payout,
+  };
+}

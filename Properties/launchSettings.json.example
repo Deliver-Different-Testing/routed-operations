@@ -15,7 +15,8 @@
         "PublicPath": "https://hub.local.deliverdifferent.com/Account/login",
         "RouteSavyID": "<ROUTE-SAVVY-APP-ID>",
         "RedisConfig": "<REDIS-HOST>:<PORT>,password=<REDIS-PASSWORD>,ssl=true,abortConnect=false,sslprotocols=tls12",
-        "HeremapApiKey": "<HERE-MAPS-API-KEY>"
+        "HeremapApiKey": "<HERE-MAPS-API-KEY>",
+        "GoogleMapsKey": "<GOOGLE-MAPS-JS-API-KEY>"
       }
     },
     "IIS Express": {
@@ -29,7 +30,8 @@
         "PublicPath": "https://hub.local.deliverdifferent.com/Account/login",
         "RouteSavyID": "<ROUTE-SAVVY-APP-ID>",
         "RedisConfig": "<REDIS-HOST>:<PORT>,password=<REDIS-PASSWORD>,ssl=true,abortConnect=false,sslprotocols=tls12",
-        "HeremapApiKey": "<HERE-MAPS-API-KEY>"
+        "HeremapApiKey": "<HERE-MAPS-API-KEY>",
+        "GoogleMapsKey": "<GOOGLE-MAPS-JS-API-KEY>"
       }
     }
   },

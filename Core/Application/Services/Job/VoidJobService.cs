@@ -49,12 +49,29 @@ public class VoidJobService(IDbContextFactory<DynamicDespatchDbContext> contextF
                         Name = "Void Jobs",
                         Mins = 0,
                         Kms = 0,
-                        Status = 0,
+                        // Void Jobs run must be locked (Status = 1) so it never
+                        // appears in the operator's Ready list and so its jobs
+                        // stay pinned. Matches legacy homeControl.js:1259
+                        // ("locked=1 always" on the Void Jobs run).
+                        Status = 1,
+                        // IsVoidRun distinguishes it from a real dispatched
+                        // run in the RunList render. Migration 20260717090000
+                        // adds this column with a safe DEFAULT 0 so legacy
+                        // rows stay unchanged.
+                        IsVoidRun = true,
                         DespatchDateTime = runDate,
                         Created = DateTime.Now,
                         LastModified = DateTime.Now
                     };
                     Context.TblBulkRuns.Add(voidRun);
+                    await Context.SaveChangesAsync();
+                }
+                else if (!voidRun.IsVoidRun || voidRun.Status != 1)
+                {
+                    // Existing run created before the migration - upgrade in
+                    // place so its display / lock behaviour matches spec.
+                    voidRun.IsVoidRun = true;
+                    voidRun.Status = 1;
                     await Context.SaveChangesAsync();
                 }
 
