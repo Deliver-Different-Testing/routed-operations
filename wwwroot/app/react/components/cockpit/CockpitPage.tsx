@@ -151,6 +151,14 @@ export function CockpitPage() {
   const selectedJob = state.jobs.find((j) => j.bulkJobId === state.selectedJobId) ?? null;
   const selectedRun = state.runs.find((r) => r.id === state.selectedRunId) ?? null;
 
+  // For Del-key path: if selectedJob is null but the id is on a run, expose
+  // that run id so the hotkey can call handleRemoveJobFromRun on it. Jobs on
+  // runs are filtered out of state.jobs by the Jobs-list rules but they still
+  // live under state.runs[i].jobs.
+  const selectedJobRunId = state.selectedJobId != null && selectedJob == null
+    ? state.runs.find((r) => r.jobs.some((j) => j.bulkJobId === state.selectedJobId))?.id ?? null
+    : null;
+
   // ---- filters --------------------------------------------------------------
   const handleSyncHd = async () => {
     try {
@@ -182,10 +190,16 @@ export function CockpitPage() {
     }
   };
 
-  const handleVoid = async (isVoid: boolean) => {
-    if (state.selectedJobIds.length === 0) return;
-    const expanded = expandMultiboxSiblings(state.selectedJobIds, state.jobs);
-    const hasFamily = expanded.length > state.selectedJobIds.length;
+  // Void or un-void an explicit list of job ids. Callers that read from the
+  // multi-select must pass state.selectedJobIds directly - do NOT dispatch a
+  // REPLACE_MULTISELECT and then call this without the ids, because the
+  // dispatch is async-batched and the closure would read the stale count.
+  // Handles multibox expansion + relationship dialog + plain-confirm fallback
+  // in one place.
+  const voidWithIds = async (ids: number[], isVoid: boolean) => {
+    if (ids.length === 0) return;
+    const expanded = expandMultiboxSiblings(ids, state.jobs);
+    const hasFamily = expanded.length > ids.length;
     // Legacy showVoidRelationshipDialog: only prompt when there's a family to
     // choose from. Single-job or already-full-family selections skip the
     // dialog and use a plain confirm.
@@ -193,16 +207,20 @@ export function CockpitPage() {
       const jobNumbersById = new Map<number, string>();
       state.jobs.forEach((j) => jobNumbersById.set(j.bulkJobId, j.jobNumber ?? String(j.bulkJobId)));
       setVoidDialog({
-        selectedIds: state.selectedJobIds,
+        selectedIds: ids,
         expandedIds: expanded,
         isVoid,
         jobNumbersById,
       });
       return;
     }
-    if (!confirm(`${isVoid ? 'Void' : 'Un-void'} ${state.selectedJobIds.length} job(s)?`)) return;
-    await executeVoid(state.selectedJobIds, isVoid);
+    if (!confirm(`${isVoid ? 'Void' : 'Un-void'} ${ids.length} job(s)?`)) return;
+    await executeVoid(ids, isVoid);
   };
+
+  // Toolbar path - reads from the multi-select at call time (safe, not a
+  // stale closure because it runs on user click).
+  const handleVoid = (isVoid: boolean) => voidWithIds(state.selectedJobIds, isVoid);
 
   const executeVoid = async (ids: number[], isVoid: boolean) => {
     try {
@@ -394,14 +412,10 @@ export function CockpitPage() {
 
   // Void a single job from within the Run Builder. Uses the same
   // multibox-expanding path as bulk void.
-  const handleVoidRunBuilderJob = async (job: RunJob, _run: Run) => {
-    dispatch({ type: 'REPLACE_MULTISELECT', payload: [job.bulkJobId] });
-    await handleVoid(true);
-  };
-  const handleUnvoidRunBuilderJob = async (job: RunJob, _run: Run) => {
-    dispatch({ type: 'REPLACE_MULTISELECT', payload: [job.bulkJobId] });
-    await handleVoid(false);
-  };
+  const handleVoidRunBuilderJob = async (job: RunJob, _run: Run) =>
+    voidWithIds([job.bulkJobId], true);
+  const handleUnvoidRunBuilderJob = async (job: RunJob, _run: Run) =>
+    voidWithIds([job.bulkJobId], false);
 
   const handleOptimizeRun = async () => {
     if (!selectedRun || selectedRun.jobs.length < 2) return;
@@ -911,8 +925,7 @@ export function CockpitPage() {
     { label: 'Show on map', onClick: () => dispatch({ type: 'SELECT_JOB', payload: job.bulkJobId }) },
     { label: 'Fix GPS...', onClick: () => setGpsFixJob(job), separatorAfter: true },
     { label: `Void job ${job.jobNumber ?? job.bulkJobId}`, onClick: () => {
-      dispatch({ type: 'REPLACE_MULTISELECT', payload: [job.bulkJobId] });
-      void handleVoid(true);
+      void voidWithIds([job.bulkJobId], true);
     }, danger: true },
     ...(job.bulkRunId ? [{
       label: 'Remove from run',
@@ -928,8 +941,7 @@ export function CockpitPage() {
       setBulkMoveOpen(true);
     }, separatorAfter: true },
     { label: `Void all in ${label}`, onClick: () => {
-      dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
-      void handleVoid(true);
+      void voidWithIds(jobIds, true);
     }, danger: true },
   ];
 
@@ -1005,8 +1017,14 @@ export function CockpitPage() {
       else if (state.selectedRunIds.length > 0) dispatch({ type: 'CLEAR_RUN_MULTISELECT' });
     },
     onDelete: () => {
+      // Two paths for Del: selectedJob is a Jobs-list row that has a bulkRunId
+      // (rare - most jobs on runs are filtered out of state.jobs), OR the
+      // selected id lives inside a run's jobs array (the common Run Builder
+      // case). selectedJobRunId covers the second.
       if (selectedJob && selectedJob.bulkRunId) {
         void handleRemoveJobFromRun(selectedJob.bulkJobId);
+      } else if (state.selectedJobId != null && selectedJobRunId != null) {
+        void handleRemoveJobFromRun(state.selectedJobId);
       }
     },
     // Legacy: Enter submits whichever modal is open. In practice each modal
@@ -1184,6 +1202,8 @@ export function CockpitPage() {
               <Panel defaultSize={50} minSize={20}>
                 <RunBuilder
                   run={selectedRun}
+                  selectedJobId={state.selectedJobId}
+                  onSelectJob={(id) => dispatch({ type: 'SELECT_JOB', payload: id })}
                   onRemoveJob={handleRemoveJobFromRun}
                   onOptimize={handleOptimizeRun}
                   onToggleStart={handleToggleStart}
