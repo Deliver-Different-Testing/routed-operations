@@ -26,6 +26,19 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     {
         var jobQuery = Context.TblBulkJobs
             .Where(j => j.BulkRunId.HasValue)
+            // Legacy filters (match UTL_stpJob_tblBulkRunWithFilter):
+            //   ISNULL(Done, 0) = 0
+            //   ISNULL(JobRelationshipTypeID, 0) <> 19  (linehaul siblings)
+            //   NOT EXISTS (LH-job with schedule.InsertToBulk = 0)
+            //   ISNULL(s.AutoBook, 0) = 0  (drop jobs on auto-book schedules)
+            .Where(j => !j.Done)
+            .Where(j => (j.JobRelationshipTypeId ?? 0) != 19)
+            .Where(j => !(j.JobNumber != null && j.JobNumber.Contains("LH")
+                          && Context.TblBulkScheduleLinehauls.Any(lh =>
+                                lh.BulkRunScheduleId == j.ScheduleId
+                                && (lh.InsertToBulk ?? false) == false)))
+            .Where(j => !Context.TblBulkRunSchedules.Any(s =>
+                s.BulkRunScheduleId == j.ScheduleId && (s.AutoBook ?? false) == true))
             .AsQueryable();
 
         if (dateTime.HasValue)
@@ -182,7 +195,13 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 CultureInfo.InvariantCulture) / 100f;
         }
 
-        var googleRouteJson = JsonConvert.SerializeObject(run.GoogleRouteResponse);
+        // Legacy SP accepts nvarchar(max) as-is. Our DTO takes `object?` so the
+        // React caller can send either a live route object OR the already-
+        // serialised string it round-tripped from the last GET. Double-serialise
+        // would wrap the string in an outer set of quotes - guard against it.
+        var googleRouteJson = run.GoogleRouteResponse is string s
+            ? s
+            : JsonConvert.SerializeObject(run.GoogleRouteResponse);
         TblBulkRun? entity;
 
         if (!run.Id.HasValue || run.Id.Value == 0)
@@ -193,7 +212,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 Mins = run.Mins,
                 Kms = run.Kms,
                 CourierId = run.Courier?.CourierId,
-                Status = run.Status,
+                // Legacy SP: ISNULL(@Status, 0) - null defaults to 0 (draft).
+                Status = run.Status ?? 0,
                 Revenue = run.Revenue,
                 Payout = run.Payout,
                 CourierPercentage = courierPercentage,
@@ -218,7 +238,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             entity.Mins = run.Mins;
             entity.Kms = run.Kms;
             entity.CourierId = run.Courier?.CourierId;
-            entity.Status = run.Status;
+            entity.Status = run.Status ?? 0;
             entity.Revenue = run.Revenue;
             entity.Payout = run.Payout;
             entity.CourierPercentage = courierPercentage;
@@ -275,11 +295,13 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         runToUpdate.Mins = run.Mins;
         runToUpdate.Kms = run.Kms;
         runToUpdate.CourierId = run.Courier?.CourierId;
-        runToUpdate.Status = run.Status;
+        runToUpdate.Status = run.Status ?? 0;
         runToUpdate.Revenue = run.Revenue;
         runToUpdate.Payout = run.Payout;
         runToUpdate.CourierPercentage = courierPercentage;
-        runToUpdate.GoogleRouteResponse = JsonConvert.SerializeObject(run.GoogleRouteResponse);
+        runToUpdate.GoogleRouteResponse = run.GoogleRouteResponse is string s
+            ? s
+            : JsonConvert.SerializeObject(run.GoogleRouteResponse);
         if (run.NoReroute.HasValue) runToUpdate.NoReroute = run.NoReroute.Value;
         if (run.RoutingMode.HasValue) runToUpdate.RoutingMode = run.RoutingMode.Value;
         if (run.FinishAtBulkJobId.HasValue || run.RoutingMode == 2)
@@ -300,12 +322,35 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var jobRuns = await Context.TblBulkJobRuns
             .Where(jr => jr.RunId == id)
             .ToListAsync();
+        var jobIds = jobRuns.Where(jr => jr.BulkJobId.HasValue)
+            .Select(jr => jr.BulkJobId!.Value)
+            .Distinct()
+            .ToList();
+
+        // Denormalise the release back onto tblBulkJob so the cockpit's
+        // Jobs list surfaces them again as unbuilt (BulkRunId is what our
+        // displayedJobs filter and legacy inBuilder flag hinge on). Without
+        // this the jobs stay "attached" to the deleted run id and disappear
+        // from every pane. RunOrder is also cleared so the next assign
+        // doesn't inherit a stale sequence number.
+        if (jobIds.Count > 0)
+        {
+            var jobs = await Context.TblBulkJobs
+                .Where(j => jobIds.Contains(j.BulkJobId) && j.BulkRunId == id)
+                .ToListAsync();
+            foreach (var j in jobs)
+            {
+                j.BulkRunId = null;
+                j.RunOrder = null;
+            }
+        }
+
         Context.TblBulkJobRuns.RemoveRange(jobRuns);
         Context.TblBulkRuns.Remove(run);
         await Context.SaveChangesAsync();
 
-        Log.Information("Run {RunName} (id {RunId}) deleted with {JobCount} job links",
-            run.Name, id, jobRuns.Count);
+        Log.Information("Run {RunName} (id {RunId}) deleted; released {JobCount} job(s) back to unbuilt",
+            run.Name, id, jobIds.Count);
         return ("Success", "Deleted");
     }
 
@@ -314,36 +359,44 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// check on fromRunId so simultaneous moves by two operators can't overwrite
     /// each other silently.
     /// </summary>
-    public async Task<(string Result, string Message)> UpdateJobToRunAsync(int jobId, int? fromRunId, int runId)
+    public async Task<(string Result, string Message)> UpdateJobToRunAsync(int jobId, int? fromRunId, int runId, int? pickRunOrder = null)
     {
-        var existing = await Context.TblBulkJobRuns
-            .FirstOrDefaultAsync(x => x.BulkJobId == jobId);
-
-        if (fromRunId.HasValue && existing != null && existing.RunId != fromRunId.Value)
+        // Optimistic-concurrency check on fromRunId. Legacy SP does not do
+        // this but the check helps two-operator scenarios flag conflicts
+        // instead of silently overwriting. Only fires when the caller passes
+        // a fromRunId - single-drop assigns from an unassigned pool skip it.
+        if (fromRunId.HasValue)
         {
-            Log.Warning("UpdateJobToRun conflict: BulkJobId {JobId} expected on run {FromRunId} but is on {ActualRunId}",
-                jobId, fromRunId, existing.RunId);
-            return ("Failed", "Job has been moved by another user. Please refresh.");
+            var existing = await Context.TblBulkJobRuns.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.BulkJobId == jobId);
+            if (existing != null && existing.RunId != fromRunId.Value)
+            {
+                Log.Warning("UpdateJobToRun conflict: BulkJobId {JobId} expected on run {FromRunId} but is on {ActualRunId}",
+                    jobId, fromRunId, existing.RunId);
+                return ("Failed", "Job has been moved by another user. Please refresh.");
+            }
         }
 
-        if (existing != null)
-        {
-            if (existing.RunId != runId) existing.RunId = runId;
-        }
-        else
-        {
-            Context.TblBulkJobRuns.Add(new TblBulkJobRun { BulkJobId = jobId, RunId = runId });
-        }
+        // MERGE + HOLDLOCK on tblBulkJobRun, then mirror onto tblBulkJob. Direct
+        // port of legacy UTL_stpJob_tblBulkJobRun_InsertOrUpdate. Loses the EF
+        // change-tracker but wins the race safety two operators can hit when
+        // moving different jobs onto the same run simultaneously.
+        await Context.Database.ExecuteSqlRawAsync(@"
+            MERGE tblBulkJobRun WITH (HOLDLOCK) AS target
+            USING (SELECT @BulkJobID AS BulkJobID) AS source
+            ON target.BulkJobID = source.BulkJobID
+            WHEN MATCHED THEN
+                UPDATE SET RunID = @RunID, PickRunOrder = @PickRunOrder
+            WHEN NOT MATCHED THEN
+                INSERT (RunID, BulkJobID, PickRunOrder)
+                VALUES (@RunID, @BulkJobID, @PickRunOrder);
 
-        // Denormalise onto tblBulkJob.BulkRunId so read-side filters
-        // (GetBulkRunsAsync + GetBulkJobsAsync's runName join) see the change
-        // immediately, without waiting for a lock/save round-trip. Legacy only
-        // updated the join table here and deferred the denorm until Save-Run,
-        // which surprised operators - keeping both in sync is safer.
-        var jobRow = await Context.TblBulkJobs.FindAsync(jobId);
-        if (jobRow != null) jobRow.BulkRunId = runId;
+            UPDATE tblBulkJob SET BulkRunID = @RunID, RunOrder = @PickRunOrder
+            WHERE BulkJobID = @BulkJobID;",
+            new SqlParameter("@RunID", runId),
+            new SqlParameter("@BulkJobID", jobId),
+            new SqlParameter("@PickRunOrder", (object?)pickRunOrder ?? DBNull.Value));
 
-        await Context.SaveChangesAsync();
         return ("Success", jobId.ToString(CultureInfo.InvariantCulture));
     }
 

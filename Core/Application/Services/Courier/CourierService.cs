@@ -5,22 +5,22 @@ using RoutedOperations.Core.Domain;
 namespace RoutedOperations.Core.Application.Services.Courier;
 
 /// <summary>
-/// Read-side lift of `UTL_stpCourier_Active`. Active = start date reached and
-/// no finish date recorded. Returns each courier joined to its fleet name for
-/// the cockpit's fleet grouping.
+/// Read-side lift of `UTL_stpCourier_Active`. Matches the legacy SP contract
+/// exactly: filter on the `Active` BIT column. Prior implementation used the
+/// UccrStartDate/UccrFinishDate window - kept as a secondary belt-and-braces
+/// guard since some tenants historically clear the Active flag when a courier
+/// finishes rather than setting FinishDate.
 /// </summary>
 public class CourierService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
     : BaseService(contextFactory)
 {
     public async Task<List<CourierDto>> GetActiveAsync()
     {
-        var now = DateTime.Now;
         var query =
             from c in Context.TucCouriers
             join f in Context.TucCourierFleets on c.CourierFleetId equals f.UccfId into fleetJoin
             from f in fleetJoin.DefaultIfEmpty()
-            where c.UccrFinishDate == null
-                  && (c.UccrStartDate == null || c.UccrStartDate <= now)
+            where c.Active
             select new CourierDto
             {
                 CourierId = c.UccrId,

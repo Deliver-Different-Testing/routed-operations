@@ -2,8 +2,10 @@
 // courier table is `tucCourier`, not `tblCourier`. Legacy code aliased it via
 // stored procedure output; here we join it directly.
 //
-// Only the columns RunBuilder uses are declared. There is no `Active` bit on
-// tucCourier - "active" is expressed as `UccrFinishDate IS NULL`.
+// Both `tucCourier` and the older `tblCourier` mirror the same row set on
+// tenants observed to date, and both carry an `Active` BIT. The legacy
+// UTL_stpCourier_Active SP filters on `Active = 1` from tblCourier - we
+// use the same bit on tucCourier for parity.
 #nullable disable
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -31,4 +33,9 @@ public partial class TucCourier
 
     [Column("UccrFinishDate")]
     public DateTime? UccrFinishDate { get; set; }
+
+    // Matches the `Active` BIT the legacy UTL_stpCourier_Active SP filters on.
+    // Non-nullable per DB schema. True = courier appears in the operator's
+    // active picker.
+    public bool Active { get; set; }
 }

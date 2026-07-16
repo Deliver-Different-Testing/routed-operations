@@ -31,6 +31,17 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var query = Context.TblBulkJobs
             .Where(j => !j.Done && !j.Void)
             .Where(j => !Context.TblBulkJobs.Any(child => child.ParentId == j.BulkJobId))
+            // Legacy filter: ISNULL(JobRelationshipTypeID, 0) <> 19 - drops
+            // linehaul-sibling rows the operator should never see in the cockpit.
+            .Where(j => (j.JobRelationshipTypeId ?? 0) != 19)
+            // Legacy filter: NOT EXISTS (linehaul job like '%LH%' whose booked
+            // schedule has an active tblBulkScheduleLinehaul row with InsertToBulk=0).
+            // If the schedule is configured to *not* auto-insert linehaul jobs into
+            // the bulk pool, the LH job should stay hidden from the cockpit.
+            .Where(j => !(j.JobNumber != null && j.JobNumber.Contains("LH")
+                          && Context.TblBulkScheduleLinehauls.Any(lh =>
+                                lh.BulkRunScheduleId == j.ScheduleId
+                                && (lh.InsertToBulk ?? false) == false)))
             .AsQueryable();
 
         if (dateTime.HasValue)
@@ -75,10 +86,22 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             // Booked-against schedule (may be for a different weekday than the target).
             join s in Context.TblBulkRunSchedules on j.ScheduleId equals s.BulkRunScheduleId into schedJoin
             from s in schedJoin.DefaultIfEmpty()
-            // Target-day sibling: same Name + Client + Speed + Region, matching the
-            // build date's weekday, non-autobook. This is the row whose StartTime/
-            // EndTime become the run's effective delivery window.
-            join sw in Context.TblBulkRunSchedules on new
+            // Target-day sibling: same Name + Client + Speed + Region, matching
+            // the build date's weekday. Legacy SP uses OUTER APPLY TOP(1) with
+            // a two-key ORDER BY: prefer sibling windows that contain BookTime,
+            // else fall back to smallest BulkRunScheduleId. That deterministic
+            // tiebreak matters when multiple sibling rows exist for the same
+            // composite key - EF's join could otherwise return a non-window
+            // row and jitter the Delivery Window on the UI.
+            //
+            // We approximate the SP contract with two LEFT JOINs + a client-side
+            // pick: candidate sibling rows are the same composite key + weekday
+            // + AutoBook=0. If any candidate window contains the job's BookTime
+            // we pick that; otherwise the smallest BulkRunScheduleId wins. See
+            // materialisation loop below.
+            join sw in Context.TblBulkRunSchedules
+                .Where(x => (x.AutoBook ?? false) == false)
+                on new
                 {
                     Name = s != null ? s.Name : null,
                     ClientId = s != null ? s.ClientId : (int?)null,
@@ -173,7 +196,9 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                                 : 0m))
                         * (bji.Items ?? 0))
                     .Sum(),
-                MaxJobsPerRun = cli != null ? cli.MaxJobsPerRun : (int?)null,
+                // Legacy SP: ISNULL(client.MaxJobsPerRun, 20). Apply the same
+                // fallback here so the DTO carries the operator-visible cap.
+                MaxJobsPerRun = cli != null && cli.MaxJobsPerRun.HasValue ? cli.MaxJobsPerRun.Value : (int?)20,
                 // Pickup-cutoff hint from the target-day schedule sibling (sw).
                 // Falls back to null when no schedule row applies - the
                 // client-side build config only enforces the cap when both a

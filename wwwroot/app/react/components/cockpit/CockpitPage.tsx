@@ -115,7 +115,13 @@ export function CockpitPage() {
     // assigned to a run (BulkRunID set) disappear from the Jobs list, so
     // operators see only what's still up for grabs. Void filter is handled
     // server-side in GetBulkJobsAsync.
-    let out = state.jobs.filter((j) => j.bulkRunId == null);
+    //
+    // Also treat orphaned BulkRunIds (job points at a run id that no longer
+    // exists in state.runs, e.g. because a previous delete didn't cascade-
+    // null the denorm) as unassigned. Without this, deleted-run jobs vanish
+    // entirely - user reported this after doing manual deletes.
+    const knownRunIds = new Set(state.runs.map((r) => r.id));
+    let out = state.jobs.filter((j) => j.bulkRunId == null || !knownRunIds.has(j.bulkRunId));
     if (state.sizeFilter === 'moreThan100Cubic') {
       out = out.filter((j) => (j.jobCubicM3 ?? 0) > 100);
     }
