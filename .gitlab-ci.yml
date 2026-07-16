@@ -1,18 +1,24 @@
 include:
   - project: 'urgent-couriers/ci-templates'
-    ref: master
-    file:
-      - '.gitlab-ci.yml'
+    file: 'ci-template.yml'
+    ref: 'main'
 
-test:frontend:lint:
-  stage: test
-  image: node:20-alpine
+variables:
+  DOTNET_VERSION: "10.0"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+
+# Frontend type-check gate. The SPA is built by the Dockerfile during the
+# image build; this job fails the pipeline fast on a TypeScript error before
+# the (slower) dockerize + deploy stages run. Mirrors the stack convention of
+# keeping the app's own test/lint jobs in the templating stage.
+test:frontend:
+  stage: templating
+  image: node:22-alpine
+  allow_failure: false
   script:
     - npm ci --prefer-offline --no-audit --no-fund
-    - npm run type-check --if-present
-    - npm run lint --if-present
-  only:
-    refs:
-      - merge_requests
-    variables:
-      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/
+    - npm run type-check
+  rules:
+    - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/
+    - if: $CI_COMMIT_BRANCH == "master"
