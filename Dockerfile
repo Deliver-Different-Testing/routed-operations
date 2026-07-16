@@ -10,7 +10,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
 # Cache NuGet deps
-COPY *.csproj ./
+COPY *.csproj nuget.config ./
 RUN dotnet restore
 
 # Copy the rest of the source and build the SPA + backend
