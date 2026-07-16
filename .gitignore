@@ -1,0 +1,22 @@
+## dotnet
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+## secrets - dev launchSettings holds SQLCredentials + Redis pw + HERE API key.
+## A .example file next to it shows the shape for new devs.
+/Properties/launchSettings.json
+
+## node / vite
+node_modules/
+wwwroot/dist/
+
+## misc
+.env
+.env.local
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store

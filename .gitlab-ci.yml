@@ -1,0 +1,18 @@
+include:
+  - project: 'urgent-couriers/ci-templates'
+    ref: master
+    file:
+      - '.gitlab-ci.yml'
+
+test:frontend:lint:
+  stage: test
+  image: node:20-alpine
+  script:
+    - npm ci --prefer-offline --no-audit --no-fund
+    - npm run type-check --if-present
+    - npm run lint --if-present
+  only:
+    refs:
+      - merge_requests
+    variables:
+      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/

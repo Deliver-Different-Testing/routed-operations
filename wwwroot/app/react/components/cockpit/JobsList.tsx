@@ -1,0 +1,169 @@
+import { useState } from 'react';
+import type { BulkJob } from '../../types';
+import { Panel } from '../common/Panel';
+import type { JobSizeFilter, ListSort } from './CockpitState';
+import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
+import { sortIndicator, nextSortDirection } from '../../lib/sortLists';
+
+interface Props {
+  jobs: BulkJob[];
+  selectedJobId: number | null;
+  selectedJobIds: number[];
+  sort: ListSort | null;
+  sizeFilter: JobSizeFilter;
+  search: string;
+  onSetSort: (sort: ListSort | null) => void;
+  onSetSizeFilter: (filter: JobSizeFilter) => void;
+  onSetSearch: (search: string) => void;
+  onSelectJob: (jobId: number) => void;
+  onToggleMultiselect: (jobId: number) => void;
+  onToggleAllMultiselect: () => void;
+  onContextMenuItems: (job: BulkJob) => ContextMenuItem[];
+}
+
+export function JobsList({
+  jobs,
+  selectedJobId,
+  selectedJobIds,
+  sort,
+  sizeFilter,
+  search,
+  onSetSort,
+  onSetSizeFilter,
+  onSetSearch,
+  onSelectJob,
+  onToggleMultiselect,
+  onToggleAllMultiselect,
+  onContextMenuItems,
+}: Props) {
+  const [ctx, setCtx] = useState<{ x: number; y: number; job: BulkJob } | null>(null);
+  const selectedSet = new Set(selectedJobIds);
+  const allSelected = jobs.length > 0 && jobs.every((j) => selectedSet.has(j.bulkJobId));
+
+  const handleDragStart = (e: React.DragEvent<HTMLTableRowElement>, jobId: number) => {
+    const ids = selectedSet.has(jobId) ? selectedJobIds : [jobId];
+    e.dataTransfer.setData('application/x-bulk-job-ids', JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const columns: { field: string; label: string }[] = [
+    { field: 'clientCode', label: 'Client' },
+    { field: 'jobNumber', label: 'Job #' },
+    { field: 'toSuburb', label: 'Suburb' },
+    { field: 'toPostCode', label: 'Zip' },
+    { field: 'bookTime', label: 'Time' },
+    { field: 'speedName', label: 'Speed' },
+    { field: 'runName', label: 'Run' },
+  ];
+
+  return (
+    <Panel
+      title={`Jobs (${jobs.length}) - ${selectedJobIds.length} selected`}
+      actions={
+        <div className="flex gap-1 items-center">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSetSearch(e.target.value)}
+            placeholder="Filter..."
+            className="border border-border rounded px-2 py-0.5 text-xs w-24"
+          />
+          <button
+            type="button"
+            onClick={() => onSetSizeFilter(sizeFilter === 'all' ? 'moreThan100Cubic' : 'all')}
+            className={`px-2 py-0.5 text-xs border rounded ${
+              sizeFilter === 'moreThan100Cubic'
+                ? 'bg-brand-cyan text-brand-dark border-brand-cyan'
+                : 'border-border bg-surface-white hover:bg-surface-light'
+            }`}
+            title="Show only jobs with cubic > 100 m3"
+          >
+            &gt;100 m3
+          </button>
+        </div>
+      }
+    >
+      <table className="w-full text-xs">
+        <thead className="bg-surface-cream sticky top-0">
+          <tr className="text-left text-text-muted">
+            <th className="px-2 py-1 w-8">
+              <input
+                type="checkbox"
+                aria-label="Select all"
+                checked={allSelected}
+                onChange={onToggleAllMultiselect}
+              />
+            </th>
+            {columns.map((c) => (
+              <th
+                key={c.field}
+                onClick={() => onSetSort(nextSortDirection(sort, c.field))}
+                className="px-2 py-1 cursor-pointer hover:bg-surface-light select-none"
+                title="Click to sort. Click again to reverse."
+              >
+                {c.label}{sortIndicator(sort, c.field)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {jobs.map((j) => (
+            <tr
+              key={j.bulkJobId}
+              draggable
+              onDragStart={(e) => handleDragStart(e, j.bulkJobId)}
+              onClick={() => onSelectJob(j.bulkJobId)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCtx({ x: e.clientX, y: e.clientY, job: j });
+              }}
+              className={`cursor-move border-t border-border-light hover:bg-surface-cream ${
+                selectedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : ''
+              }`}
+              title="Drag onto a run - right-click for more"
+            >
+              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  aria-label={`Select job ${j.jobNumber ?? j.bulkJobId}`}
+                  checked={selectedSet.has(j.bulkJobId)}
+                  onChange={() => onToggleMultiselect(j.bulkJobId)}
+                />
+              </td>
+              <td className="px-2 py-1">{j.clientCode}</td>
+              <td className="px-2 py-1 font-medium">{j.jobNumber}</td>
+              <td className="px-2 py-1">{j.toSuburb}</td>
+              <td className="px-2 py-1">{j.toPostCode}</td>
+              <td className="px-2 py-1">{j.bookTime ? formatTime(j.bookTime) : ''}</td>
+              <td className="px-2 py-1">{j.speedName ?? j.speed}</td>
+              <td className="px-2 py-1">{j.runName ?? ''}</td>
+            </tr>
+          ))}
+          {jobs.length === 0 && (
+            <tr>
+              <td colSpan={columns.length + 1} className="px-2 py-4 text-center text-text-muted">
+                No jobs match the current filters.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <RowContextMenu
+        clientX={ctx?.x ?? null}
+        clientY={ctx?.y ?? null}
+        title={ctx ? `Job ${ctx.job.jobNumber}` : undefined}
+        items={ctx ? onContextMenuItems(ctx.job) : []}
+        onClose={() => setCtx(null)}
+      />
+    </Panel>
+  );
+}
+
+function formatTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  } catch {
+    return '';
+  }
+}
