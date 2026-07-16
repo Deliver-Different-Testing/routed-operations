@@ -193,6 +193,7 @@ export function RunList({
               onClick={() => onSelectRun(r.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 setCtx({ x: e.clientX, y: e.clientY, run: r });
               }}
               onDragOver={(e) => handleDragOver(e, r.id)}

@@ -32,11 +32,16 @@ export function RowContextMenu({ clientX, clientY, title, items, onClose }: Prop
     const onClick = () => onClose();
     document.addEventListener('keydown', onKey);
     document.addEventListener('click', onClick);
-    document.addEventListener('contextmenu', onClick);
+    // NOTE: we deliberately do NOT listen for `contextmenu` on document here.
+    // React 18 batches state updates within a single native event dispatch,
+    // so a document-level contextmenu listener would fire on the very event
+    // that opened this menu - the setCtx({...}) from the row handler and the
+    // setCtx(null) from this listener would batch, with null winning and the
+    // menu never appearing. Right-clicks on other rows REPLACE ctx atomically
+    // via their own row-level handler, so no cross-menu leakage.
     return () => {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('click', onClick);
-      document.removeEventListener('contextmenu', onClick);
     };
   }, [clientX, clientY, onClose]);
 

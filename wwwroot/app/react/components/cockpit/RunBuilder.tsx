@@ -161,6 +161,7 @@ export function RunBuilder({
                 onClick={() => onSelectJob?.(j.bulkJobId)}
                 onContextMenu={(e) => {
                   e.preventDefault();
+                  e.stopPropagation();
                   setCtx({ x: e.clientX, y: e.clientY, job: j });
                 }}
                 title="Click to select. Right-click for more actions. Del to remove."

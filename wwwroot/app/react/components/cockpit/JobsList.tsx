@@ -119,7 +119,11 @@ export function JobsList({
               onDragStart={(e) => handleDragStart(e, j.bulkJobId)}
               onClick={() => onSelectJob(j.bulkJobId)}
               onContextMenu={(e) => {
+                // stopPropagation prevents ancestor / body-level listeners
+                // (react-resizable-panels adds one during resize) from
+                // swallowing the event before React's synthetic dispatch.
                 e.preventDefault();
+                e.stopPropagation();
                 setCtx({ x: e.clientX, y: e.clientY, job: j });
               }}
               className={`cursor-move border-t border-border-light hover:bg-surface-cream ${

@@ -63,6 +63,7 @@ export function GroupedJobs({
               onContextMenu={(e) => {
                 if (!onContextMenuItems) return;
                 e.preventDefault();
+                e.stopPropagation();
                 setCtx({ x: e.clientX, y: e.clientY, jobIds, label: key });
               }}
               title={onSelectGroup ? 'Click to multi-select; right-click for more' : undefined}

@@ -81,16 +81,26 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             .Distinct()
             .ToList();
 
-        // Also include empty runs stamped for this date (freshly created via the
-        // Create button, no jobs yet - operators expect to see them so they can
-        // start dragging jobs in).
+        // Also include empty runs stamped for this date that have NEVER had any
+        // jobs assigned (freshly created via the Create button, no jobs yet -
+        // operators expect to see them so they can start dragging jobs in).
+        //
+        // We CANNOT include every empty run stamped for the date because
+        // UTL_stpJob_InsertFromRunBuilder does NOT delete the tblBulkRun row
+        // after dispatch. Legacy SP filters them out by INNER JOIN-ing on jobs
+        // with Done = 0 - dispatched runs (all jobs Done = 1) disappear from
+        // the operator's list naturally. We replicate that by requiring EITHER
+        // a matching active job OR a fully-empty tblBulkJobRun link table for
+        // that run (never dispatched, never had jobs).
         var runQuery = Context.TblBulkRuns.AsQueryable();
         if (dateTime.HasValue)
         {
             var d = dateTime.Value.Date;
             runQuery = runQuery.Where(r =>
                 runIdsWithJobs.Contains(r.Id) ||
-                (r.DespatchDateTime.HasValue && r.DespatchDateTime.Value.Date == d));
+                (r.DespatchDateTime.HasValue
+                 && r.DespatchDateTime.Value.Date == d
+                 && !Context.TblBulkJobRuns.Any(jr => jr.RunId == r.Id)));
         }
         else
         {

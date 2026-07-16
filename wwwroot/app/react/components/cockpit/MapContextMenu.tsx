@@ -45,11 +45,13 @@ export function MapContextMenu({
     const onClick = () => onClose();
     document.addEventListener('keydown', onKey);
     document.addEventListener('click', onClick);
-    document.addEventListener('contextmenu', onClick);
+    // See RowContextMenu note: no document-level contextmenu listener - it
+    // would self-close on the same event that opened the menu due to React 18
+    // batching. Marker right-clicks REPLACE target atomically via GoogleMap's
+    // marker rightclick handler.
     return () => {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('click', onClick);
-      document.removeEventListener('contextmenu', onClick);
     };
   }, [target, onClose]);
 
