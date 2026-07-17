@@ -32,6 +32,7 @@ export function OptimizePreviewModal({ open, runName, stops, onClose, onConfirm 
           </button>
           <button
             type="button"
+            data-primary="true"
             onClick={async () => { await onConfirm(); }}
             className="px-3 py-1 text-sm bg-brand-purple text-white rounded"
           >

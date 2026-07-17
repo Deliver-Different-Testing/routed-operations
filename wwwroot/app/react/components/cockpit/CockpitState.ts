@@ -29,6 +29,7 @@ export interface CockpitState {
   runSearch: string;
   groupSearch: string;
   fleetSearch: string;
+  groupMode: 'postcode' | 'time';
   loading: boolean;
   error: string | null;
 }
@@ -55,6 +56,7 @@ type Action =
   | { type: 'SET_RUN_SEARCH'; payload: string }
   | { type: 'SET_GROUP_SEARCH'; payload: string }
   | { type: 'SET_FLEET_SEARCH'; payload: string }
+  | { type: 'SET_GROUP_MODE'; payload: 'postcode' | 'time' }
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null };
 
@@ -82,6 +84,7 @@ const initialState: CockpitState = {
   runSearch: '',
   groupSearch: '',
   fleetSearch: '',
+  groupMode: 'postcode',
   loading: false,
   error: null,
 };
@@ -144,6 +147,8 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       return { ...state, groupSearch: action.payload };
     case 'SET_FLEET_SEARCH':
       return { ...state, fleetSearch: action.payload };
+    case 'SET_GROUP_MODE':
+      return { ...state, groupMode: action.payload };
     case 'SET_LOADING':
       return { ...state, loading: action.payload };
     case 'SET_ERROR':

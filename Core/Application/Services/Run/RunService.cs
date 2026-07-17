@@ -53,7 +53,29 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
         var regionIdSet = ParseIntList(regionIds);
         if (regionIdSet.Count > 0)
-            jobQuery = jobQuery.Where(j => j.RegionId.HasValue && regionIdSet.Contains(j.RegionId.Value));
+        {
+            // Mirror JobService's geospatial region-filter fix (R2.1). Legacy
+            // SP filters via a lat/lng + fuzzy-address join to tblBulkRegion,
+            // not tblBulkJob.RegionID. Raw SQL keeps the string normaliser
+            // correct without EF LINQ contortions.
+            var inList = string.Join(",", regionIdSet);
+            var jobIds = await Context.Database.SqlQueryRaw<int>(
+                $@"SELECT DISTINCT j.BulkJobID AS Value
+                   FROM tblBulkJob j
+                   LEFT JOIN tblBulkRegion breg
+                     ON ((breg.PickupLatitude = j.PickUpLatitude
+                       AND breg.PickupLongitude = j.PickUpLongitude)
+                     OR LOWER(RTRIM(breg.FromAddress)) COLLATE DATABASE_DEFAULT
+                        = LOWER(LTRIM(RTRIM(REPLACE(
+                            REPLACE(
+                              REPLACE(N' ' + j.FromAddress + N' ', ' ', '<>'),
+                              '>st<', '>street<'),
+                            '<>', ' '
+                          )))) COLLATE DATABASE_DEFAULT)
+                   WHERE breg.BulkRegionId IN ({inList})"
+            ).ToListAsync();
+            jobQuery = jobQuery.Where(j => jobIds.Contains(j.BulkJobId));
+        }
 
         var ourRefSet = ParseStringList(ourRefs);
         if (ourRefSet.Count > 0)
@@ -81,17 +103,24 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             .Distinct()
             .ToList();
 
-        // Also include empty runs stamped for this date that have NEVER had any
-        // jobs assigned (freshly created via the Create button, no jobs yet -
-        // operators expect to see them so they can start dragging jobs in).
+        // Also include empty runs stamped for this date that are still in draft
+        // state (Status = 0). Freshly-created runs (Create button) start at
+        // Status = 0; dispatched runs sit at Status = 1 (Locked) or higher and
+        // must NOT re-surface after their jobs went live.
         //
-        // We CANNOT include every empty run stamped for the date because
-        // UTL_stpJob_InsertFromRunBuilder does NOT delete the tblBulkRun row
-        // after dispatch. Legacy SP filters them out by INNER JOIN-ing on jobs
-        // with Done = 0 - dispatched runs (all jobs Done = 1) disappear from
-        // the operator's list naturally. We replicate that by requiring EITHER
-        // a matching active job OR a fully-empty tblBulkJobRun link table for
-        // that run (never dispatched, never had jobs).
+        // Discriminator by trial-and-error against DFRNT_SEED_CR after a real
+        // dispatch:
+        //   - `runIdsWithJobs.Contains` misses dispatched runs (their jobs are
+        //     Done = 1 so the job query drops them - correct).
+        //   - Previous "no tblBulkJobRun links" branch was wrong because
+        //     UTL_stpJob_InsertFromTblBulkJob DOES delete the link rows on
+        //     dispatch, leaving the run row with Status = 1 + zero links -
+        //     indistinguishable from a fresh empty run by link count alone.
+        //   - Status = 0 cleanly separates fresh drafts from dispatched runs
+        //     because operators lock a run (Status = 1) before send-to-live.
+        //     Void Jobs run (IsVoidRun = 1, Status = 1) never surfaces via this
+        //     branch either, which is correct - it's only visible when it has
+        //     voided jobs to render.
         var runQuery = Context.TblBulkRuns.AsQueryable();
         if (dateTime.HasValue)
         {
@@ -100,7 +129,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 runIdsWithJobs.Contains(r.Id) ||
                 (r.DespatchDateTime.HasValue
                  && r.DespatchDateTime.Value.Date == d
-                 && !Context.TblBulkJobRuns.Any(jr => jr.RunId == r.Id)));
+                 && (r.Status ?? 0) == 0));
         }
         else
         {
@@ -179,7 +208,10 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 Jobs = jobs
                     .Where(j => j.BulkRunId == r.Id)
                     .Where(j => !parentSet.Contains(j.BulkJobId))
-                    .OrderBy(j => j.RunOrder ?? int.MaxValue)
+                    // NULL RunOrder placed FIRST to match SQL ASC NULLS FIRST
+                    // (legacy SP behaviour) - unassigned rows sit above the
+                    // ordered ones. See R2.5 for the JobService equivalent.
+                    .OrderBy(j => j.RunOrder ?? int.MinValue)
                     .Select(j => new RunJobDto
                     {
                         BulkJobId = j.BulkJobId,

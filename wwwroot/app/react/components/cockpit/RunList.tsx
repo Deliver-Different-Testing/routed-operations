@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import type { BulkJob, Courier, Run } from '../../types';
 import { Panel } from '../common/Panel';
 import { StatusBadge } from '../common/StatusBadge';
+import { Button } from '../common/Button';
 import type { ListSort } from './CockpitState';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
@@ -26,9 +27,10 @@ interface Props {
   onAssignCourier: (runId: number, courierId: number | null) => void;
   onLockRun: (runId: number, locked: boolean) => void;
   onDispatch: () => void;
+  onPrebook: () => void;
   onAssignSelectedJobs: (runId: number) => void;
   onDropJobs: (runId: number, jobIds: number[]) => void;
-  onContextMenuItems: (run: Run) => ContextMenuItem[];
+  onContextMenuItems: (run: Run, helpers: { startRename: () => void }) => ContextMenuItem[];
   selectedJobCount: number;
 }
 
@@ -51,6 +53,7 @@ export function RunList({
   onAssignCourier,
   onLockRun,
   onDispatch,
+  onPrebook,
   onAssignSelectedJobs,
   onDropJobs,
   onContextMenuItems,
@@ -66,6 +69,14 @@ export function RunList({
   const allSelected = runs.length > 0 && runs.every((r) => selectedRunSet.has(r.id));
   const locked = runs.filter((r) => r.status && r.status > 0);
 
+  // Legacy runList.tpl splits runs into two ng-repeats: unlocked first
+  // (filter:{locked:'!1'}), then locked (filter:{locked:'1'}). Preserves the
+  // user's chosen sort WITHIN each group. Operators rely on this to see at a
+  // glance what's still editable vs already sent for lock/dispatch.
+  const unlockedRuns = runs.filter((r) => !(r.status && r.status > 0));
+  const lockedRuns = runs.filter((r) => r.status && r.status > 0);
+  const hasBothGroups = unlockedRuns.length > 0 && lockedRuns.length > 0;
+
   const startRename = (r: Run) => {
     setRenamingId(r.id);
     setRenameValue(r.name ?? '');
@@ -79,17 +90,25 @@ export function RunList({
   };
 
   const handleDragOver = (e: React.DragEvent, runId: number) => {
-    if (Array.from(e.dataTransfer.types).includes('application/x-bulk-job-ids')) {
+    const types = Array.from(e.dataTransfer.types);
+    if (types.includes('application/x-bulk-job-ids') || types.includes('application/x-courier-id')) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
+      e.dataTransfer.dropEffect = types.includes('application/x-courier-id') ? 'copy' : 'move';
       setDropTargetId(runId);
     }
   };
   const handleDragLeave = () => setDropTargetId(null);
   const handleDrop = (e: React.DragEvent, runId: number) => {
     e.preventDefault();
-    const raw = e.dataTransfer.getData('application/x-bulk-job-ids');
     setDropTargetId(null);
+    // Courier drop wins if present - assigns the courier to this run.
+    const courierRaw = e.dataTransfer.getData('application/x-courier-id');
+    if (courierRaw) {
+      const cid = Number(courierRaw);
+      if (Number.isFinite(cid)) onAssignCourier(runId, cid);
+      return;
+    }
+    const raw = e.dataTransfer.getData('application/x-bulk-job-ids');
     if (!raw) return;
     try {
       const ids = JSON.parse(raw) as number[];
@@ -120,15 +139,31 @@ export function RunList({
             placeholder="Filter..."
             className="border border-border rounded px-2 py-0.5 text-xs w-24"
           />
-          <button
-            type="button"
+          {/* Prebook button hidden pending real spec. Legacy sendTo('prebook')
+              POSTed to a dead endpoint; the existing Status=2 staging path is
+              retained on the backend but not surfaced in the UI until the
+              proper tucJobBooking + cron contract is defined. Set env flag or
+              re-enable when spec lands. */}
+          {false && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onPrebook}
+              disabled={locked.length === 0}
+              title="Prebook staging - not yet spec'd"
+            >
+              Prebook
+            </Button>
+          )}
+          <Button
+            variant="warning"
+            size="sm"
             onClick={onDispatch}
             disabled={locked.length === 0}
-            className="px-2 py-0.5 text-xs bg-brand-orange text-white rounded disabled:opacity-50"
             title={locked.length === 0 ? 'Lock a run first' : `Dispatch ${locked.length} locked run(s)`}
           >
             Send to Live ({locked.length})
-          </button>
+          </Button>
         </div>
       }
     >
@@ -146,18 +181,18 @@ export function RunList({
           placeholder="New run name..."
           className="flex-1 border border-border rounded px-2 py-1 text-xs"
         />
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => {
             if (newRunName.trim()) {
               onCreateRun(newRunName.trim());
               setNewRunName('');
             }
           }}
-          className="px-2 py-1 text-xs bg-brand-cyan text-brand-dark font-medium rounded"
         >
           + Create
-        </button>
+        </Button>
       </div>
 
       <table className="w-full text-xs">
@@ -187,22 +222,42 @@ export function RunList({
           </tr>
         </thead>
         <tbody>
-          {runs.map((r) => (
+          {/* Section headers only render when both groups have members - a
+              single-group day should not waste the operator's screen space. */}
+          {hasBothGroups && (
+            <tr className="bg-surface-cream">
+              <td colSpan={columns.length + 2} className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-muted font-semibold">
+                Ready ({unlockedRuns.length})
+              </td>
+            </tr>
+          )}
+          {[...unlockedRuns, ...lockedRuns].map((r, idx) => (
+            <Fragment key={r.id}>
+            {hasBothGroups && idx === unlockedRuns.length && (
+              <tr className="bg-success-bg">
+                <td colSpan={columns.length + 2} className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-success font-semibold">
+                  Locked ({lockedRuns.length}) - queued for dispatch
+                </td>
+              </tr>
+            )}
             <tr
-              key={r.id}
               onClick={() => onSelectRun(r.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setCtx({ x: e.clientX, y: e.clientY, run: r });
               }}
-              onDragOver={(e) => handleDragOver(e, r.id)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, r.id)}
+              onDragOver={r.isVoidRun ? undefined : (e) => handleDragOver(e, r.id)}
+              onDragLeave={r.isVoidRun ? undefined : handleDragLeave}
+              onDrop={r.isVoidRun ? undefined : (e) => handleDrop(e, r.id)}
               className={`cursor-pointer border-t border-border-light hover:bg-surface-cream ${
                 selectedRunId === r.id ? 'bg-brand-cyan/10' : ''
-              } ${dropTargetId === r.id ? 'ring-2 ring-brand-cyan bg-brand-cyan/20' : ''}`}
-              title="Right-click for more actions"
+              } ${dropTargetId === r.id ? 'ring-2 ring-brand-cyan bg-brand-cyan/20' : ''} ${
+                r.isVoidRun ? 'bg-error/5 text-text-muted' : ''
+              }`}
+              title={r.isVoidRun
+                ? 'Void Jobs run - locked, cannot be dispatched. Right-click to un-void jobs.'
+                : 'Right-click for more actions'}
             >
               <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                 <input
@@ -273,39 +328,51 @@ export function RunList({
               {/* Preassigned CSS class per legacy runList.tpl:31 - a light amber
                   background when the run's Status = 18 (dispatcher has pre-
                   attached a courier before the operator locked the run). */}
-              <td className={`px-2 py-1 truncate max-w-32 ${r.status === 18 ? 'bg-warning-bg' : ''}`}>{r.courierName ?? ''}</td>
+              <td className={`px-2 py-1 truncate max-w-32 ${r.status === 18 ? 'bg-warning-bg' : ''}`}>
+                <div className="truncate">{r.courierName ?? ''}</div>
+                {r.fleet && (
+                  <div className="text-[10px] text-text-muted truncate" title={`Fleet: ${r.fleet}`}>
+                    {r.fleet}
+                  </div>
+                )}
+              </td>
               <td className="px-2 py-1">
                 <StatusBadge
-                  label={r.status && r.status > 0 ? 'Locked' : 'Ready'}
-                  kind={r.status && r.status > 0 ? 'success' : 'info'}
+                  label={r.isVoidRun ? 'Void' : r.status && r.status > 0 ? 'Locked' : 'Ready'}
+                  kind={r.isVoidRun ? 'error' : r.status && r.status > 0 ? 'success' : 'info'}
                 />
               </td>
               <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
-                <div className="flex gap-1 flex-wrap">
-                  <select
-                    value={r.courierId ?? ''}
-                    onChange={(e) => onAssignCourier(r.id, e.target.value ? Number(e.target.value) : null)}
-                    className="text-xs border border-border rounded px-1 py-0.5 max-w-24"
-                    title="Assign courier"
-                  >
-                    <option value="">-</option>
-                    {couriers.map((c) => (
-                      <option key={c.courierId} value={c.courierId}>{c.displayName}</option>
-                    ))}
-                  </select>
-                  {selectedJobCount > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => onAssignSelectedJobs(r.id)}
-                      className="text-[10px] px-1 py-0.5 bg-brand-purple text-white rounded"
-                      title={`Move ${selectedJobCount} selected job(s) to this run`}
+                {r.isVoidRun ? (
+                  <span className="text-[10px] text-text-muted italic">no courier</span>
+                ) : (
+                  <div className="flex gap-1 flex-wrap">
+                    <select
+                      value={r.courierId ?? ''}
+                      onChange={(e) => onAssignCourier(r.id, e.target.value ? Number(e.target.value) : null)}
+                      className="text-xs border border-border rounded px-1 py-0.5 max-w-24"
+                      title="Assign courier"
                     >
-                      + {selectedJobCount}
-                    </button>
-                  )}
-                </div>
+                      <option value="">-</option>
+                      {couriers.map((c) => (
+                        <option key={c.courierId} value={c.courierId}>{c.displayName}</option>
+                      ))}
+                    </select>
+                    {selectedJobCount > 0 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => onAssignSelectedJobs(r.id)}
+                        title={`Move ${selectedJobCount} selected job(s) to this run`}
+                      >
+                        + {selectedJobCount}
+                      </Button>
+                    )}
+                  </div>
+                )}
               </td>
             </tr>
+            </Fragment>
           ))}
           {runs.length === 0 && (
             <tr>
@@ -321,7 +388,7 @@ export function RunList({
         clientX={ctx?.x ?? null}
         clientY={ctx?.y ?? null}
         title={ctx ? `Run ${ctx.run.name}` : undefined}
-        items={ctx ? onContextMenuItems(ctx.run) : []}
+        items={ctx ? onContextMenuItems(ctx.run, { startRename: () => startRename(ctx.run) }) : []}
         onClose={() => setCtx(null)}
       />
     </Panel>

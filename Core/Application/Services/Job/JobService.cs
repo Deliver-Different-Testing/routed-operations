@@ -56,7 +56,33 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
         var regionIdSet = ParseIntList(regionIds);
         if (regionIdSet.Count > 0)
-            query = query.Where(j => j.RegionId.HasValue && regionIdSet.Contains(j.RegionId.Value));
+        {
+            // Legacy SP's region filter joins tblBulkRegion via lat/lng match
+            // OR a fuzzy-normalised FromAddress equality (see UTL_stpJob_
+            // tblBulkJobWithFilter). It does NOT trust tblBulkJob.RegionID.
+            // We replicate via raw SQL - the string normaliser (space<>tokenise
+            // + st->street rewrite + retrim) is nasty in EF LINQ, and the
+            // filter runs once per page so a single roundtrip is fine.
+            //
+            // ids come from int.TryParse in ParseIntList - safe to interpolate.
+            var inList = string.Join(",", regionIdSet);
+            var jobIds = await Context.Database.SqlQueryRaw<int>(
+                $@"SELECT DISTINCT j.BulkJobID AS Value
+                   FROM tblBulkJob j
+                   LEFT JOIN tblBulkRegion breg
+                     ON ((breg.PickupLatitude = j.PickUpLatitude
+                       AND breg.PickupLongitude = j.PickUpLongitude)
+                     OR LOWER(RTRIM(breg.FromAddress)) COLLATE DATABASE_DEFAULT
+                        = LOWER(LTRIM(RTRIM(REPLACE(
+                            REPLACE(
+                              REPLACE(N' ' + j.FromAddress + N' ', ' ', '<>'),
+                              '>st<', '>street<'),
+                            '<>', ' '
+                          )))) COLLATE DATABASE_DEFAULT)
+                   WHERE breg.BulkRegionId IN ({inList})"
+            ).ToListAsync();
+            query = query.Where(j => jobIds.Contains(j.BulkJobId));
+        }
 
         var ourRefSet = ParseStringList(ourRefs);
         if (ourRefSet.Count > 0)
@@ -79,10 +105,10 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             from t in speedJoin.DefaultIfEmpty()
             join c in Context.TucCouriers on j.CourierId equals c.UccrId into courierJoin
             from c in courierJoin.DefaultIfEmpty()
-            // tucClient join used only to surface MaxJobsPerRun for the Max Boxes
-            // build mode. Legacy fallback ISNULL(...,20) is applied client-side.
-            join cli in Context.TucClients on j.ClientId equals cli.UcclId into clientJoin
-            from cli in clientJoin.DefaultIfEmpty()
+            // tucClient join. Legacy SP uses INNER JOIN - jobs with orphan
+            // ClientId (deleted client, tenant reseed) are silently dropped
+            // from the cockpit's Jobs list. We match that behaviour here.
+            join cli in Context.TucClients on j.ClientId equals cli.UcclId
             // Postcode -> RunName / MergeTo / Sequence lookup. Legacy SP:
             // LEFT JOIN TblBulkPostCodeRunName rn ON rn.PostCode = ToPostCode.
             // Nullable + defensive: `rn.PostCode` in DB is nvarchar so we compare
@@ -113,23 +139,27 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             // + AutoBook=0. If any candidate window contains the job's BookTime
             // we pick that; otherwise the smallest BulkRunScheduleId wins. See
             // materialisation loop below.
+            // Coalesce nullable keys to sentinel values so EF's join matches
+            // NULL-to-NULL (legacy SQL SP uses ISNULL(..., -1) / ISNULL(..., '')
+            // on both sides). Without this, any schedule with NULL Client/Speed/
+            // Region silently fails to find its sibling window on the target day.
             join sw in Context.TblBulkRunSchedules
                 .Where(x => (x.AutoBook ?? false) == false)
                 on new
                 {
-                    Name = s != null ? s.Name : null,
-                    ClientId = s != null ? s.ClientId : (int?)null,
-                    SpeedId = s != null ? s.SpeedId : (int?)null,
-                    Region = s != null ? s.Region : null,
-                    DayOfWeek = targetDow,
+                    Name = s != null ? s.Name ?? string.Empty : string.Empty,
+                    ClientId = s != null && s.ClientId.HasValue ? s.ClientId.Value : -1,
+                    SpeedId = s != null && s.SpeedId.HasValue ? s.SpeedId.Value : -1,
+                    Region = s != null ? s.Region ?? string.Empty : string.Empty,
+                    DayOfWeek = targetDow ?? -1,
                 }
                 equals new
                 {
-                    sw.Name,
-                    sw.ClientId,
-                    sw.SpeedId,
-                    sw.Region,
-                    sw.DayOfWeek,
+                    Name = sw.Name ?? string.Empty,
+                    ClientId = sw.ClientId ?? -1,
+                    SpeedId = sw.SpeedId ?? -1,
+                    Region = sw.Region ?? string.Empty,
+                    DayOfWeek = sw.DayOfWeek ?? -1,
                 } into siblingJoin
             from sw in siblingJoin.DefaultIfEmpty()
             where s == null || s.AutoBook != true
@@ -214,9 +244,9 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                                 : 0m))
                         * (bji.Items ?? 0))
                     .Sum(),
-                // Legacy SP: ISNULL(client.MaxJobsPerRun, 20). Apply the same
-                // fallback here so the DTO carries the operator-visible cap.
-                MaxJobsPerRun = cli != null && cli.MaxJobsPerRun.HasValue ? cli.MaxJobsPerRun.Value : (int?)20,
+                // Legacy SP: ISNULL(client.MaxJobsPerRun, 20). Client join is
+                // INNER now, so cli is always non-null; only MaxJobsPerRun can be.
+                MaxJobsPerRun = cli.MaxJobsPerRun.HasValue ? cli.MaxJobsPerRun.Value : (int?)20,
                 // Pickup-cutoff hint from the target-day schedule sibling (sw).
                 // Falls back to null when no schedule row applies - the
                 // client-side build config only enforces the cap when both a
@@ -241,10 +271,12 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         return materialised
             // Legacy SP: ORDER BY BookTime, PrefixRunName, BuilderIndex.
             // Sort in-memory after projection so the client renders in the
-            // same order operators are used to.
+            // same order operators are used to. NULL RunOrder placed FIRST
+            // (int.MinValue) to match SQL Server's default ASC NULLS FIRST -
+            // legacy operators expect unassigned rows above ordered ones.
             .OrderBy(x => x.Dto.BookTime)
             .ThenBy(x => x.Dto.PrefixRunName)
-            .ThenBy(x => x.Dto.RunOrder ?? int.MaxValue)
+            .ThenBy(x => x.Dto.RunOrder ?? int.MinValue)
             .Select(x =>
             {
                 if (x.WindowStart.HasValue) x.Dto.ScheduleWindowStart = baseDate.Add(x.WindowStart.Value);
@@ -350,22 +382,40 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var job = await Context.TblBulkJobs.FindAsync(request.JobId);
         if (job == null) return false;
 
+        var postCode = ParsePostCode(request.PostCode);
+
         if (request.Address == "ToAddress")
         {
             job.DeliveryLatitude = request.Lat;
             job.DeliveryLongitude = request.Lng;
-            job.ToPostCode = string.IsNullOrEmpty(request.PostCode) ? 0 : int.Parse(request.PostCode);
+            job.ToPostCode = postCode;
         }
         else
         {
             job.PickUpLatitude = request.Lat;
             job.PickUpLongitude = request.Lng;
-            job.FromPostCode = string.IsNullOrEmpty(request.PostCode) ? 0 : int.Parse(request.PostCode);
+            job.FromPostCode = postCode;
         }
 
         Context.Entry(job).State = EntityState.Modified;
         await Context.SaveChangesAsync();
         return true;
+    }
+
+    /// <summary>
+    /// TblBulkJob.To/FromPostCode is `int?` in the schema, but US tenants send
+    /// postcodes as ZIP+4 strings ("02138-4137") from the geocoder. Strip
+    /// anything after the first hyphen, keep only digits, then int.Parse.
+    /// Leading zeros drop (int 2138 for "02138") - operators reading it back
+    /// display it as-is; the ZIP+4 suffix isn't stored anywhere in the schema.
+    /// Falls back to 0 when the input has no digits, matching legacy behaviour.
+    /// </summary>
+    private static int ParsePostCode(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+        var head = raw.Split('-', 2)[0];
+        var digitsOnly = new string(head.Where(char.IsDigit).ToArray());
+        return int.TryParse(digitsOnly, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : 0;
     }
 
     public async Task<object> BulkUpdateRouteDateAsync(BulkUpdateRouteDateRequest request)

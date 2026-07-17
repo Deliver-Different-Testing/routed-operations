@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import type { BulkJob } from '../../types';
 import { Panel } from '../common/Panel';
+import { Button } from '../common/Button';
 import type { JobSizeFilter, ListSort } from './CockpitState';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { sortIndicator, nextSortDirection } from '../../lib/sortLists';
+import { exportJobsToCsv } from '../../lib/csvExport';
 
 interface Props {
   jobs: BulkJob[];
@@ -71,18 +73,24 @@ export function JobsList({
             placeholder="Filter..."
             className="border border-border rounded px-2 py-0.5 text-xs w-24"
           />
-          <button
-            type="button"
+          <Button
+            variant="neutral"
+            size="sm"
+            active={sizeFilter === 'moreThan100Cubic'}
             onClick={() => onSetSizeFilter(sizeFilter === 'all' ? 'moreThan100Cubic' : 'all')}
-            className={`px-2 py-0.5 text-xs border rounded ${
-              sizeFilter === 'moreThan100Cubic'
-                ? 'bg-brand-cyan text-brand-dark border-brand-cyan'
-                : 'border-border bg-surface-white hover:bg-surface-light'
-            }`}
             title="Show only jobs with cubic > 100 m3"
           >
             &gt;100 m3
-          </button>
+          </Button>
+          <Button
+            variant="neutral"
+            size="sm"
+            onClick={() => exportJobsToCsv(jobs)}
+            disabled={jobs.length === 0}
+            title={jobs.length === 0 ? 'No jobs to export' : `Download ${jobs.length} job(s) as CSV`}
+          >
+            CSV
+          </Button>
         </div>
       }
     >

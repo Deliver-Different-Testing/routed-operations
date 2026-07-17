@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
  * Global keyboard shortcut hook. Mirrors the legacy hotkeys.add() bindings in
@@ -25,6 +25,12 @@ export interface Hotkeys {
 }
 
 export function useHotkeys(bindings: Hotkeys) {
+  // Ref pattern so we bind document.keydown ONCE on mount instead of
+  // unbind/rebind on every parent render. Callers pass inline arrows without
+  // useCallback and it still stays cheap.
+  const ref = useRef(bindings);
+  ref.current = bindings;
+
   useEffect(() => {
     const isEditing = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -33,12 +39,13 @@ export function useHotkeys(bindings: Hotkeys) {
     };
 
     const onKey = (e: KeyboardEvent) => {
+      const b = ref.current;
       // Esc closes modals - fire even from inside inputs so operators can
       // dismiss a "Fix GPS" dialog without clicking away first.
       if (e.key === 'Escape') {
-        if (bindings.onEscape) {
+        if (b.onEscape) {
           e.preventDefault();
-          bindings.onEscape();
+          b.onEscape();
         }
         return;
       }
@@ -49,30 +56,30 @@ export function useHotkeys(bindings: Hotkeys) {
       if (isEditing(e.target)) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
-        if (bindings.onDispatch) {
+        if (b.onDispatch) {
           e.preventDefault();
-          bindings.onDispatch();
+          b.onDispatch();
         }
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
-        if (bindings.onSelectAll) {
+        if (b.onSelectAll) {
           e.preventDefault();
-          bindings.onSelectAll();
+          b.onSelectAll();
         }
         return;
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (bindings.onDelete) {
+        if (b.onDelete) {
           e.preventDefault();
-          bindings.onDelete();
+          b.onDelete();
         }
         return;
       }
       if (e.key === 'Enter') {
-        if (bindings.onEnter) {
+        if (b.onEnter) {
           e.preventDefault();
-          bindings.onEnter();
+          b.onEnter();
         }
         return;
       }
@@ -80,5 +87,5 @@ export function useHotkeys(bindings: Hotkeys) {
 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [bindings.onDispatch, bindings.onSelectAll, bindings.onEscape, bindings.onDelete, bindings.onEnter]);
+  }, []);
 }

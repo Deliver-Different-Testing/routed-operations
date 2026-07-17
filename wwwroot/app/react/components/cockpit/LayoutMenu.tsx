@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { CockpitLayout } from '../../lib/layouts';
 import { DEFAULT_LAYOUT } from '../../lib/layouts';
+import { Button } from '../common/Button';
 
 interface Props {
   layouts: CockpitLayout[];
@@ -30,14 +31,15 @@ export function LayoutMenu({ layouts, onSave, onLoad, onDelete }: Props) {
 
   return (
     <div className="relative">
-      <button
-        type="button"
+      <Button
+        variant="neutral"
+        size="sm"
         onClick={() => setOpen((v) => !v)}
-        className="px-2 py-0.5 text-xs border border-border rounded bg-surface-white hover:bg-surface-light"
+        active={open}
         title="Save or restore a panel layout"
       >
         Layout
-      </button>
+      </Button>
       {open && (
         <div
           className="absolute right-0 top-full mt-1 min-w-56 bg-surface-white border border-border rounded shadow-lg z-40 text-xs"
