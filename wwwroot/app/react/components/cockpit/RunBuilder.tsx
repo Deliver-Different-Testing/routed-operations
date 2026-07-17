@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Run, RunJob } from '../../types';
 import { Panel } from '../common/Panel';
+import { Button } from '../common/Button';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { runBuilderTotals } from '../../lib/runFinancials';
 
@@ -99,11 +100,11 @@ export function RunBuilder({
     <Panel
       title={run.isVoidRun ? `Run: ${run.name}` : `Run: ${run.name}`}
       actions={
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onOptimize}
           disabled={run.jobs.length < 2 || run.isVoidRun}
-          className="px-2 py-0.5 text-xs bg-brand-purple text-white rounded disabled:opacity-50"
           title={
             run.isVoidRun ? 'Cannot optimise a Void Jobs run'
               : run.jobs.length < 2 ? 'Need 2+ jobs to optimise'
@@ -111,7 +112,7 @@ export function RunBuilder({
           }
         >
           Optimise
-        </button>
+        </Button>
       }
     >
       {/* Calculator strip (legacy runBuilder.tpl:18-41) */}

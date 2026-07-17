@@ -1,4 +1,5 @@
 import { Modal } from '../common/Modal';
+import { Button } from '../common/Button';
 
 export interface VoidRelationshipContext {
   selectedIds: number[];
@@ -43,29 +44,21 @@ export function VoidRelationshipDialog({ context, onConfirm, onCancel }: Props) 
       title={`${verb} multibox family?`}
       footer={
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-3 py-1 text-sm border border-border rounded"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
+          <Button variant="neutral" onClick={onCancel}>Cancel</Button>
+          <Button
+            variant="neutral"
             onClick={() => onConfirm(context.selectedIds)}
-            className="px-3 py-1 text-sm border border-border rounded"
             title="Void only what the operator selected. Siblings stay live."
           >
             {verb} {selectedCount} selected only
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="danger"
             onClick={() => onConfirm(context.expandedIds)}
-            className="px-3 py-1 text-sm bg-error text-white rounded"
             title={`Void the selected ${selectedCount} plus the ${extraCount} multibox sibling(s)`}
           >
             {verb} full family ({context.expandedIds.length})
-          </button>
+          </Button>
         </div>
       }
     >

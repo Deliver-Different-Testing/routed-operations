@@ -1,35 +1,59 @@
 import { useMemo, useState } from 'react';
 import type { BulkJob } from '../../types';
 import { Panel } from '../common/Panel';
+import { Button } from '../common/Button';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
+
+export type GroupMode = 'postcode' | 'time';
 
 interface Props {
   jobs: BulkJob[];
   search: string;
+  mode: GroupMode;
+  onSetMode: (mode: GroupMode) => void;
   onSetSearch: (search: string) => void;
   onSelectGroup?: (jobIds: number[]) => void;
   onBulkMoveGroup?: (jobIds: number[], groupLabel: string) => void;
-  onContextMenuItems?: (jobIds: number[], groupLabel: string) => ContextMenuItem[];
+  // For time-mode groups, this also gets an isTimeGroup flag so the parent
+  // can attach different actions (Open these times / Edit Group Date).
+  onContextMenuItems?: (jobIds: number[], groupLabel: string, isTimeGroup: boolean) => ContextMenuItem[];
+  onDragStart?: (jobIds: number[]) => void;
 }
 
+/**
+ * Grouped jobs pane. Legacy groupedJobs.tpl supports two modes: postcode
+ * (default) and time-of-day. Time mode buckets jobs into 30-minute windows
+ * by BookTime and sorts ascending - it's used for time-critical dispatch
+ * planning. Draggable onto runs, same payload as JobsList.
+ */
 export function GroupedJobs({
   jobs,
   search,
+  mode,
+  onSetMode,
   onSetSearch,
   onSelectGroup,
   onBulkMoveGroup,
   onContextMenuItems,
+  onDragStart,
 }: Props) {
-  const [ctx, setCtx] = useState<{ x: number; y: number; jobIds: number[]; label: string } | null>(null);
+  const [ctx, setCtx] = useState<{ x: number; y: number; jobIds: number[]; label: string; isTimeGroup: boolean } | null>(null);
 
   const groups = useMemo(() => {
     const acc = new Map<string, BulkJob[]>();
     jobs.forEach((j) => {
-      const key = j.toPostCode?.toString() ?? j.toSuburb ?? 'Unknown';
+      const key = mode === 'time'
+        ? bucketByTime(j.bookTime)
+        : (j.toPostCode?.toString() ?? j.toSuburb ?? 'Unknown');
       if (!acc.has(key)) acc.set(key, []);
       acc.get(key)!.push(j);
     });
-    let entries = Array.from(acc.entries()).sort(([a], [b]) => a.localeCompare(b));
+    let entries = Array.from(acc.entries());
+    if (mode === 'time') {
+      entries.sort(([a], [b]) => a.localeCompare(b));
+    } else {
+      entries.sort(([a], [b]) => a.localeCompare(b));
+    }
     if (search.trim()) {
       const needle = search.trim().toLowerCase();
       entries = entries.filter(([key, items]) =>
@@ -37,19 +61,47 @@ export function GroupedJobs({
         items.some((j) => (j.toSuburb ?? '').toLowerCase().includes(needle)));
     }
     return entries;
-  }, [jobs, search]);
+  }, [jobs, search, mode]);
+
+  const handleDragStart = (e: React.DragEvent<HTMLLIElement>, jobIds: number[]) => {
+    e.dataTransfer.setData('application/x-bulk-job-ids', JSON.stringify(jobIds));
+    e.dataTransfer.effectAllowed = 'move';
+    onDragStart?.(jobIds);
+  };
 
   return (
     <Panel
-      title="Grouped by Zip / Suburb"
+      title={mode === 'time' ? 'Grouped by Time' : 'Grouped by Zip / Suburb'}
       actions={
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => onSetSearch(e.target.value)}
-          placeholder="Filter zip..."
-          className="border border-border rounded px-2 py-0.5 text-xs w-24"
-        />
+        <div className="flex items-center gap-1">
+          <div className="inline-flex border border-border rounded-lg overflow-hidden text-[10px]">
+            <button
+              type="button"
+              onClick={() => onSetMode('postcode')}
+              className={`px-2 py-0.5 ${
+                mode === 'postcode' ? 'bg-brand-cyan text-brand-dark font-medium'
+                : 'bg-surface-white text-text-secondary hover:bg-surface-cream'
+              }`}
+              title="Group jobs by zip / suburb (default)"
+            >Zip</button>
+            <button
+              type="button"
+              onClick={() => onSetMode('time')}
+              className={`px-2 py-0.5 ${
+                mode === 'time' ? 'bg-brand-cyan text-brand-dark font-medium'
+                : 'bg-surface-white text-text-secondary hover:bg-surface-cream'
+              }`}
+              title="Group jobs by ready time (30 min buckets)"
+            >Time</button>
+          </div>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSetSearch(e.target.value)}
+            placeholder={mode === 'time' ? 'Filter time...' : 'Filter zip...'}
+            className="border border-border rounded px-2 py-0.5 text-xs w-20"
+          />
+        </div>
       }
     >
       <ul className="divide-y divide-border-light">
@@ -58,15 +110,21 @@ export function GroupedJobs({
           return (
             <li
               key={key}
-              className={`px-3 py-2 ${onSelectGroup ? 'cursor-pointer hover:bg-surface-cream' : ''}`}
+              draggable={!!onDragStart}
+              onDragStart={onDragStart ? (e) => handleDragStart(e, jobIds) : undefined}
+              className={`px-3 py-2 ${onSelectGroup ? 'cursor-pointer hover:bg-surface-cream' : ''} ${
+                onDragStart ? 'cursor-move' : ''
+              }`}
               onClick={() => onSelectGroup?.(jobIds)}
               onContextMenu={(e) => {
                 if (!onContextMenuItems) return;
                 e.preventDefault();
                 e.stopPropagation();
-                setCtx({ x: e.clientX, y: e.clientY, jobIds, label: key });
+                setCtx({ x: e.clientX, y: e.clientY, jobIds, label: key, isTimeGroup: mode === 'time' });
               }}
-              title={onSelectGroup ? 'Click to multi-select; right-click for more' : undefined}
+              title={onDragStart
+                ? 'Drag to a run to assign, or click to multi-select. Right-click for more.'
+                : (onSelectGroup ? 'Click to multi-select; right-click for more' : undefined)}
             >
               <div className="flex items-center justify-between">
                 <span className="font-medium text-text-primary">{key}</span>
@@ -75,14 +133,14 @@ export function GroupedJobs({
                     {items.length} job{items.length === 1 ? '' : 's'}
                   </span>
                   {onBulkMoveGroup && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={(e) => { e.stopPropagation(); onBulkMoveGroup(jobIds, key); }}
-                      className="text-xs px-2 py-0.5 border border-brand-purple text-brand-purple rounded hover:bg-brand-purple/10"
                       title={`Move all ${items.length} jobs in ${key} to another date`}
                     >
                       Move date
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
@@ -98,10 +156,29 @@ export function GroupedJobs({
       <RowContextMenu
         clientX={ctx?.x ?? null}
         clientY={ctx?.y ?? null}
-        title={ctx ? `Group ${ctx.label} (${ctx.jobIds.length} jobs)` : undefined}
-        items={ctx && onContextMenuItems ? onContextMenuItems(ctx.jobIds, ctx.label) : []}
+        title={ctx ? `${ctx.isTimeGroup ? 'Time' : 'Group'} ${ctx.label} (${ctx.jobIds.length} jobs)` : undefined}
+        items={ctx && onContextMenuItems ? onContextMenuItems(ctx.jobIds, ctx.label, ctx.isTimeGroup) : []}
         onClose={() => setCtx(null)}
       />
     </Panel>
   );
+}
+
+// Bucket a bookTime (either "HH:MM:SS" or ISO datetime) into a 30-min slot
+// key like "06:00", "06:30", "07:00". Buckets align at :00 and :30 so all
+// jobs booked between 06:00 and 06:29 land in "06:00".
+function bucketByTime(raw: string | null): string {
+  if (!raw) return '(no time)';
+  let hh = 0, mm = 0;
+  if (/^\d{2}:\d{2}/.test(raw)) {
+    hh = parseInt(raw.slice(0, 2), 10);
+    mm = parseInt(raw.slice(3, 5), 10);
+  } else {
+    try {
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) { hh = d.getHours(); mm = d.getMinutes(); }
+    } catch { /* fall through */ }
+  }
+  const bucketMm = mm < 30 ? 0 : 30;
+  return `${String(hh).padStart(2, '0')}:${String(bucketMm).padStart(2, '0')}`;
 }

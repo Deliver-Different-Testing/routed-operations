@@ -1,25 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BulkJob, Run } from '../../types';
 import { Panel } from '../common/Panel';
+import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import type { MapContextTarget } from './MapContextMenu';
 
 interface Props {
   jobs: BulkJob[];
   selectedRun: Run | null;
+  selectedJobId?: number | null;
+  // All runs currently multi-selected in the Run List. Legacy colours pins
+  // for these runs in a rotating palette (#ff9000/#00a3ff/#ffff00/#b13cff)
+  // so operators can eyeball which pins belong to which run at a glance.
+  multiSelectedRuns?: Run[];
   onPinClick?: (jobId: number) => void;
   onPinContextMenu?: (target: MapContextTarget) => void;
 }
+
+// Legacy runList palette for multi-selected runs (HereMap.tpl line ~230).
+const MULTI_RUN_COLOURS = ['#ff9000', '#00a3ff', '#ffff00', '#b13cff', '#3cffb1', '#ff3cff'];
 
 interface Pin {
   lat: number;
   lng: number;
   label: string;
-  kind: 'pickup' | 'delivery' | 'start' | 'end' | 'sequenced' | 'unassigned';
+  kind: 'pickup' | 'delivery' | 'start' | 'end' | 'sequenced' | 'unassigned' | 'multiRun';
   sequence?: number;
   bulkJobId: number;
   jobNumber: string | null;
   runId: number | null;
+  // Colour override for pins belonging to a multi-selected run (rotating
+  // palette). Present only when kind === 'multiRun'.
+  colour?: string;
 }
 
 /**
@@ -36,11 +48,15 @@ interface Pin {
  *   - Unassigned pin: Select / Add to run
  * Legacy analogue: addClickHandler + addGreyClickHandler in HereMap.tpl.
  */
-export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: Props) {
+export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns, onPinClick, onPinContextMenu }: Props) {
   const user = useAuth();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  // Index of markers by bulkJobId so `highlightPin`-style bouncing (fired when
+  // the operator clicks a job in a list) can find the marker in O(1). Cleared
+  // whenever markers are rebuilt.
+  const markersByJobIdRef = useRef<Map<number, any>>(new Map());
   const polylineRef = useRef<any>(null);
   const infoWindowRef = useRef<any>(null);
   const [ready, setReady] = useState(false);
@@ -120,9 +136,10 @@ export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: P
     // Clear the previous markers + polyline.
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
+    markersByJobIdRef.current.clear();
     if (polylineRef.current) { polylineRef.current.setMap(null); polylineRef.current = null; }
 
-    const pins = buildPins(jobs, selectedRun);
+    const pins = buildPins(jobs, selectedRun, multiSelectedRuns ?? []);
     if (pins.length === 0) return;
 
     const bounds = new g.maps.LatLngBounds();
@@ -164,6 +181,10 @@ export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: P
       });
 
       markersRef.current.push(marker);
+      // Only index the delivery-side pin (there can be a pickup + delivery
+      // pair for the same job in future extensions). Delivery is what the
+      // Jobs list shows and what the operator wants to bounce.
+      markersByJobIdRef.current.set(p.bulkJobId, marker);
     });
 
     // Fit bounds to the plotted pins so the operator lands on the actual area
@@ -191,7 +212,29 @@ export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: P
         });
       }
     }
-  }, [ready, jobs, selectedRun, onPinClick, onPinContextMenu, autoZoom]);
+  }, [ready, jobs, selectedRun, multiSelectedRuns, onPinClick, onPinContextMenu, autoZoom]);
+
+  // highlightPin(job) equivalent: whenever the operator selects a job (from
+  // the Jobs list, the Run Builder pane, the group list, wherever) look up
+  // the corresponding marker and bounce it for ~1s. Legacy analogue:
+  // homeControl.js selectJob(...) -> highlightPin(currentJob) which finds the
+  // marker by lat/lng match and calls setAnimation(BOUNCE). Same effect here
+  // but O(1) via the bulkJobId map instead of coord matching.
+  useEffect(() => {
+    if (selectedJobId == null) return;
+    const g = (window as any).google;
+    if (!g?.maps) return;
+    const marker = markersByJobIdRef.current.get(selectedJobId);
+    if (!marker) return;
+    try {
+      marker.setAnimation(g.maps.Animation.BOUNCE);
+      const timer = setTimeout(() => marker.setAnimation(null), 1400);
+      return () => {
+        clearTimeout(timer);
+        marker.setAnimation(null);
+      };
+    } catch { /* older SDK - non-fatal */ }
+  }, [selectedJobId]);
 
   if (!apiKey || !ready) {
     const reason = !apiKey
@@ -216,20 +259,17 @@ export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: P
     <Panel
       title={selectedRun ? `Map - Run: ${selectedRun.name}` : `Map - ${jobs.length} jobs`}
       actions={
-        <button
-          type="button"
+        <Button
+          variant="neutral"
+          size="sm"
+          active={autoZoom}
           onClick={() => setAutoZoom((v) => !v)}
-          className={`px-2 py-0.5 text-xs border rounded ${
-            autoZoom
-              ? 'bg-brand-cyan text-brand-dark border-brand-cyan font-medium'
-              : 'border-border bg-surface-white hover:bg-surface-light'
-          }`}
           title={autoZoom
             ? 'Auto zoom is on - map re-fits to the pin cluster on every update. Click to disable.'
             : 'Auto zoom is off - map holds its position. Click to enable.'}
         >
           Auto Zoom: {autoZoom ? 'On' : 'Off'}
-        </button>
+        </Button>
       }
     >
       <div ref={mapContainerRef} className="h-full w-full" />
@@ -237,7 +277,7 @@ export function GoogleMap({ jobs, selectedRun, onPinClick, onPinContextMenu }: P
   );
 }
 
-function buildPins(jobs: BulkJob[], selectedRun: Run | null): Pin[] {
+function buildPins(jobs: BulkJob[], selectedRun: Run | null, multiSelectedRuns: Run[]): Pin[] {
   const out: Pin[] = [];
   const inRun = selectedRun ? new Set(selectedRun.jobs.map((j) => j.bulkJobId)) : null;
   const sequenceByJobId = new Map<number, number>();
@@ -247,6 +287,16 @@ function buildPins(jobs: BulkJob[], selectedRun: Run | null): Pin[] {
     });
   }
 
+  // Build a lookup from bulkJobId -> multi-run colour so any pin whose owner
+  // run is multi-selected gets tinted. Skip the currently-selected run so its
+  // sequence colouring wins.
+  const multiRunColourByJobId = new Map<number, string>();
+  multiSelectedRuns.forEach((run, idx) => {
+    if (selectedRun && run.id === selectedRun.id) return;
+    const colour = MULTI_RUN_COLOURS[idx % MULTI_RUN_COLOURS.length];
+    run.jobs.forEach((rj) => multiRunColourByJobId.set(rj.bulkJobId, colour));
+  });
+
   jobs.forEach((j) => {
     const dropLat = parseCoord(j.deliveryLatitude);
     const dropLng = parseCoord(j.deliveryLongitude);
@@ -254,13 +304,17 @@ function buildPins(jobs: BulkJob[], selectedRun: Run | null): Pin[] {
     if (dropLat == null || dropLng == null) return;
 
     // Legacy colour rules (see HereMap.tpl createPin() + drawDirections):
-    //   in a run                 -> orange stop marker with sequence label
-    //   assigned to a *different* run -> keep the run's own colour later
-    //                                    (Stage 1 shows plain delivery pin)
-    //   unassigned to any run    -> grey (matches legacy potentialJobs)
+    //   in the selected run           -> orange stop marker w/ sequence label
+    //   in another multi-selected run -> palette-tinted marker (see MULTI_RUN_COLOURS)
+    //   assigned to a *different* run -> plain delivery pin
+    //   unassigned to any run         -> grey (matches legacy potentialJobs)
     let kind: Pin['kind'];
+    let colour: string | undefined;
     if (inRun && inRun.has(j.bulkJobId)) {
       kind = 'sequenced';
+    } else if (multiRunColourByJobId.has(j.bulkJobId)) {
+      kind = 'multiRun';
+      colour = multiRunColourByJobId.get(j.bulkJobId);
     } else if (j.bulkRunId != null) {
       kind = 'delivery';
     } else {
@@ -275,6 +329,7 @@ function buildPins(jobs: BulkJob[], selectedRun: Run | null): Pin[] {
       bulkJobId: j.bulkJobId,
       jobNumber: j.jobNumber,
       runId: j.bulkRunId,
+      colour,
     });
   });
 
@@ -305,7 +360,8 @@ function parseCoord(raw: string | null): number | null {
  * orange run-stop, red delivery (fallback).
  */
 function makeIcon(g: any, p: Pin) {
-  const fill = p.kind === 'start' ? '#b0f26f'
+  const fill = p.kind === 'multiRun' && p.colour ? p.colour
+    : p.kind === 'start' ? '#b0f26f'
     : p.kind === 'end' ? '#6fb4f0'
     : p.kind === 'sequenced' ? '#F2994A'
     : p.kind === 'unassigned' ? '#c7c7c7'

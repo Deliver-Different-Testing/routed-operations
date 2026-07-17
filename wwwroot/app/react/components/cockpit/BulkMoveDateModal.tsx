@@ -25,6 +25,7 @@ export function BulkMoveDateModal({ open, jobCount, onClose, onConfirm }: Props)
           </button>
           <button
             type="button"
+            data-primary="true"
             disabled={busy}
             onClick={async () => {
               setBusy(true);

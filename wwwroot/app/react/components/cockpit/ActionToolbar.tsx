@@ -1,3 +1,5 @@
+import { Button } from '../common/Button';
+
 interface Props {
   selectedJobCount: number;
   onVoid: () => void;
@@ -27,42 +29,18 @@ export function ActionToolbar({
         {selectedJobCount} job{selectedJobCount === 1 ? '' : 's'} selected
       </span>
       <div className="flex-1" />
-      <button
-        type="button"
-        onClick={onVoid}
-        className="px-2 py-1 border border-error text-error rounded hover:bg-error-bg"
-      >
-        Void
-      </button>
-      <button
-        type="button"
-        onClick={onUnvoid}
-        className="px-2 py-1 border border-border rounded hover:bg-surface-cream"
-      >
-        Un-void
-      </button>
-      <button
-        type="button"
-        onClick={onBulkMoveDate}
-        className="px-2 py-1 border border-brand-purple text-brand-purple rounded hover:bg-brand-purple/10"
-      >
-        Bulk move date...
-      </button>
-      <button
-        type="button"
+      <Button variant="danger" size="sm" onClick={onVoid}>Void</Button>
+      <Button variant="neutral" size="sm" onClick={onUnvoid}>Un-void</Button>
+      <Button variant="secondary" size="sm" onClick={onBulkMoveDate}>Bulk move date...</Button>
+      <Button
+        variant="warning"
+        size="sm"
         onClick={onSendSelected}
-        className="px-2 py-1 bg-brand-orange text-white rounded hover:brightness-95"
         title="Dispatch the selected jobs directly to Live (no locked run required)"
       >
         Send selected to Live
-      </button>
-      <button
-        type="button"
-        onClick={onClearSelection}
-        className="px-2 py-1 text-text-muted hover:text-text-primary"
-      >
-        Clear
-      </button>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onClearSelection}>Clear</Button>
     </div>
   );
 }

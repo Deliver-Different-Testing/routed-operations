@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle } from 'react-resizable-panels';
 import { useCockpitState } from './CockpitState';
+import { Button } from '../common/Button';
 import { FiltersBar } from './FiltersBar';
 import { JobsList } from './JobsList';
 import { GroupedJobs } from './GroupedJobs';
@@ -31,6 +32,7 @@ import { useToast } from '../../context/ToastContext';
 import { bucketJobs, buildModeLabel, loadBuildConfig, saveBuildConfig, splitOrderedJobsByConstraints, windowMinutes } from '../../lib/buildConfig';
 import { expandMultiboxSiblings } from '../../lib/multibox';
 import { VoidRelationshipDialog, type VoidRelationshipContext } from './VoidRelationshipDialog';
+import { MergeRunModal } from './MergeRunModal';
 import { sortJobs, sortRuns } from '../../lib/sortLists';
 import { RunActionToolbar } from './RunActionToolbar';
 import type { ContextMenuItem } from './RowContextMenu';
@@ -52,6 +54,22 @@ export function CockpitPage() {
   const [mapContext, setMapContext] = useState<MapContextTarget | null>(null);
   const [gpsFixJob, setGpsFixJob] = useState<BulkJob | null>(null);
   const [voidDialog, setVoidDialog] = useState<VoidRelationshipContext | null>(null);
+  const [mergeSource, setMergeSource] = useState<Run | null>(null);
+  // Which of the four panes was interacted with most recently. Ctrl+A uses
+  // this to pick the right "select all" scope. Legacy called this
+  // `activeTable` and updated it on every ng-mouseup binding.
+  const [activePane, setActivePane] = useState<'jobs' | 'runs' | 'groups'>('jobs');
+  // Legacy routeSetting.autoRoute: when true, Build Runs / Optimise routes are
+  // sent to HERE automatically; when false, the operator must pick "Optimise"
+  // from the run menu themselves. Purely a UX preference, no server bearing.
+  const [autoRoute, setAutoRoute] = useState<boolean>(() => {
+    try { return localStorage.getItem('routed-operations.autoRoute') !== '0'; }
+    catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('routed-operations.autoRoute', autoRoute ? '1' : '0'); }
+    catch { /* localStorage disabled */ }
+  }, [autoRoute]);
   const [layouts, setLayouts] = useState<CockpitLayout[]>(() => loadLayouts());
   const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(() => loadFilterPresets());
   const horizontalRef = useRef<ImperativePanelGroupHandle | null>(null);
@@ -417,10 +435,16 @@ export function CockpitPage() {
   const handleUnvoidRunBuilderJob = async (job: RunJob, _run: Run) =>
     voidWithIds([job.bulkJobId], false);
 
-  const handleOptimizeRun = async () => {
-    if (!selectedRun || selectedRun.jobs.length < 2) return;
+  // Optimise a specific run's stops. When `lockAfter` is true, persist the
+  // new order AND flip status to 1 in the same round-trip - this is the
+  // "Route and Lock Run" menu item (legacy homeControl.js:2205-2219).
+  const handleOptimizeRun = async (opts?: { runId?: number; lockAfter?: boolean }) => {
+    const run = opts?.runId != null
+      ? state.runs.find((r) => r.id === opts.runId) ?? null
+      : selectedRun;
+    if (!run || run.jobs.length < 2) return;
     try {
-      const jobsWithCoords = selectedRun.jobs
+      const jobsWithCoords = run.jobs
         .map((rj) => state.jobs.find((j) => j.bulkJobId === rj.bulkJobId))
         .filter((j): j is NonNullable<typeof j> => j != null && !!j.deliveryLatitude && !!j.deliveryLongitude);
       const waypoints: SavvyLocation[] = jobsWithCoords.map((j) => ({
@@ -437,13 +461,17 @@ export function CockpitPage() {
       // Routing mode dispatch. A-B (0) uses RouteSavvy's straight optimiser.
       // A-A (1) and Finish-at-stop (2) need HERE's `end` pin, which RouteSavvy
       // doesn't expose - route through the typed HERE endpoint instead.
+      // Also: HERE's findsequence2 caps at ~120 waypoints in practice and
+      // hard-errors past 200. Legacy uses RouteSavvy as the fallback above
+      // 200 stops (homeControl.js:3737-3809). Same fallback here.
       const nameToOrder = new Map<string, number>();
-      if (selectedRun.routingMode === 1 || selectedRun.routingMode === 2) {
+      const overThreshold = jobsWithCoords.length > 200;
+      if (!overThreshold && (run.routingMode === 1 || run.routingMode === 2)) {
         const first = jobsWithCoords[0];
         const startLat = Number(first.pickUpLatitude ?? first.deliveryLatitude);
         const startLng = Number(first.pickUpLongitude ?? first.deliveryLongitude);
-        const finishJob = selectedRun.routingMode === 2 && selectedRun.finishAtBulkJobId
-          ? jobsWithCoords.find((j) => j.bulkJobId === selectedRun.finishAtBulkJobId)
+        const finishJob = run.routingMode === 2 && run.finishAtBulkJobId
+          ? jobsWithCoords.find((j) => j.bulkJobId === run.finishAtBulkJobId)
           : undefined;
         const seq = await routeService.hereSequenceTyped(
           { name: 'start', lat: startLat, lng: startLng },
@@ -453,7 +481,7 @@ export function CockpitPage() {
             lng: Number(j.deliveryLongitude),
           })),
           {
-            returnToStart: selectedRun.routingMode === 1,
+            returnToStart: run.routingMode === 1,
             finishAtName: finishJob ? (finishJob.jobNumber ?? String(finishJob.bulkJobId)) : null,
           }
         );
@@ -467,20 +495,43 @@ export function CockpitPage() {
           if (n && n !== 'start' && !nameToOrder.has(n)) nameToOrder.set(n, ++ord);
         });
       } else {
+        if (overThreshold) {
+          toast.show(`${jobsWithCoords.length} stops - using RouteSavvy (HERE limit 200)`, 'info');
+        }
         const res = await routeService.optimizeWithName(waypoints);
         res.routes.forEach((r, i) => { if (r.name) nameToOrder.set(r.name, i + 1); });
       }
 
-      const stops: OptimizeStop[] = selectedRun.jobs.map((rj) => ({
+      const stops: OptimizeStop[] = run.jobs.map((rj) => ({
         bulkJobId: rj.bulkJobId,
         jobNumber: rj.jobNumber,
         originalOrder: rj.builderIndex,
         newOrder: rj.jobNumber ? nameToOrder.get(rj.jobNumber) ?? 0 : 0,
       })).sort((a, b) => (a.newOrder || 999) - (b.newOrder || 999));
 
+      // Route+Lock skips the preview - the operator has already committed to
+      // both actions by picking the menu item. Manual "Optimise" still gets
+      // the preview so operators can double-check before persisting.
+      if (opts?.lockAfter) {
+        const jobs = stops.map((s) => ({
+          bulkJobId: s.bulkJobId,
+          builderIndex: s.newOrder || null,
+          jobNumber: s.jobNumber,
+        }));
+        const body = runToBody(run, { jobs, status: 1 });
+        const upsert = await runService.insertOrUpdate(body);
+        if (upsert.response.result === 'Success') {
+          toast.show(`Routed + locked "${run.name}" (${stops.length} stops)`, 'success');
+          await loadJobsAndRuns(state.filters);
+        } else {
+          toast.show(upsert.response.message ?? 'Route + lock failed', 'error');
+        }
+        return;
+      }
+
       // Preview modal - operator confirms before persisting.
       setOptimizePreview({
-        runName: selectedRun.name ?? '',
+        runName: run.name ?? '',
         stops,
         commit: async () => {
           const jobs = stops.map((s) => ({
@@ -488,7 +539,7 @@ export function CockpitPage() {
             builderIndex: s.newOrder || null,
             jobNumber: s.jobNumber,
           }));
-          const body = runToBody(selectedRun, { jobs });
+          const body = runToBody(run, { jobs });
           const upsert = await runService.insertOrUpdate(body);
           if (upsert.response.result === 'Success') {
             toast.show(`Applied new order (${stops.length} stops)`, 'success');
@@ -502,6 +553,29 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
+  };
+
+  /**
+   * Stage the locked runs as "prebook" (Status=2). Legacy sendToPrebook writes
+   * to a separate scheduling table via /Job/InsertPrebook; that endpoint is
+   * still TODO in Stage 1, so this variant marks the runs as staged and lets
+   * the nightly cron pick them up. Operators can pick "Send to Live" instead
+   * to bypass the queue for urgent runs.
+   */
+  const handlePrebook = async () => {
+    const locked = state.runs.filter((r) => (r.status ?? 0) === 1 && !r.isVoidRun);
+    if (locked.length === 0) return;
+    if (!confirm(`Stage ${locked.length} locked run(s) as prebook? They will not dispatch to Live until the next scheduled push.`)) return;
+    let ok = 0;
+    for (const run of locked) {
+      try {
+        const body = runToBody(run, { status: 2 });
+        const res = await runService.update(run.id, body);
+        if (res.response.result === 'Success') ok++;
+      } catch { /* individual failure, keep going */ }
+    }
+    toast.show(`Staged ${ok} of ${locked.length} run(s) as prebook`, ok === locked.length ? 'success' : 'warning');
+    await loadJobsAndRuns(state.filters);
   };
 
   const handleDispatch = async () => {
@@ -654,7 +728,9 @@ export function CockpitPage() {
         const withCoords = orderedJobs.filter(
           (j) => j.deliveryLatitude && j.deliveryLongitude
         );
-        if (withCoords.length >= 2) {
+        // Auto route off: skip HERE and use the postcode-sorted order that
+        // arrived from bucketJobs. Legacy routeSetting.autoRoute check.
+        if (autoRoute && withCoords.length >= 2) {
           try {
             const first = withCoords[0];
             // Use the first job's pickup as the start; if pickup missing,
@@ -871,10 +947,17 @@ export function CockpitPage() {
 
   // ---- multi-select helpers -------------------------------------------------
   const handleToggleAllMultiselect = () => {
-    if (state.selectedJobIds.length === state.jobs.length) {
+    // Operate over the CURRENTLY VISIBLE jobs, not the raw state.jobs. Legacy
+    // jobList.tpl's "select all" checkbox is scoped to the ng-repeat, so hidden
+    // rows (bulkRunId-attached, void-filtered, size-filtered, search-filtered)
+    // are not toggled. React equivalent: `displayedJobs`.
+    const visibleIds = displayedJobs.map((j) => j.bulkJobId);
+    const allVisibleSelected = visibleIds.length > 0
+      && visibleIds.every((id) => state.selectedJobIds.includes(id));
+    if (allVisibleSelected) {
       dispatch({ type: 'CLEAR_MULTISELECT' });
     } else {
-      dispatch({ type: 'REPLACE_MULTISELECT', payload: state.jobs.map((j) => j.bulkJobId) });
+      dispatch({ type: 'REPLACE_MULTISELECT', payload: visibleIds });
     }
   };
 
@@ -889,9 +972,18 @@ export function CockpitPage() {
   const bulkLockSelected = async (lock: boolean) => {
     const targets = state.runs.filter((r) => state.selectedRunIds.includes(r.id) && ((r.status ?? 0) > 0) !== lock);
     if (targets.length === 0) return;
+    // Single reload at the end - the per-item handleLockRun would fire one
+    // reload per run, N sequential full re-fetches, on a bulk of 20+ runs.
+    let ok = 0;
     for (const r of targets) {
-      await handleLockRun(r.id, lock);
+      try {
+        const body = runToBody(r, { status: lock ? 1 : 0 });
+        const res = await runService.update(r.id, body);
+        if (res.response.result === 'Success') ok++;
+      } catch { /* keep going */ }
     }
+    toast.show(`${lock ? 'Locked' : 'Unlocked'} ${ok} of ${targets.length} run(s)`, ok === targets.length ? 'success' : 'warning');
+    await loadJobsAndRuns(state.filters);
   };
 
   const handleBulkDispatchSelected = async () => {
@@ -914,10 +1006,21 @@ export function CockpitPage() {
   const handleBulkDeleteSelected = async () => {
     if (state.selectedRunIds.length === 0) return;
     if (!confirm(`Delete ${state.selectedRunIds.length} run(s)? Jobs stay behind unassigned.`)) return;
-    for (const id of state.selectedRunIds) {
-      await handleDeleteRun(id);
+    // Single reload at the end (see bulkLockSelected for rationale).
+    let ok = 0;
+    const targetIds = [...state.selectedRunIds];
+    for (const id of targetIds) {
+      try {
+        const res = await runService.remove(id);
+        if (res.response.result === 'Success') {
+          ok++;
+          if (state.selectedRunId === id) dispatch({ type: 'SELECT_RUN', payload: null });
+        }
+      } catch { /* keep going */ }
     }
+    toast.show(`Deleted ${ok} of ${targetIds.length} run(s)`, ok === targetIds.length ? 'success' : 'warning');
     dispatch({ type: 'CLEAR_RUN_MULTISELECT' });
+    await loadJobsAndRuns(state.filters);
   };
 
   // ---- context-menu factories ----------------------------------------------
@@ -934,64 +1037,69 @@ export function CockpitPage() {
     }] : []),
   ];
 
-  const groupContextMenu = (jobIds: number[], label: string): ContextMenuItem[] => [
-    { label: `Multi-select ${jobIds.length} job(s)`, onClick: () => dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds }) },
-    { label: 'Move to another date...', onClick: () => {
-      dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
-      setBulkMoveOpen(true);
-    }, separatorAfter: true },
-    { label: `Void all in ${label}`, onClick: () => {
+  const groupContextMenu = (jobIds: number[], label: string, isTimeGroup: boolean): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      { label: `Multi-select ${jobIds.length} job(s)`, onClick: () => dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds }) },
+    ];
+    if (isTimeGroup) {
+      // Legacy groupedTimeMenu "Open these times" - highlight the same time
+      // bucket in the Jobs list so operators can eyeball what's in the slot.
+      items.push({ label: 'Open these times in Jobs list', onClick: () => {
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
+        dispatch({ type: 'SET_JOB_SEARCH', payload: label });
+      }});
+      items.push({ label: 'Edit Group Date...', onClick: () => {
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
+        setBulkMoveOpen(true);
+      }, separatorAfter: true });
+    } else {
+      items.push({ label: 'Move to another date...', onClick: () => {
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
+        setBulkMoveOpen(true);
+      }, separatorAfter: true });
+    }
+    items.push({ label: `Void all in ${label}`, onClick: () => {
       void voidWithIds(jobIds, true);
-    }, danger: true },
-  ];
+    }, danger: true });
+    return items;
+  };
 
-  const runContextMenu = (run: Run): ContextMenuItem[] => {
+  const runContextMenu = (run: Run, helpers: { startRename: () => void }): ContextMenuItem[] => {
     const locked = (run.status ?? 0) > 0;
     return [
       { label: 'Select', onClick: () => dispatch({ type: 'SELECT_RUN', payload: run.id }) },
+      { label: 'Rename...', onClick: helpers.startRename },
       { label: locked ? 'Unlock' : 'Lock', onClick: () => handleLockRun(run.id, !locked) },
       { label: 'Optimise sequence', onClick: () => {
         dispatch({ type: 'SELECT_RUN', payload: run.id });
-        void handleOptimizeRun();
+        void handleOptimizeRun({ runId: run.id });
       }, disabled: run.jobs.length < 2 },
-      { label: 'Merge into...', onClick: () => handleMergeRun(run), disabled: run.jobs.length === 0, separatorAfter: true },
+      // Route and Lock: HERE-sequence + status=1 in one step. Legacy
+      // homeControl.js:2205-2219. Disabled once locked (no-op) or below
+      // 2 jobs (nothing to sequence).
+      { label: 'Route and Lock', onClick: () => {
+        dispatch({ type: 'SELECT_RUN', payload: run.id });
+        void handleOptimizeRun({ runId: run.id, lockAfter: true });
+      }, disabled: run.jobs.length < 2 || locked || run.isVoidRun },
+      { label: 'Merge into...', onClick: () => setMergeSource(run), disabled: run.jobs.length === 0, separatorAfter: true },
       { label: 'Delete run', onClick: () => handleDeleteRun(run.id), danger: true },
     ];
   };
 
   /**
-   * Legacy analogue: "Merge selected run to another run" in runListMenu
-   * (homeControl.js:2114-2198). Moves every job from `source` into `target`,
-   * then deletes the emptied source run. Refuses to merge into a locked run
-   * or into itself.
+   * Merge source run into target run. Callable from the MergeRunModal picker
+   * (chosen by target id) - the picker already filtered out locked / self.
    */
-  const handleMergeRun = async (source: Run) => {
-    if (source.jobs.length === 0) return;
-    const targetName = window.prompt(
-      `Merge run "${source.name}" (${source.jobs.length} jobs) into which run?\n\nExisting runs:\n${state.runs.map((r) => r.name).filter((n) => n).join(', ')}`,
-      ''
-    );
-    if (!targetName || !targetName.trim()) return;
-    const target = state.runs.find((r) =>
-      (r.name ?? '').toLowerCase() === targetName.trim().toLowerCase());
-    if (!target) {
-      toast.show(`Run "${targetName}" not found`, 'error');
-      return;
-    }
-    if (target.id === source.id) {
-      toast.show('Cannot merge a run into itself', 'error');
-      return;
-    }
-    if ((target.status ?? 0) > 0) {
-      toast.show(`"${target.name}" is locked. Unlock it before merging.`, 'error');
-      return;
-    }
+  const doMergeRun = async (source: Run, targetId: number) => {
+    const target = state.runs.find((r) => r.id === targetId);
+    if (!target) return;
     try {
       const jobIds = source.jobs.map((j) => j.bulkJobId);
       await assignJobsToRun(target.id, jobIds);
       await runService.remove(source.id);
       toast.show(`Merged ${jobIds.length} job(s) from "${source.name}" into "${target.name}"`, 'success');
       if (state.selectedRunId === source.id) dispatch({ type: 'SELECT_RUN', payload: target.id });
+      setMergeSource(null);
       await loadJobsAndRuns(state.filters);
     } catch (e) {
       toast.show((e as Error).message, 'error');
@@ -1007,7 +1115,15 @@ export function CockpitPage() {
       if (state.selectedJobIds.length > 0) void handleSendSelected();
       else void handleDispatch();
     },
-    onSelectAll: () => dispatch({ type: 'REPLACE_MULTISELECT', payload: displayedJobs.map((j) => j.bulkJobId) }),
+    onSelectAll: () => {
+      // Ctrl+A follows the last-focused pane. Jobs and Groups act on jobs,
+      // Runs acts on runs. Legacy hotkeys.js dispatched to activeTable.
+      if (activePane === 'runs') {
+        dispatch({ type: 'REPLACE_RUN_MULTISELECT', payload: displayedRuns.map((r) => r.id) });
+      } else {
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: displayedJobs.map((j) => j.bulkJobId) });
+      }
+    },
     onEscape: () => {
       if (bulkMoveOpen) setBulkMoveOpen(false);
       else if (optimizePreview) setOptimizePreview(null);
@@ -1040,6 +1156,21 @@ export function CockpitPage() {
     },
   });
 
+  // Stable refs for GoogleMap props so its marker useEffect doesn't tear down
+  // and rebuild every pin on every parent render.
+  const mapMultiSelectedRuns = useMemo(
+    () => state.runs.filter((r) => state.selectedRunIds.includes(r.id)),
+    [state.runs, state.selectedRunIds],
+  );
+  const handleMapPinClick = useCallback(
+    (jobId: number) => dispatch({ type: 'SELECT_JOB', payload: jobId }),
+    [dispatch],
+  );
+  const handleMapPinContextMenu = useCallback(
+    (t: MapContextTarget) => setMapContext(t),
+    [],
+  );
+
   const runBuilderContextMenu = (job: RunJob, _run: Run): ContextMenuItem[] => [
     { label: `Show job ${job.jobNumber ?? job.bulkJobId}`, onClick: () => dispatch({ type: 'SELECT_JOB', payload: job.bulkJobId }) },
     { label: 'Remove from run', onClick: () => handleRemoveJobFromRun(job.bulkJobId), danger: true },
@@ -1063,31 +1194,44 @@ export function CockpitPage() {
           confirms it triggers the actual build against the selected jobs. */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-cream border-b border-border-light text-xs">
         <span className="text-text-muted">Build mode:</span>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           onClick={() => openBuildConfig(false)}
-          className="px-2 py-0.5 bg-brand-cyan/40 text-brand-dark rounded font-medium hover:bg-brand-cyan/60"
           title="Change build configuration"
         >
           {buildModeLabel(buildConfig)}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => openBuildConfig(true)}
           disabled={state.selectedJobIds.length === 0}
-          className="ml-2 px-3 py-0.5 bg-brand-purple text-white rounded font-medium disabled:opacity-40"
+          className="ml-2"
           title={state.selectedJobIds.length === 0
             ? 'Select one or more jobs first'
             : `Build runs from ${state.selectedJobIds.length} selected job(s)`}
         >
           Build Runs
-        </button>
+        </Button>
         {state.selectedJobIds.length > 0 && (
           <span className="text-text-muted ml-2">
             ({state.selectedJobIds.length} job{state.selectedJobIds.length === 1 ? '' : 's'} selected)
           </span>
         )}
         <div className="flex-1" />
+        {/* Auto route: when off, Build Runs skips HERE optimisation and just
+            partitions/sorts by postcode or time. Operators use "Optimise" per
+            run instead. Legacy routeSetting.autoRoute (homeControl.js:435). */}
+        <label className="inline-flex items-center gap-1 text-[10px] text-text-muted select-none mr-2"
+               title="When off, Build Runs skips HERE optimisation - useful for slow HERE responses or offline dev">
+          <input
+            type="checkbox"
+            checked={autoRoute}
+            onChange={(e) => setAutoRoute(e.target.checked)}
+          />
+          Auto route
+        </label>
         <FilterPresetsMenu
           presets={filterPresets}
           onSave={handleSaveFilterPreset}
@@ -1116,20 +1260,26 @@ export function CockpitPage() {
           <Panel defaultSize={28} minSize={15}>
             <PanelGroup direction="vertical" ref={leftVerticalRef}>
               <Panel defaultSize={25} minSize={15}>
+                <div className="h-full" onMouseDownCapture={() => setActivePane('groups')}>
                 <GroupedJobs
                   jobs={displayedJobs}
                   search={state.groupSearch}
+                  mode={state.groupMode}
+                  onSetMode={(m) => dispatch({ type: 'SET_GROUP_MODE', payload: m })}
                   onSetSearch={(s) => dispatch({ type: 'SET_GROUP_SEARCH', payload: s })}
                   onSelectGroup={(ids) => dispatch({ type: 'REPLACE_MULTISELECT', payload: ids })}
                   onBulkMoveGroup={(ids) => {
                     dispatch({ type: 'REPLACE_MULTISELECT', payload: ids });
                     setBulkMoveOpen(true);
                   }}
-                  onContextMenuItems={(ids, label) => groupContextMenu(ids, label)}
+                  onContextMenuItems={(ids, label, isTime) => groupContextMenu(ids, label, isTime)}
+                  onDragStart={(ids) => dispatch({ type: 'REPLACE_MULTISELECT', payload: ids })}
                 />
+                </div>
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={45} minSize={20}>
+                <div className="h-full" onMouseDownCapture={() => setActivePane('jobs')}>
                 <JobsList
                   jobs={displayedJobs}
                   sort={state.jobSort}
@@ -1145,6 +1295,7 @@ export function CockpitPage() {
                   onToggleAllMultiselect={handleToggleAllMultiselect}
                   onContextMenuItems={(job) => jobContextMenu(job)}
                 />
+                </div>
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={30} minSize={15}>
@@ -1163,6 +1314,7 @@ export function CockpitPage() {
           <Panel defaultSize={26} minSize={15}>
             <PanelGroup direction="vertical" ref={runVerticalRef}>
               <Panel defaultSize={50} minSize={20}>
+                <div className="h-full flex flex-col" onMouseDownCapture={() => setActivePane('runs')}>
                 <RunActionToolbar
                   selectedRunCount={state.selectedRunIds.length}
                   hasLockedInSelection={state.runs.some((r) => state.selectedRunIds.includes(r.id) && (r.status ?? 0) > 0)}
@@ -1192,11 +1344,13 @@ export function CockpitPage() {
                   onAssignCourier={handleAssignCourier}
                   onLockRun={handleLockRun}
                   onDispatch={handleDispatch}
+                  onPrebook={handlePrebook}
                   onAssignSelectedJobs={handleAssignSelectedJobs}
                   onDropJobs={handleDropJobs}
-                  onContextMenuItems={(run) => runContextMenu(run)}
+                  onContextMenuItems={(run, helpers) => runContextMenu(run, helpers)}
                   selectedJobCount={state.selectedJobIds.length}
                 />
+                </div>
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={50} minSize={20}>
@@ -1205,7 +1359,7 @@ export function CockpitPage() {
                   selectedJobId={state.selectedJobId}
                   onSelectJob={(id) => dispatch({ type: 'SELECT_JOB', payload: id })}
                   onRemoveJob={handleRemoveJobFromRun}
-                  onOptimize={handleOptimizeRun}
+                  onOptimize={() => { void handleOptimizeRun(); }}
                   onToggleStart={handleToggleStart}
                   onToggleEnd={handleToggleEnd}
                   onVoidJob={handleVoidRunBuilderJob}
@@ -1235,8 +1389,18 @@ export function CockpitPage() {
               // filter only affects the LIST, not the map.
               jobs={state.jobs}
               selectedRun={selectedRun}
-              onPinClick={(jobId) => dispatch({ type: 'SELECT_JOB', payload: jobId })}
-              onPinContextMenu={(t) => setMapContext(t)}
+              // Wire selectedJobId so the map bounces the matching marker
+              // whenever the operator picks a job in the Jobs list, Run
+              // Builder, or group list. Matches legacy highlightPin(job).
+              selectedJobId={state.selectedJobId}
+              // Tint pins from every other run the operator has multi-selected
+              // in the Run List (legacy MULTI_RUN_COLOURS palette). Skips the
+              // primary selectedRun since that already gets sequenced orange.
+              // useMemo keeps the array reference stable so GoogleMap's marker
+              // useEffect only re-runs when the actual selection changes.
+              multiSelectedRuns={mapMultiSelectedRuns}
+              onPinClick={handleMapPinClick}
+              onPinContextMenu={handleMapPinContextMenu}
             />
           </Panel>
         </PanelGroup>
@@ -1291,6 +1455,18 @@ export function CockpitPage() {
         onCancel={() => setVoidDialog(null)}
       />
 
+      <MergeRunModal
+        open={mergeSource != null}
+        source={mergeSource}
+        candidates={state.runs.filter((r) =>
+          r.id !== mergeSource?.id
+          && (r.status ?? 0) === 0
+          && !r.isVoidRun
+        )}
+        onClose={() => setMergeSource(null)}
+        onConfirm={(targetId) => { if (mergeSource) void doMergeRun(mergeSource, targetId); }}
+      />
+
       <FixGpsModal
         open={gpsFixJob != null}
         job={gpsFixJob}
@@ -1337,7 +1513,9 @@ function runToBody(run: Run, overrides: Partial<InsertOrUpdateRunBody>): InsertO
     courier: run.courierId
       ? { courierId: run.courierId, courier: run.courierName }
       : null,
-    courierPercent: run.courierPercentage != null ? `${run.courierPercentage * 100}%` : null,
+    // Math.round avoids float-precision strings like "70.00000000000001%" that
+    // legacy code + downstream SPs would then fail to parse cleanly.
+    courierPercent: run.courierPercentage != null ? `${Math.round(run.courierPercentage * 100)}%` : null,
     googleRouteResponse: run.googleRouteResponse,
     jobs: run.jobs,
     // Preserve run-level routing fields on every write so lock/rename/etc.

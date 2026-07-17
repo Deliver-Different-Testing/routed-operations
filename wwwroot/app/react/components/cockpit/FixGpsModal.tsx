@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkJob } from '../../types';
 import { Modal } from '../common/Modal';
 import { useAuth } from '../../context/AuthContext';
+import { Button } from '../common/Button';
 
 interface Props {
   open: boolean;
@@ -11,21 +12,24 @@ interface Props {
 }
 
 /**
- * GPS coordinate repair modal. Direct port of the legacy #gpsForm flow:
+ * GPS coordinate repair modal. Direct port of the legacy #gpsForm flow, but
+ * running on Google Maps instead of HERE for parity with the cockpit map.
+ * Steps:
  *   1. Operator chooses which leg to fix (pickup or delivery)
  *   2. Types an address in the search box, or accepts the auto-populated
  *      current address
- *   3. HERE geocoder returns lat/lng, we show them on the map preview
- *   4. Save calls PATCH /api/jobs/{id}/gps with the resolved coordinates
+ *   3. Google Geocoder returns lat/lng + postal component, shown on the map
+ *   4. Draggable marker + map right-click let the operator nudge the pin
+ *   5. Save calls PATCH /api/jobs/{id}/gps with the resolved coordinates
  *
- * The address search uses HERE Maps `geocode` REST endpoint via the same
- * SDK loaded in Views/Home/Index.cshtml so we don't have to add a new
- * backend proxy.
+ * The postal-code extraction pulls the first `postal_code` address component
+ * and forwards it as a string; backend `ParsePostCode` strips ZIP+4 suffixes
+ * and non-digit noise before storing as int on tblBulkJob.
  */
 export function FixGpsModal({ open, job, onClose, onSave }: Props) {
   const user = useAuth();
-  const H = typeof window !== 'undefined' ? window.H : undefined;
-  const apiKey = user.hereMapsApiKey;
+  const apiKey = user.googleMapsKey;
+  const google = typeof window !== 'undefined' ? (window as any).google : undefined;
 
   const [leg, setLeg] = useState<'ToAddress' | 'FromAddress'>('ToAddress');
   const [query, setQuery] = useState('');
@@ -33,10 +37,12 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [ready, setReady] = useState(false);
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
+  const geocoderRef = useRef<any>(null);
 
   const currentAddress = useMemo(() => {
     if (!job) return '';
@@ -53,73 +59,138 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
     }
   }, [open, currentAddress]);
 
-  // Init preview map once the modal opens.
+  // Wait for the async-loaded SDK, same pattern as GoogleMap.tsx.
   useEffect(() => {
-    if (!open || !H || !apiKey || !mapContainerRef.current || mapRef.current) return;
-    const platform = new H.service.Platform({ apikey: apiKey });
-    const layers = platform.createDefaultLayers();
-    const map = new H.Map(mapContainerRef.current, layers.vector.normal.map, {
+    if (!open || !apiKey) return;
+    if (google && google.maps) { setReady(true); return; }
+    const started = Date.now();
+    const t = setInterval(() => {
+      const g = (window as any).google;
+      if (g && g.maps) { setReady(true); clearInterval(t); }
+      else if (Date.now() - started > 20000) { clearInterval(t); }
+    }, 200);
+    return () => clearInterval(t);
+  }, [open, apiKey, google]);
+
+  // Init preview map once the SDK is ready. Right-click on the map moves the
+  // candidate pin (legacy gpsForm behaviour).
+  useEffect(() => {
+    if (!open || !ready || !mapContainerRef.current || mapRef.current) return;
+    const g = (window as any).google;
+    if (!g?.maps) return;
+
+    const map = new g.maps.Map(mapContainerRef.current, {
       center: { lat: 37.7749, lng: -122.4194 },
       zoom: 3,
-      pixelRatio: window.devicePixelRatio || 1,
+      mapTypeId: g.maps.MapTypeId.ROADMAP,
+      gestureHandling: 'greedy',
+      disableDefaultUI: false,
+      clickableIcons: false,
+      styles: [
+        { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+      ],
     });
-    new H.mapevents.Behavior(new H.mapevents.MapEvents(map));
     mapRef.current = map;
-    return () => {
-      map.dispose();
-      mapRef.current = null;
-      markerRef.current = null;
-    };
-  }, [open, H, apiKey]);
+    geocoderRef.current = new g.maps.Geocoder();
 
-  // Update preview marker whenever we get a candidate.
+    map.addListener('rightclick', (e: any) => {
+      if (!e?.latLng) return;
+      const lat = e.latLng.lat();
+      const lng = e.latLng.lng();
+      // Reverse-geocode the click to pull a postal code + label. Falls back
+      // to the raw coords if the geocoder returns nothing.
+      geocoderRef.current?.geocode({ location: { lat, lng } }, (results: any, status: string) => {
+        if (status === 'OK' && results?.[0]) {
+          const item = results[0];
+          setCandidate({
+            lat, lng,
+            label: item.formatted_address ?? 'Custom pin',
+            postCode: extractPostCode(item),
+          });
+        } else {
+          setCandidate((prev) => ({
+            lat, lng,
+            label: prev?.label ?? 'Custom pin',
+            postCode: prev?.postCode ?? '',
+          }));
+        }
+      });
+    });
+
+    return () => {
+      // Google Maps doesn't expose a dispose; just drop the refs so a fresh
+      // instance is built on the next open.
+      if (markerRef.current) { markerRef.current.setMap(null); markerRef.current = null; }
+      mapRef.current = null;
+      geocoderRef.current = null;
+    };
+  }, [open, ready]);
+
+  // Update preview marker whenever we get a candidate. Draggable so operators
+  // can nudge the pin by hand - dragend calls setCandidate with the new coord.
   useEffect(() => {
-    if (!mapRef.current || !H) return;
+    const g = (window as any).google;
+    if (!mapRef.current || !g?.maps) return;
     if (markerRef.current) {
-      mapRef.current.removeObject(markerRef.current);
+      markerRef.current.setMap(null);
       markerRef.current = null;
     }
     if (candidate) {
-      const marker = new H.map.Marker({ lat: candidate.lat, lng: candidate.lng });
-      mapRef.current.addObject(marker);
+      const marker = new g.maps.Marker({
+        position: { lat: candidate.lat, lng: candidate.lng },
+        map: mapRef.current,
+        draggable: true,
+        title: candidate.label,
+      });
+
+      marker.addListener('dragend', (e: any) => {
+        if (!e?.latLng) return;
+        const lat = e.latLng.lat();
+        const lng = e.latLng.lng();
+        // Reverse-geocode so the postcode field updates as the marker moves.
+        geocoderRef.current?.geocode({ location: { lat, lng } }, (results: any, status: string) => {
+          if (status === 'OK' && results?.[0]) {
+            const item = results[0];
+            setCandidate({
+              lat, lng,
+              label: item.formatted_address ?? candidate.label,
+              postCode: extractPostCode(item),
+            });
+          } else {
+            setCandidate((prev) => prev ? { ...prev, lat, lng } : prev);
+          }
+        });
+      });
+
       markerRef.current = marker;
       mapRef.current.setCenter({ lat: candidate.lat, lng: candidate.lng });
       mapRef.current.setZoom(15);
     }
-  }, [candidate, H]);
+  }, [candidate]);
 
-  const doSearch = async () => {
-    if (!query.trim() || !apiKey || !H) return;
+  const doSearch = () => {
+    if (!query.trim() || !geocoderRef.current) return;
     setSearching(true);
     setError(null);
-    try {
-      const platform = new H.service.Platform({ apikey: apiKey });
-      const geocoder = platform.getSearchService();
-      const result: any = await new Promise((resolve, reject) => {
-        geocoder.geocode({ q: query }, resolve, reject);
-      });
-      const item = result?.items?.[0];
-      if (!item) {
+    geocoderRef.current.geocode({ address: query }, (results: any, status: string) => {
+      setSearching(false);
+      if (status !== 'OK' || !results?.[0]) {
         setError('No results found. Try a more specific address.');
         return;
       }
+      const item = results[0];
+      const loc = item.geometry.location;
       setCandidate({
-        lat: item.position.lat,
-        lng: item.position.lng,
-        label: item.address?.label ?? item.title ?? query,
-        postCode: item.address?.postalCode ?? '',
+        lat: loc.lat(),
+        lng: loc.lng(),
+        label: item.formatted_address ?? query,
+        postCode: extractPostCode(item),
       });
-    } catch (e) {
-      setError((e as Error).message ?? 'Geocode failed.');
-    } finally {
-      setSearching(false);
-    }
+    });
   };
 
   const copyGeocodedAddress = () => {
     if (candidate?.label) {
-      // Legacy behaviour: strip the leading label part (before the first
-      // comma) and use the street-address portion.
       const parts = candidate.label.split(',');
       const trimmed = parts.length > 1 ? parts.slice(1).join(',').trim() : candidate.label;
       setQuery(trimmed);
@@ -154,27 +225,30 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
       title={`Fix GPS - ${job.jobNumber}`}
       footer={
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="px-3 py-1 text-sm border border-border rounded">
-            Cancel
-          </button>
-          <button
-            type="button"
+          <Button variant="neutral" onClick={onClose}>Cancel</Button>
+          <Button
+            variant="secondary"
+            data-primary="true"
             onClick={commit}
             disabled={!candidate || saving}
-            className="px-3 py-1 text-sm bg-brand-purple text-white rounded disabled:opacity-50"
           >
             {saving ? 'Saving...' : `Apply to ${leg === 'ToAddress' ? 'delivery' : 'pickup'}`}
-          </button>
+          </Button>
         </div>
       }
     >
       <div className="space-y-3 text-sm">
-        <div className="flex gap-2">
+        {/* Segmented radio pair matches BuildConfigModal PillRadio style so the
+            Delivery/Pickup toggle uses the same cyan-selected pattern as the
+            rest of the cockpit. */}
+        <div className="inline-flex border border-border rounded-lg overflow-hidden whitespace-nowrap">
           {(['ToAddress', 'FromAddress'] as const).map((k) => (
             <label
               key={k}
-              className={`px-3 py-1 border rounded cursor-pointer ${
-                leg === k ? 'bg-brand-cyan text-brand-dark border-brand-cyan' : 'border-border'
+              className={`px-3 py-1.5 cursor-pointer text-sm transition-all ${
+                leg === k
+                  ? 'bg-brand-cyan text-brand-dark font-medium'
+                  : 'bg-surface-white text-text-secondary hover:bg-surface-cream'
               }`}
             >
               <input
@@ -200,16 +274,20 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
               className="flex-1 border border-border rounded px-2 py-1"
               placeholder="Street, city, state"
             />
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={doSearch}
-              disabled={searching}
-              className="px-3 py-1 bg-brand-cyan text-brand-dark rounded font-medium disabled:opacity-50"
+              disabled={searching || !ready}
             >
               {searching ? 'Searching...' : 'Search'}
-            </button>
+            </Button>
           </div>
           {error && <div className="mt-2 text-error text-xs">{error}</div>}
+          {!apiKey && (
+            <div className="mt-2 text-error text-xs">
+              Google Maps API key is not set (GoogleMapsKey env var).
+            </div>
+          )}
         </div>
 
         <div>
@@ -237,7 +315,20 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
         <div className="text-xs text-text-muted">
           Current on file: <em>{currentAddress || '(none)'}</em>
         </div>
+        <div className="text-[10px] text-text-muted italic">
+          Tip: drag the pin, or right-click the map to drop the pin somewhere else.
+        </div>
       </div>
     </Modal>
   );
+}
+
+/**
+ * Pull the first `postal_code` component out of a Google Geocoder result. US
+ * ZIP+4 shows up as "02138-4137" - forward it as-is; backend strips the +4.
+ */
+function extractPostCode(result: any): string {
+  const comp = (result?.address_components ?? []).find((c: any) =>
+    Array.isArray(c.types) && c.types.includes('postal_code'));
+  return comp?.short_name ?? comp?.long_name ?? '';
 }
