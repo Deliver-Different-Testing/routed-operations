@@ -27,7 +27,7 @@
              RunBuilder which loaded google.maps + Directions + Places. The
              async attribute lets the SPA mount first; the map component
              re-checks window.google.maps before rendering. -->
-        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places" async defer></script>
+        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places,geometry" async defer></script>
     }
 </head>
 <body>

@@ -221,7 +221,63 @@ declared closed at iteration 3.
 | B.1 | MAJOR | UTL_stpJob_tblBulkRun_Delete SP body diff | VERIFIED - legacy SP is 2 lines (`delete tblBulkJobRun`, `delete tblBulkRun`); current EF DeleteAsync does the same PLUS resets tblBulkJob.BulkRunId/RunOrder on released jobs (intentional superset). No change needed. |
 | B.2 | P1 | Nearby-to-run courier distance ranking | REJECTED - legacy `GetPotentialCouriersAsync` just returns `UTL_stpCourier_Active` (full active list). No distance ranking exists in legacy. Current CourierService already matches. |
 | B.3 | MAJOR | Region filter geospatial join (R2.1) | FIXED - added raw-SQL region resolver in both JobService + RunService that mirrors the SP's lat/lng match OR fuzzy-address (space<>tokenise + st->street) join to tblBulkRegion. Verified against live NZ tenant: region 4 (Hamilton) resolves to 42 jobs. |
-| B.4 | P1 | Full prebook cron path | DEFERRED - awaiting real spec. UI button hidden in RunList via `{false && ...}` guard; backend handlePrebook + onPrebook prop stay intact for future re-enable. |
+| B.4 | P1 | Full prebook cron path | DEFERRED - awaiting real spec. UI button hidden after C.3. |
+
+---
+
+## Option C - sibling modules (Stage 2)
+
+**Revised 2026-07-21:** original C.1 (TblBulkRunPolygon + Point) and C.2 (TblRecurringRoute + Zip) tables were DELETED after user pointed out the Configurator already owns the canonical Route / ZipPolygon / Dispatch_RouteRoster / RouteZipcodes tables. Rebuilt against those. C.3 Quoting stays as-is (shadow-table concept, unrelated).
+
+**Approach:** Route Builder + Configurator now share the same physical Route tables. A route created in the Route Builder cockpit shows up in DF Admin → Operations → Recurring Routes and vice versa. Downstream `uspPrebookSet` picks it up on the nightly cron regardless of which app authored it.
+
+### Modules
+
+| ID | Module | Status | Files landed |
+|----|--------|--------|--------------|
+| C.1' | PolygonBuilder (zip picker) | DONE | Rebuilt: no new tables. Reads existing ZipPolygon.Wkt shapes, renders on Google Maps, click-to-toggle selection, saves as a Route + RouteZipcodes rows via `/api/recurring-routes`. Old TblBulkRunPolygon migration deleted. |
+| C.2' | Route + ZipPolygon entity port | DONE | Ported `Route`, `ZipPolygon`, `DispatchRouteRoster`, `TucAgent` (trimmed to needed fields) from Configurator scaffold. Added RouteZipcodes many-to-many junction config in `OnModelCreating` matching Configurator's FK names (`FK_RouteZipcodes_ZipPolygon` / `FK_RouteZipcodes_Routes`). Renamed `Services/Route/` → `Services/Routing/` to free the class name for the entity. |
+| C.3' | RecurringRouteService + controller | DONE | 12 endpoints under `/api/recurring-routes`: CRUD + soft-delete + copy + roster CRUD + zip search + polygon-shape lookup + assignable-targets + schedule-lookup. DTOs match Configurator `TenantRouteDto` contract. TargetType polymorphism (1=Courier, 2=Agent, 3=NetworkPartner) preserved. |
+| C.4' | Frontend rewrite | DONE | `ScheduledRoutes.tsx` with Configurator column layout (Name / Type / Area / Schedule / Default / Zip Codes / Roster / Status). RouteEditor modal + RosterModal (weekly-DoW OR one-off-date entries). `PolygonBuilder.tsx` reborn as zip picker on Google Maps + save-as-route flow. |
+| C.3 | Quoting | KEPT | Shadow-table concept (`TblQuoteJob` + `TblQuoteRun`) is unrelated to routes and stays. `QuoteService` (upload / simulate / delete-set / get-sets), `QuoteController`, `Quoting.tsx` (CSV upload + rate card + service level + max stops + result grid). |
+
+### Registered in `Program.cs`
+`QuoteService`, `RecurringRouteService` — `PolygonService` / `ScheduledRouteService` from the earlier attempt are gone.
+
+### Policies used
+`RouteBuilder.Read` (list/get), `RouteBuilder.Admin` (create/update/copy/delete/roster), `RouteBuilder.Quote` — all pre-existed.
+
+### Migrations (in DBMigrationV2)
+- `20260721100000_RoutedOperationsQuoting.sql` — `tblQuoteJob` + `tblQuoteRun` shadow tables + hot-path indexes + grant matrix
+- `20260721100500_RoutedOperationsGrantRoutesWrites.sql` — grants `INSERT/UPDATE/DELETE` on `Routes` / `RouteZipcodes` / `Dispatch_RouteRoster` to `DespatchWeb` + `InternetUser` (they had SELECT only; only `AdminManager` had writes). Guarded per principal via `DATABASE_PRINCIPAL_ID(...)` so tenants missing an optional user don't fail.
+
+### Schema quirks fixed during Playwright QA
+Discovered while smoke-testing on DFRNT tenant 1:
+- `TblBulkRunSchedule.DayOfWeek` retyped `int?` → `short?` (DB column is `smallint`, not `int` — was throwing `InvalidCastException`)
+- `TblBulkRunSchedule.Region` retyped `string` → `int?` (DB column is `int`, not `nvarchar`)
+- `TucAgent` `[Table]` name `"tucAgent"` → `"tucAgents"` (DB table is pluralised)
+- Two `useEffect` deps `[toast]` → `[]` on `ScheduledRoutes.tsx` + `PolygonBuilder.tsx` — the toast ref changed on every render, triggering infinite retry loops when a 500 fired
+- `QuoteService.GetSetsAsync` — EF Core 10 can't translate positional-record ctor inside `GroupBy`; split into anonymous-type projection + client-side ordering
+
+### Playwright verification (2026-07-21, DFRNT tenant 1)
+
+| Flow | Result |
+|---|---|
+| GET `/scheduled-routes` list + create modal opens | ✅ |
+| Create route "Playwright QA Route" + Kerran courier + Boston schedule + 02138 zip | ✅ DB verified (RouteId=1, 1 zip) |
+| Open roster modal + add Monday courier entry | ✅ DB verified (1 active row on `Dispatch_RouteRoster`) |
+| GET `/polygon-builder` + Google Maps loads | ✅ |
+| Zip search 021** returns 15 Boston polygons | ✅ |
+| Click 02108 + 02116 → shapes render, toggle to orange when selected | ✅ (screenshots saved) |
+| Save-as-Route "Boston Downtown QA Route" with 2 zips | ✅ DB verified (RouteId=2, 2 zips) |
+| GET `/quoting` + upload 3-row set | ✅ (via API - browser upload requires file input) |
+| Simulate `PlaywrightQA` @ Standard/Standard/25 stops → recommended $62.44 | ✅ |
+
+### Bonus
+Cockpit `RunList` Prebook button wrapped in `{false && ...}` with a comment. Backend `handlePrebook` + `onPrebook` prop stay intact; re-enable by removing the guard when the real prebook spec arrives.
+
+### Final build
+Frontend `npm run build` — 87 modules → 340 KB (gzip ~101 KB). Backend `dotnet build` — 0 CS errors.
 
 ---
 

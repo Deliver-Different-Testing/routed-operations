@@ -22,6 +22,17 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<TucClient> TucClients { get; set; }
     public virtual DbSet<TblBulkScheduleLinehaul> TblBulkScheduleLinehauls { get; set; }
     public virtual DbSet<TblBulkPostCodeRunName> TblBulkPostCodeRunNames { get; set; }
+    // Route module (Stage 2 - C.1'/C.2'). Shared with Configurator - same
+    // Route / ZipPolygon / Dispatch_RouteRoster tables; RouteZipcodes is an
+    // implicit many-to-many junction configured in OnModelCreating below.
+    public virtual DbSet<Despatch.Route> Routes { get; set; }
+    public virtual DbSet<ZipPolygon> ZipPolygons { get; set; }
+    public virtual DbSet<DispatchRouteRoster> DispatchRouteRosters { get; set; }
+    public virtual DbSet<TucAgent> TucAgents { get; set; }
+    // Quoting module (Stage 2 - C.3). Shadow tables for pricing scenarios;
+    // rows never promote to tblBulkJob or tucJob - live in the quoting sandbox.
+    public virtual DbSet<TblQuoteJob> TblQuoteJobs { get; set; }
+    public virtual DbSet<TblQuoteRun> TblQuoteRuns { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -105,6 +116,30 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<TblBulkPostCodeRunName>(entity =>
         {
             entity.HasKey(e => e.Id);
+        });
+
+        // Route <-> ZipPolygon many-to-many via the implicit "RouteZipcodes"
+        // junction table (RouteId + ZipPolygonId composite PK). Configuration
+        // mirrors the Configurator scaffold so both apps share the same
+        // physical junction with matching FK constraint names.
+        modelBuilder.Entity<Despatch.Route>(entity =>
+        {
+            entity.HasMany(r => r.ZipPolygons)
+                .WithMany(z => z.Routes)
+                .UsingEntity<Dictionary<string, object>>(
+                    "RouteZipcode",
+                    j => j.HasOne<ZipPolygon>().WithMany()
+                        .HasForeignKey("ZipPolygonId")
+                        .OnDelete(DeleteBehavior.ClientSetNull)
+                        .HasConstraintName("FK_RouteZipcodes_ZipPolygon"),
+                    j => j.HasOne<Despatch.Route>().WithMany()
+                        .HasForeignKey("RouteId")
+                        .HasConstraintName("FK_RouteZipcodes_Routes"),
+                    j =>
+                    {
+                        j.HasKey("RouteId", "ZipPolygonId");
+                        j.ToTable("RouteZipcodes");
+                    });
         });
 
         OnModelCreatingPartial(modelBuilder);

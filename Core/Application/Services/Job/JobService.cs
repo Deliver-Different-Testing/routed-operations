@@ -150,7 +150,7 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                     Name = s != null ? s.Name ?? string.Empty : string.Empty,
                     ClientId = s != null && s.ClientId.HasValue ? s.ClientId.Value : -1,
                     SpeedId = s != null && s.SpeedId.HasValue ? s.SpeedId.Value : -1,
-                    Region = s != null ? s.Region ?? string.Empty : string.Empty,
+                    Region = s != null && s.Region.HasValue ? s.Region.Value : -1,
                     DayOfWeek = targetDow ?? -1,
                 }
                 equals new
@@ -158,8 +158,8 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                     Name = sw.Name ?? string.Empty,
                     ClientId = sw.ClientId ?? -1,
                     SpeedId = sw.SpeedId ?? -1,
-                    Region = sw.Region ?? string.Empty,
-                    DayOfWeek = sw.DayOfWeek ?? -1,
+                    Region = sw.Region ?? -1,
+                    DayOfWeek = sw.DayOfWeek.HasValue ? (int)sw.DayOfWeek.Value : -1,
                 } into siblingJoin
             from sw in siblingJoin.DefaultIfEmpty()
             where s == null || s.AutoBook != true
