@@ -14,10 +14,14 @@ public partial class TblBulkRunSchedule
     [Column("BulkRunScheduleId")]
     public int BulkRunScheduleId { get; set; }
     public string Name { get; set; }
-    public int? DayOfWeek { get; set; }
+    // smallint in the DB (not int) - typing this as `int?` triggers an
+    // InvalidCastException when EF materialises the row.
+    public short? DayOfWeek { get; set; }
     public int? ClientId { get; set; }
     public int? SpeedId { get; set; }
-    public string Region { get; set; }
+    // int in the DB (foreign key into a region table), not nvarchar.
+    // Callers that read + coalesce it treat the value as an opaque discriminator.
+    public int? Region { get; set; }
     // On US this column is TIME (TimeSpan in .NET); on NZ it's DATETIME.
     // We declare it as TimeSpan? here because that's what the US tenant needs
     // - the legacy SP resolved the cross-tenant difference with CAST(x AS

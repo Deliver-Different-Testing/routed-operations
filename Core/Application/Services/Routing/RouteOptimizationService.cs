@@ -4,7 +4,7 @@ using RoutedOperations.Core.Application.Dtos.Route;
 using RoutedOperations.Infrastructure;
 using Serilog;
 
-namespace RoutedOperations.Core.Application.Services.Route;
+namespace RoutedOperations.Core.Application.Services.Routing;
 
 /// <summary>
 /// Server-side proxy for the RouteSavvy optimizer. Same request shape and

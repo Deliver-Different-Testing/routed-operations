@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.Route;
-using RoutedOperations.Core.Application.Services.Route;
+using RoutedOperations.Core.Application.Services.Routing;
 
 namespace RoutedOperations.API.Controllers;
 

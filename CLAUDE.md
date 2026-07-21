@@ -2,7 +2,13 @@
 
 ## Product context
 
-Routed Operations is the umbrella product replacing the legacy RunBuilder AngularJS + .NET MVC app. Stage 1 (Route Builder) aims for feature parity with the legacy cockpit; later modules (Quoting, Scheduled Routes, Polygon Builder, Dynamic mode) are scaffolded but not built out yet.
+Routed Operations is the umbrella product replacing the legacy RunBuilder AngularJS + .NET MVC app.
+
+- **Stage 1 - Route Builder** cockpit (merged into `master`): feature parity with the legacy cockpit.
+- **Stage 2 - sibling modules** (branch `feature/stage2-sibling-modules`, awaiting review):
+  - **Scheduled Routes** + **Polygon Builder** reuse the Configurator `Route` / `ZipPolygon` / `Dispatch_RouteRoster` / `RouteZipcodes` tables so a route created here shows up cleanly in DF Admin → Operations → Recurring Routes and drives the same downstream `uspPrebookSet` cron. Backed by `RecurringRouteService` + `/api/recurring-routes/*`.
+  - **Quoting** uses isolated shadow tables (`tblQuoteJob` + `tblQuoteRun`); rows never promote to `tblBulkJob` or `tucJob`.
+- **Dynamic mode** is still scoped but not started (see `ROUTEBUILDER-DYNAMIC-PLAN` handover for the plan).
 
 Reference implementation for the stack + conventions: `C:\Gitlab\Configurator_Root\Configurator`. Legacy source for feature parity: `C:\Gitlab\RunBuilder_Root`.
 

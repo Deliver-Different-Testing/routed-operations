@@ -15,8 +15,10 @@ using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Application.Services.Courier;
 using RoutedOperations.Core.Application.Services.Job;
 using RoutedOperations.Core.Application.Services.Region;
-using RoutedOperations.Core.Application.Services.Route;
+using RoutedOperations.Core.Application.Services.Routing;
 using RoutedOperations.Core.Application.Services.Run;
+using RoutedOperations.Core.Application.Services.Quote;
+using RoutedOperations.Core.Application.Services.RecurringRoute;
 using RoutedOperations.Core.Application.Services.Speed;
 using RoutedOperations.Core.Application.Services.VehicleSize;
 using RoutedOperations.Core.Domain;
@@ -204,6 +206,9 @@ builder.Services.AddScoped<VehicleSizeService>();
 builder.Services.AddScoped<CourierService>();
 builder.Services.AddScoped<RouteOptimizationService>();
 builder.Services.AddScoped<HereMapService>();
+// Stage 2 - sibling modules.
+builder.Services.AddScoped<QuoteService>();
+builder.Services.AddScoped<RecurringRouteService>();
 
 // DespatchContext registered with a placeholder connection string; the real one is
 // resolved per-request from the tenant claim by DynamicDespatchDbContextFactory.
