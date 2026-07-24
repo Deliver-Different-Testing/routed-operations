@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
+import { postcodeLabel } from '../lib/tenantLabels';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
@@ -28,6 +30,8 @@ const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
  */
 export default function ScheduledRoutes() {
   const toast = useToast();
+  const user = useAuth();
+  const zipLongLabel = postcodeLabel(user.isUsTenant, false);
   const [routes, setRoutes] = useState<RecurringRoute[]>([]);
   const [loading, setLoading] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
@@ -103,7 +107,7 @@ export default function ScheduledRoutes() {
                 <th className="px-2 py-1">Area</th>
                 <th className="px-2 py-1 w-40">Schedule</th>
                 <th className="px-2 py-1 w-48">Default</th>
-                <th className="px-2 py-1 w-20 text-right">Zip Codes</th>
+                <th className="px-2 py-1 w-20 text-right">{zipLongLabel}s</th>
                 <th className="px-2 py-1 w-20 text-right">Roster</th>
                 <th className="px-2 py-1 w-20">Status</th>
                 <th className="px-2 py-1 w-48"></th>
@@ -209,6 +213,8 @@ interface EditorProps {
 
 function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   const toast = useToast();
+  const user = useAuth();
+  const zipLongLabel = postcodeLabel(user.isUsTenant, false);
   const isNew = initial === null;
   const [name, setName] = useState(initial?.name ?? '');
   const [area, setArea] = useState(initial?.area ?? '');
@@ -351,7 +357,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
             </select>
           </Field>
         </div>
-        <Field label={`Zip codes (${zips.length})`}>
+        <Field label={`${zipLongLabel}s (${zips.length})`}>
           <div className="border border-border rounded-lg p-2 bg-surface-white">
             {zips.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-2">
@@ -366,7 +372,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               </div>
             )}
             <input type="text" value={zipSearch} onChange={(e) => setZipSearch(e.target.value)}
-              className={INPUT_CLASS + ' text-xs'} placeholder="Type to search zip codes..." />
+              className={INPUT_CLASS + ' text-xs'} placeholder={`Type to search ${zipLongLabel.toLowerCase()}s...`} />
             {zipResults.length > 0 && (
               <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white text-xs">
                 {zipResults.map((z) => (

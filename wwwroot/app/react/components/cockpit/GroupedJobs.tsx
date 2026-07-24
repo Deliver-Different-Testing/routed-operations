@@ -3,6 +3,8 @@ import type { BulkJob } from '../../types';
 import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
+import { useAuth } from '../../context/AuthContext';
+import { postcodeLabel } from '../../lib/tenantLabels';
 
 export type GroupMode = 'postcode' | 'time';
 
@@ -37,6 +39,8 @@ export function GroupedJobs({
   onContextMenuItems,
   onDragStart,
 }: Props) {
+  const { isUsTenant } = useAuth();
+  const zipLabel = postcodeLabel(isUsTenant, true);
   const [ctx, setCtx] = useState<{ x: number; y: number; jobIds: number[]; label: string; isTimeGroup: boolean } | null>(null);
 
   const groups = useMemo(() => {
@@ -71,7 +75,7 @@ export function GroupedJobs({
 
   return (
     <Panel
-      title={mode === 'time' ? 'Grouped by Time' : 'Grouped by Zip / Suburb'}
+      title={mode === 'time' ? 'Grouped by Time' : `Grouped by ${zipLabel} / Suburb`}
       actions={
         <div className="flex items-center gap-1">
           <div className="inline-flex border border-border rounded-lg overflow-hidden text-[10px]">
@@ -82,8 +86,8 @@ export function GroupedJobs({
                 mode === 'postcode' ? 'bg-brand-cyan text-brand-dark font-medium'
                 : 'bg-surface-white text-text-secondary hover:bg-surface-cream'
               }`}
-              title="Group jobs by zip / suburb (default)"
-            >Zip</button>
+              title={`Group jobs by ${zipLabel.toLowerCase()} / suburb (default)`}
+            >{zipLabel}</button>
             <button
               type="button"
               onClick={() => onSetMode('time')}
@@ -98,7 +102,7 @@ export function GroupedJobs({
             type="text"
             value={search}
             onChange={(e) => onSetSearch(e.target.value)}
-            placeholder={mode === 'time' ? 'Filter time...' : 'Filter zip...'}
+            placeholder={mode === 'time' ? 'Filter time...' : `Filter ${zipLabel.toLowerCase()}...`}
             className="border border-border rounded px-2 py-0.5 text-xs w-20"
           />
         </div>
@@ -127,7 +131,26 @@ export function GroupedJobs({
                 : (onSelectGroup ? 'Click to multi-select; right-click for more' : undefined)}
             >
               <div className="flex items-center justify-between">
-                <span className="font-medium text-text-primary">{key}</span>
+                <span className="font-medium text-text-primary">
+                  {key}
+                  {/* Postcode-mode suburb tail (P1.6, legacy groupedJobs.tpl:47).
+                      Show up to 3 distinct suburb names so operators can
+                      eyeball which suburbs a postcode bucket covers before
+                      opening it. Time-mode buckets get no tail. */}
+                  {mode === 'postcode' && (() => {
+                    const suburbs = Array.from(new Set(
+                      items.map((j) => (j.toSuburb ?? '').trim()).filter(Boolean)
+                    ));
+                    if (suburbs.length === 0) return null;
+                    const shown = suburbs.slice(0, 3);
+                    const tail = suburbs.length > 3 ? `, +${suburbs.length - 3}` : '';
+                    return (
+                      <span className="ml-1 text-[10px] text-text-muted font-normal">
+                        ({shown.join(', ')}{tail})
+                      </span>
+                    );
+                  })()}
+                </span>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-text-muted">
                     {items.length} job{items.length === 1 ? '' : 's'}

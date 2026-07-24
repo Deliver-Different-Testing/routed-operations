@@ -8,6 +8,7 @@ const defaultUser: AppUser = {
   timeZone: null,
   countryCode: null,
   isUsTenant: false,
+  isInternal: false,
   hereMapsApiKey: null,
   googleMapsKey: null,
 };

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { tenantMapCentre } from '../lib/mapDefaults';
+import { postcodeLabel } from '../lib/tenantLabels';
 import { useToast } from '../context/ToastContext';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
@@ -26,6 +28,8 @@ const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export default function PolygonBuilder() {
   const user = useAuth();
   const toast = useToast();
+  const zipShortLower = postcodeLabel(user.isUsTenant, true).toLowerCase();
+  const zipLongLower = postcodeLabel(user.isUsTenant, false).toLowerCase();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<Map<number, any>>(new Map()); // zipPolygonId -> Polygon overlay
@@ -60,7 +64,7 @@ export default function PolygonBuilder() {
     if (!ready || !mapContainerRef.current || mapRef.current) return;
     const g = (window as any).google;
     const map = new g.maps.Map(mapContainerRef.current, {
-      center: { lat: 37.7749, lng: -122.4194 },
+      center: tenantMapCentre(user.isUsTenant),
       zoom: 5,
       mapTypeId: g.maps.MapTypeId.ROADMAP,
       gestureHandling: 'greedy',
@@ -186,7 +190,7 @@ export default function PolygonBuilder() {
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-white border-b border-border text-xs">
         <h1 className="text-base font-semibold text-text-primary">Polygon Builder</h1>
         <span className="text-text-muted">
-          - {loadedShapes.length} zip{loadedShapes.length === 1 ? '' : 's'} loaded, {selected.length} selected
+          - {loadedShapes.length} {zipShortLower}{loadedShapes.length === 1 ? '' : 's'} loaded, {selected.length} selected
         </span>
         <div className="flex-1" />
         <Button variant="neutral" size="sm" onClick={clearAll} disabled={loadedShapes.length === 0 && selected.length === 0}>
@@ -196,7 +200,7 @@ export default function PolygonBuilder() {
           variant="secondary" size="sm"
           onClick={() => setSaveOpen(true)}
           disabled={selected.length === 0}
-          title={selected.length === 0 ? 'Select some zip codes first' : 'Persist the selection as a recurring route'}
+          title={selected.length === 0 ? `Select some ${zipLongLower}s first` : 'Persist the selection as a recurring route'}
         >
           Save as Route ({selected.length})
         </Button>
@@ -207,14 +211,14 @@ export default function PolygonBuilder() {
           <div className="p-3 space-y-3 text-xs">
             <div>
               <div className="text-text-secondary text-[10px] uppercase tracking-wide mb-1">
-                Search zip codes
+                Search {zipLongLower}s
               </div>
               <input
                 type="text"
                 value={zipSearch}
                 onChange={(e) => setZipSearch(e.target.value)}
                 className="w-full border border-border rounded px-2 py-1 text-xs"
-                placeholder="Type a zip prefix..."
+                placeholder={`Type a ${zipShortLower} prefix...`}
               />
               {zipResults.length > 0 && (
                 <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white">
@@ -235,7 +239,7 @@ export default function PolygonBuilder() {
                 </ul>
               )}
               <div className="mt-1 text-[10px] text-text-muted">
-                Load a zip to render its boundary; click the shape on the map to toggle selection.
+                Load a {zipShortLower} to render its boundary; click the shape on the map to toggle selection.
               </div>
             </div>
 
@@ -245,7 +249,7 @@ export default function PolygonBuilder() {
               </div>
               {selected.length === 0 && (
                 <div className="text-text-muted italic text-[10px]">
-                  No zips selected yet.
+                  No {zipShortLower}s selected yet.
                 </div>
               )}
               <ul className="space-y-0.5">
@@ -289,6 +293,9 @@ interface SaveProps {
 
 function SaveAsRouteModal({ selected, onClose, onSaved }: SaveProps) {
   const toast = useToast();
+  const user = useAuth();
+  const zipShortLower = postcodeLabel(user.isUsTenant, true).toLowerCase();
+  const zipLongLower = postcodeLabel(user.isUsTenant, false).toLowerCase();
   const [name, setName] = useState('');
   const [area, setArea] = useState('');
   const [scheduleId, setScheduleId] = useState<number | null>(null);
@@ -344,7 +351,7 @@ function SaveAsRouteModal({ selected, onClose, onSaved }: SaveProps) {
         <div className="flex justify-end gap-2">
           <Button variant="neutral" onClick={onClose}>Cancel</Button>
           <Button variant="secondary" data-primary="true" onClick={commit} disabled={saving || !name.trim()}>
-            {saving ? 'Saving...' : `Create with ${selected.length} zip(s)`}
+            {saving ? 'Saving...' : `Create with ${selected.length} ${zipShortLower}(s)`}
           </Button>
         </div>
       }>
@@ -389,7 +396,7 @@ function SaveAsRouteModal({ selected, onClose, onSaved }: SaveProps) {
           </Field>
         </div>
         <div className="border border-border-light rounded p-2 bg-surface-cream text-xs">
-          <div className="font-medium mb-1">{selected.length} zip codes will be attached:</div>
+          <div className="font-medium mb-1">{selected.length} {zipLongLower}s will be attached:</div>
           <div className="flex flex-wrap gap-1">
             {selected.map((z) => (
               <span key={z.zipPolygonId} className="px-2 py-0.5 rounded bg-brand-cyan/15 text-brand-dark">

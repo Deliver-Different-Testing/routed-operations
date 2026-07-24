@@ -14,6 +14,7 @@ public record AppUserBootstrap(
     string? TimeZone,
     string? CountryCode,
     bool IsUsTenant,
+    bool IsInternal,
     string? HereMapsApiKey,
     string? GoogleMapsKey);
 
@@ -44,7 +45,21 @@ public class HomeController(
             .FirstOrDefault(x => x.Type == "CountryCode")?.Value;
         var email = HttpContext.User.Claims
             .FirstOrDefault(x => x.Type == ClaimTypes.Email)?.Value;
-        var fullName = HttpContext.User.Identity?.Name;
+
+        // Hub stamps "FirstName" + "Surname" as separate claims (see hub
+        // AccountController.cs:473-474). Prefer those for the Dashboard
+        // "You" card; fall back to Identity.Name (which is the email) only
+        // when both name claims are missing.
+        var firstName = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "FirstName")?.Value;
+        var surname = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "Surname")?.Value;
+        var identityName = HttpContext.User.Identity?.Name;
+        var composedName = string.Join(" ", new[] { firstName, surname }
+            .Where(s => !string.IsNullOrWhiteSpace(s)));
+        var fullName = !string.IsNullOrWhiteSpace(composedName)
+            ? composedName
+            : identityName;
 
         Log.Information(
             "HomeController.Index - TenantId: {TenantId}, TimeZone: {TimeZone}, Country: {Country}, HasConnection: {HasConn}",
@@ -70,7 +85,17 @@ public class HomeController(
         // the Dashboard's "You" card.
         var resolvedEmail = !string.IsNullOrEmpty(email)
             ? email
-            : (fullName?.Contains('@') == true ? fullName : null);
+            : (identityName?.Contains('@') == true ? identityName : null);
+
+        // "Internal" claim is stamped by Hub for internal-staff logins - we
+        // read the boolean form and default false. Wired through here so the
+        // React SPA can gate the Staff Import affordance (NZ internal only)
+        // without a second round-trip to fetch it.
+        var internalClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "Internal")?.Value;
+        var isInternal = !string.IsNullOrEmpty(internalClaim)
+            && bool.TryParse(internalClaim, out var internalValue)
+            && internalValue;
 
         var bootstrap = new AppUserBootstrap(
             CurrentTenantId: int.TryParse(tenantId, out var tid) ? tid : null,
@@ -79,6 +104,7 @@ public class HomeController(
             TimeZone: timeZone,
             CountryCode: countryCode,
             IsUsTenant: string.Equals(countryCode, "US", StringComparison.OrdinalIgnoreCase),
+            IsInternal: isInternal,
             HereMapsApiKey: appSettings.HereMapsApiKey,
             GoogleMapsKey: appSettings.GoogleMapsKey);
 

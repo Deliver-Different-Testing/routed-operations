@@ -1,6 +1,8 @@
 using System.IO;
 using System.Security.AccessControl;
 using System.Threading.Tasks;
+using FluentValidation;
+using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -70,6 +72,14 @@ builder.Services.AddControllersWithViews()
         options.SerializerSettings.DateParseHandling = Newtonsoft.Json.DateParseHandling.DateTimeOffset;
     });
 
+// FluentValidation auto-validation. Discovers every IValidator<T> in this
+// assembly and wires it into MVC's model-binding pipeline so [FromBody]
+// requests get validated before the action executes. Mirrors the same
+// three-line block BulkImportHyper's Program.cs uses.
+builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddFluentValidationClientsideAdapters();
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+
 // Memory cache - explicit registration so ConnectionStringManager doesn't
 // depend on the framework's transitive AddMvcCore -> AddMemoryCache chain.
 builder.Services.AddMemoryCache();
@@ -138,8 +148,11 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
         : CookieSecurePolicy.Always;
 });
 
-// File size limits (25 MB).
-const long maxFileSize = 25L * 1024 * 1024;
+// File size limits. 20 MB cap prevents a ZIP-bomb XLSX from expanding to
+// millions of cells and OOMing the shared multi-tenant pod. Controller
+// [RequestSizeLimit] carries the same cap so the rejection lands
+// consistently at every layer.
+const long maxFileSize = 20L * 1024 * 1024;
 builder.Services.Configure<FormOptions>(x =>
 {
     x.ValueLengthLimit = (int)maxFileSize;
@@ -147,7 +160,31 @@ builder.Services.Configure<FormOptions>(x =>
     x.MultipartHeadersLengthLimit = 32768;
 });
 builder.Services.Configure<IISServerOptions>(options => { options.MaxRequestBodySize = maxFileSize; });
-builder.Services.Configure<KestrelServerOptions>(options => { options.Limits.MaxRequestBodySize = maxFileSize; });
+builder.Services.Configure<KestrelServerOptions>(options =>
+{
+    options.Limits.MaxRequestBodySize = maxFileSize;
+    // Phase 1 Task 7: mirror BulkImportHyper's 15-minute header timeout so
+    // long-running direct-insert imports (Excel parse + N job inserts +
+    // linehaul split) don't get chopped off by Kestrel's 30-second default.
+    // Paired with AddRequestTimeouts below for the response-side cap.
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(15);
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(15);
+});
+
+// Phase 1 Task 7: 15-minute request timeout policy for the direct-insert
+// bulk-import flow. Applied as the default so every controller inherits
+// it, matching BulkImportHyper's Program.cs. Deliberately using 408
+// (Request Timeout) rather than 503 - the request itself timed out, the
+// service is still healthy, and the React wizard renders a friendlier
+// message for 408 than for a generic Service Unavailable.
+builder.Services.AddRequestTimeouts(options =>
+{
+    options.DefaultPolicy = new Microsoft.AspNetCore.Http.Timeouts.RequestTimeoutPolicy
+    {
+        Timeout = TimeSpan.FromMinutes(15),
+        TimeoutStatusCode = StatusCodes.Status408RequestTimeout
+    };
+});
 
 // Authorization policies matching the parity build plan.
 builder.Services.AddAuthorization(options =>
@@ -206,9 +243,33 @@ builder.Services.AddScoped<VehicleSizeService>();
 builder.Services.AddScoped<CourierService>();
 builder.Services.AddScoped<RouteOptimizationService>();
 builder.Services.AddScoped<HereMapService>();
+// HERE Maps geocoder (address -> lat/lng). Consumed by the BulkImportHyper
+// AddressService (fallback path) and any other service that needs geocoding.
+// Typed HttpClient with a 5-second timeout so a HERE outage does not stall
+// the request on the default 100 s. AddHttpClient<T>() is Transient by
+// default; the extra Scoped registration below pulls the transient client
+// on demand so existing constructor injection keeps working.
+builder.Services.AddHttpClient<HereGeocodeService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
 // Stage 2 - sibling modules.
 builder.Services.AddScoped<QuoteService>();
 builder.Services.AddScoped<RecurringRouteService>();
+// BulkImportHyper direct-insert service quartet (Phase 1 Task 6).
+// BulkImportServiceV2 is a partial class split across three files
+// (BulkImportServiceV2.cs + BulkImportJobFactory.cs + BulkImportRatingService.cs)
+// - a single Scoped registration covers all three surfaces. The peer
+// services below (Address/Client/Template/Tenant) are what the new
+// BulkImport / Clients / Address controllers depend on.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.BulkImportServiceV2>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.AddressService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ClientService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.TemplateService>();
+// TenantService is stateless + only reads IWebHostEnvironment - Singleton
+// is safe and matches the source's registration lifetime.
+builder.Services.AddSingleton<RoutedOperations.Core.Application.Services.BulkImport.ITenantService,
+    RoutedOperations.Core.Application.Services.BulkImport.TenantService>();
 
 // DespatchContext registered with a placeholder connection string; the real one is
 // resolved per-request from the tenant claim by DynamicDespatchDbContextFactory.
@@ -393,6 +454,11 @@ app.Use(async (context, next) =>
 });
 
 app.UseCookiePolicy();
+// Phase 1 Task 7: activate the RequestTimeouts middleware BEFORE routing
+// so a slow bulk-import request is bounded at the pipeline entry point,
+// not after routing has already matched an endpoint. Paired with the
+// Kestrel RequestHeadersTimeout / KeepAliveTimeout bumps above.
+app.UseRequestTimeouts();
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();

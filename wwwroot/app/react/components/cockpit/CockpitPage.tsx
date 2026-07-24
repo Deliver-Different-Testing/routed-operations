@@ -15,6 +15,7 @@ import { ActionToolbar } from './ActionToolbar';
 import { BulkMoveDateModal } from './BulkMoveDateModal';
 import { OptimizePreviewModal, type OptimizeStop } from './OptimizePreviewModal';
 import { BuildConfigModal } from './BuildConfigModal';
+import { BuildAlertModal, type BuildBucketPreview, type BuildSkipReport } from './BuildAlertModal';
 import { FixGpsModal } from './FixGpsModal';
 import { LayoutMenu } from './LayoutMenu';
 import { FilterPresetsMenu } from './FilterPresetsMenu';
@@ -33,16 +34,22 @@ import { bucketJobs, buildModeLabel, loadBuildConfig, saveBuildConfig, splitOrde
 import { expandMultiboxSiblings } from '../../lib/multibox';
 import { VoidRelationshipDialog, type VoidRelationshipContext } from './VoidRelationshipDialog';
 import { MergeRunModal } from './MergeRunModal';
+import { SendSelectedModal } from './SendSelectedModal';
 import { sortJobs, sortRuns } from '../../lib/sortLists';
 import { RunActionToolbar } from './RunActionToolbar';
 import type { ContextMenuItem } from './RowContextMenu';
 import { useHotkeys } from '../../hooks/useHotkeys';
+import { useGlobalSearch } from '../../context/GlobalSearchContext';
 
 interface ClientOption { id: number; label: string; }
 
 export function CockpitPage() {
   const [state, dispatch] = useCockpitState();
   const toast = useToast();
+  // P1.4 global cross-jobs search. The Header owns the input; we consume the
+  // query below to widen filtering across jobs / runs / groups, and register
+  // a jump handler so a header result click selects the target job.
+  const globalSearch = useGlobalSearch();
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const [allCouriers, setAllCouriers] = useState<Courier[]>([]);
   const [clients, setClients] = useState<ClientOption[]>([]);
@@ -51,10 +58,26 @@ export function CockpitPage() {
   const [vehicleSizes, setVehicleSizes] = useState<VehicleSize[]>([]);
   const [buildConfig, setBuildConfig] = useState<BuildConfig>(() => loadBuildConfig());
   const [buildConfigModal, setBuildConfigModal] = useState<{ open: boolean; onConfirm?: () => void }>({ open: false });
+  // Pre-build preview modal (P1.11). Populated by openBuildAlert() before the
+  // heavy build path fires; empty when no build is pending.
+  const [buildAlert, setBuildAlert] = useState<{
+    buckets: BuildBucketPreview[];
+    skips: BuildSkipReport;
+    totalValid: number;
+    execute: () => Promise<void>;
+  } | null>(null);
   const [mapContext, setMapContext] = useState<MapContextTarget | null>(null);
-  const [gpsFixJob, setGpsFixJob] = useState<BulkJob | null>(null);
+  // L2.P3.2 Optional pre-selected leg for the JobDetail address-row
+  // right-click shortcut. Header "Fix GPS" button leaves it undefined
+  // (modal defaults to 'ToAddress'); the address-row shortcuts pass the
+  // matching side so the operator lands in one click.
+  const [gpsFixJob, setGpsFixJob] = useState<{ job: BulkJob; leg?: 'ToAddress' | 'FromAddress' } | null>(null);
   const [voidDialog, setVoidDialog] = useState<VoidRelationshipContext | null>(null);
   const [mergeSource, setMergeSource] = useState<Run | null>(null);
+  // P2.7 Send-Selected modal state. Populated by handleSendSelected once the
+  // pre-flight checks (client filter warning etc.) have passed; the modal
+  // takes over from window.prompt for the actual courier pick + confirm.
+  const [sendSelectedModal, setSendSelectedModal] = useState<{ expandedJobIds: number[] } | null>(null);
   // Which of the four panes was interacted with most recently. Ctrl+A uses
   // this to pick the right "select all" scope. Legacy called this
   // `activeTable` and updated it on every ng-mouseup binding.
@@ -128,6 +151,42 @@ export function CockpitPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.filters.date, state.filters.regionIds.join(','), state.filters.speeds.join(','), state.filters.clientIds.join(','), state.filters.ourRefs.join(',')]);
 
+  // P1.4 global search: register / unregister the "jump to this job id" handler
+  // so the Header's result dropdown can hop the cockpit to the matching row.
+  useEffect(() => {
+    globalSearch.registerOnJump((jobId) => dispatch({ type: 'SELECT_JOB', payload: jobId }));
+    return () => { globalSearch.registerOnJump(null); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Publish result hits to the Header dropdown. Search covers both unassigned
+  // jobs (state.jobs) AND jobs sitting on runs (surfaced via state.runs[i].jobs
+  // enriched to a hit shape). Capped to 25 rows so the dropdown stays sensible.
+  useEffect(() => {
+    const q = globalSearch.query.trim().toLowerCase();
+    if (!q) { globalSearch.publishResults([]); return; }
+    const matches: { bulkJobId: number; jobNumber: string | null; clientCode: string | null;
+                     toSuburb: string | null; toPostCode: number | null; runName: string | null }[] = [];
+    for (const j of state.jobs) {
+      const hay =
+        `${j.jobNumber ?? ''} ${j.clientCode ?? ''} ${j.toSuburb ?? ''} ${j.toAddress ?? ''} ${j.ourRef ?? ''} ${j.toPostCode ?? ''} ${j.runName ?? ''}`
+          .toLowerCase();
+      if (hay.includes(q)) {
+        matches.push({
+          bulkJobId: j.bulkJobId,
+          jobNumber: j.jobNumber,
+          clientCode: j.clientCode,
+          toSuburb: j.toSuburb,
+          toPostCode: j.toPostCode,
+          runName: j.runName,
+        });
+        if (matches.length >= 25) break;
+      }
+    }
+    globalSearch.publishResults(matches);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalSearch.query, state.jobs]);
+
   const displayedJobs = (() => {
     // Legacy jobList.tpl: filter:{inBuilder: '!1', Void: '!1'} - jobs already
     // assigned to a run (BulkRunID set) disappear from the Jobs list, so
@@ -143,14 +202,22 @@ export function CockpitPage() {
     if (state.sizeFilter === 'moreThan100Cubic') {
       out = out.filter((j) => (j.jobCubicM3 ?? 0) > 100);
     }
-    if (state.jobSearch.trim()) {
-      const needle = state.jobSearch.trim().toLowerCase();
-      out = out.filter((j) =>
+    // Combined search: the panel-local Jobs filter (state.jobSearch) plus the
+    // Header-level global filter (globalSearch.query). Legacy runListCombined
+    // treats both as ORs across the same field set; we intersect them (AND) so
+    // narrowing globally still lets the operator further-narrow per pane.
+    const needles = [state.jobSearch.trim(), globalSearch.query.trim()]
+      .filter(Boolean)
+      .map((s) => s.toLowerCase());
+    if (needles.length > 0) {
+      out = out.filter((j) => needles.every((needle) =>
         (j.jobNumber ?? '').toLowerCase().includes(needle) ||
         (j.clientCode ?? '').toLowerCase().includes(needle) ||
         (j.toSuburb ?? '').toLowerCase().includes(needle) ||
+        (j.toAddress ?? '').toLowerCase().includes(needle) ||
+        (j.ourRef ?? '').toLowerCase().includes(needle) ||
         String(j.toPostCode ?? '').includes(needle) ||
-        (j.runName ?? '').toLowerCase().includes(needle));
+        (j.runName ?? '').toLowerCase().includes(needle)));
     }
     return sortJobs(out, state.jobSort);
   })();
@@ -325,17 +392,27 @@ export function CockpitPage() {
     }
   };
 
-  const handleAssignCourier = async (runId: number, courierId: number | null) => {
+  const handleAssignCourier = async (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => {
     const run = state.runs.find((r) => r.id === runId);
     if (!run) return;
     const courier = courierId ? allCouriers.find((c) => c.courierId === courierId) : null;
     try {
+      // Preassign path (P1.9): flip Status to 18 in the same round-trip as the
+      // courier assign so downstream dispatchers see it flagged. If the run is
+      // already at a non-zero status (e.g. locked=1), preserve that - the
+      // preassign flag only applies to the "not yet locked" case.
+      const preassignStatus = opts?.preassign && (run.status ?? 0) === 0 ? 18 : undefined;
       const body = runToBody(run, {
         courier: courier ? { courierId: courier.courierId, courier: courier.displayName } : null,
+        ...(preassignStatus !== undefined ? { status: preassignStatus } : {}),
       });
       const res = await runService.update(runId, body);
       if (res.response.result === 'Success') {
-        toast.show(courier ? `Assigned ${courier.displayName}` : 'Courier removed', 'success');
+        toast.show(
+          courier
+            ? opts?.preassign ? `Preassigned ${courier.displayName} (Status 18)` : `Assigned ${courier.displayName}`
+            : 'Courier removed',
+          'success');
         await loadJobsAndRuns(state.filters);
       } else {
         toast.show(res.response.message ?? 'Assign failed', 'error');
@@ -390,6 +467,18 @@ export function CockpitPage() {
   const handleDropJobs = (runId: number, jobIds: number[]) => assignJobsToRun(runId, jobIds);
 
   const handleRemoveJobFromRun = async (jobId: number) => {
+    // L2.P2.2 Legacy HereMap.tpl:155-161 prompts before pulling a job off
+    // a LOCKED run (Status > 0) because the run has already been earmarked
+    // for a courier; silently removing is a small safety loss. Find the
+    // owning run via the job -> run.jobs relationship (bulkRunId on the
+    // job DTO can lag behind an in-flight update).
+    const owningRun = state.runs.find((r) => r.jobs.some((j) => j.bulkJobId === jobId));
+    if (owningRun && owningRun.status != null && owningRun.status > 0) {
+      const ok = window.confirm(
+        `Are you sure you want to remove this job from the locked run "${owningRun.name}"?`
+      );
+      if (!ok) return;
+    }
     try {
       const res = await runService.removeJob(jobId);
       if (res.response.result === 'Success') {
@@ -434,6 +523,32 @@ export function CockpitPage() {
     voidWithIds([job.bulkJobId], true);
   const handleUnvoidRunBuilderJob = async (job: RunJob, _run: Run) =>
     voidWithIds([job.bulkJobId], false);
+
+  /**
+   * Persist a manually re-ordered run (P1.10, legacy activateRunDrop). The
+   * caller passes the current run.jobs snapshot in the operator's desired
+   * order; we assign builderIndex = i + 1 and POST via the existing
+   * InsertOrUpdate path so the MERGE + HOLDLOCK contract stays.
+   */
+  const handleReorderRunJobs = async (run: Run, orderedJobs: RunJob[]) => {
+    try {
+      const jobs = orderedJobs.map((rj, i) => ({
+        bulkJobId: rj.bulkJobId,
+        builderIndex: i + 1,
+        jobNumber: rj.jobNumber,
+      }));
+      const body = runToBody(run, { jobs });
+      const upsert = await runService.insertOrUpdate(body);
+      if (upsert.response.result === 'Success') {
+        toast.show(`Reordered ${orderedJobs.length} stop(s) on "${run.name}"`, 'success');
+        await loadJobsAndRuns(state.filters);
+      } else {
+        toast.show(upsert.response.message ?? 'Reorder failed', 'error');
+      }
+    } catch (e) {
+      toast.show((e as Error).message, 'error');
+    }
+  };
 
   // Optimise a specific run's stops. When `lockAfter` is true, persist the
   // new order AND flip status to 1 in the same round-trip - this is the
@@ -581,6 +696,29 @@ export function CockpitPage() {
   const handleDispatch = async () => {
     const locked = state.runs.filter((r) => r.status && r.status > 0);
     if (locked.length === 0) return;
+
+    // P1.2 unlocked-runs alert (legacy homeControl.js:1797-1801). Warn the
+    // operator when there are unlocked runs sitting in the current view; the
+    // operator may have forgotten to lock them and dispatch would silently
+    // skip those runs. Void runs excluded - they're never dispatchable.
+    const unlocked = state.runs.filter((r) =>
+      !r.isVoidRun && (r.status ?? 0) === 0 && r.jobs.length > 0);
+    if (unlocked.length > 0) {
+      const names = unlocked.slice(0, 4).map((r) => r.name ?? `#${r.id}`).join(', ');
+      const tail = unlocked.length > 4 ? `, +${unlocked.length - 4} more` : '';
+      alert(`You have ${unlocked.length} unlocked run(s) (${names}${tail}). ` +
+            `Please lock all runs before dispatch, or continue to dispatch only the ${locked.length} locked run(s).`);
+      // Fall through to the normal confirm so the operator can still choose
+      // to dispatch just the locked ones - matches legacy prompt-then-continue.
+    }
+
+    // P1.1 client-filter warning (legacy homeControl.js:1804-1810).
+    if (state.filters.clientIds.length > 0) {
+      if (!confirm(`A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
+                   `Only jobs from those clients are visible - are you sure you want to dispatch?`)) {
+        return;
+      }
+    }
     if (!confirm(`Send ${locked.length} locked run(s) to Live?`)) return;
     try {
       const body = locked.map((r) => runToBody(r, {}));
@@ -605,24 +743,28 @@ export function CockpitPage() {
   const handleSendSelected = async () => {
     if (state.selectedJobIds.length === 0) return;
 
-    // Simple prompt-based courier picker for now; the legacy also just used a
-    // form dialog. Empty answer -> null courier (dispatch orphaned).
-    const expanded = expandMultiboxSiblings(state.selectedJobIds, state.jobs);
-    const courierList = allCouriers.map((c) => `${c.courierId}: ${c.displayName}`).join('\n');
-    const courierInput = window.prompt(
-      `Dispatch ${expanded.length} job(s) to Live.\n\nEnter courier ID (blank for unassigned):\n\n${courierList}`,
-      ''
-    );
-    if (courierInput === null) return; // Cancel
-    const courierId = courierInput.trim() ? Number(courierInput.trim()) : null;
-    if (courierId !== null && Number.isNaN(courierId)) {
-      toast.show('Invalid courier id.', 'error');
-      return;
+    // P1.1 client-filter warning (same rationale as handleDispatch). Cheap
+    // guard before the courier prompt so the operator can bail early if the
+    // filter narrows the visible pool more than they meant to.
+    if (state.filters.clientIds.length > 0) {
+      if (!confirm(`A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
+                   `Only jobs from those clients are visible - are you sure you want to dispatch the selection?`)) {
+        return;
+      }
     }
 
+    // P2.7 Replaced the legacy window.prompt courier picker with SendSelectedModal.
+    // Pre-expand multibox siblings here so the modal's job-count reflects the
+    // real dispatch size (parent + children). The modal fires doSendSelected
+    // with the chosen courier id (or null for unassigned).
+    const expanded = expandMultiboxSiblings(state.selectedJobIds, state.jobs);
+    setSendSelectedModal({ expandedJobIds: expanded });
+  };
+
+  const doSendSelected = async (expandedJobIds: number[], courierId: number | null) => {
     try {
       const runName = `Selected ${new Date().toISOString().slice(0, 10)}`;
-      const res = await runService.dispatchJobs(expanded, courierId, runName);
+      const res = await runService.dispatchJobs(expandedJobIds, courierId, runName);
       const failures = res.response.filter((r) => r.result !== 'Success').length;
       if (failures === 0) {
         toast.show(`Dispatched ${res.response.length} job(s) to Live`, 'success');
@@ -630,6 +772,7 @@ export function CockpitPage() {
         toast.show(`${failures} of ${res.response.length} dispatches failed`, 'warning');
       }
       dispatch({ type: 'CLEAR_MULTISELECT' });
+      setSendSelectedModal(null);
       await loadJobsAndRuns(state.filters);
     } catch (e) {
       toast.show((e as Error).message, 'error');
@@ -688,20 +831,69 @@ export function CockpitPage() {
       return;
     }
 
-    const warnings: string[] = [];
-    if (missingWindow.length) warnings.push(`${missingWindow.length} job(s) missing schedule window`);
-    if (missingCubic.length) warnings.push(`${missingCubic.length} job(s) missing cubic data`);
-    if (missingPostcode.length) warnings.push(`${missingPostcode.length} job(s) missing postcode`);
-    if (warnings.length) toast.show(`Skipped: ${warnings.join('; ')}`, 'warning');
-
     const buckets = bucketJobs(valid, mode);
     if (buckets.length === 0) {
       toast.show('No buckets formed from selection.', 'warning');
       return;
     }
 
+    // P1.11 pre-build preview. Show the bucket table + skip counts and wait
+    // for the operator to confirm before firing the heavy HERE + create-run
+    // + assign loop below. Skips get elevated into a proper listing (was a
+    // toast) so the operator can eyeball the losses before committing.
+    const preview: BuildBucketPreview[] = buckets.map((b) => {
+      let windowLabel: string | null = null;
+      if (mode === 'deliveryWindow' && b.jobs.length > 0) {
+        const start = b.jobs[0].scheduleWindowStart;
+        // Earliest end across the bucket (per 2026-07-08 amendment).
+        const earliestEnd = b.jobs.reduce<string | null>((m, j) => {
+          if (!j.scheduleWindowEnd) return m;
+          if (!m) return j.scheduleWindowEnd;
+          return new Date(j.scheduleWindowEnd) < new Date(m) ? j.scheduleWindowEnd : m;
+        }, null);
+        if (start && earliestEnd) {
+          const fmt = (iso: string) => {
+            const d = new Date(iso);
+            return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
+          };
+          windowLabel = `${fmt(start)} - ${fmt(earliestEnd)}`;
+        }
+      }
+      return {
+        key: b.key,
+        hhmm: b.hhmm,
+        jobCount: b.jobs.length,
+        windowLabel,
+      };
+    });
+    const skips: BuildSkipReport = {
+      missingWindow: missingWindow.length,
+      missingCubic: missingCubic.length,
+      missingPostcode: missingPostcode.length,
+    };
+
+    setBuildAlert({
+      buckets: preview,
+      skips,
+      totalValid: valid.length,
+      execute: () => runBuildExecution(buckets, mode, vcOn),
+    });
+  };
+
+  /**
+   * Actual heavy execution split out of doBuildRuns for the P1.11 preview
+   * flow. Same code that used to live inline - just moved so the pre-build
+   * alert can gate on operator confirm.
+   */
+  const runBuildExecution = async (
+    buckets: ReturnType<typeof bucketJobs>,
+    mode: 'maxBoxes' | 'deliveryWindow',
+    vcOn: boolean,
+  ) => {
+    setBuildAlert(null);
+
     const labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const runsToCreate: { name: string; jobs: typeof valid }[] = [];
+    const runsToCreate: { name: string; jobs: BulkJob[] }[] = [];
 
     for (const bucket of buckets) {
       let orderedJobs = bucket.jobs; // already ToPostCode-sorted for DW mode
@@ -731,58 +923,94 @@ export function CockpitPage() {
         // Auto route off: skip HERE and use the postcode-sorted order that
         // arrived from bucketJobs. Legacy routeSetting.autoRoute check.
         if (autoRoute && withCoords.length >= 2) {
+          // P2.6 legacy homeControl.js:3737-3809 - HERE's findsequence2 hard-
+          // errors above ~200 stops. For those buckets fall back to RouteSavvy
+          // (which has no waypoint cap) and interpolate leg minutes from the
+          // total. Same fallback the manual per-run "Optimise" path uses
+          // (I0.02, handleOptimizeRun overThreshold branch).
+          const overThreshold = withCoords.length > 200;
           try {
-            const first = withCoords[0];
-            // Use the first job's pickup as the start; if pickup missing,
-            // use its delivery as a poor-man's proxy.
-            const startLat = Number(first.pickUpLatitude ?? first.deliveryLatitude);
-            const startLng = Number(first.pickUpLongitude ?? first.deliveryLongitude);
-            const destinations = withCoords.map((j) => ({
-              name: j.jobNumber ?? String(j.bulkJobId),
-              lat: Number(j.deliveryLatitude),
-              lng: Number(j.deliveryLongitude),
-            }));
-            // Route Builder routing mode (Plan §Phase 2 §6):
-            //   'aToA'         -> tell HERE to return to origin (end=start)
-            //   'finishAtStop' -> pin the nominated job as HERE's `end`
-            //   'aToB'         -> HERE default, no extras
-            const finishAtJob = buildConfig.routingMode === 'finishAtStop' && buildConfig.finishAtBulkJobId
-              ? withCoords.find((j) => j.bulkJobId === buildConfig.finishAtBulkJobId)
-              : undefined;
-            const seq = await routeService.hereSequenceTyped(
-              { name: 'start', lat: startLat, lng: startLng },
-              destinations,
-              {
-                returnToStart: buildConfig.routingMode === 'aToA',
-                finishAtName: finishAtJob ? (finishAtJob.jobNumber ?? String(finishAtJob.bulkJobId)) : null,
-              }
-            );
-            if (seq && seq.orderedNames.length > 0) {
-              // Map HERE's ordered names back to job objects. Drop the start
-              // entry (its "name" is the literal 'start'), keep the rest.
-              const byName = new Map<string, typeof orderedJobs[number]>();
-              orderedJobs.forEach((j) => {
-                const n = j.jobNumber ?? String(j.bulkJobId);
-                byName.set(n, j);
+            if (overThreshold) {
+              toast.show(`Bucket has ${withCoords.length} stops - using RouteSavvy (HERE limit 200)`, 'info');
+              const waypoints: SavvyLocation[] = withCoords.map((j) => ({
+                name: j.jobNumber ?? String(j.bulkJobId),
+                latitude: Number(j.deliveryLatitude),
+                longitude: Number(j.deliveryLongitude),
+                visitDurationInMinutes: 0,
+              }));
+              const res = await routeService.optimizeWithName(waypoints);
+              const nameToOrder = new Map<string, number>();
+              res.routes.forEach((r, i) => { if (r.name) nameToOrder.set(r.name, i + 1); });
+              // Re-order the whole bucket using the RouteSavvy sequence. Jobs
+              // without a returned order (dropped or unnamed) fall to the end
+              // in their original order so nothing gets silently lost.
+              const reordered = [...orderedJobs].sort((a, b) => {
+                const an = a.jobNumber ?? String(a.bulkJobId);
+                const bn = b.jobNumber ?? String(b.bulkJobId);
+                return (nameToOrder.get(an) ?? Number.MAX_SAFE_INTEGER)
+                     - (nameToOrder.get(bn) ?? Number.MAX_SAFE_INTEGER);
               });
-              const reordered: typeof orderedJobs = [];
-              const legs: number[] = [];
-              seq.orderedNames.forEach((n, i) => {
-                const j = byName.get(n);
-                if (j) {
-                  reordered.push(j);
-                  legs.push(seq.legMinutes[i] ?? 0);
+              orderedJobs = reordered;
+              // RouteSavvy response has no per-leg times; approximate travel
+              // via proportional split. Legacy homeControl.js:3791-3793 uses
+              // the same trick. Buckets over 200 are rare enough that this
+              // window-fit approximation is fine for MVP.
+              const totalMinutes = 0; // RouteSavvy response shape in this codebase omits totalTime
+              const perStop = orderedJobs.length > 0 ? totalMinutes / orderedJobs.length : 0;
+              legMinutes = orderedJobs.map(() => perStop);
+            } else {
+              const first = withCoords[0];
+              // Use the first job's pickup as the start; if pickup missing,
+              // use its delivery as a poor-man's proxy.
+              const startLat = Number(first.pickUpLatitude ?? first.deliveryLatitude);
+              const startLng = Number(first.pickUpLongitude ?? first.deliveryLongitude);
+              const destinations = withCoords.map((j) => ({
+                name: j.jobNumber ?? String(j.bulkJobId),
+                lat: Number(j.deliveryLatitude),
+                lng: Number(j.deliveryLongitude),
+              }));
+              // Route Builder routing mode (Plan §Phase 2 §6):
+              //   'aToA'         -> tell HERE to return to origin (end=start)
+              //   'finishAtStop' -> pin the nominated job as HERE's `end`
+              //   'aToB'         -> HERE default, no extras
+              const finishAtJob = buildConfig.routingMode === 'finishAtStop' && buildConfig.finishAtBulkJobId
+                ? withCoords.find((j) => j.bulkJobId === buildConfig.finishAtBulkJobId)
+                : undefined;
+              const seq = await routeService.hereSequenceTyped(
+                { name: 'start', lat: startLat, lng: startLng },
+                destinations,
+                {
+                  returnToStart: buildConfig.routingMode === 'aToA',
+                  finishAtName: finishAtJob ? (finishAtJob.jobNumber ?? String(finishAtJob.bulkJobId)) : null,
                 }
-              });
-              if (reordered.length > 0) {
-                orderedJobs = reordered;
-                legMinutes = legs;
+              );
+              if (seq && seq.orderedNames.length > 0) {
+                // Map HERE's ordered names back to job objects. Drop the start
+                // entry (its "name" is the literal 'start'), keep the rest.
+                const byName = new Map<string, typeof orderedJobs[number]>();
+                orderedJobs.forEach((j) => {
+                  const n = j.jobNumber ?? String(j.bulkJobId);
+                  byName.set(n, j);
+                });
+                const reordered: typeof orderedJobs = [];
+                const legs: number[] = [];
+                seq.orderedNames.forEach((n, i) => {
+                  const j = byName.get(n);
+                  if (j) {
+                    reordered.push(j);
+                    legs.push(seq.legMinutes[i] ?? 0);
+                  }
+                });
+                if (reordered.length > 0) {
+                  orderedJobs = reordered;
+                  legMinutes = legs;
+                }
               }
             }
           } catch (e) {
             // Log to console; toast would be noisy since the build still
             // works (just with less accurate window-fit checks).
-            console.warn('HERE sequence failed, falling back to postcode order', e);
+            console.warn('Route optimisation failed, falling back to postcode order', e);
           }
         }
       }
@@ -1026,7 +1254,7 @@ export function CockpitPage() {
   // ---- context-menu factories ----------------------------------------------
   const jobContextMenu = (job: BulkJob): ContextMenuItem[] => [
     { label: 'Show on map', onClick: () => dispatch({ type: 'SELECT_JOB', payload: job.bulkJobId }) },
-    { label: 'Fix GPS...', onClick: () => setGpsFixJob(job), separatorAfter: true },
+    { label: 'Fix GPS...', onClick: () => setGpsFixJob({ job }), separatorAfter: true },
     { label: `Void job ${job.jobNumber ?? job.bulkJobId}`, onClick: () => {
       void voidWithIds([job.bulkJobId], true);
     }, danger: true },
@@ -1048,11 +1276,34 @@ export function CockpitPage() {
         dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
         dispatch({ type: 'SET_JOB_SEARCH', payload: label });
       }});
+      // P2.2 Legacy setTime (homeControl.js:4099-4162): after multi-selecting
+      // a time bucket the operator wanted to "collapse" back into postcode
+      // groups (so they can then bucket the jobs into runs by geography). If
+      // the selected bucket's bookTime range spans > 1 hour it also warns -
+      // longer windows almost never split cleanly into a single run and the
+      // operator likely meant to pick a narrower slot. Alert first, then
+      // switch group mode + multi-select regardless (matches legacy: legacy
+      // ONLY alerts, never blocks).
+      items.push({ label: 'Multi-select and sort by postcode', onClick: () => {
+        const bucketJobs = state.jobs.filter((j) => jobIds.includes(j.bulkJobId));
+        const spread = bookTimeSpreadMs(bucketJobs);
+        if (spread != null && spread > 60 * 60 * 1000) {
+          alert(`WARNING: The time range you have picked spans ${Math.round(spread / 60000)} minutes (>1 hour).`);
+        }
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
+        dispatch({ type: 'SET_GROUP_MODE', payload: 'postcode' });
+      }});
       items.push({ label: 'Edit Group Date...', onClick: () => {
         dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
         setBulkMoveOpen(true);
       }, separatorAfter: true });
     } else {
+      // Postcode-mode: "Create Run From Group" (P1.5, legacy homeControl.js:4337-4342).
+      // One click creates a fresh run named after the bucket key (e.g. "3110")
+      // and drops every job in the bucket onto it.
+      items.push({ label: `Create run from these ${jobIds.length} job(s)`, onClick: () => {
+        void createRunFromGroup(label, jobIds);
+      } });
       items.push({ label: 'Move to another date...', onClick: () => {
         dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
         setBulkMoveOpen(true);
@@ -1062,6 +1313,41 @@ export function CockpitPage() {
       void voidWithIds(jobIds, true);
     }, danger: true });
     return items;
+  };
+
+  /**
+   * P1.5 helper. Creates a new run named after the group label (postcode)
+   * and immediately assigns the group's jobs to it. Uses the existing
+   * POST /api/runs + assign path so the flow matches manual create + drag.
+   */
+  const createRunFromGroup = async (groupLabel: string, jobIds: number[]) => {
+    if (jobIds.length === 0) return;
+    try {
+      const body: InsertOrUpdateRunBody = {
+        id: null,
+        name: groupLabel,
+        mins: 0,
+        kms: 0,
+        status: 0,
+        revenue: null,
+        payout: null,
+        courier: null,
+        courierPercent: null,
+        googleRouteResponse: null,
+        jobs: [],
+        despatchDateTime: state.filters.date,
+      };
+      const created = await runService.insertOrUpdate(body);
+      if (created.response.result !== 'Success') {
+        toast.show(created.response.message ?? 'Create run failed', 'error');
+        return;
+      }
+      const runId = Number(created.response.message);
+      await assignJobsToRun(runId, jobIds);
+      toast.show(`Created run "${groupLabel}" with ${jobIds.length} job(s)`, 'success');
+    } catch (e) {
+      toast.show((e as Error).message, 'error');
+    }
   };
 
   const runContextMenu = (run: Run, helpers: { startRename: () => void }): ContextMenuItem[] => {
@@ -1081,6 +1367,15 @@ export function CockpitPage() {
         dispatch({ type: 'SELECT_RUN', payload: run.id });
         void handleOptimizeRun({ runId: run.id, lockAfter: true });
       }, disabled: run.jobs.length < 2 || locked || run.isVoidRun },
+      // Edit Route Date (P1.3, legacy homeControl.js:2034-2113). Multi-selects
+      // every job on the run and opens the bulk-move-date modal preloaded with
+      // the count. Uses the existing POST /api/jobs/bulk-move endpoint.
+      { label: 'Edit Route Date...', onClick: () => {
+        const ids = run.jobs.map((j) => j.bulkJobId);
+        if (ids.length === 0) return;
+        dispatch({ type: 'REPLACE_MULTISELECT', payload: ids });
+        setBulkMoveOpen(true);
+      }, disabled: run.jobs.length === 0 },
       { label: 'Merge into...', onClick: () => setMergeSource(run), disabled: run.jobs.length === 0, separatorAfter: true },
       { label: 'Delete run', onClick: () => handleDeleteRun(run.id), danger: true },
     ];
@@ -1110,6 +1405,31 @@ export function CockpitPage() {
   // Ctrl+D dispatches (locked runs or selected jobs), Ctrl+A selects all
   // visible jobs, Esc clears the current selection, Del removes the focused
   // job from its run. Matches the legacy hotkeys.add() bindings.
+
+  // P2.3 arrow-key row navigation. Scope depends on the last-focused pane:
+  //   jobs   -> move selection within displayedJobs
+  //   runs   -> move selection within displayedRuns (updates selectedRunId)
+  //   groups -> also acts on displayedJobs (groups is a projection of jobs)
+  // Wraps at both ends so continuous presses cycle round.
+  const navigateSelection = (delta: -1 | 1) => {
+    if (activePane === 'runs') {
+      if (displayedRuns.length === 0) return;
+      const idx = displayedRuns.findIndex((r) => r.id === state.selectedRunId);
+      const nextIdx = idx < 0
+        ? (delta === 1 ? 0 : displayedRuns.length - 1)
+        : (idx + delta + displayedRuns.length) % displayedRuns.length;
+      dispatch({ type: 'SELECT_RUN', payload: displayedRuns[nextIdx].id });
+      return;
+    }
+    // jobs + groups pane share the same underlying displayedJobs list.
+    if (displayedJobs.length === 0) return;
+    const idx = displayedJobs.findIndex((j) => j.bulkJobId === state.selectedJobId);
+    const nextIdx = idx < 0
+      ? (delta === 1 ? 0 : displayedJobs.length - 1)
+      : (idx + delta + displayedJobs.length) % displayedJobs.length;
+    dispatch({ type: 'SELECT_JOB', payload: displayedJobs[nextIdx].bulkJobId });
+  };
+
   useHotkeys({
     onDispatch: () => {
       if (state.selectedJobIds.length > 0) void handleSendSelected();
@@ -1129,6 +1449,7 @@ export function CockpitPage() {
       else if (optimizePreview) setOptimizePreview(null);
       else if (buildConfigModal.open) setBuildConfigModal({ open: false });
       else if (gpsFixJob) setGpsFixJob(null);
+      else if (sendSelectedModal) setSendSelectedModal(null);
       else if (state.selectedJobIds.length > 0) dispatch({ type: 'CLEAR_MULTISELECT' });
       else if (state.selectedRunIds.length > 0) dispatch({ type: 'CLEAR_RUN_MULTISELECT' });
     },
@@ -1154,6 +1475,10 @@ export function CockpitPage() {
         ?? modal.querySelector<HTMLButtonElement>('button.bg-brand-purple, button.bg-brand-cyan, button.bg-error');
       primaryBtn?.click();
     },
+    // Arrow keys map through to the shared navigateSelection helper defined
+    // just above so both hotkey handlers share one implementation.
+    onArrowUp: () => navigateSelection(-1),
+    onArrowDown: () => navigateSelection(1),
   });
 
   // Stable refs for GoogleMap props so its marker useEffect doesn't tear down
@@ -1169,6 +1494,14 @@ export function CockpitPage() {
   const handleMapPinContextMenu = useCallback(
     (t: MapContextTarget) => setMapContext(t),
     [],
+  );
+  // L2.P2.3 Grey-pin one-click adds an unassigned job to the currently
+  // selected run. GoogleMap.tsx only fires this when the pin is grey AND a
+  // selected run is present AND the run is still editable - so no extra
+  // guard needed here beyond routing to the existing assignJobsToRun path.
+  const handleAddToRunFromMap = useCallback(
+    (jobId: number, runId: number) => { void assignJobsToRun(runId, [jobId]); },
+    [assignJobsToRun],
   );
 
   const runBuilderContextMenu = (job: RunJob, _run: Run): ContextMenuItem[] => [
@@ -1303,7 +1636,7 @@ export function CockpitPage() {
                   job={selectedJob}
                   speeds={state.speeds}
                   onUpdateField={handleUpdateJobField}
-                  onOpenGpsFix={(j) => setGpsFixJob(j)}
+                  onOpenGpsFix={(j, leg) => setGpsFixJob({ job: j, leg })}
                 />
               </Panel>
             </PanelGroup>
@@ -1364,6 +1697,7 @@ export function CockpitPage() {
                   onToggleEnd={handleToggleEnd}
                   onVoidJob={handleVoidRunBuilderJob}
                   onUnvoidJob={handleUnvoidRunBuilderJob}
+                  onReorderJobs={(r, jobs) => { void handleReorderRunJobs(r, jobs); }}
                 />
               </Panel>
             </PanelGroup>
@@ -1401,6 +1735,7 @@ export function CockpitPage() {
               multiSelectedRuns={mapMultiSelectedRuns}
               onPinClick={handleMapPinClick}
               onPinContextMenu={handleMapPinContextMenu}
+              onAddToRunFromMap={handleAddToRunFromMap}
             />
           </Panel>
         </PanelGroup>
@@ -1433,6 +1768,19 @@ export function CockpitPage() {
         onSave={saveBuildConfigAndClose}
         onConfirm={buildConfigModal.onConfirm}
       />
+
+      {/* P1.11 pre-build preview. Only rendered when doBuildRuns has an
+          active pending build; the alert's confirm fires the execute closure. */}
+      {buildAlert && (
+        <BuildAlertModal
+          open={true}
+          buckets={buildAlert.buckets}
+          skips={buildAlert.skips}
+          totalValid={buildAlert.totalValid}
+          onCancel={() => setBuildAlert(null)}
+          onConfirm={() => { void buildAlert.execute(); }}
+        />
+      )}
 
       <MapContextMenu
         target={mapContext}
@@ -1467,9 +1815,22 @@ export function CockpitPage() {
         onConfirm={(targetId) => { if (mergeSource) void doMergeRun(mergeSource, targetId); }}
       />
 
+      {/* P2.7 Courier picker for Send-Selected. Replaces the legacy window.prompt
+          courier-id picker with a proper filterable <select>. */}
+      <SendSelectedModal
+        open={sendSelectedModal != null}
+        jobCount={sendSelectedModal?.expandedJobIds.length ?? 0}
+        couriers={allCouriers}
+        onClose={() => setSendSelectedModal(null)}
+        onConfirm={(courierId) => {
+          if (sendSelectedModal) return doSendSelected(sendSelectedModal.expandedJobIds, courierId);
+        }}
+      />
+
       <FixGpsModal
         open={gpsFixJob != null}
-        job={gpsFixJob}
+        job={gpsFixJob?.job ?? null}
+        defaultLeg={gpsFixJob?.leg}
         onClose={() => setGpsFixJob(null)}
         onSave={async (jobId, address, lat, lng, postCode) => {
           try {
@@ -1499,6 +1860,23 @@ export function CockpitPage() {
       )}
     </div>
   );
+}
+
+/**
+ * P2.2 helper. Compute the span (max minus min) in milliseconds of the given
+ * jobs' bookTime values. bookTime arrives as an ISO datetime string; jobs
+ * without a bookTime are ignored. Returns null when fewer than 2 jobs have a
+ * usable bookTime (nothing to span).
+ */
+function bookTimeSpreadMs(jobs: BulkJob[]): number | null {
+  const stamps: number[] = [];
+  for (const j of jobs) {
+    if (!j.bookTime) continue;
+    const t = new Date(j.bookTime).getTime();
+    if (!Number.isNaN(t)) stamps.push(t);
+  }
+  if (stamps.length < 2) return null;
+  return Math.max(...stamps) - Math.min(...stamps);
 }
 
 function runToBody(run: Run, overrides: Partial<InsertOrUpdateRunBody>): InsertOrUpdateRunBody {

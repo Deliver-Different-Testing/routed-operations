@@ -8,6 +8,9 @@ export interface AppUser {
   timeZone: string | null;
   countryCode: string | null;
   isUsTenant: boolean;
+  // Sourced from the Hub "Internal" claim on login. Gates internal-only
+  // affordances like Bulk Import's Staff Import button.
+  isInternal: boolean;
   hereMapsApiKey: string | null;
   googleMapsKey: string | null;
 }
@@ -68,6 +71,9 @@ export interface BulkJob {
   parentId: number | null;
   regionId: number | null;
   barcode: string | null;
+  // Signature-not-required flag. Legacy SP aliased tblBulkJob.DeliverToPrivateBusiness
+  // AS 'Ok_To_Leave'. JobDetail renders as "Sig not req" checkbox.
+  okToLeave: boolean | null;
   // Contact / tracking / POD - editable via JobDetail pane.
   contact: string | null;
   deliverToContact: string | null;

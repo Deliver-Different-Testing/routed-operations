@@ -2,11 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkJob } from '../../types';
 import { Modal } from '../common/Modal';
 import { useAuth } from '../../context/AuthContext';
+import { tenantMapCentre } from '../../lib/mapDefaults';
 import { Button } from '../common/Button';
 
 interface Props {
   open: boolean;
   job: BulkJob | null;
+  // L2.P3.2 Optional side pre-select. When set (e.g. from a JobDetail
+  // address-row right-click "Update GPS" shortcut), the modal opens with the
+  // Delivery / Pickup toggle already switched to the matching leg so the
+  // operator only has to type / drop the pin. Falls back to 'ToAddress' when
+  // omitted, matching the modal's historical default.
+  defaultLeg?: 'ToAddress' | 'FromAddress';
   onClose: () => void;
   onSave: (jobId: number, address: 'ToAddress' | 'FromAddress', lat: string, lng: string, postCode: string) => Promise<void>;
 }
@@ -26,12 +33,19 @@ interface Props {
  * and forwards it as a string; backend `ParsePostCode` strips ZIP+4 suffixes
  * and non-digit noise before storing as int on tblBulkJob.
  */
-export function FixGpsModal({ open, job, onClose, onSave }: Props) {
+export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
   const user = useAuth();
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
+  // L2.P2.1 Legacy gpsForm.tpl:63-68 scopes the Places autocomplete /
+  // Geocoder to the tenant's country (`'us'` vs `'nz'`) so search results
+  // stay geographically relevant. Without it Google will happily geocode a
+  // "Green St" in Belfast onto a Boston job. isUsTenant is bootstrapped
+  // into AuthContext from HomeController's __APP_USER__ payload; this is
+  // its first real consumer.
+  const countryCode = user.isUsTenant ? 'us' : 'nz';
 
-  const [leg, setLeg] = useState<'ToAddress' | 'FromAddress'>('ToAddress');
+  const [leg, setLeg] = useState<'ToAddress' | 'FromAddress'>(defaultLeg ?? 'ToAddress');
   const [query, setQuery] = useState('');
   const [candidate, setCandidate] = useState<{ lat: number; lng: number; label: string; postCode: string } | null>(null);
   const [searching, setSearching] = useState(false);
@@ -56,8 +70,12 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
       setQuery(currentAddress);
       setCandidate(null);
       setError(null);
+      // L2.P3.2 Honour defaultLeg on each open so the JobDetail address
+      // right-click shortcut always lands on the correct leg even if the
+      // operator previously switched the toggle in a prior invocation.
+      if (defaultLeg) setLeg(defaultLeg);
     }
-  }, [open, currentAddress]);
+  }, [open, currentAddress, defaultLeg]);
 
   // Wait for the async-loaded SDK, same pattern as GoogleMap.tsx.
   useEffect(() => {
@@ -80,7 +98,7 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
     if (!g?.maps) return;
 
     const map = new g.maps.Map(mapContainerRef.current, {
-      center: { lat: 37.7749, lng: -122.4194 },
+      center: tenantMapCentre(user.isUsTenant),
       zoom: 3,
       mapTypeId: g.maps.MapTypeId.ROADMAP,
       gestureHandling: 'greedy',
@@ -99,7 +117,11 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
       const lng = e.latLng.lng();
       // Reverse-geocode the click to pull a postal code + label. Falls back
       // to the raw coords if the geocoder returns nothing.
-      geocoderRef.current?.geocode({ location: { lat, lng } }, (results: any, status: string) => {
+      // L2.P2.1 region hint so a coord near a border resolves to the
+      // tenant's country label (Google uses region as a soft bias on
+      // reverse-geocode - componentRestrictions is not supported for
+      // reverse lookups per the Geocoding API docs).
+      geocoderRef.current?.geocode({ location: { lat, lng }, region: countryCode }, (results: any, status: string) => {
         if (status === 'OK' && results?.[0]) {
           const item = results[0];
           setCandidate({
@@ -148,7 +170,8 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
         const lat = e.latLng.lat();
         const lng = e.latLng.lng();
         // Reverse-geocode so the postcode field updates as the marker moves.
-        geocoderRef.current?.geocode({ location: { lat, lng } }, (results: any, status: string) => {
+        // L2.P2.1 region hint - see the map rightclick handler above for why.
+        geocoderRef.current?.geocode({ location: { lat, lng }, region: countryCode }, (results: any, status: string) => {
           if (status === 'OK' && results?.[0]) {
             const item = results[0];
             setCandidate({
@@ -168,11 +191,21 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
     }
   }, [candidate]);
 
-  const doSearch = () => {
-    if (!query.trim() || !geocoderRef.current) return;
+  const doSearch = (overrideQuery?: string) => {
+    const q = (overrideQuery ?? query).trim();
+    if (!q || !geocoderRef.current) return;
     setSearching(true);
     setError(null);
-    geocoderRef.current.geocode({ address: query }, (results: any, status: string) => {
+    // L2.P2.1 Legacy gpsForm.tpl:63-68 restricts the autocomplete /
+    // geocoder to the tenant's country so a bare street name resolves to
+    // the correct hemisphere. componentRestrictions is a HARD filter (no
+    // out-of-country results returned), region is a SOFT bias - we send
+    // both so borderline street names still resolve correctly.
+    geocoderRef.current.geocode({
+      address: q,
+      region: countryCode,
+      componentRestrictions: { country: countryCode },
+    }, (results: any, status: string) => {
       setSearching(false);
       if (status !== 'OK' || !results?.[0]) {
         setError('No results found. Try a more specific address.');
@@ -183,10 +216,22 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
       setCandidate({
         lat: loc.lat(),
         lng: loc.lng(),
-        label: item.formatted_address ?? query,
+        label: item.formatted_address ?? q,
         postCode: extractPostCode(item),
       });
     });
+  };
+
+  // P2.5 Legacy gpsForm.tpl:14-16 "Copy Listed Address to Search". Some
+  // operators clear or edit the search box mid-repair (e.g. dropped the pin
+  // manually then wanted to re-geocode the original address). This button
+  // pulls the listed address for the currently-selected leg back into the
+  // search box and immediately triggers a geocode.
+  const copyListedAddress = () => {
+    if (!currentAddress) return;
+    setQuery(currentAddress);
+    // Pass the address explicitly so we don't race the setQuery state update.
+    doSearch(currentAddress);
   };
 
   const copyGeocodedAddress = () => {
@@ -275,8 +320,18 @@ export function FixGpsModal({ open, job, onClose, onSave }: Props) {
               placeholder="Street, city, state"
             />
             <Button
+              variant="neutral"
+              onClick={copyListedAddress}
+              disabled={!currentAddress || searching || !ready}
+              title={currentAddress
+                ? 'Copy the address currently on file for this leg into the search box and geocode it.'
+                : 'No listed address on file for this leg.'}
+            >
+              Use listed
+            </Button>
+            <Button
               variant="primary"
-              onClick={doSearch}
+              onClick={() => doSearch()}
               disabled={searching || !ready}
             >
               {searching ? 'Searching...' : 'Search'}

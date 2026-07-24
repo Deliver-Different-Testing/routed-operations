@@ -3,6 +3,27 @@
 
 const BASE_URL = '/api';
 
+/**
+ * Structured HTTP error thrown by `request` when the server returns a
+ * non-2xx response. Kept as a plain subclass of `Error` so existing
+ * `catch (e) { toast.show((e as Error).message) }` sites keep working;
+ * callers who need the status code / structured body (e.g. BulkImport
+ * pass 5 wanting `{ error, hint, partialCount }`) can `instanceof`
+ * check + read the extra fields.
+ */
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  hint?: string;
+  constructor(message: string, status: number, body: unknown, hint?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+    this.hint = hint;
+  }
+}
+
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${url}`, {
     credentials: 'same-origin',
@@ -18,12 +39,12 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(
+    const message =
       err?.messages?.[0]?.message
         ?? err?.error
         ?? err?.message
-        ?? `HTTP ${res.status}`
-    );
+        ?? `HTTP ${res.status}`;
+    throw new ApiError(message, res.status, err, err?.hint);
   }
 
   if (res.status === 204 || res.headers.get('content-length') === '0') {
