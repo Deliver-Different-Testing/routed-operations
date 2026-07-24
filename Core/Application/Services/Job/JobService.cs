@@ -218,6 +218,8 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 ParentId = j.ParentId,
                 RegionId = j.RegionId,
                 Barcode = j.Barcode,
+                // Legacy SP alias: DeliverToPrivateBusiness AS 'Ok_To_Leave'.
+                OkToLeave = j.DeliverToPrivateBusiness,
                 Contact = j.Contact,
                 DeliverToContact = j.DeliverToContact,
                 DeliverToPhone = j.DeliverToPhone,
@@ -343,6 +345,15 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                     break;
                 case "Speed":
                     Context.Entry(job).Property(field).CurrentValue = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    break;
+                case "OkToLeave":
+                    // Frontend sends "true"/"false" (string) for the "Sig not req"
+                    // checkbox. Persist onto DeliverToPrivateBusiness (the actual
+                    // column alias per legacy SP). Null cleared when value is empty.
+                    Context.Entry(job).Property(nameof(TblBulkJob.DeliverToPrivateBusiness)).CurrentValue =
+                        string.IsNullOrWhiteSpace(value) ? (bool?)null
+                        : bool.TryParse(value, out var b) ? b
+                        : value.Trim() == "1";
                     break;
                 case "BookDate":
                     if (DateTime.TryParseExact(value, "dd/MM/yyyy", CultureInfo.InvariantCulture,

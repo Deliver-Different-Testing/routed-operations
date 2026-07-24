@@ -7,6 +7,9 @@ import type { ListSort } from './CockpitState';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
 import { runAreas } from '../../lib/runAreas';
+// L2.P3.1 Same palette the map uses for multi-selected run pins - shared
+// so the RunList row tint and the map pin colour are identically indexed.
+import { MULTI_RUN_COLOURS } from './GoogleMap';
 
 interface Props {
   runs: Run[];
@@ -24,7 +27,7 @@ interface Props {
   onCreateRun: (name: string) => void;
   onRenameRun: (runId: number, name: string) => void;
   onDeleteRun: (runId: number) => void;
-  onAssignCourier: (runId: number, courierId: number | null) => void;
+  onAssignCourier: (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => void;
   onLockRun: (runId: number, locked: boolean) => void;
   onDispatch: () => void;
   onPrebook: () => void;
@@ -64,10 +67,34 @@ export function RunList({
   const [renameValue, setRenameValue] = useState('');
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; run: Run } | null>(null);
+  // Preassign dialog state for the courier-drop flow (P1.9, legacy
+  // homeControl.js:2557-2600). Presents a Status=18 (preassign) vs Status=0
+  // (assign only) choice before the update fires.
+  const [preassignPrompt, setPreassignPrompt] = useState<
+    { runId: number; courierId: number; courierName: string } | null
+  >(null);
 
   const selectedRunSet = new Set(selectedRunIds);
   const allSelected = runs.length > 0 && runs.every((r) => selectedRunSet.has(r.id));
   const locked = runs.filter((r) => r.status && r.status > 0);
+
+  // L2.P3.1 Row tint palette that matches the map-pin colouring for multi-
+  // selected runs (GoogleMap.tsx buildPins() -> multiRunColourByJobId). We
+  // iterate the runs in the SAME order the map does (`state.runs` order,
+  // filtered by selection) so palette index N here is the same colour on
+  // the map. The currently-focused `selectedRunId` is excluded from the
+  // palette (matches GoogleMap: sequenced orange wins for that run's pins)
+  // and continues to render with `bg-brand-cyan/10` below.
+  const multiRunColourByRunId = new Map<number, string>();
+  if (selectedRunIds.length > 1) {
+    let colourIdx = 0;
+    for (const r of runs) {
+      if (!selectedRunSet.has(r.id)) continue;
+      if (selectedRunId === r.id) continue;
+      multiRunColourByRunId.set(r.id, MULTI_RUN_COLOURS[colourIdx % MULTI_RUN_COLOURS.length]);
+      colourIdx += 1;
+    }
+  }
 
   // Legacy runList.tpl splits runs into two ng-repeats: unlocked first
   // (filter:{locked:'!1'}), then locked (filter:{locked:'1'}). Preserves the
@@ -76,6 +103,30 @@ export function RunList({
   const unlockedRuns = runs.filter((r) => !(r.status && r.status > 0));
   const lockedRuns = runs.filter((r) => r.status && r.status > 0);
   const hasBothGroups = unlockedRuns.length > 0 && lockedRuns.length > 0;
+
+  /**
+   * Synthesise "Run N" where N is the next unused sequential integer across
+   * the existing runs for the current bookdate. Legacy newRun did the same
+   * in-memory (homeControl.js:2652-2672). Only inspects names that already
+   * match /^Run \d+$/ so operators with a custom naming scheme aren't
+   * clobbered by the auto-numbering.
+   */
+  const nextRunAutoName = (): string => {
+    let n = 1;
+    const taken = new Set<number>();
+    for (const r of runs) {
+      const m = (r.name ?? '').match(/^Run\s+(\d+)$/i);
+      if (m) taken.add(Number(m[1]));
+    }
+    while (taken.has(n)) n++;
+    return `Run ${n}`;
+  };
+
+  const submitCreateRun = () => {
+    const name = newRunName.trim() || nextRunAutoName();
+    onCreateRun(name);
+    setNewRunName('');
+  };
 
   const startRename = (r: Run) => {
     setRenamingId(r.id);
@@ -101,11 +152,16 @@ export function RunList({
   const handleDrop = (e: React.DragEvent, runId: number) => {
     e.preventDefault();
     setDropTargetId(null);
-    // Courier drop wins if present - assigns the courier to this run.
+    // Courier drop wins if present - opens the preassign confirm dialog so
+    // the operator can pick Status 18 (preassigned) vs Status 0 (assign only).
+    // Legacy homeControl.js:2557-2600 shows the same picker inline.
     const courierRaw = e.dataTransfer.getData('application/x-courier-id');
     if (courierRaw) {
       const cid = Number(courierRaw);
-      if (Number.isFinite(cid)) onAssignCourier(runId, cid);
+      if (Number.isFinite(cid)) {
+        const cour = couriers.find((c) => c.courierId === cid);
+        setPreassignPrompt({ runId, courierId: cid, courierName: cour?.displayName ?? `Courier #${cid}` });
+      }
       return;
     }
     const raw = e.dataTransfer.getData('application/x-bulk-job-ids');
@@ -173,23 +229,16 @@ export function RunList({
           value={newRunName}
           onChange={(e) => setNewRunName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && newRunName.trim()) {
-              onCreateRun(newRunName.trim());
-              setNewRunName('');
-            }
+            if (e.key === 'Enter') submitCreateRun();
           }}
-          placeholder="New run name..."
+          placeholder={`New run name... (blank = auto-named "${nextRunAutoName()}")`}
           className="flex-1 border border-border rounded px-2 py-1 text-xs"
         />
         <Button
           variant="primary"
           size="sm"
-          onClick={() => {
-            if (newRunName.trim()) {
-              onCreateRun(newRunName.trim());
-              setNewRunName('');
-            }
-          }}
+          onClick={submitCreateRun}
+          title={newRunName.trim() ? undefined : `Blank name auto-generates "${nextRunAutoName()}"`}
         >
           + Create
         </Button>
@@ -255,9 +304,20 @@ export function RunList({
               } ${dropTargetId === r.id ? 'ring-2 ring-brand-cyan bg-brand-cyan/20' : ''} ${
                 r.isVoidRun ? 'bg-error/5 text-text-muted' : ''
               }`}
+              // L2.P3.1 Inline tint from the multi-run palette. Kept out of
+              // the className string above because Tailwind can't compile an
+              // arbitrary hex-code list; ~25% alpha (40 hex) keeps the row
+              // text legible while matching the map pin colour intent.
+              style={
+                multiRunColourByRunId.has(r.id)
+                  ? { backgroundColor: multiRunColourByRunId.get(r.id) + '40' }
+                  : undefined
+              }
               title={r.isVoidRun
                 ? 'Void Jobs run - locked, cannot be dispatched. Right-click to un-void jobs.'
-                : 'Right-click for more actions'}
+                : multiRunColourByRunId.has(r.id)
+                  ? 'Multi-selected. Same colour on the map.'
+                  : 'Right-click for more actions'}
             >
               <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                 <input
@@ -391,6 +451,62 @@ export function RunList({
         items={ctx ? onContextMenuItems(ctx.run, { startRename: () => startRename(ctx.run) }) : []}
         onClose={() => setCtx(null)}
       />
+
+      {/* Preassign vs Assign choice for courier drops (P1.9, legacy
+          homeControl.js:2557-2600). Status=18 marks a preassigned run - the
+          courier is provisionally attached but the run is not yet dispatched
+          to Live. Status=0 leaves the courier on the run without any lock. */}
+      {preassignPrompt && (
+        <div
+          className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40"
+          onClick={() => setPreassignPrompt(null)}
+          data-modal-open="true"
+        >
+          <div
+            className="bg-surface-white rounded-lg shadow-lg max-w-sm w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 border-b border-border-light">
+              <h3 className="text-base font-semibold text-text-primary">Assign courier</h3>
+            </div>
+            <div className="px-4 py-3 text-sm">
+              Attach <b>{preassignPrompt.courierName}</b> to this run as:
+              <ul className="mt-2 text-xs text-text-muted list-disc list-inside space-y-1">
+                <li><b>Preassigned</b> tags the run with Status 18 (amber badge) so
+                    dispatchers see it's earmarked for this courier ahead of lock.</li>
+                <li><b>Assign only</b> leaves the courier attached at Status 0
+                    (Ready) with no preassign tag.</li>
+              </ul>
+            </div>
+            <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex justify-end gap-2">
+              <Button variant="neutral" size="sm" onClick={() => setPreassignPrompt(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  onAssignCourier(preassignPrompt.runId, preassignPrompt.courierId);
+                  setPreassignPrompt(null);
+                }}
+              >
+                Assign only
+              </Button>
+              <Button
+                variant="warning"
+                size="sm"
+                data-primary="true"
+                onClick={() => {
+                  onAssignCourier(preassignPrompt.runId, preassignPrompt.courierId, { preassign: true });
+                  setPreassignPrompt(null);
+                }}
+              >
+                Preassign (Status 18)
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </Panel>
   );
 }

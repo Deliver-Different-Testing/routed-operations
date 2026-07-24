@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 
 const items = [
   { to: '/dashboard', label: 'Dashboard' },
+  { to: '/bulk-import', label: 'Bulk Import' },
   { to: '/routes', label: 'Routes' },
   { to: '/quoting', label: 'Quoting' },
   { to: '/scheduled-routes', label: 'Scheduled Routes' },

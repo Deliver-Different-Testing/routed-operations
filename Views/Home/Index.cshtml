@@ -1,9 +1,30 @@
 @model RoutedOperations.Controllers.AppUserBootstrap
+@inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment Env
 @{
     var bootstrapJson = System.Text.Json.JsonSerializer.Serialize(Model, new System.Text.Json.JsonSerializerOptions
     {
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
     });
+
+    // Cache-busting version stamp - uses the built bundle's mtime so a
+    // rebuild (via `npm run build:watch` or `npm run build`) automatically
+    // invalidates the browser cache on next page load. Falls back to app
+    // start time if the dist file isn't there yet (first build).
+    string BundleVersion(string relativePath)
+    {
+        try
+        {
+            var full = System.IO.Path.Combine(Env.WebRootPath, relativePath.TrimStart('/'));
+            if (System.IO.File.Exists(full))
+            {
+                return System.IO.File.GetLastWriteTimeUtc(full).Ticks.ToString();
+            }
+        }
+        catch { }
+        return DateTime.UtcNow.Ticks.ToString();
+    }
+    var jsVer = BundleVersion("dist/app.js");
+    var cssVer = BundleVersion("dist/app.css");
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -12,7 +33,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Routed Operations</title>
     <link rel="icon" href="/favicon.ico" />
-    <link rel="stylesheet" href="/dist/app.css" />
+    <link rel="stylesheet" href="/dist/app.css?v=@cssVer" />
     <!-- HERE Maps JS v3 - still loaded because the Fix GPS modal uses HERE
          geocoding. The main cockpit map surface uses Google Maps instead
          (see the script tag below) for parity with the legacy RunBuilder. -->
@@ -36,6 +57,6 @@
     <script>
         window.__APP_USER__ = @Html.Raw(bootstrapJson);
     </script>
-    <script type="module" src="/dist/app.js"></script>
+    <script type="module" src="/dist/app.js?v=@jsVer"></script>
 </body>
 </html>

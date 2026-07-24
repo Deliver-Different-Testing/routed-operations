@@ -4,6 +4,8 @@ import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { runBuilderTotals } from '../../lib/runFinancials';
+import { useAuth } from '../../context/AuthContext';
+import { postcodeLabel } from '../../lib/tenantLabels';
 
 interface Props {
   run: Run | null;
@@ -15,6 +17,10 @@ interface Props {
   onToggleEnd?: (job: RunJob, run: Run) => void;
   onVoidJob?: (job: RunJob, run: Run) => void;
   onUnvoidJob?: (job: RunJob, run: Run) => void;
+  // Persist a manually re-ordered set of jobs (P1.10, legacy homeControl.js:
+  // 891-916 activateRunDrop). The array is in the order the operator wants;
+  // callers assign builderIndex = index + 1 during persist.
+  onReorderJobs?: (run: Run, orderedJobs: RunJob[]) => void;
 }
 
 /**
@@ -53,10 +59,40 @@ export function RunBuilder({
   onToggleEnd,
   onVoidJob,
   onUnvoidJob,
+  onReorderJobs,
 }: Props) {
+  const { isUsTenant } = useAuth();
+  const zipLabel = postcodeLabel(isUsTenant, true);
   const [ctx, setCtx] = useState<{ x: number; y: number; job: RunJob } | null>(null);
+  // Drag-to-reorder state (P1.10). We only track the id being dragged; the
+  // ordering is applied on drop against the current run.jobs snapshot.
+  const [dragJobId, setDragJobId] = useState<number | null>(null);
+  const [dropTargetJobId, setDropTargetJobId] = useState<number | null>(null);
 
   const totals = useMemo(() => run ? runBuilderTotals(run) : null, [run]);
+
+  const canReorder = !!onReorderJobs && !!run && !run.isVoidRun;
+
+  const commitReorder = (targetJobId: number) => {
+    if (!canReorder || !run || dragJobId == null || dragJobId === targetJobId) {
+      setDragJobId(null);
+      setDropTargetJobId(null);
+      return;
+    }
+    const src = run.jobs.findIndex((j) => j.bulkJobId === dragJobId);
+    const dst = run.jobs.findIndex((j) => j.bulkJobId === targetJobId);
+    if (src < 0 || dst < 0) {
+      setDragJobId(null);
+      setDropTargetJobId(null);
+      return;
+    }
+    const next = [...run.jobs];
+    const [moved] = next.splice(src, 1);
+    next.splice(dst, 0, moved);
+    onReorderJobs!(run, next);
+    setDragJobId(null);
+    setDropTargetJobId(null);
+  };
 
   if (!run) {
     return (
@@ -137,6 +173,7 @@ export function RunBuilder({
       <table className="w-full text-xs">
         <thead className="bg-surface-cream sticky top-0">
           <tr className="text-left text-text-muted">
+            {canReorder && <th className="px-1 py-1 w-6" title="Drag rows to re-order"></th>}
             <th className="px-1 py-1 w-6"></th>
             <th className="px-1 py-1 w-8">#</th>
             <th className="px-1 py-1">Client</th>
@@ -144,7 +181,7 @@ export function RunBuilder({
             <th className="px-1 py-1">Time</th>
             <th className="px-1 py-1">To</th>
             <th className="px-1 py-1">Suburb</th>
-            <th className="px-1 py-1">Zip</th>
+            <th className="px-1 py-1">{zipLabel}</th>
             <th className="px-1 py-1">Courier</th>
             <th className="px-1 py-1">Speed</th>
             <th className="px-1 py-1 w-12"></th>
@@ -153,20 +190,56 @@ export function RunBuilder({
         <tbody>
           {run.jobs.map((j) => {
             const missingGps = !j.deliveryLatitude;
+            const isDragging = dragJobId === j.bulkJobId;
+            const isDropTarget = dropTargetJobId === j.bulkJobId && dragJobId != null && dragJobId !== j.bulkJobId;
             return (
               <tr
                 key={j.bulkJobId}
                 className={`cursor-pointer border-t border-border-light hover:bg-surface-cream ${
                   missingGps ? 'text-error' : ''
-                } ${selectedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : ''}`}
+                } ${selectedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : ''} ${
+                  isDragging ? 'opacity-40' : ''
+                } ${isDropTarget ? 'ring-2 ring-brand-cyan' : ''}`}
                 onClick={() => onSelectJob?.(j.bulkJobId)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   setCtx({ x: e.clientX, y: e.clientY, job: j });
                 }}
-                title="Click to select. Right-click for more actions. Del to remove."
+                onDragOver={canReorder && dragJobId != null ? (e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dropTargetJobId !== j.bulkJobId) setDropTargetJobId(j.bulkJobId);
+                } : undefined}
+                onDragLeave={canReorder ? () => {
+                  if (dropTargetJobId === j.bulkJobId) setDropTargetJobId(null);
+                } : undefined}
+                onDrop={canReorder ? (e) => {
+                  e.preventDefault();
+                  commitReorder(j.bulkJobId);
+                } : undefined}
+                title={canReorder
+                  ? 'Click to select. Grab the handle on the left to drag re-order. Right-click for more.'
+                  : 'Click to select. Right-click for more actions. Del to remove.'}
               >
+                {canReorder && (
+                  <td
+                    className="px-1 py-1 text-center text-text-muted cursor-grab active:cursor-grabbing select-none"
+                    draggable
+                    onDragStart={(e) => {
+                      setDragJobId(j.bulkJobId);
+                      // Payload keeps a marker so external drop targets (RunList)
+                      // don't confuse this with a job-move drop. Not consumed by
+                      // the receiver but keeps browsers from cancelling the drag.
+                      e.dataTransfer.setData('application/x-run-reorder', String(j.bulkJobId));
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragEnd={() => { setDragJobId(null); setDropTargetJobId(null); }}
+                    title="Drag to re-order"
+                  >
+                    ::
+                  </td>
+                )}
                 <td className="px-1 py-1">
                   {j.isStart && <span title="Start point" className="text-brand-cyan">▶</span>}
                   {j.isEnd && <span title="End point" className="text-brand-orange">⚑</span>}
@@ -198,7 +271,7 @@ export function RunBuilder({
           })}
           {run.jobs.length === 0 && (
             <tr>
-              <td colSpan={11} className="px-2 py-4 text-center text-text-muted">
+              <td colSpan={canReorder ? 12 : 11} className="px-2 py-4 text-center text-text-muted">
                 Run is empty. Select jobs in the Jobs pane and use the "+ job(s)" button on this run.
               </td>
             </tr>

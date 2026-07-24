@@ -49,6 +49,11 @@ public class BulkJobDto
     public int? ParentId { get; set; }
     public int? RegionId { get; set; }
     public string? Barcode { get; set; }
+    // Legacy SP UTL_stpJob_tblBulkJobWithFilter aliases tblBulkJob.DeliverToPrivateBusiness
+    // AS 'Ok_To_Leave'. Surfaces in JobDetail as "Sig not req" - when true, the
+    // driver may leave the parcel without a signature. Nullable to match the
+    // column shape (bit NULL); UI treats null as false.
+    public bool? OkToLeave { get; set; }
 
     // ---- Contact / tracking / POD fields (editable via JobDetail pane) ----
     public string? Contact { get; set; }

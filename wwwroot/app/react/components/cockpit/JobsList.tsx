@@ -6,6 +6,8 @@ import type { JobSizeFilter, ListSort } from './CockpitState';
 import { RowContextMenu, type ContextMenuItem } from './RowContextMenu';
 import { sortIndicator, nextSortDirection } from '../../lib/sortLists';
 import { exportJobsToCsv } from '../../lib/csvExport';
+import { useAuth } from '../../context/AuthContext';
+import { postcodeLabel } from '../../lib/tenantLabels';
 
 interface Props {
   jobs: BulkJob[];
@@ -38,6 +40,8 @@ export function JobsList({
   onToggleAllMultiselect,
   onContextMenuItems,
 }: Props) {
+  const { isUsTenant } = useAuth();
+  const zipLabel = postcodeLabel(isUsTenant, true);
   const [ctx, setCtx] = useState<{ x: number; y: number; job: BulkJob } | null>(null);
   const selectedSet = new Set(selectedJobIds);
   const allSelected = jobs.length > 0 && jobs.every((j) => selectedSet.has(j.bulkJobId));
@@ -55,7 +59,7 @@ export function JobsList({
     { field: 'bookTime', label: 'R Time' },
     { field: 'toAddress', label: 'To' },
     { field: 'toSuburb', label: 'Suburb' },
-    { field: 'toPostCode', label: 'Zip' },
+    { field: 'toPostCode', label: zipLabel },
     { field: 'courierName', label: 'Courier' },
     { field: 'speedName', label: 'Speed' },
     { field: 'runName', label: 'Run' },
@@ -85,7 +89,7 @@ export function JobsList({
           <Button
             variant="neutral"
             size="sm"
-            onClick={() => exportJobsToCsv(jobs)}
+            onClick={() => exportJobsToCsv(jobs, isUsTenant)}
             disabled={jobs.length === 0}
             title={jobs.length === 0 ? 'No jobs to export' : `Download ${jobs.length} job(s) as CSV`}
           >

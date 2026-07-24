@@ -3,6 +3,7 @@ import type { BulkJob, Run } from '../../types';
 import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
+import { tenantMapCentre } from '../../lib/mapDefaults';
 import type { MapContextTarget } from './MapContextMenu';
 
 interface Props {
@@ -15,10 +16,21 @@ interface Props {
   multiSelectedRuns?: Run[];
   onPinClick?: (jobId: number) => void;
   onPinContextMenu?: (target: MapContextTarget) => void;
+  // L2.P2.3 Legacy HereMap.tpl:177-184 addGreyClickHandler wired a plain
+  // click on an UNASSIGNED (grey) pin to `addToRunFromMap(...)` - one
+  // click adds the job to the currently active run. Right-click still
+  // opens the full menu (multi-run picker). We call this from the marker
+  // click handler ONLY when kind === 'unassigned' AND a selectedRun is
+  // present. Absence of this callback preserves the pre-existing (right-
+  // click-only) flow, so callers that don't wire it stay unchanged.
+  onAddToRunFromMap?: (jobId: number, runId: number) => void;
 }
 
 // Legacy runList palette for multi-selected runs (HereMap.tpl line ~230).
-const MULTI_RUN_COLOURS = ['#ff9000', '#00a3ff', '#ffff00', '#b13cff', '#3cffb1', '#ff3cff'];
+// Exported so RunList.tsx can tint multi-selected rows with the SAME palette
+// (L2.P3.1) - operators visually cross-reference selected rows to their pin
+// clusters on the map. Keep this list in sync with buildPins() below.
+export const MULTI_RUN_COLOURS = ['#ff9000', '#00a3ff', '#ffff00', '#b13cff', '#3cffb1', '#ff3cff'];
 
 interface Pin {
   lat: number;
@@ -48,7 +60,7 @@ interface Pin {
  *   - Unassigned pin: Select / Add to run
  * Legacy analogue: addClickHandler + addGreyClickHandler in HereMap.tpl.
  */
-export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns, onPinClick, onPinContextMenu }: Props) {
+export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns, onPinClick, onPinContextMenu, onAddToRunFromMap }: Props) {
   const user = useAuth();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
@@ -57,14 +69,25 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
   // the operator clicks a job in a list) can find the marker in O(1). Cleared
   // whenever markers are rebuilt.
   const markersByJobIdRef = useRef<Map<number, any>>(new Map());
-  const polylineRef = useRef<any>(null);
+  // Multiple polylines when the route was chunked into 23-stop Google
+  // Directions batches (P1.12, legacy drawDirectionsMoreThan23Waypoints).
+  // Kept as an array so we tear all of them down on the next render.
+  const polylinesRef = useRef<any[]>([]);
   const infoWindowRef = useRef<any>(null);
+  // Latest request token so an in-flight Directions call for a stale run
+  // gets discarded when the operator moves to another run mid-fetch.
+  const directionsTokenRef = useRef<number>(0);
   const [ready, setReady] = useState(false);
   // Legacy Auto Zoom control: when true (default) the map re-fits its bounds
   // to the current pin cluster on every render. Operators sometimes want the
   // map to hold its position (zoomed out review of the whole day), so this
   // toggle sits top-left of the map surface.
   const [autoZoom, setAutoZoom] = useState(true);
+  // P2.1 Map-background context menu. Legacy HereMap.tpl:61-70 opened a small
+  // one-item menu ("Centre here") on right-click of the map itself (as opposed
+  // to a marker). We stash the click coordinates + latLng here and render a
+  // tiny fixed-position popup below.
+  const [mapMenu, setMapMenu] = useState<{ clientX: number; clientY: number; lat: number; lng: number } | null>(null);
 
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
@@ -90,9 +113,9 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     if (!g?.maps) return;
 
     const map = new g.maps.Map(mapContainerRef.current, {
-      // San Francisco fallback; setMapBounds below jumps to the real cluster
-      // once markers land. Matches the legacy Auckland fallback pattern.
-      center: { lat: 37.7749, lng: -122.4194 },
+      // Tenant-aware fallback; setMapBounds below jumps to the real cluster
+      // once markers land. Auckland on NZ, San Francisco on US.
+      center: tenantMapCentre(user.isUsTenant),
       zoom: 4,
       mapTypeId: g.maps.MapTypeId.ROADMAP,
       gestureHandling: 'greedy',
@@ -109,20 +132,26 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     mapRef.current = map;
     infoWindowRef.current = new g.maps.InfoWindow();
 
-    // Legacy "Center here" - right-click the map background and centre on
-    // the click coordinates. See HereMap.tpl:63-69 (map.setContextMenu on
-    // control: 'map').
+    // P2.1 Legacy "Centre here" (HereMap.tpl:61-70). Right-click on the map
+    // background opens a mini one-item menu; picking it re-centres. We prefer
+    // a menu over a direct setCenter so accidental right-clicks don't teleport
+    // the map away from the operator's current view, matching the legacy UX.
     map.addListener('rightclick', (e: any) => {
-      if (e?.latLng) {
-        map.setCenter(e.latLng);
-      }
+      const dom = e?.domEvent as MouseEvent | undefined;
+      if (!e?.latLng) return;
+      setMapMenu({
+        clientX: dom?.clientX ?? 0,
+        clientY: dom?.clientY ?? 0,
+        lat: e.latLng.lat(),
+        lng: e.latLng.lng(),
+      });
     });
 
     return () => {
       markersRef.current.forEach((m) => m.setMap(null));
       markersRef.current = [];
-      if (polylineRef.current) polylineRef.current.setMap(null);
-      polylineRef.current = null;
+      polylinesRef.current.forEach((p) => p.setMap(null));
+      polylinesRef.current = [];
       mapRef.current = null;
     };
   }, [ready]);
@@ -133,11 +162,15 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     const g = (window as any).google;
     if (!g?.maps) return;
 
-    // Clear the previous markers + polyline.
+    // Clear the previous markers + polylines. Bump the directions token so
+    // any in-flight fetch for a prior selection resolves into a no-op.
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = [];
     markersByJobIdRef.current.clear();
-    if (polylineRef.current) { polylineRef.current.setMap(null); polylineRef.current = null; }
+    polylinesRef.current.forEach((p) => p.setMap(null));
+    polylinesRef.current = [];
+    directionsTokenRef.current += 1;
+    const myToken = directionsTokenRef.current;
 
     const pins = buildPins(jobs, selectedRun, multiSelectedRuns ?? []);
     if (pins.length === 0) return;
@@ -156,6 +189,21 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
       bounds.extend(marker.getPosition());
 
       marker.addListener('click', () => {
+        // L2.P2.3 Legacy grey-pin one-click add. When the operator has
+        // a run selected AND the pin is unassigned (grey) AND the run is
+        // still editable (not locked, not the Void Jobs run), fire the
+        // add directly instead of the standard select. The context menu
+        // is still available on right-click for multi-run picking.
+        if (
+          p.kind === 'unassigned'
+          && onAddToRunFromMap
+          && selectedRun
+          && !selectedRun.isVoidRun
+          && (selectedRun.status ?? 0) === 0
+        ) {
+          onAddToRunFromMap(p.bulkJobId, selectedRun.id);
+          return;
+        }
         if (onPinClick) onPinClick(p.bulkJobId);
         // Legacy bounce animation on select (HereMap.tpl:522-525 sets
         // Animation.BOUNCE for 1000ms).
@@ -194,25 +242,41 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
       mapRef.current.fitBounds(bounds);
     }
 
-    // Route line through the sequenced pins of the selected run. Matches the
-    // legacy directionsDisplay path but without pulling Directions - a plain
-    // polyline is enough for a visual sequence hint.
+    // Route line through the sequenced pins of the selected run.
+    //
+    // P1.12: legacy HereMap.tpl:908-1066 (drawDirectionsMoreThan23Waypoints)
+    // chunked the run into 23-waypoint slices for Google Directions and
+    // stitched the encoded polylines back together, because the Directions
+    // API caps at 25 waypoints per request (origin + destination + up to 23
+    // intermediates). We do the same here: for each chunk, request driving
+    // directions and render the returned overview_path as a proper Polyline
+    // that hugs the road network. If the API call fails (quota, offline,
+    // etc.), fall back to a straight-line polyline through the chunk so the
+    // operator still sees the sequence.
     if (selectedRun) {
       const seqPins = pins
         .filter((p) => p.kind === 'sequenced' && p.sequence != null)
         .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
       if (seqPins.length > 1) {
-        polylineRef.current = new g.maps.Polyline({
-          path: seqPins.map((p) => ({ lat: p.lat, lng: p.lng })),
-          geodesic: true,
-          strokeColor: '#606DB4',
-          strokeOpacity: 0.9,
-          strokeWeight: 3,
-          map: mapRef.current,
-        });
+        drawRunPolyline(g, mapRef.current, seqPins, polylinesRef, myToken, directionsTokenRef);
       }
     }
-  }, [ready, jobs, selectedRun, multiSelectedRuns, onPinClick, onPinContextMenu, autoZoom]);
+  }, [ready, jobs, selectedRun, multiSelectedRuns, onPinClick, onPinContextMenu, onAddToRunFromMap, autoZoom]);
+
+  // P2.1 close-the-map-menu wiring. Mirrors MapContextMenu's Escape + outside-
+  // click pattern. Deliberately NOT listening for contextmenu (a second right-
+  // click just replaces the menu target via the rightclick handler above).
+  useEffect(() => {
+    if (!mapMenu) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMapMenu(null); };
+    const onClick = () => setMapMenu(null);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('click', onClick);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('click', onClick);
+    };
+  }, [mapMenu]);
 
   // highlightPin(job) equivalent: whenever the operator selects a job (from
   // the Jobs list, the Run Builder pane, the group list, wherever) look up
@@ -273,8 +337,155 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
       }
     >
       <div ref={mapContainerRef} className="h-full w-full" />
+      {mapMenu && (
+        <ul
+          className="fixed z-50 bg-surface-white border border-border rounded shadow-lg text-xs min-w-40"
+          style={{ top: mapMenu.clientY, left: mapMenu.clientX }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <li className="px-3 py-2 bg-surface-cream border-b border-border-light font-medium text-text-primary text-[10px] text-text-muted">
+            {mapMenu.lat.toFixed(5)}, {mapMenu.lng.toFixed(5)}
+          </li>
+          <li>
+            <button
+              type="button"
+              onClick={() => {
+                const g = (window as any).google;
+                if (g?.maps && mapRef.current) {
+                  mapRef.current.setCenter({ lat: mapMenu.lat, lng: mapMenu.lng });
+                }
+                setMapMenu(null);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-surface-cream text-text-primary"
+            >
+              Centre here
+            </button>
+          </li>
+        </ul>
+      )}
     </Panel>
   );
+}
+
+/**
+ * P1.12 chunked-directions polyline drawer.
+ *
+ * Google Directions API caps at 25 waypoints per request (origin + destination
+ * + up to 23 intermediates). Legacy HereMap.tpl:908-1066 split runs above that
+ * threshold into 23-stop slices and stitched. We follow the same shape:
+ *
+ *   Batch layout: [pin0..pin22], [pin22..pin44], [pin44..pin66], ...
+ *   Note the deliberate overlap on the boundary stop so the joining segment
+ *   is included in exactly one chunk (never dropped and never duplicated).
+ *
+ * Failures fall back to straight-line polylines for the affected chunk so the
+ * operator still gets a visual - matches the "any line is better than no line"
+ * legacy behaviour.
+ */
+function drawRunPolyline(
+  g: any,
+  map: any,
+  seqPins: Pin[],
+  polylinesRef: React.MutableRefObject<any[]>,
+  ownToken: number,
+  currentTokenRef: React.MutableRefObject<number>
+) {
+  const CHUNK_MAX_STOPS = 25; // Google's per-request cap
+  const CHUNK_WAYPOINTS = CHUNK_MAX_STOPS - 2; // 23 intermediates in a batch
+
+  // Straight-line fallback that renders immediately + gets replaced when the
+  // Directions responses land. Keeps the map from flashing empty during the
+  // (few hundred ms) fetch.
+  const placeholder = new g.maps.Polyline({
+    path: seqPins.map((p) => ({ lat: p.lat, lng: p.lng })),
+    geodesic: true,
+    strokeColor: '#606DB4',
+    strokeOpacity: 0.35,
+    strokeWeight: 2,
+    map,
+  });
+  polylinesRef.current.push(placeholder);
+
+  // No DirectionsService? Bail with the straight-line placeholder.
+  if (!g.maps.DirectionsService) return;
+  const svc = new g.maps.DirectionsService();
+
+  // Build the batch descriptors [{ origin, destination, waypoints }].
+  const batches: { origin: Pin; destination: Pin; waypoints: Pin[] }[] = [];
+  let cursor = 0;
+  while (cursor < seqPins.length - 1) {
+    const chunkEnd = Math.min(cursor + CHUNK_WAYPOINTS + 1, seqPins.length - 1);
+    const origin = seqPins[cursor];
+    const destination = seqPins[chunkEnd];
+    const waypoints = seqPins.slice(cursor + 1, chunkEnd);
+    batches.push({ origin, destination, waypoints });
+    if (chunkEnd === seqPins.length - 1) break;
+    cursor = chunkEnd;
+  }
+
+  const chunkPolylines: any[] = [];
+  let outstanding = batches.length;
+  const finishBatch = () => {
+    outstanding -= 1;
+    if (outstanding !== 0) return;
+    // Once every batch has resolved, drop the placeholder and swap in the
+    // real polylines - but only if we're still the current selection.
+    if (currentTokenRef.current !== ownToken) {
+      chunkPolylines.forEach((p) => p.setMap(null));
+      return;
+    }
+    placeholder.setMap(null);
+    const idx = polylinesRef.current.indexOf(placeholder);
+    if (idx >= 0) polylinesRef.current.splice(idx, 1);
+    chunkPolylines.forEach((p) => polylinesRef.current.push(p));
+  };
+
+  batches.forEach((batch) => {
+    svc.route({
+      origin: { lat: batch.origin.lat, lng: batch.origin.lng },
+      destination: { lat: batch.destination.lat, lng: batch.destination.lng },
+      waypoints: batch.waypoints.map((p) => ({
+        location: { lat: p.lat, lng: p.lng },
+        stopover: true,
+      })),
+      travelMode: g.maps.TravelMode.DRIVING,
+      // The waypoints already come in the operator-approved sequence (post-
+      // HERE / RouteSavvy optimise). Do NOT ask Google to re-optimise; we
+      // want the polyline to match the sequence the operator sees, not what
+      // Google thinks is faster.
+      optimizeWaypoints: false,
+    }, (result: any, status: string) => {
+      // Stale request check first - the operator may have switched runs.
+      if (currentTokenRef.current !== ownToken) {
+        finishBatch();
+        return;
+      }
+      let path: any[] | null = null;
+      if (status === 'OK' && result?.routes?.[0]?.overview_path) {
+        path = result.routes[0].overview_path;
+      }
+      if (!path) {
+        // Straight-line fallback for this chunk only. Still renders in the
+        // brand purple so it doesn't look broken.
+        path = [
+          { lat: batch.origin.lat, lng: batch.origin.lng },
+          ...batch.waypoints.map((p) => ({ lat: p.lat, lng: p.lng })),
+          { lat: batch.destination.lat, lng: batch.destination.lng },
+        ];
+      }
+      const line = new g.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: '#606DB4',
+        strokeOpacity: 0.9,
+        strokeWeight: 3,
+        map,
+      });
+      chunkPolylines.push(line);
+      finishBatch();
+    });
+  });
 }
 
 function buildPins(jobs: BulkJob[], selectedRun: Run | null, multiSelectedRuns: Run[]): Pin[] {

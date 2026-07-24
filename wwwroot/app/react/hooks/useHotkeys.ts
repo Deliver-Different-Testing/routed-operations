@@ -22,6 +22,11 @@ export interface Hotkeys {
   // primary button (Save / Build / Confirm / etc). Legacy analogue:
   // gather.submit() bound to the Enter hotkey.
   onEnter?: () => void;
+  // P2.3 arrow-key row navigation. Legacy homeView.html:341-348 wires ng-keydown
+  // 38/40 (Up/Down) to prev/next row in the active pane. Suppressed when the
+  // operator is typing into an input so the arrows still move the caret.
+  onArrowUp?: () => void;
+  onArrowDown?: () => void;
 }
 
 export function useHotkeys(bindings: Hotkeys) {
@@ -80,6 +85,24 @@ export function useHotkeys(bindings: Hotkeys) {
         if (b.onEnter) {
           e.preventDefault();
           b.onEnter();
+        }
+        return;
+      }
+      // P2.3 arrow-key row navigation. Fired only when the operator isn't
+      // typing (already handled by isEditing above) and only when a handler is
+      // registered - otherwise the browser's native scroll wins so operators
+      // can still scroll the map / tables with arrows.
+      if (e.key === 'ArrowUp') {
+        if (b.onArrowUp) {
+          e.preventDefault();
+          b.onArrowUp();
+        }
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        if (b.onArrowDown) {
+          e.preventDefault();
+          b.onArrowDown();
         }
         return;
       }

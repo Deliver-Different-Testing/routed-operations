@@ -18,9 +18,10 @@ export function toIsoDate(date: Date | string | null | undefined): string {
   return `${year}-${month}-${day}`;
 }
 
-export function formatCurrency(value: number | null | undefined): string {
+export function formatCurrency(value: number | null | undefined, isUsTenant = true): string {
   if (value == null) return '';
-  return value.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
+  const currency = isUsTenant ? 'USD' : 'NZD';
+  return value.toLocaleString(undefined, { style: 'currency', currency });
 }
 
 export function todayIso(): string {
