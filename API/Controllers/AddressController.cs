@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Address;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
 using RoutedOperations.Core.Application.Services.BulkImport;
+using RoutedOperations.Core.Application.Services.Routing;
 using Serilog;
 
 namespace RoutedOperations.API.Controllers;
@@ -23,6 +24,7 @@ namespace RoutedOperations.API.Controllers;
 [Authorize(Policy = "RouteBuilder.Admin")]
 public class AddressController(
     AddressService addressService,
+    HereGeocodeService hereGeocodeService,
     ILogger<AddressController> logger) : BaseController
 {
     private int GetCurrentContactId()
@@ -182,6 +184,69 @@ public class AddressController(
         catch (Exception e)
         {
             logger.LogError(e, "Address.GetZipCodesByLocation failed");
+            throw;
+        }
+    }
+
+    // GET /api/address/reverse-geocode?lat=&lng=&country= - HERE reverse
+    // geocode proxy for the Fix GPS modal (map right-click + marker drag).
+    // Overrides the controller-level Admin policy because the caller is the
+    // cockpit Build workflow, matching PATCH /api/jobs/{id}/gps.
+    [HttpGet("reverse-geocode")]
+    [Authorize(Policy = "RouteBuilder.Build")]
+    public async Task<IActionResult> ReverseGeocode([FromQuery] double lat, [FromQuery] double lng, [FromQuery] string? country = null)
+    {
+        try
+        {
+            var result = await hereGeocodeService.ReverseGeocodeAsync(lat, lng, country);
+            if (result == null) return Ok(new { found = false });
+            return Ok(new
+            {
+                found = true,
+                lat = result.Lat,
+                lng = result.Lng,
+                formattedAddress = result.FormattedAddress,
+                postCode = result.PostCode,
+                suburb = result.Suburb,
+                countryCode = result.CountryCode,
+            });
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Address.ReverseGeocode failed");
+            throw;
+        }
+    }
+
+    // GET /api/address/forward-geocode?address=&country= - HERE forward
+    // geocode proxy for the Fix GPS modal Search button. Same shape as
+    // reverse-geocode so the front end handles both symmetrically.
+    // Kept separate from the POST /geocode batch endpoint used by BulkImport
+    // because that path resolves against the tenant's historical tblBulkJob
+    // rows first and is optimised for high-fanout batches, whereas this
+    // endpoint is a single-address direct HERE call sized for interactive UI.
+    [HttpGet("forward-geocode")]
+    [Authorize(Policy = "RouteBuilder.Build")]
+    public async Task<IActionResult> ForwardGeocode([FromQuery] string address, [FromQuery] string? country = null)
+    {
+        try
+        {
+            var result = await hereGeocodeService.GeocodeAsync(address, country);
+            if (result == null) return Ok(new { found = false });
+            return Ok(new
+            {
+                found = true,
+                lat = result.Lat,
+                lng = result.Lng,
+                formattedAddress = result.FormattedAddress,
+                postCode = result.PostCode,
+                suburb = result.Suburb,
+                countryCode = result.CountryCode,
+            });
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Address.ForwardGeocode failed");
             throw;
         }
     }

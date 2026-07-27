@@ -148,6 +148,82 @@ public class HereMapService(HttpClient httpClient, AppSettings appSettings)
         };
     }
 
+    /// <summary>
+    /// HERE Routing v8 polyline draw. Takes an ordered list of stops (already
+    /// sequenced by the operator or a prior optimiser) and returns the driving
+    /// polyline as a decoded list of lat/lng points. Used to replace the
+    /// Google Directions polyline draw on the cockpit map without exposing
+    /// the HERE key to the browser.
+    ///
+    /// HERE v8 accepts up to 100 waypoints per request. We chunk at 90 to
+    /// leave headroom and stitch results end-to-end - each chunk overlaps the
+    /// previous chunk's terminal stop so the polyline stays contiguous.
+    /// </summary>
+    public async Task<List<LatLngDto>?> RoutePolylineAsync(List<HereSequenceStop> stops)
+    {
+        EnsureConfigured();
+        if (stops == null || stops.Count < 2)
+        {
+            Log.Warning("RoutePolylineAsync called with < 2 stops");
+            return null;
+        }
+
+        const int ChunkMaxStops = 90;
+        var points = new List<LatLngDto>();
+
+        for (var cursor = 0; cursor < stops.Count - 1; cursor += ChunkMaxStops - 1)
+        {
+            var chunkEnd = Math.Min(cursor + ChunkMaxStops - 1, stops.Count - 1);
+            var origin = stops[cursor];
+            var destination = stops[chunkEnd];
+            var vias = new List<HereSequenceStop>();
+            for (var i = cursor + 1; i < chunkEnd; i++) vias.Add(stops[i]);
+
+            var parts = new List<string>
+            {
+                $"transportMode=car",
+                $"origin={FormatLatLng(origin)}",
+                $"destination={FormatLatLng(destination)}",
+                $"return=polyline",
+            };
+            foreach (var v in vias) parts.Add($"via={FormatLatLng(v)}");
+
+            var url = $"https://router.hereapi.com/v8/routes?apiKey={appSettings.HereMapsApiKey}&{string.Join('&', parts)}";
+            var response = await httpClient.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Log.Warning("HERE Routing v8 polyline failed (chunk {Cursor}-{End}): {Status} {Body}",
+                    cursor, chunkEnd, response.StatusCode, body);
+                return null;
+            }
+
+            var raw = await response.Content.ReadFromJsonAsync<HereRouteRawResponse>(_jsonOptions);
+            var route = raw?.routes?.FirstOrDefault();
+            var sections = route?.sections;
+            if (sections == null || sections.Count == 0)
+            {
+                Log.Warning("HERE Routing v8 polyline returned no sections (chunk {Cursor}-{End})", cursor);
+                return null;
+            }
+
+            foreach (var section in sections)
+            {
+                if (string.IsNullOrEmpty(section.polyline)) continue;
+                var decoded = FlexiblePolyline.Decode(section.polyline);
+                if (decoded.Count == 0) continue;
+                if (points.Count > 0 && SamePoint(points[^1], decoded[0]))
+                    points.AddRange(decoded.Skip(1));
+                else
+                    points.AddRange(decoded);
+            }
+
+            if (chunkEnd == stops.Count - 1) break;
+        }
+
+        return points.Count == 0 ? null : points;
+    }
+
     private void EnsureConfigured()
     {
         if (string.IsNullOrEmpty(appSettings.HereMapsApiKey))
@@ -161,6 +237,13 @@ public class HereMapService(HttpClient httpClient, AppSettings appSettings)
         $"{Uri.EscapeDataString(string.IsNullOrEmpty(s.Name) ? "wp" : s.Name)};" +
         $"{s.Lat.ToString("0.######", CultureInfo.InvariantCulture)}," +
         $"{s.Lng.ToString("0.######", CultureInfo.InvariantCulture)}";
+
+    private static string FormatLatLng(HereSequenceStop s) =>
+        $"{s.Lat.ToString("0.######", CultureInfo.InvariantCulture)}," +
+        $"{s.Lng.ToString("0.######", CultureInfo.InvariantCulture)}";
+
+    private static bool SamePoint(LatLngDto a, LatLngDto b) =>
+        Math.Abs(a.Lat - b.Lat) < 1e-7 && Math.Abs(a.Lng - b.Lng) < 1e-7;
 
     // HERE response shape (subset we consume). Property names match the JSON
     // exactly so the case-insensitive resolver + our camelCase resolver both
@@ -185,5 +268,102 @@ public class HereMapService(HttpClient httpClient, AppSettings appSettings)
         public string? fromWaypoint { get; set; }
         public string? toWaypoint { get; set; }
         public double time { get; set; }  // seconds
+    }
+
+    // -- HERE Routing v8 response shape (subset we consume) ----------------
+    private sealed class HereRouteRawResponse
+    {
+        public List<HereRouteRaw>? routes { get; set; }
+    }
+    private sealed class HereRouteRaw
+    {
+        public List<HereRouteSectionRaw>? sections { get; set; }
+    }
+    private sealed class HereRouteSectionRaw
+    {
+        // Flexible-polyline encoded string. See FlexiblePolyline.Decode below.
+        public string? polyline { get; set; }
+    }
+}
+
+/// <summary>
+/// HERE Flexible Polyline decoder. Ported from the reference JS implementation
+/// at https://github.com/heremaps/flexible-polyline. HERE Routing v8 returns
+/// route sections encoded in this format; the frontend needs plain lat/lng
+/// arrays so we decode server-side.
+///
+/// Format: header (version + precision + 3d flag) followed by delta-encoded
+/// varints of scaled coordinates. Supports 2D lat/lng; 3rd dimension (elevation
+/// etc.) is skipped since we only need road geometry.
+/// </summary>
+internal static class FlexiblePolyline
+{
+    private const string Encoding =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    private static readonly int[] Decoding = BuildDecoding();
+
+    public static List<LatLngDto> Decode(string encoded)
+    {
+        var result = new List<LatLngDto>();
+        if (string.IsNullOrEmpty(encoded)) return result;
+
+        var idx = 0;
+        // Header: version (1), then a bit-packed value containing precision (3 bits),
+        // 3rd-dim type (3 bits), 3rd-dim precision (4 bits).
+        var version = DecodeUnsignedVarint(encoded, ref idx);
+        if (version != 1) return result;
+        var header = DecodeUnsignedVarint(encoded, ref idx);
+        var precision = (int)(header & 15);
+        var thirdDimType = (int)((header >> 4) & 7);
+        var thirdDimPrecision = (int)((header >> 7) & 15);
+        _ = thirdDimPrecision; // unused - we skip 3rd-dim values
+
+        var factor = Math.Pow(10, precision);
+        long lat = 0, lng = 0;
+        while (idx < encoded.Length)
+        {
+            lat += DecodeSignedVarint(encoded, ref idx);
+            if (idx >= encoded.Length) break;
+            lng += DecodeSignedVarint(encoded, ref idx);
+            if (thirdDimType != 0)
+            {
+                if (idx >= encoded.Length) break;
+                // 3rd dimension present; consume + discard.
+                DecodeSignedVarint(encoded, ref idx);
+            }
+            result.Add(new LatLngDto { Lat = lat / factor, Lng = lng / factor });
+        }
+        return result;
+    }
+
+    private static long DecodeUnsignedVarint(string s, ref int idx)
+    {
+        long value = 0;
+        var shift = 0;
+        while (idx < s.Length)
+        {
+            var ch = s[idx++];
+            if (ch >= Decoding.Length) return 0;
+            var v = Decoding[ch];
+            if (v < 0) return 0;
+            value |= (long)(v & 0x1F) << shift;
+            if ((v & 0x20) == 0) return value;
+            shift += 5;
+        }
+        return value;
+    }
+
+    private static long DecodeSignedVarint(string s, ref int idx)
+    {
+        var u = DecodeUnsignedVarint(s, ref idx);
+        return ((u & 1) != 0) ? ~(u >> 1) : (u >> 1);
+    }
+
+    private static int[] BuildDecoding()
+    {
+        var arr = new int[128];
+        for (var i = 0; i < arr.Length; i++) arr[i] = -1;
+        for (var i = 0; i < Encoding.Length; i++) arr[Encoding[i]] = i;
+        return arr;
     }
 }

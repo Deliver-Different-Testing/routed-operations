@@ -4,6 +4,7 @@ import { Modal } from '../common/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
 import { Button } from '../common/Button';
+import { addressService } from '../../services/addressService';
 
 interface Props {
   open: boolean;
@@ -19,31 +20,29 @@ interface Props {
 }
 
 /**
- * GPS coordinate repair modal. Direct port of the legacy #gpsForm flow, but
- * running on Google Maps instead of HERE for parity with the cockpit map.
+ * GPS coordinate repair modal. Google Maps renders the base tiles + marker;
+ * every geocoding call goes through HERE via server-side proxies so the
+ * Google Directions / Geocoding SKUs stay at zero.
  * Steps:
  *   1. Operator chooses which leg to fix (pickup or delivery)
  *   2. Types an address in the search box, or accepts the auto-populated
  *      current address
- *   3. Google Geocoder returns lat/lng + postal component, shown on the map
- *   4. Draggable marker + map right-click let the operator nudge the pin
+ *   3. HERE forward geocode returns lat/lng + postcode, shown on the map
+ *   4. Draggable marker + map right-click reverse-geocode via HERE
  *   5. Save calls PATCH /api/jobs/{id}/gps with the resolved coordinates
  *
- * The postal-code extraction pulls the first `postal_code` address component
- * and forwards it as a string; backend `ParsePostCode` strips ZIP+4 suffixes
- * and non-digit noise before storing as int on tblBulkJob.
+ * HERE returns postcodes as strings (`"02108"`, `"1010"`); backend
+ * `ParsePostCode` strips ZIP+4 suffixes and non-digit noise before storing
+ * as int on tblBulkJob.
  */
 export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
   const user = useAuth();
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
-  // L2.P2.1 Legacy gpsForm.tpl:63-68 scopes the Places autocomplete /
-  // Geocoder to the tenant's country (`'us'` vs `'nz'`) so search results
-  // stay geographically relevant. Without it Google will happily geocode a
-  // "Green St" in Belfast onto a Boston job. isUsTenant is bootstrapped
-  // into AuthContext from HomeController's __APP_USER__ payload; this is
-  // its first real consumer.
-  const countryCode = user.isUsTenant ? 'us' : 'nz';
+  // Tenant-country hint sent to HERE forward + reverse geocode so a bare
+  // street name resolves to the correct hemisphere. ISO 3166-1 alpha-3 per
+  // HERE's `in=countryCode:` syntax.
+  const hereCountryCode = user.isUsTenant ? 'USA' : 'NZL';
 
   const [leg, setLeg] = useState<'ToAddress' | 'FromAddress'>(defaultLeg ?? 'ToAddress');
   const [query, setQuery] = useState('');
@@ -56,7 +55,6 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
-  const geocoderRef = useRef<any>(null);
 
   const currentAddress = useMemo(() => {
     if (!job) return '';
@@ -109,34 +107,37 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
       ],
     });
     mapRef.current = map;
-    geocoderRef.current = new g.maps.Geocoder();
 
     map.addListener('rightclick', (e: any) => {
       if (!e?.latLng) return;
       const lat = e.latLng.lat();
       const lng = e.latLng.lng();
-      // Reverse-geocode the click to pull a postal code + label. Falls back
-      // to the raw coords if the geocoder returns nothing.
-      // L2.P2.1 region hint so a coord near a border resolves to the
-      // tenant's country label (Google uses region as a soft bias on
-      // reverse-geocode - componentRestrictions is not supported for
-      // reverse lookups per the Geocoding API docs).
-      geocoderRef.current?.geocode({ location: { lat, lng }, region: countryCode }, (results: any, status: string) => {
-        if (status === 'OK' && results?.[0]) {
-          const item = results[0];
-          setCandidate({
-            lat, lng,
-            label: item.formatted_address ?? 'Custom pin',
-            postCode: extractPostCode(item),
-          });
-        } else {
+      // Reverse-geocode the click to pull a postal code + label via HERE
+      // (server-side proxy - see /api/address/reverse-geocode). Falls back
+      // to the raw coords if HERE returns nothing.
+      addressService.reverseGeocode(lat, lng, hereCountryCode)
+        .then((res) => {
+          if (res.found) {
+            setCandidate({
+              lat, lng,
+              label: res.formattedAddress ?? 'Custom pin',
+              postCode: res.postCode ?? '',
+            });
+          } else {
+            setCandidate((prev) => ({
+              lat, lng,
+              label: prev?.label ?? 'Custom pin',
+              postCode: prev?.postCode ?? '',
+            }));
+          }
+        })
+        .catch(() => {
           setCandidate((prev) => ({
             lat, lng,
             label: prev?.label ?? 'Custom pin',
             postCode: prev?.postCode ?? '',
           }));
-        }
-      });
+        });
     });
 
     return () => {
@@ -144,7 +145,6 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
       // instance is built on the next open.
       if (markerRef.current) { markerRef.current.setMap(null); markerRef.current = null; }
       mapRef.current = null;
-      geocoderRef.current = null;
     };
   }, [open, ready]);
 
@@ -169,20 +169,23 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
         if (!e?.latLng) return;
         const lat = e.latLng.lat();
         const lng = e.latLng.lng();
-        // Reverse-geocode so the postcode field updates as the marker moves.
-        // L2.P2.1 region hint - see the map rightclick handler above for why.
-        geocoderRef.current?.geocode({ location: { lat, lng }, region: countryCode }, (results: any, status: string) => {
-          if (status === 'OK' && results?.[0]) {
-            const item = results[0];
-            setCandidate({
-              lat, lng,
-              label: item.formatted_address ?? candidate.label,
-              postCode: extractPostCode(item),
-            });
-          } else {
+        // Reverse-geocode via HERE so the postcode field updates as the
+        // marker moves. Server-side proxy hides the HERE API key.
+        addressService.reverseGeocode(lat, lng, hereCountryCode)
+          .then((res) => {
+            if (res.found) {
+              setCandidate({
+                lat, lng,
+                label: res.formattedAddress ?? candidate.label,
+                postCode: res.postCode ?? '',
+              });
+            } else {
+              setCandidate((prev) => prev ? { ...prev, lat, lng } : prev);
+            }
+          })
+          .catch(() => {
             setCandidate((prev) => prev ? { ...prev, lat, lng } : prev);
-          }
-        });
+          });
       });
 
       markerRef.current = marker;
@@ -193,33 +196,31 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
 
   const doSearch = (overrideQuery?: string) => {
     const q = (overrideQuery ?? query).trim();
-    if (!q || !geocoderRef.current) return;
+    if (!q) return;
     setSearching(true);
     setError(null);
-    // L2.P2.1 Legacy gpsForm.tpl:63-68 restricts the autocomplete /
-    // geocoder to the tenant's country so a bare street name resolves to
-    // the correct hemisphere. componentRestrictions is a HARD filter (no
-    // out-of-country results returned), region is a SOFT bias - we send
-    // both so borderline street names still resolve correctly.
-    geocoderRef.current.geocode({
-      address: q,
-      region: countryCode,
-      componentRestrictions: { country: countryCode },
-    }, (results: any, status: string) => {
-      setSearching(false);
-      if (status !== 'OK' || !results?.[0]) {
-        setError('No results found. Try a more specific address.');
-        return;
-      }
-      const item = results[0];
-      const loc = item.geometry.location;
-      setCandidate({
-        lat: loc.lat(),
-        lng: loc.lng(),
-        label: item.formatted_address ?? q,
-        postCode: extractPostCode(item),
+    // Forward geocode via HERE (server-side proxy). Legacy gpsForm.tpl:63-68
+    // narrowed the Google Geocoder to the tenant's country so a bare street
+    // name resolves to the correct hemisphere; HERE's `in=countryCode:` is
+    // the equivalent narrowing and does the same job.
+    addressService.forwardGeocode(q, hereCountryCode)
+      .then((res) => {
+        setSearching(false);
+        if (!res.found || res.lat == null || res.lng == null) {
+          setError('No results found. Try a more specific address.');
+          return;
+        }
+        setCandidate({
+          lat: res.lat,
+          lng: res.lng,
+          label: res.formattedAddress ?? q,
+          postCode: res.postCode ?? '',
+        });
+      })
+      .catch((e) => {
+        setSearching(false);
+        setError((e as Error).message ?? 'Search failed.');
       });
-    });
   };
 
   // P2.5 Legacy gpsForm.tpl:14-16 "Copy Listed Address to Search". Some
@@ -376,14 +377,4 @@ export function FixGpsModal({ open, job, defaultLeg, onClose, onSave }: Props) {
       </div>
     </Modal>
   );
-}
-
-/**
- * Pull the first `postal_code` component out of a Google Geocoder result. US
- * ZIP+4 shows up as "02138-4137" - forward it as-is; backend strips the +4.
- */
-function extractPostCode(result: any): string {
-  const comp = (result?.address_components ?? []).find((c: any) =>
-    Array.isArray(c.types) && c.types.includes('postal_code'));
-  return comp?.short_name ?? comp?.long_name ?? '';
 }

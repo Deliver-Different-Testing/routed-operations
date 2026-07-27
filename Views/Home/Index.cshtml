@@ -34,21 +34,16 @@
     <title>Routed Operations</title>
     <link rel="icon" href="/favicon.ico" />
     <link rel="stylesheet" href="/dist/app.css?v=@cssVer" />
-    <!-- HERE Maps JS v3 - still loaded because the Fix GPS modal uses HERE
-         geocoding. The main cockpit map surface uses Google Maps instead
-         (see the script tag below) for parity with the legacy RunBuilder. -->
-    <link rel="stylesheet" type="text/css" href="https://js.api.here.com/v3/3.1/mapsjs-ui.css" />
-    <script src="https://js.api.here.com/v3/3.1/mapsjs-core.js" type="text/javascript" charset="utf-8"></script>
-    <script src="https://js.api.here.com/v3/3.1/mapsjs-service.js" type="text/javascript" charset="utf-8"></script>
-    <script src="https://js.api.here.com/v3/3.1/mapsjs-ui.js" type="text/javascript" charset="utf-8"></script>
-    <script src="https://js.api.here.com/v3/3.1/mapsjs-mapevents.js" type="text/javascript" charset="utf-8"></script>
     @if (!string.IsNullOrEmpty(Model?.GoogleMapsKey))
     {
-        <!-- Google Maps SDK for the cockpit map surface. Matches the legacy
-             RunBuilder which loaded google.maps + Directions + Places. The
-             async attribute lets the SPA mount first; the map component
-             re-checks window.google.maps before rendering. -->
-        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places,geometry" async defer></script>
+        <!-- Google Maps SDK for the cockpit map surface. Only `places` is
+             loaded (needed by FixAddressesModal Autocomplete); Directions +
+             Geocoding SKUs are now served through backend HERE proxies (see
+             /api/routes/polyline and /api/address/*-geocode) so those SDK
+             libraries are no longer required. The async attribute lets the
+             SPA mount first; map components re-check window.google.maps
+             before rendering. -->
+        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places" async defer></script>
     }
 </head>
 <body>
