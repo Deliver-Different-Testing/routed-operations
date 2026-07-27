@@ -12,6 +12,8 @@
     "test": "echo \"No tests configured yet\" && exit 0"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "@tanstack/react-virtual": "^3.14.8",
     "@vis.gl/react-google-maps": "^1.5.0",
     "date-fns": "^4.1.0",
     "react": "^18.3.1",

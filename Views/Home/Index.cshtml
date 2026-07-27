@@ -34,6 +34,11 @@
     <title>Routed Operations</title>
     <link rel="icon" href="/favicon.ico" />
     <link rel="stylesheet" href="/dist/app.css?v=@cssVer" />
+    <!-- Phase 6 perf: hint the browser to start downloading the JS bundle
+         while the CSS parses, instead of waiting to discover the <script
+         type="module"> tag at the bottom of body. Saves ~100 ms on cold
+         page loads on average links. -->
+    <link rel="modulepreload" href="/dist/app.js?v=@jsVer" />
     @if (!string.IsNullOrEmpty(Model?.GoogleMapsKey))
     {
         <!-- Google Maps SDK for the cockpit map surface. Only `places` is

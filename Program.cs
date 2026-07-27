@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
@@ -83,6 +84,27 @@ builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 // Memory cache - explicit registration so ConnectionStringManager doesn't
 // depend on the framework's transitive AddMvcCore -> AddMemoryCache chain.
 builder.Services.AddMemoryCache();
+
+// Response compression. The cockpit's /api/jobs response for a busy day is
+// ~400-600 KB of JSON uncompressed; Brotli or Gzip typically shrinks that
+// 5-10x. Brotli preferred when the browser accepts it, Gzip as fallback.
+// EnableForHttps=true because local + prod both serve over TLS via the
+// shared cookie domain, and BREACH-style attacks aren't a concern for
+// authenticated JSON responses that don't reflect user input verbatim.
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o =>
+{
+    o.Level = System.IO.Compression.CompressionLevel.Fastest;
+});
+builder.Services.Configure<GzipCompressionProviderOptions>(o =>
+{
+    o.Level = System.IO.Compression.CompressionLevel.Fastest;
+});
 
 // DataProtection: local file (dev) vs AWS SSM (prod). Mirrors the Configurator pattern so the
 // shared cookie stays decryptable across the DFRNT app suite.
@@ -231,6 +253,13 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 
+// Tenant-scoped in-memory cache helper (Phase 2 perf). Wraps IMemoryCache
+// with a per-request tenant prefix so lookup responses (couriers, speeds,
+// regions, suburbs, ...) never leak across tenants. Scoped lifetime picks up
+// the correct HttpContext per request; the underlying IMemoryCache is
+// Singleton via AddMemoryCache() above.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Utilities.TenantScopedCache>();
+
 // Application services (per the parity plan).
 builder.Services.AddScoped<JobService>();
 builder.Services.AddScoped<RunService>();
@@ -341,6 +370,12 @@ var app = builder.Build();
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 
 app.UseForwardedHeaders();
+
+// Response compression - registered before UseStaticFiles + UseRouting so
+// every response (static assets + API JSON) gets a chance to be compressed.
+// The middleware inspects the Accept-Encoding header and content type; only
+// text-like responses (JSON, JS, CSS, HTML) get compressed by default.
+app.UseResponseCompression();
 
 // Readiness probe - SqlServer check with a JSON body.
 app.MapHealthChecks("/healthz", new HealthCheckOptions

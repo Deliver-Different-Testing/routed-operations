@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { BulkJob } from '../../types';
 import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
@@ -43,8 +43,14 @@ export function JobsList({
   const { isUsTenant } = useAuth();
   const zipLabel = postcodeLabel(isUsTenant, true);
   const [ctx, setCtx] = useState<{ x: number; y: number; job: BulkJob } | null>(null);
-  const selectedSet = new Set(selectedJobIds);
-  const allSelected = jobs.length > 0 && jobs.every((j) => selectedSet.has(j.bulkJobId));
+  // Phase 5 perf: rebuild the Set only when selectedJobIds actually changes.
+  // Previous plain `new Set(...)` allocated 500+ entries on every render even
+  // when nothing about selection had moved.
+  const selectedSet = useMemo(() => new Set(selectedJobIds), [selectedJobIds]);
+  // State-based allSelected derivation (per risk-audit mitigation for
+  // future virtualization work): compare lengths rather than iterating
+  // rows so this stays O(1) instead of O(n).
+  const allSelected = jobs.length > 0 && jobs.length === selectedSet.size;
 
   const handleDragStart = (e: React.DragEvent<HTMLTableRowElement>, jobId: number) => {
     const ids = selectedSet.has(jobId) ? selectedJobIds : [jobId];

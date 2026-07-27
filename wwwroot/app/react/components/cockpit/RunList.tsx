@@ -1,5 +1,6 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import type { BulkJob, Courier, Run } from '../../types';
+import { CourierCombobox } from './CourierCombobox';
 import { Panel } from '../common/Panel';
 import { StatusBadge } from '../common/StatusBadge';
 import { Button } from '../common/Button';
@@ -74,8 +75,11 @@ export function RunList({
     { runId: number; courierId: number; courierName: string } | null
   >(null);
 
-  const selectedRunSet = new Set(selectedRunIds);
-  const allSelected = runs.length > 0 && runs.every((r) => selectedRunSet.has(r.id));
+  // Phase 5 perf: memoize the Set so it doesn't rebuild on every render;
+  // state-based allSelected so this stays O(1) (also lays groundwork for
+  // future virtualization per the risk-audit recommendation).
+  const selectedRunSet = useMemo(() => new Set(selectedRunIds), [selectedRunIds]);
+  const allSelected = runs.length > 0 && runs.length === selectedRunSet.size;
   const locked = runs.filter((r) => r.status && r.status > 0);
 
   // L2.P3.1 Row tint palette that matches the map-pin colouring for multi-
@@ -407,17 +411,11 @@ export function RunList({
                   <span className="text-[10px] text-text-muted italic">no courier</span>
                 ) : (
                   <div className="flex gap-1 flex-wrap">
-                    <select
-                      value={r.courierId ?? ''}
-                      onChange={(e) => onAssignCourier(r.id, e.target.value ? Number(e.target.value) : null)}
-                      className="text-xs border border-border rounded px-1 py-0.5 max-w-24"
-                      title="Assign courier"
-                    >
-                      <option value="">-</option>
-                      {couriers.map((c) => (
-                        <option key={c.courierId} value={c.courierId}>{c.displayName}</option>
-                      ))}
-                    </select>
+                    <CourierCombobox
+                      value={r.courierId ?? null}
+                      couriers={couriers}
+                      onChange={(id) => onAssignCourier(r.id, id)}
+                    />
                     {selectedJobCount > 0 && (
                       <Button
                         variant="secondary"

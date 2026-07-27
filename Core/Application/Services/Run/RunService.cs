@@ -24,7 +24,19 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<List<RunDto>> GetBulkRunsAsync(
         DateTime? dateTime, string? clientIds, string? regionIds, string? ourRefs, string? speeds)
     {
+        // Phase 1 perf: pre-fetch the set of schedule IDs with AutoBook=true
+        // in one indexed scan so the main query filters via a set lookup
+        // instead of a correlated NOT EXISTS subquery evaluated per row.
+        var autoBookScheduleIds = await Context.TblBulkRunSchedules
+            .AsNoTracking()
+            .Where(s => (s.AutoBook ?? false) == true)
+            .Select(s => s.BulkRunScheduleId)
+            .ToListAsync();
+        var autoBookSet = new HashSet<int>(autoBookScheduleIds);
+
+        // AsNoTracking - projection to RunDto downstream, no entity mutation.
         var jobQuery = Context.TblBulkJobs
+            .AsNoTracking()
             .Where(j => j.BulkRunId.HasValue)
             // Legacy filters (match UTL_stpJob_tblBulkRunWithFilter):
             //   ISNULL(Done, 0) = 0
@@ -37,8 +49,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                           && Context.TblBulkScheduleLinehauls.Any(lh =>
                                 lh.BulkRunScheduleId == j.ScheduleId
                                 && (lh.InsertToBulk ?? false) == false)))
-            .Where(j => !Context.TblBulkRunSchedules.Any(s =>
-                s.BulkRunScheduleId == j.ScheduleId && (s.AutoBook ?? false) == true))
+            .Where(j => !j.ScheduleId.HasValue || !autoBookSet.Contains(j.ScheduleId.Value))
             .AsQueryable();
 
         if (dateTime.HasValue)
@@ -91,6 +102,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         // parent - never surfaced to the operator. Kept out of the run's job
         // list so the Run Builder never renders one.
         var parentIds = await Context.TblBulkJobs
+            .AsNoTracking()
             .Where(child => child.ParentId != null)
             .Select(child => child.ParentId!.Value)
             .Distinct()
@@ -121,7 +133,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         //     Void Jobs run (IsVoidRun = 1, Status = 1) never surfaces via this
         //     branch either, which is correct - it's only visible when it has
         //     voided jobs to render.
-        var runQuery = Context.TblBulkRuns.AsQueryable();
+        var runQuery = Context.TblBulkRuns.AsNoTracking().AsQueryable();
         if (dateTime.HasValue)
         {
             var d = dateTime.Value.Date;
@@ -144,6 +156,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var jobCourierIds = jobs.Where(j => j.CourierId.HasValue).Select(j => j.CourierId!.Value).Distinct();
         var allCourierIds = courierIds.Concat(jobCourierIds).Distinct().ToList();
         var couriers = await Context.TucCouriers
+            .AsNoTracking()
             .Where(c => allCourierIds.Contains(c.UccrId))
             .ToListAsync();
         var courierById = couriers.ToDictionary(c => c.UccrId, c => (c.Code + " " + c.UccrName).Trim());
@@ -153,6 +166,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var fleetIds = couriers.Where(c => c.CourierFleetId.HasValue)
             .Select(c => c.CourierFleetId!.Value).Distinct().ToList();
         var fleets = await Context.TucCourierFleets
+            .AsNoTracking()
             .Where(f => fleetIds.Contains(f.UccfId))
             .ToDictionaryAsync(f => f.UccfId, f => f.UccfName);
         var fleetByCourier = couriers
@@ -162,6 +176,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         // Speed name lookup for the Run Builder Speed column.
         var speedIds = jobs.Select(j => j.Speed).Distinct().ToList();
         var speedNames = await Context.TucJobTypes
+            .AsNoTracking()
             .Where(s => speedIds.Contains(s.UcjtId))
             .ToDictionaryAsync(s => s.UcjtId, s => s.UcjtName);
 
@@ -169,6 +184,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         // (BulkJobId, RunId) so the per-run projection can pick them up.
         var runIds = runs.Select(r => r.Id).ToList();
         var jobRuns = await Context.TblBulkJobRuns
+            .AsNoTracking()
             .Where(jr => jr.RunId.HasValue && runIds.Contains(jr.RunId.Value)
                       && jr.BulkJobId.HasValue)
             .Select(jr => new { jr.BulkJobId, jr.RunId, jr.IsStart, jr.IsEnd })

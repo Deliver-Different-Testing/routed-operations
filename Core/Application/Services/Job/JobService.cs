@@ -22,15 +22,31 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<List<BulkJobDto>> GetBulkJobsAsync(
         DateTime? dateTime, string? clientIds, string? regionIds, string? ourRefs, string? speeds)
     {
-        // Exclude parent jobs (any row that has at least one child pointing at
-        // it via ParentId). Parents are the pickup leg of a paired
-        // pickup/delivery booking; only the delivery children need to appear
-        // in the run-build cockpit. Matches the legacy RunBuilder behaviour
-        // where parents are auto-assigned to the "9999 ParentJobs" courier
-        // and hidden from the operator's selection set.
+        // Phase 1 perf: pre-fetch the set of parent-job IDs in one indexed scan
+        // and materialise them into a HashSet so the main query filters via a
+        // simple `NOT IN` set-compare instead of a correlated `NOT EXISTS`
+        // subquery evaluated per row. Set-lookup is O(1); for typical tenants
+        // the parent set is a few hundred rows so the IN clause stays tractable.
+        //
+        // Parents are the pickup leg of a paired pickup/delivery booking;
+        // only the delivery children need to appear in the run-build cockpit.
+        // Matches the legacy RunBuilder behaviour where parents are auto-
+        // assigned to the "9999 ParentJobs" courier and hidden from the
+        // operator's selection set.
+        var parentIds = await Context.TblBulkJobs
+            .AsNoTracking()
+            .Where(j => j.ParentId.HasValue)
+            .Select(j => j.ParentId!.Value)
+            .Distinct()
+            .ToListAsync();
+        var parentIdSet = new HashSet<int>(parentIds);
+
+        // AsNoTracking on the main query - the whole pipeline projects to
+        // BulkJobDto, no entity mutation happens downstream in this method.
         var query = Context.TblBulkJobs
+            .AsNoTracking()
             .Where(j => !j.Done && !j.Void)
-            .Where(j => !Context.TblBulkJobs.Any(child => child.ParentId == j.BulkJobId))
+            .Where(j => !parentIdSet.Contains(j.BulkJobId))
             // Legacy filter: ISNULL(JobRelationshipTypeID, 0) <> 19 - drops
             // linehaul-sibling rows the operator should never see in the cockpit.
             .Where(j => (j.JobRelationshipTypeId ?? 0) != 19)
@@ -198,7 +214,10 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 ClientRefa = j.ClientRefa,
                 ClientRefb = j.ClientRefb,
                 OurRef = j.OurRef,
-                Notes = j.Notes,
+                // Phase 3 perf: Notes dropped from the list projection - can
+                // be several hundred chars per row on tenants with heavy note
+                // usage. Fetched on-demand via GET /api/jobs/{id}/detail.
+                Notes = null,
                 PickUpLatitude = j.PickUpLatitude,
                 PickUpLongitude = j.PickUpLongitude,
                 DeliveryLatitude = j.DeliveryLatitude,
@@ -223,10 +242,16 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 Contact = j.Contact,
                 DeliverToContact = j.DeliverToContact,
                 DeliverToPhone = j.DeliverToPhone,
-                TrackingEmail = j.TrackingEmail,
-                TrackingMobile = j.TrackingMobile,
-                ProofOfDeliveryEmail = j.ProofOfDeliveryEmail,
-                ProofOfDeliveryMobile = j.ProofOfDeliveryMobile,
+                // Phase 3 perf: heavy display-only fields (TrackingEmail,
+                // TrackingMobile, ProofOfDeliveryEmail, ProofOfDeliveryMobile)
+                // dropped from the list projection - fetched on-demand via
+                // GET /api/jobs/{id}/detail when the operator opens the
+                // JobDetail modal. Explicitly null-projected here so consumers
+                // that spread the DTO still get the keys, just empty values.
+                TrackingEmail = null,
+                TrackingMobile = null,
+                ProofOfDeliveryEmail = null,
+                ProofOfDeliveryMobile = null,
                 ScheduleId = s != null ? s.BulkRunScheduleId : (int?)null,
                 ScheduleName = s != null ? s.Name : null,
                 // ScheduleWindowStart/End are filled in-memory below from the
@@ -294,6 +319,29 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// </summary>
     private static int DayOfWeekIso(DayOfWeek d) =>
         d == DayOfWeek.Sunday ? 7 : (int)d;
+
+    /// <summary>
+    /// Phase 3 perf: lazy-loads the 5 "heavy" display-only fields that were
+    /// pulled out of the /api/jobs list projection. Called only when the
+    /// operator opens the JobDetail modal - not on every cockpit filter
+    /// toggle. Returns null if the job is not visible to this tenant.
+    /// </summary>
+    public async Task<JobDetailExtrasDto?> GetJobDetailExtrasAsync(int jobId)
+    {
+        return await Context.TblBulkJobs
+            .AsNoTracking()
+            .Where(j => j.BulkJobId == jobId)
+            .Select(j => new JobDetailExtrasDto
+            {
+                BulkJobId = j.BulkJobId,
+                Notes = j.Notes,
+                TrackingEmail = j.TrackingEmail,
+                TrackingMobile = j.TrackingMobile,
+                ProofOfDeliveryEmail = j.ProofOfDeliveryEmail,
+                ProofOfDeliveryMobile = j.ProofOfDeliveryMobile,
+            })
+            .FirstOrDefaultAsync();
+    }
 
     public async Task<List<object>> GetClientFiltersAsync()
     {

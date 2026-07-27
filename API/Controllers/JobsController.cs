@@ -58,6 +58,17 @@ public class JobsController(
         return Ok(new { response = childIds });
     }
 
+    // GET /api/jobs/{id}/detail - lazy-loads the 5 heavy display-only fields
+    // (Notes + tracking + POD email/mobile) that were dropped from the list
+    // projection for perf. Called on JobDetail modal open.
+    [HttpGet("{id:int}/detail")]
+    public async Task<IActionResult> GetDetail(int id)
+    {
+        var extras = await jobService.GetJobDetailExtrasAsync(id);
+        if (extras == null) return NotFound();
+        return Ok(extras);
+    }
+
     // PATCH /api/jobs/{id}         body: { field, value }
     [HttpPatch("{id:int}")]
     [Authorize(Policy = "RouteBuilder.Build")]

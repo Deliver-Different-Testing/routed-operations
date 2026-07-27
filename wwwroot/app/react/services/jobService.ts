@@ -6,6 +6,20 @@ interface BulkJobsResponse {
   maxJsonLength: number;
 }
 
+/**
+ * Phase 3 perf: the 5 heavy display-only fields (Notes + tracking + POD
+ * email/mobile) that were dropped from the /api/jobs list projection and
+ * fetched lazily on JobDetail modal open.
+ */
+export interface JobDetailExtras {
+  bulkJobId: number;
+  notes: string | null;
+  trackingEmail: string | null;
+  trackingMobile: string | null;
+  proofOfDeliveryEmail: string | null;
+  proofOfDeliveryMobile: string | null;
+}
+
 export const jobService = {
   getBulkJobs: (filters: JobFilters) =>
     request<BulkJobsResponse>(`/jobs${buildQuery({
@@ -24,6 +38,14 @@ export const jobService = {
 
   getMultiboxChildren: (parentJobId: number) =>
     request<{ response: number[] }>(`/jobs/${parentJobId}/multibox-children`),
+
+  /**
+   * Lazy-load Notes + Tracking + POD email/mobile for one job. These were
+   * dropped from the /api/jobs list response for perf; JobDetail modal
+   * fetches them on open via this call.
+   */
+  getDetail: (jobId: number) =>
+    request<JobDetailExtras>(`/jobs/${jobId}/detail`),
 
   updateDetail: (jobId: number, field: string, value: string) =>
     request<{ response: string }>(`/jobs/${jobId}`, {
