@@ -59,4 +59,16 @@ export const routeService = {
         finishAtName: opts?.finishAtName ?? null,
       }),
     }),
+
+  /**
+   * Fetch a driving polyline for an already-sequenced list of stops. Backed
+   * by HERE Routing v8 (server-side proxy hides the API key). Returns an
+   * empty points list on any failure so the caller can fall back to
+   * straight-line rendering.
+   */
+  polyline: (stops: HereSequenceStop[]) =>
+    request<{ points: LatLng[] }>('/routes/polyline', {
+      method: 'POST',
+      body: JSON.stringify({ stops }),
+    }),
 };

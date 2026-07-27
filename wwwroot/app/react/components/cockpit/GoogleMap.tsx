@@ -4,6 +4,7 @@ import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
+import { routeService } from '../../services/routeService';
 import type { MapContextTarget } from './MapContextMenu';
 
 interface Props {
@@ -369,19 +370,21 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
 }
 
 /**
- * P1.12 chunked-directions polyline drawer.
+ * Polyline drawer backed by HERE Routing v8 (via /api/routes/polyline).
  *
- * Google Directions API caps at 25 waypoints per request (origin + destination
- * + up to 23 intermediates). Legacy HereMap.tpl:908-1066 split runs above that
- * threshold into 23-stop slices and stitched. We follow the same shape:
+ * Previously used google.maps.DirectionsService with a 23-waypoint chunking
+ * dance to work around Google's 25-waypoint cap. HERE v8 accepts 90+
+ * waypoints per request and the chunking now lives server-side, so the
+ * frontend collapses to a single fetch.
  *
- *   Batch layout: [pin0..pin22], [pin22..pin44], [pin44..pin66], ...
- *   Note the deliberate overlap on the boundary stop so the joining segment
- *   is included in exactly one chunk (never dropped and never duplicated).
- *
- * Failures fall back to straight-line polylines for the affected chunk so the
- * operator still gets a visual - matches the "any line is better than no line"
- * legacy behaviour.
+ * Behaviour preserved from the Google-based version:
+ *   - Straight-line placeholder rendered immediately so the map doesn't
+ *     flash empty during the (few hundred ms) fetch.
+ *   - Stale-token check so a mid-fetch run switch discards the reply
+ *     rather than drawing over the new selection.
+ *   - On any failure (network, empty response) the placeholder stays and
+ *     the operator gets straight-line segments - "any line is better than
+ *     no line" matches the legacy fallback.
  */
 function drawRunPolyline(
   g: any,
@@ -391,12 +394,7 @@ function drawRunPolyline(
   ownToken: number,
   currentTokenRef: React.MutableRefObject<number>
 ) {
-  const CHUNK_MAX_STOPS = 25; // Google's per-request cap
-  const CHUNK_WAYPOINTS = CHUNK_MAX_STOPS - 2; // 23 intermediates in a batch
-
-  // Straight-line fallback that renders immediately + gets replaced when the
-  // Directions responses land. Keeps the map from flashing empty during the
-  // (few hundred ms) fetch.
+  // Placeholder straight line - kept visible until (or unless) HERE responds.
   const placeholder = new g.maps.Polyline({
     path: seqPins.map((p) => ({ lat: p.lat, lng: p.lng })),
     geodesic: true,
@@ -407,85 +405,34 @@ function drawRunPolyline(
   });
   polylinesRef.current.push(placeholder);
 
-  // No DirectionsService? Bail with the straight-line placeholder.
-  if (!g.maps.DirectionsService) return;
-  const svc = new g.maps.DirectionsService();
+  const stops = seqPins.map((p) => ({
+    name: p.jobNumber ?? `stop-${p.bulkJobId}`,
+    lat: p.lat,
+    lng: p.lng,
+  }));
 
-  // Build the batch descriptors [{ origin, destination, waypoints }].
-  const batches: { origin: Pin; destination: Pin; waypoints: Pin[] }[] = [];
-  let cursor = 0;
-  while (cursor < seqPins.length - 1) {
-    const chunkEnd = Math.min(cursor + CHUNK_WAYPOINTS + 1, seqPins.length - 1);
-    const origin = seqPins[cursor];
-    const destination = seqPins[chunkEnd];
-    const waypoints = seqPins.slice(cursor + 1, chunkEnd);
-    batches.push({ origin, destination, waypoints });
-    if (chunkEnd === seqPins.length - 1) break;
-    cursor = chunkEnd;
-  }
-
-  const chunkPolylines: any[] = [];
-  let outstanding = batches.length;
-  const finishBatch = () => {
-    outstanding -= 1;
-    if (outstanding !== 0) return;
-    // Once every batch has resolved, drop the placeholder and swap in the
-    // real polylines - but only if we're still the current selection.
-    if (currentTokenRef.current !== ownToken) {
-      chunkPolylines.forEach((p) => p.setMap(null));
-      return;
-    }
-    placeholder.setMap(null);
-    const idx = polylinesRef.current.indexOf(placeholder);
-    if (idx >= 0) polylinesRef.current.splice(idx, 1);
-    chunkPolylines.forEach((p) => polylinesRef.current.push(p));
-  };
-
-  batches.forEach((batch) => {
-    svc.route({
-      origin: { lat: batch.origin.lat, lng: batch.origin.lng },
-      destination: { lat: batch.destination.lat, lng: batch.destination.lng },
-      waypoints: batch.waypoints.map((p) => ({
-        location: { lat: p.lat, lng: p.lng },
-        stopover: true,
-      })),
-      travelMode: g.maps.TravelMode.DRIVING,
-      // The waypoints already come in the operator-approved sequence (post-
-      // HERE / RouteSavvy optimise). Do NOT ask Google to re-optimise; we
-      // want the polyline to match the sequence the operator sees, not what
-      // Google thinks is faster.
-      optimizeWaypoints: false,
-    }, (result: any, status: string) => {
-      // Stale request check first - the operator may have switched runs.
-      if (currentTokenRef.current !== ownToken) {
-        finishBatch();
-        return;
-      }
-      let path: any[] | null = null;
-      if (status === 'OK' && result?.routes?.[0]?.overview_path) {
-        path = result.routes[0].overview_path;
-      }
-      if (!path) {
-        // Straight-line fallback for this chunk only. Still renders in the
-        // brand purple so it doesn't look broken.
-        path = [
-          { lat: batch.origin.lat, lng: batch.origin.lng },
-          ...batch.waypoints.map((p) => ({ lat: p.lat, lng: p.lng })),
-          { lat: batch.destination.lat, lng: batch.destination.lng },
-        ];
-      }
+  routeService.polyline(stops)
+    .then((res) => {
+      // Stale request check - discard if the operator has moved on.
+      if (currentTokenRef.current !== ownToken) return;
+      const points = res?.points ?? [];
+      if (points.length < 2) return; // keep the placeholder
       const line = new g.maps.Polyline({
-        path,
+        path: points.map((pt) => ({ lat: pt.lat, lng: pt.lng })),
         geodesic: true,
         strokeColor: '#606DB4',
         strokeOpacity: 0.9,
         strokeWeight: 3,
         map,
       });
-      chunkPolylines.push(line);
-      finishBatch();
+      placeholder.setMap(null);
+      const idx = polylinesRef.current.indexOf(placeholder);
+      if (idx >= 0) polylinesRef.current.splice(idx, 1);
+      polylinesRef.current.push(line);
+    })
+    .catch(() => {
+      // Silent - the placeholder straight-line stays visible on failure.
     });
-  });
 }
 
 function buildPins(jobs: BulkJob[], selectedRun: Run | null, multiSelectedRuns: Run[]): Pin[] {

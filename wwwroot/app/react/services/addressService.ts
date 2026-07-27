@@ -1,4 +1,4 @@
-import { request } from './api';
+import { request, buildQuery } from './api';
 import type { BulkBaseResponse } from './bulkImportService';
 
 /**
@@ -109,6 +109,21 @@ export interface GeocodeResponse extends BulkBaseResponse {
   addresses: GeocodeAddressDto[];
 }
 
+/**
+ * HERE reverse-geocode response envelope. `found=false` when HERE returned
+ * no items - callers should keep the raw coords and clear the postcode field.
+ */
+export interface ReverseGeocodeResponse {
+  found: boolean;
+  lat?: number;
+  lng?: number;
+  formattedAddress?: string | null;
+  postCode?: string | null;
+  suburb?: string | null;
+  countryCode?: string | null;
+}
+
+
 export const addressService = {
   getSuburbs: () =>
     request<SuburbsResponse>('/address/suburbs').then((raw) => ({ response: raw })),
@@ -139,4 +154,26 @@ export const addressService = {
       method: 'POST',
       body: JSON.stringify(payload),
     }).then((raw) => ({ response: raw })),
+
+  /**
+   * Reverse-geocode a lat/lng via HERE (server-side proxy). Used by the Fix
+   * GPS modal for map right-click and pin drag. `country` is an optional
+   * ISO 3166-1 alpha-3 hint (e.g. `USA`, `NZL`).
+   */
+  reverseGeocode: (lat: number, lng: number, country?: string) =>
+    request<ReverseGeocodeResponse>(
+      '/address/reverse-geocode' + buildQuery({ lat, lng, country: country ?? null }),
+    ),
+
+  /**
+   * Forward-geocode a free-text address string via HERE. Used by the Fix
+   * GPS modal Search button. Returns the same envelope as reverseGeocode so
+   * the UI handles both paths symmetrically. `country` is an ISO 3166-1
+   * alpha-3 hint (`USA` / `NZL`) that narrows results to the tenant's
+   * country so a bare street name resolves to the correct hemisphere.
+   */
+  forwardGeocode: (address: string, country?: string) =>
+    request<ReverseGeocodeResponse>(
+      '/address/forward-geocode' + buildQuery({ address, country: country ?? null }),
+    ),
 };

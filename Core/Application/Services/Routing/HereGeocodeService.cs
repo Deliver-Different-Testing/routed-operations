@@ -83,6 +83,68 @@ public class HereGeocodeService(HttpClient httpClient, AppSettings appSettings)
         }
     }
 
+    /// <summary>
+    /// Reverse geocode a lat/lng to {formatted, postCode, suburb}. Used by the
+    /// Fix GPS modal when the operator drags the pin or right-clicks the map
+    /// so we can populate the postcode field without a Google Geocoder call.
+    /// Returns null on any failure so callers can fall back to raw coords.
+    ///
+    /// countryCode is accepted for API symmetry with forward geocode but is
+    /// intentionally ignored here: HERE's `in=countryCode:` filter narrows so
+    /// aggressively that a coord clearly inside the requested country can
+    /// return zero results if the nearest street segment straddles a locale
+    /// boundary. The lat/lng already implies the country, so we let HERE pick
+    /// the natural match and cross-check afterwards if needed.
+    /// </summary>
+    public async Task<HereGeocodeResult?> ReverseGeocodeAsync(double lat, double lng, string? countryCode = null)
+    {
+        _ = countryCode; // parameter reserved for future use, see summary
+        if (string.IsNullOrEmpty(appSettings.HereMapsApiKey))
+        {
+            Log.Warning("HereMapsApiKey not configured - reverse geocode disabled");
+            return null;
+        }
+
+        var at = $"{lat.ToString("0.######", CultureInfo.InvariantCulture)}," +
+                 $"{lng.ToString("0.######", CultureInfo.InvariantCulture)}";
+        var url = $"https://revgeocode.search.hereapi.com/v1/revgeocode?at={at}&limit=1&apiKey={appSettings.HereMapsApiKey}";
+
+        try
+        {
+            var response = await httpClient.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Log.Warning("HERE reverse geocode failed for ({Lat},{Lng}): {Status} {Body}",
+                    lat, lng, response.StatusCode, body);
+                return null;
+            }
+
+            var raw = await response.Content.ReadFromJsonAsync<HereGeocodeRawResponse>(_jsonOptions);
+            var top = raw?.Items?.FirstOrDefault();
+            if (top?.Position == null)
+            {
+                Log.Information("HERE reverse geocode returned no results for ({Lat},{Lng})", lat, lng);
+                return null;
+            }
+
+            return new HereGeocodeResult
+            {
+                Lat = top.Position.Lat,
+                Lng = top.Position.Lng,
+                FormattedAddress = top.Address?.Label,
+                Suburb = top.Address?.District ?? top.Address?.City,
+                PostCode = top.Address?.PostalCode,
+                CountryCode = top.Address?.CountryCode,
+            };
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "HERE reverse geocode threw for ({Lat},{Lng})", lat, lng);
+            return null;
+        }
+    }
+
     // -- HERE response shape (subset we consume) ---------------------------
     private sealed class HereGeocodeRawResponse
     {

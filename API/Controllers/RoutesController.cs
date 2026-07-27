@@ -50,4 +50,17 @@ public class RoutesController(
         var result = await hereMapService.SequenceTypedAsync(body);
         return Ok(result);
     }
+
+    // POST /api/routes/polyline   body: RoutePolylineRequest
+    // Server-side proxy for HERE Routing v8 polyline draws. Replaces the
+    // Google Directions call on the cockpit map so the Google Directions API
+    // billing SKU stays at zero. Returns { points: [{lat, lng}, ...] } or a
+    // null Points list on failure - the caller (GoogleMap.tsx drawRunPolyline)
+    // treats null as "keep the straight-line fallback".
+    [HttpPost("polyline")]
+    public async Task<IActionResult> Polyline([FromBody] RoutePolylineRequest body)
+    {
+        var points = await hereMapService.RoutePolylineAsync(body.Stops);
+        return Ok(new RoutePolylineResponse { Points = points ?? new List<LatLngDto>() });
+    }
 }

@@ -103,3 +103,22 @@ public class HereSequenceResult
     /// <summary>Per-hop travel minutes. Length = OrderedNames.Count (first entry = 0, entry N = leg from N-1 to N).</summary>
     public List<double> LegMinutes { get; set; } = new();
 }
+
+/// <summary>
+/// HERE Routing v8 polyline draw request. Stops must already be in the
+/// operator-approved order (this is a draw call, not an optimise call).
+/// </summary>
+public class RoutePolylineRequest
+{
+    public List<HereSequenceStop> Stops { get; set; } = new();
+}
+
+/// <summary>
+/// HERE Routing v8 polyline response: an ordered list of lat/lng points
+/// (decoded from HERE's flexible polyline format) plus a null indicator that
+/// callers can treat as "no route available, fall back to straight lines".
+/// </summary>
+public class RoutePolylineResponse
+{
+    public List<LatLngDto> Points { get; set; } = new();
+}
