@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Courier;
+using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 
 namespace RoutedOperations.Core.Application.Services.Courier;
@@ -11,14 +12,26 @@ namespace RoutedOperations.Core.Application.Services.Courier;
 /// guard since some tenants historically clear the Active flag when a courier
 /// finishes rather than setting FinishDate.
 /// </summary>
-public class CourierService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class CourierService(
+    IDbContextFactory<DynamicDespatchDbContext> contextFactory,
+    TenantScopedCache cache)
     : BaseService(contextFactory)
 {
-    public async Task<List<CourierDto>> GetActiveAsync()
+    // 5-minute sliding TTL. Couriers are edited via a different app
+    // (CourierManager) so this app cannot invalidate on write; 5 min is an
+    // acceptable staleness ceiling that still eliminates the ~90% of hits
+    // that happen inside a single operator session.
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+
+    public Task<List<CourierDto>> GetActiveAsync() =>
+        cache.GetOrSetAsync("couriers:active", CacheTtl, LoadActiveAsync);
+
+    private async Task<List<CourierDto>> LoadActiveAsync()
     {
+        // AsNoTracking on both source sets - projection to CourierDto only.
         var query =
-            from c in Context.TucCouriers
-            join f in Context.TucCourierFleets on c.CourierFleetId equals f.UccfId into fleetJoin
+            from c in Context.TucCouriers.AsNoTracking()
+            join f in Context.TucCourierFleets.AsNoTracking() on c.CourierFleetId equals f.UccfId into fleetJoin
             from f in fleetJoin.DefaultIfEmpty()
             where c.Active
             select new CourierDto

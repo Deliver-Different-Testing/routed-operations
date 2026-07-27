@@ -26,10 +26,18 @@ namespace RoutedOperations.Core.Application.Services.BulkImport;
 public class AddressService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     IHttpContextAccessor httpContextAccessor,
-    HereGeocodeService hereGeocodeService) : BaseService(contextFactory)
+    HereGeocodeService hereGeocodeService,
+    TenantScopedCache cache) : BaseService(contextFactory)
 {
     private readonly IHttpContextAccessor _httpContextAccessor = httpContextAccessor;
     private readonly HereGeocodeService _hereGeocodeService = hereGeocodeService;
+    private readonly TenantScopedCache _cache = cache;
+
+    // 1-hour sliding TTL. Address reference tables (tucSuburb, ZoneZip,
+    // tblBulkRegion, ZoneName) are edited via AdminManager (different app -
+    // we cannot invalidate on write); 1h is a fine staleness ceiling for
+    // per-session operator workflows.
+    private static readonly TimeSpan RefDataTtl = TimeSpan.FromHours(1);
 
     internal const string TO_COMPANY_SEPERATOR = ", ";
 
@@ -52,7 +60,10 @@ public class AddressService(
         return countryCode?.Equals(usa) ?? false;
     }
 
-    public async Task<SuburbsResponse> GetSuburbs(Guid messageId)
+    public Task<SuburbsResponse> GetSuburbs(Guid messageId) =>
+        _cache.GetOrSetAsync("address:suburbs", RefDataTtl, () => LoadSuburbsAsync(messageId));
+
+    private async Task<SuburbsResponse> LoadSuburbsAsync(Guid messageId)
     {
         // For US tenants, return empty suburbs list
         if (IsUsTenant())
@@ -68,6 +79,7 @@ public class AddressService(
         {
             Success = true,
             Suburbs = await Context.TucSuburbs
+                .AsNoTracking()
                 .Select(s => new SuburbDto()
                 {
                     Id = s.UcsuId,
@@ -82,7 +94,10 @@ public class AddressService(
         };
     }
 
-    public async Task<ZipCodesResponse> GetZipCodes(Guid messageId)
+    public Task<ZipCodesResponse> GetZipCodes(Guid messageId) =>
+        _cache.GetOrSetAsync("address:zipcodes", RefDataTtl, () => LoadZipCodesAsync(messageId));
+
+    private async Task<ZipCodesResponse> LoadZipCodesAsync(Guid messageId)
     {
         // For NZ tenants, return empty zip codes list
         if (IsNzTenant())
@@ -98,6 +113,7 @@ public class AddressService(
         {
             Success = true,
             ZipCodes = await Context.ZoneZips
+                .AsNoTracking()
                 .Select(s => new ZipCodeDto()
                 {
                     Id = s.ZoneZipId,

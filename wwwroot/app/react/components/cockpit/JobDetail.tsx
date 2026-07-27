@@ -3,6 +3,7 @@ import type { BulkJob, Speed } from '../../types';
 import { Panel } from '../common/Panel';
 import { useAuth } from '../../context/AuthContext';
 import { postcodeLabel } from '../../lib/tenantLabels';
+import { jobService } from '../../services/jobService';
 
 interface Props {
   job: BulkJob | null;
@@ -29,9 +30,43 @@ interface Props {
  *   Schedule    - Read-only: current run, schedule, window, cubic
  * Backed by PATCH /api/jobs/{id} for every editable field.
  */
-export function JobDetail({ job, speeds, onUpdateField, onOpenGpsFix }: Props) {
+export function JobDetail(props: Props) {
+  const { speeds, onUpdateField, onOpenGpsFix } = props;
+  let job = props.job;
   const { isUsTenant } = useAuth();
   const zipLabel = postcodeLabel(isUsTenant, true);
+  // Phase 3 perf: Notes + Tracking + POD email/mobile are lazy-loaded on
+  // job change. The list /api/jobs endpoint returns them as null to keep
+  // the payload lean; we hydrate here via GET /api/jobs/{id}/detail.
+  const [extras, setExtras] = useState<{
+    bulkJobId: number;
+    notes: string | null;
+    trackingEmail: string | null;
+    trackingMobile: string | null;
+    proofOfDeliveryEmail: string | null;
+    proofOfDeliveryMobile: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!job) { setExtras(null); return; }
+    let cancelled = false;
+    jobService.getDetail(job.bulkJobId)
+      .then((res) => { if (!cancelled) setExtras(res); })
+      .catch(() => { /* silent - fields stay null, matches pre-Phase-3 empty-field render */ });
+    return () => { cancelled = true; };
+  }, [job?.bulkJobId]);
+  // Merge extras into the effective job used by the form. Extras override
+  // list values ONLY when we have a hit on the same bulkJobId (guards
+  // against a stale extras snapshot from a previous selection).
+  const effectiveJob: BulkJob | null = job && extras && extras.bulkJobId === job.bulkJobId
+    ? {
+        ...job,
+        notes: extras.notes ?? job.notes,
+        trackingEmail: extras.trackingEmail ?? job.trackingEmail,
+        trackingMobile: extras.trackingMobile ?? job.trackingMobile,
+        proofOfDeliveryEmail: extras.proofOfDeliveryEmail ?? job.proofOfDeliveryEmail,
+        proofOfDeliveryMobile: extras.proofOfDeliveryMobile ?? job.proofOfDeliveryMobile,
+      }
+    : job;
   // L2.P3.2 Small right-click popover on the pickup / delivery address
   // sections. Legacy jobDetail.tpl:11,21 bound `context-menu="detailAddressMenu"`
   // on those rows and offered a single "Update GPS" item that opened the
@@ -61,6 +96,11 @@ export function JobDetail({ job, speeds, onUpdateField, onOpenGpsFix }: Props) {
       </Panel>
     );
   }
+
+  // Overlay the lazily-loaded extras so every downstream `job.xxx` read
+  // below transparently picks up Notes / Tracking / POD fields once
+  // /api/jobs/{id}/detail responds.
+  job = effectiveJob!;
 
   const save = (field: string, value: string) => onUpdateField(job.bulkJobId, field, value);
 

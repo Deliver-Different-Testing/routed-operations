@@ -12,15 +12,29 @@ namespace RoutedOperations.Core.Application.Services.BulkImport;
 // column corresponds to which Urgent field. Ownership is enforced by the
 // ContactId filter on every read/write so operators can't see or delete
 // another contact's templates.
-public class TemplateService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class TemplateService(
+    IDbContextFactory<DynamicDespatchDbContext> contextFactory,
+    TenantScopedCache cache)
     : BaseService(contextFactory)
 {
-    public async Task<TemplatesResponse> Get(Guid messageId, int contactId)
+    // 1-minute TTL - operators create/edit templates mid-session; short
+    // ceiling means the cache still absorbs the wizard's per-step re-fetches
+    // (Step 1 -> back to Step 1 etc.) without holding stale data long enough
+    // to matter if invalidation misses.
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(1);
+
+    private static string CacheKey(int contactId) => $"templates:contact:{contactId}";
+
+    public Task<TemplatesResponse> Get(Guid messageId, int contactId) =>
+        cache.GetOrSetAsync(CacheKey(contactId), CacheTtl, () => LoadAsync(messageId, contactId));
+
+    private async Task<TemplatesResponse> LoadAsync(Guid messageId, int contactId)
     {
         return new TemplatesResponse(messageId)
         {
             Success = true,
             Templates = await Context.BulkImportTemplates
+                .AsNoTracking()
                 .Where(t => t.ContactId == contactId)
                 .Select(t => new TemplateDto()
                 {
@@ -57,6 +71,7 @@ public class TemplateService(IDbContextFactory<DynamicDespatchDbContext> context
 
         Context.Add(template);
         await Context.SaveChangesAsync();
+        cache.Invalidate(CacheKey(contactId));
 
         response.Template = new TemplateDto()
         {
@@ -88,6 +103,7 @@ public class TemplateService(IDbContextFactory<DynamicDespatchDbContext> context
         Context.BulkImportTemplates.Remove(template);
 
         await Context.SaveChangesAsync();
+        cache.Invalidate(CacheKey(contactId));
 
         response.Success = true;
         return response;

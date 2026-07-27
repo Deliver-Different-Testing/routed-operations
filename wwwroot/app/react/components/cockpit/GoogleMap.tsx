@@ -182,9 +182,10 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
         position: { lat: p.lat, lng: p.lng },
         map: mapRef.current,
         icon: makeIcon(g, p),
-        label: p.kind === 'sequenced' && p.sequence != null
-          ? { text: String(p.sequence), color: '#14152D', fontSize: '10px', fontWeight: '700' }
-          : undefined,
+        // Sequence number is baked directly into makeIcon's SVG so it
+        // bounces together with the pin during `highlightPin` animation
+        // (Google's Marker.label is a separate DOM element that stays
+        // stationary during BOUNCE with path-based Symbol icons).
         title: p.label,
       });
       bounds.extend(marker.getPosition());
@@ -255,8 +256,15 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     // etc.), fall back to a straight-line polyline through the chunk so the
     // operator still sees the sequence.
     if (selectedRun) {
+      // Include start + end pins alongside sequenced pins so the polyline
+      // covers the full route (leg 1 -> 2 and leg N-1 -> N). Without this,
+      // buildPins re-tags the first and last sequenced pins to `start` /
+      // `end` (for the green/blue marker colours) and they were being
+      // filtered out here - HERE was only asked to route through the
+      // interior stops, leaving the operator to eyeball how to reach the
+      // first and last delivery.
       const seqPins = pins
-        .filter((p) => p.kind === 'sequenced' && p.sequence != null)
+        .filter((p) => (p.kind === 'sequenced' || p.kind === 'start' || p.kind === 'end') && p.sequence != null)
         .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
       if (seqPins.length > 1) {
         drawRunPolyline(g, mapRef.current, seqPins, polylinesRef, myToken, directionsTokenRef);
@@ -513,9 +521,16 @@ function parseCoord(raw: string | null): number | null {
 }
 
 /**
- * Legacy createPin() shape - a raindrop-style path Google Maps renders as an
- * SVG marker icon. Colours per legacy: green start, blue end, grey unassigned,
- * orange run-stop, red delivery (fallback).
+ * Legacy createPin() shape - a raindrop-style icon Google Maps renders from
+ * an inline SVG data URI. Colours per legacy: green start, blue end, grey
+ * unassigned, orange run-stop, red delivery (fallback).
+ *
+ * The sequence number is baked into the SVG itself (as a <text> element)
+ * rather than passed via the Marker.label prop. Reason: Google's bounce
+ * animation only animates the icon element; when the label is a separate
+ * DOM element (path-based Symbol icons + Marker.label), the number stays
+ * stationary while the pin bounces - operators see the label desynced.
+ * URL-based icons with embedded text bounce as a single unit.
  */
 function makeIcon(g: any, p: Pin) {
   const fill = p.kind === 'multiRun' && p.colour ? p.colour
@@ -525,13 +540,27 @@ function makeIcon(g: any, p: Pin) {
     : p.kind === 'unassigned' ? '#c7c7c7'
     : p.kind === 'pickup' ? '#43C7F4'
     : '#EF4444';
+  const seqText = (p.kind === 'sequenced' || p.kind === 'start' || p.kind === 'end') && p.sequence != null
+    ? String(p.sequence)
+    : '';
+  // Path y-range: 0 (tip, bottom) up to -44 (top of ball), with a radius-11
+  // circle centered at (0, -33). Add a little padding on top so the stroke
+  // isn't clipped: viewBox spans y = -46..0 (height 46), x = -12..+12 (width
+  // 24). Anchor in the returned Point() below is in image pixel coordinates
+  // (top-left origin), so (12, 46) is bottom-center - the raindrop tip.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="46" viewBox="-12 -46 24 46">`
+    + `<path d="M 0,0 C -2.2,-22 -11,-24.2 -11,-33 A 11,11 0 1,1 11,-33 C 11,-24.2 2.2,-22 0,0 z" `
+    + `fill="${fill}" stroke="#14152D" stroke-width="1.5"/>`
+    + (seqText
+        ? `<text x="0" y="-29" font-size="12" font-weight="700" text-anchor="middle" `
+          + `fill="#14152D" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">`
+          + `${seqText}</text>`
+        : '')
+    + `</svg>`;
   return {
-    path: 'M 0,0 C -2,-20 -10,-22 -10,-30 A 10,10 0 1,1 10,-30 C 10,-22 2,-20 0,0 z',
-    fillColor: fill,
-    fillOpacity: 1,
-    strokeColor: '#14152D',
-    strokeWeight: 1.5,
-    scale: 1,
-    labelOrigin: new g.maps.Point(0, -30),
+    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg),
+    size: new g.maps.Size(24, 46),
+    scaledSize: new g.maps.Size(24, 46),
+    anchor: new g.maps.Point(12, 46),
   };
 }

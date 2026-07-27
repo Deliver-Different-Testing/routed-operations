@@ -1056,10 +1056,16 @@ export function CockpitPage() {
       return;
     }
 
-    // Create each run, then assign its jobs. Sequential so the toast count is
-    // accurate even if one create fails mid-way.
+    // Create each run WITH its jobs + builderIndex populated in the same
+    // insertOrUpdate call. Previously this looped assignJob() per-job after
+    // creating an empty run, which persisted the BulkRunID link but NEVER
+    // stamped PickRunOrder - so the `#` column in Run Builder rendered as
+    // all dashes and the map pins stayed the unassigned/red colour until
+    // the operator manually re-optimised. Matching the Route+Lock path
+    // (handleOptimizeRun above ~630) which already does this correctly.
     let createdRuns = 0;
     let assignedJobs = 0;
+    let firstCreatedRunId: number | null = null;
     for (const r of runsToCreate) {
       try {
         // Routing-mode fields (Plan §Phase 2 §6): persisted at run creation so
@@ -1088,7 +1094,11 @@ export function CockpitPage() {
           courier: null,
           courierPercent: null,
           googleRouteResponse: null,
-          jobs: [],
+          jobs: r.jobs.map((j, idx) => ({
+            bulkJobId: j.bulkJobId,
+            builderIndex: idx + 1,
+            jobNumber: j.jobNumber,
+          })),
           despatchDateTime: state.filters.date,
           noReroute: buildConfig.noReroute,
           routingMode: routingModeNumeric,
@@ -1098,11 +1108,8 @@ export function CockpitPage() {
         if (created.response.result !== 'Success') continue;
         const runId = Number(created.response.message);
         createdRuns++;
-
-        // Assign in parallel per-run (still sequential across runs).
-        const results = await Promise.all(r.jobs.map((j) =>
-          runService.assignJob(runId, j.bulkJobId, j.bulkRunId ?? null)));
-        assignedJobs += results.filter((x) => x.response.result === 'Success').length;
+        assignedJobs += r.jobs.length;
+        if (firstCreatedRunId == null) firstCreatedRunId = runId;
       } catch (e) {
         toast.show(`Run "${r.name}" build failed: ${(e as Error).message}`, 'error');
       }
@@ -1112,6 +1119,12 @@ export function CockpitPage() {
     dispatch({ type: 'CLEAR_MULTISELECT' });
     setBuildConfigModal({ open: false });
     await loadJobsAndRuns(state.filters);
+    // Auto-select the first newly-built run so the operator immediately
+    // sees its jobs in Run Builder and coloured/sequenced pins on the map,
+    // instead of having to manually click the row after Build closes.
+    if (firstCreatedRunId != null) {
+      dispatch({ type: 'SELECT_RUN', payload: firstCreatedRunId });
+    }
   };
 
   // ---- Layout save/load -----------------------------------------------------

@@ -12,10 +12,24 @@ namespace RoutedOperations.Core.Application.Services.Routing;
 /// </summary>
 public class RouteOptimizationService(HttpClient httpClient, AppSettings appSettings)
 {
-    private readonly JsonSerializerOptions _jsonOptions = new()
+    // Both directions: RouteSavvy is a WCF SVC that both accepts AND emits
+    // PascalCase JSON (`Locations` in, `Message`/`OptimizedStops` out) per
+    // WCF DataContract defaults. So we use the same PascalCase (null policy)
+    // options for the request body serialisation AND the response body
+    // deserialisation. `PropertyNameCaseInsensitive = true` is belt-and-
+    // braces so a hypothetical future casing tweak on their side doesn't
+    // silently null every field.
+    //
+    // Legacy RunBuilder RouteRepository had `PropertyNamingPolicy =
+    // CamelCase` on its read options; that was a latent bug that only
+    // avoided misbehaviour because System.Text.Json used to be more
+    // forgiving. On .NET 10 the same options now silently bind every
+    // Message/OptimizedStops field to null and return empty routes.
+    private static readonly JsonSerializerOptions _jsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
+        PropertyNamingPolicy = null,
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = false,
     };
 
     public async Task<List<LatLngDto>> OptimizeAsync(List<SavvyLocationDto> waypoints)
@@ -58,15 +72,38 @@ public class RouteOptimizationService(HttpClient httpClient, AppSettings appSett
                 OptimizeType = "distance",
                 RouteType = "basic",
                 Avoid = "none",
-                Departure = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff")
+                // RouteSavvy is strict about this format: 12-hour hh (not
+                // 24-hour HH) and COLON-separated milliseconds (not dot).
+                // Any deviation (e.g. `HH:mm:ss.fff`, ISO-8601 with tz)
+                // returns HTTP 400 BadRequest with a null-argument error
+                // from Enumerable.Count() inside their POSTOptimize handler.
+                // Matches the legacy RunBuilder RouteRepository format exactly.
+                Departure = DateTime.Now.ToString("yyyy-MM-ddThh:mm:ss:fff")
             }
         };
 
         var response = await httpClient.PostAsJsonAsync(
-            "http://optimizer2.routesavvy.com/RSAPI.svc/POSTOptimize", model);
+            "http://optimizer2.routesavvy.com/RSAPI.svc/POSTOptimize",
+            model,
+            _jsonOptions);
 
         if (response.IsSuccessStatusCode)
-            return await response.Content.ReadFromJsonAsync<RouteSavvyResponse>(_jsonOptions);
+        {
+            try
+            {
+                return await response.Content.ReadFromJsonAsync<RouteSavvyResponse>(_jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                // Response was 2xx but the body didn't shape-match
+                // RouteSavvyResponse. Log the head so a wire-format change
+                // upstream is diagnosable without adding a full trace log.
+                var raw = await response.Content.ReadAsStringAsync();
+                Log.Error(ex, "RouteSavvy response deserialize failed. Body head: {Head}",
+                    raw.Length > 500 ? raw.Substring(0, 500) : raw);
+                return null;
+            }
+        }
 
         var body = await response.Content.ReadAsStringAsync();
         Log.Error("RouteSavvy POSTOptimize failed: {Status} {Body}", response.StatusCode, body);

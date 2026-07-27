@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.VehicleSize;
+using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 
 namespace RoutedOperations.Core.Application.Services.VehicleSize;
@@ -9,12 +10,21 @@ namespace RoutedOperations.Core.Application.Services.VehicleSize;
 /// Vehicle Capacity dropdown in the Build Runs config modal. Matches the
 /// legacy inline SQL in JobRepository.GetVehicleSizesAsync.
 /// </summary>
-public class VehicleSizeService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class VehicleSizeService(
+    IDbContextFactory<DynamicDespatchDbContext> contextFactory,
+    TenantScopedCache cache)
     : BaseService(contextFactory)
 {
-    public async Task<List<VehicleSizeDto>> GetAllAsync()
-    {
-        return await Context.VehicleSizes
+    // 1-hour sliding TTL. Vehicle sizes are edited via AdminManager; effectively
+    // static reference data during any operator session.
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
+
+    public Task<List<VehicleSizeDto>> GetAllAsync() =>
+        cache.GetOrSetAsync("vehicle-sizes:all", CacheTtl, LoadAllAsync);
+
+    private async Task<List<VehicleSizeDto>> LoadAllAsync() =>
+        await Context.VehicleSizes
+            .AsNoTracking()
             .Where(v => v.CubicCapacity != null)
             .OrderBy(v => v.CubicCapacity)
             .ThenBy(v => v.VehicleName)
@@ -25,5 +35,4 @@ public class VehicleSizeService(IDbContextFactory<DynamicDespatchDbContext> cont
                 CubicCapacity = v.CubicCapacity,
             })
             .ToListAsync();
-    }
 }

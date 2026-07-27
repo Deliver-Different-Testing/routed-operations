@@ -17,11 +17,20 @@ namespace RoutedOperations.Core.Application.Services.BulkImport;
 // aren't in TucClientContacts).
 public class ClientService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
-    IHttpContextAccessor httpContextAccessor) : BaseService(contextFactory)
+    IHttpContextAccessor httpContextAccessor,
+    TenantScopedCache cache) : BaseService(contextFactory)
 {
     private readonly IHttpContextAccessor httpContextAccessor = httpContextAccessor;
 
-    public async Task<ClientsResponse> Get(Guid messageId, int contactId)
+    // 5-minute sliding TTL. Clients are edited via ClientManager (different
+    // app - we cannot invalidate on write); acceptable staleness ceiling.
+    private static readonly TimeSpan ClientsTtl = TimeSpan.FromMinutes(5);
+
+    public Task<ClientsResponse> Get(Guid messageId, int contactId) =>
+        cache.GetOrSetAsync($"clients:contact:{contactId}", ClientsTtl,
+            () => LoadClientsAsync(messageId, contactId));
+
+    private async Task<ClientsResponse> LoadClientsAsync(Guid messageId, int contactId)
     {
         // Get tenant type from JWT claims - default to US tenant
         var countryCode = httpContextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "CountryCode")?.Value;
@@ -48,6 +57,7 @@ public class ClientService(
             IsInternal = false,
             IsUsTenant = isUsTenant,
             Clients = await Context.TucClients
+                .AsNoTracking()
                 .Where(c => c.UcclActive
                     && (c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active)))
                 .Select(x => new ClientDto
@@ -75,6 +85,7 @@ public class ClientService(
             Success = true,
             IsInternal = isInternal,
             Clients = await Context.TucClients
+                .AsNoTracking()
                 .Where(c => c.UcclActive
                     && (isInternal || c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active))
                     && (c.UcclName.ToLower().Contains(searchLower) || c.UcclCode.ToLower().Contains(searchLower)))
