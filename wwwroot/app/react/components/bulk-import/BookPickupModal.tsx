@@ -163,7 +163,7 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
       footer={
         showForm ? (
           <div className="flex justify-between items-center">
-            <Button variant="ghost" onClick={onClose} disabled={booking}>
+            <Button variant="neutral" onClick={onClose} disabled={booking}>
               No pickup required
             </Button>
             <Button

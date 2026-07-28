@@ -143,7 +143,7 @@ namespace RoutedOperations.Core.Application.Validators
                         .MaximumLength(20).When(x => !string.IsNullOrWhiteSpace(x.JobNumber))// && x.JobNumber.Contains("-"))
                         //.MaximumLength(18).When(x => !string.IsNullOrWhiteSpace(x.JobNumber) && !x.JobNumber.Contains("-"))
                         .NotEmpty()
-                        .Must(x => !x.ToLower().Any(c => "0123456789abcdefghijklmnopqrstuvwxyz-".IndexOf(c) < 0)).WithMessage("Invalid characters, job number characters must be either 0-9 or A-Z.");
+                        .Must(x => string.IsNullOrEmpty(x) || !x.ToLower().Any(c => "0123456789abcdefghijklmnopqrstuvwxyz-".IndexOf(c) < 0)).WithMessage("Invalid characters, job number characters must be either 0-9 or A-Z.");
 
                     //j.RuleFor(x => x.JobNumber)
                     //    .Must(x => x.Trim().IndexOf("-") == x.Trim().Length - 2 && "abcdefghijklmnopqrstuvwxyz".IndexOf(x.Trim().ToLower().Last()) >= 0).WithMessage("Invalid multi-box job number.")

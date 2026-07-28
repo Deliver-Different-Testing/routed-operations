@@ -197,6 +197,14 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
   // can iterate them. Pre-tick real depots (id > 0) AND the coverage-only
   // bucket (id === -1) so US operators do not silently drop rate-by-distance
   // rows. Unmatched (id === 0) stays unticked because it needs review.
+  //
+  // Keying the effect on a signature of the depot IDs (not just length) is
+  // deliberate: the buckets list often mutates from [Unmatched(10 jobs)]
+  // (before the depot lookup arrives) to [Auckland(10 jobs)] (after) - both
+  // length 1 - so a length-only dep would skip the re-fire and Auckland
+  // would never auto-tick. Legacy pre-selects every non-Unmatched bucket
+  // by default; matching that behaviour here.
+  const bucketSignature = buckets.map((b) => `${b.depotId}:${b.jobIndexes.length}`).join(',');
   useEffect(() => {
     if (!open) return;
     dispatch({ type: 'SET_DEPOTS', depots: buckets });
@@ -210,7 +218,7 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
     }
     dispatch({ type: 'SET_SELECTED_REGIONS', regions: next });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, buckets.length]);
+  }, [open, bucketSignature]);
 
   const totalRows = state.parsed?.rows.length ?? 0;
   const selectedCount = buckets

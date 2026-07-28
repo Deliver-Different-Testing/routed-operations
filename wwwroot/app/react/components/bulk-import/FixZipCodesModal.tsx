@@ -68,6 +68,13 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
 
   const [known, setKnown] = useState<ZipCodeDto[]>([]);
   const [loading, setLoading] = useState(false);
+  // NZ-only: aliasLower -> { canonicalName, postCode }. Populated from
+  // tucSuburb.Alias. Legacy findSuburb (homeControl.js:2516-2532) matches
+  // by canonical name OR any alias entry, which is why "Mount Eden 1024"
+  // is accepted despite the canonical row being "Mt Eden". Auto-remapping
+  // via this index turns alias hits into first-class matches so the wizard
+  // sends the canonical name to the server (which does exact match only).
+  const [aliasIndex, setAliasIndex] = useState<Map<string, { name: string; postCode: string | null }>>(new Map());
 
   useEffect(() => {
     if (!open) return;
@@ -77,16 +84,40 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       try {
         if (isUs) {
           const { response } = await addressService.getZipCodes();
-          if (!cancelled) setKnown(response.zipCodes ?? []);
+          if (!cancelled) {
+            setKnown(response.zipCodes ?? []);
+            setAliasIndex(new Map());
+          }
         } else {
           // NZ tenants: /address/zipcodes returns no rows, so the modal used
           // to bypass the reference check silently. Load suburbs instead and
           // reshape into the same ZipCodeDto shape the UI renders.
           const { response } = await addressService.getSuburbs();
-          if (!cancelled) setKnown((response.suburbs ?? []).map(suburbToZipCodeDto));
+          if (cancelled) return;
+          const suburbs = response.suburbs ?? [];
+          setKnown(suburbs.map(suburbToZipCodeDto));
+          const idx = new Map<string, { name: string; postCode: string | null }>();
+          for (const s of suburbs) {
+            const raw = (s.alias ?? '').trim();
+            if (!raw) continue;
+            const canonical = (s.name ?? '').trim();
+            for (const part of raw.split(',')) {
+              const a = part.trim().toLowerCase();
+              if (!a) continue;
+              // Prefer alias entries whose PostCode matches an actual reference
+              // row - later duplicates would silently overwrite so we keep the
+              // first-seen mapping (legacy findSuburb also short-circuits on
+              // the first alias hit).
+              if (!idx.has(a)) idx.set(a, { name: canonical, postCode: s.postCode ?? null });
+            }
+          }
+          setAliasIndex(idx);
         }
       } catch {
-        if (!cancelled) setKnown([]);
+        if (!cancelled) {
+          setKnown([]);
+          setAliasIndex(new Map());
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -128,10 +159,23 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       const canon = canonical.get(v.toLowerCase());
       if (canon && canon !== v) {
         dispatch({ type: 'SET_FIXED_ZIP', badZip: storeKey, corrected: canon });
+        continue;
+      }
+      // NZ alias fallback: if the raw value is not itself a canonical suburb
+      // but matches an alias entry, silently rewrite to the canonical name.
+      // Ports legacy findSuburb's alias-lookup branch. Only applies when the
+      // canonical row's postcode matches the row's postcode; if postcodes
+      // disagree we treat it as a real conflict and leave it flagged for
+      // the operator to resolve.
+      if (!isUs && !canonical.has(v.toLowerCase())) {
+        const aliasHit = aliasIndex.get(v.toLowerCase());
+        if (aliasHit && (!pc || !aliasHit.postCode || aliasHit.postCode === pc)) {
+          dispatch({ type: 'SET_FIXED_ZIP', badZip: storeKey, corrected: aliasHit.name });
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, loading, known.length, state.parsed]);
+  }, [open, loading, known.length, aliasIndex, state.parsed]);
 
   // Find bad values. Legacy homeControl.js:2339-2344 keys the flaggedSuburbs
   // list on (name + postcode) because NZ has duplicate suburb names across
@@ -161,13 +205,20 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       // If the reference list is empty (no data for this tenant) skip the
       // check entirely and treat every value as fine.
       if (knownSet.size === 0) continue;
-      if (!knownSet.has(v.toLowerCase())) {
-        const display = isUs ? v : (pc ? `${v} (${pc})` : v);
-        bad.push({ display, storeKey });
+      if (knownSet.has(v.toLowerCase())) continue;
+      // NZ alias match: if the value matches a canonical suburb's alias
+      // and postcodes agree (or either side is unknown) it is NOT bad -
+      // buildJobs will rewrite it to the canonical name at submit via
+      // the auto-normalize effect above. Skip listing in the modal.
+      if (!isUs) {
+        const aliasHit = aliasIndex.get(v.toLowerCase());
+        if (aliasHit && (!pc || !aliasHit.postCode || aliasHit.postCode === pc)) continue;
       }
+      const display = isUs ? v : (pc ? `${v} (${pc})` : v);
+      bad.push({ display, storeKey });
     }
     return bad;
-  }, [isUs, known, state.mapping, state.parsed]);
+  }, [isUs, known, aliasIndex, state.mapping, state.parsed]);
 
   // Reference list is empty: show a banner but still let the operator proceed.
   // Happens on tenants with no ZoneZip / Suburb reference data seeded, so we

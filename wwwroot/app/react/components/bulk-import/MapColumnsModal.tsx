@@ -133,17 +133,58 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
     return true;
   });
 
+  // A required field counts as "missing" when either:
+  //   - no column is mapped, OR
+  //   - the mapped column is blank in at least one parsed row.
+  // The second rule catches the case where the operator picked a column
+  // that exists in the sheet but has no values (e.g. an empty Job Number
+  // column). Without this the wizard advances to the import step and the
+  // server bounces the batch with a validation 400. Note that when
+  // Autogenerate Job Number is ticked, jobNumber is not present in
+  // visibleFields at all (see urgentFieldsFor in wizardState.ts:394-402),
+  // so ticking Autogen automatically satisfies this check.
   const missingRequired = visibleFields
-    .filter((f) => f.required && !state.mapping[f.key])
+    .filter((f) => {
+      if (!f.required) return false;
+      const mapped = state.mapping[f.key];
+      if (!mapped) return true;
+      if (!state.parsed) return false;
+      return state.parsed.rows.some((r) => {
+        const v = r[mapped];
+        return v == null || String(v).trim() === '';
+      });
+    })
     .map((f) => f.label);
 
   function handleNext() {
     if (missingRequired.length > 0) {
-      toast.show(`Please map: ${missingRequired.join(', ')}`, 'warning');
+      const jobNumberBlocked = missingRequired.includes('Job Number');
+      const msg = jobNumberBlocked
+        ? `Job Number is empty in one or more rows. Map a column with values or tick 'Autogenerate Job Number'.`
+        : `Please map: ${missingRequired.join(', ')}`;
+      toast.show(msg, 'warning');
       return;
     }
     onNext();
   }
+
+  // 1-based row number of the first row whose mapped required column is
+  // blank. Used to drive the legacy-style "Invalid data at record N."
+  // banner. Zero means no invalid rows were found.
+  const firstInvalidRecord = (() => {
+    if (!state.parsed) return 0;
+    for (let i = 0; i < state.parsed.rows.length; i++) {
+      const row = state.parsed.rows[i];
+      for (const f of visibleFields) {
+        if (!f.required) continue;
+        const col = state.mapping[f.key];
+        if (!col) continue;
+        const v = row[col];
+        if (v == null || String(v).trim() === '') return i + 1;
+      }
+    }
+    return 0;
+  })();
 
   return (
     <Modal
@@ -198,6 +239,8 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
                           <span className="text-text-muted">Please select a field</span>
                         ) : hasValue ? (
                           <span className="text-success">Data Seems OK</span>
+                        ) : f.required ? (
+                          <span className="text-error font-semibold">Invalid</span>
                         ) : (
                           <span className="text-warning">Field selected but empty</span>
                         )}
@@ -580,6 +623,9 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
         {missingRequired.length > 0 && (
           <div className="mt-3 p-2 bg-error/5 border border-error/30 rounded text-xs text-error">
             Please map required column(s): {missingRequired.join(', ')}.
+            {firstInvalidRecord > 0 && (
+              <span> Invalid data at record {firstInvalidRecord}.</span>
+            )}
           </div>
         )}
       </div>
