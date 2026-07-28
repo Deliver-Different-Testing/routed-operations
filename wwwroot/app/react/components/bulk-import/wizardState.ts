@@ -451,6 +451,9 @@ export function urgentFieldsFor(
   }
 
   // fromSuburb / fromPostCode - NZ on-demand only, legacy 1327-1358.
+  // NZ routed does NOT expose these because the server backfills them from
+  // the client's saved site details (UcclSuburb / UcclPostCode) at job
+  // construction time.
   if (nzOnDemand) {
     base.push({
       key: 'fromSuburb',

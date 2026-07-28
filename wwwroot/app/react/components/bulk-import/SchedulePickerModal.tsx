@@ -88,11 +88,16 @@ export function SchedulePickerModal({
   // operator ends up seeing a fake "full list" they cannot actually book.
   //
   // On-demand doesn't use schedules, so it falls back to the full speed list.
-  // Routed without a depot/date yet also falls back so the dropdown isn't
-  // empty on initial open.
+  // For routed, do NOT fall back to allSpeeds when currentDepot or dayOfWeek
+  // aren't yet resolved. The client's full 70-ish speed catalogue is NOT the
+  // list the operator can actually book - only the subset with a matching
+  // (depot, dayOfWeek) schedule works. Showing the full list mid-race lets
+  // the operator pick a service that will then fail with "No schedules for
+  // this date + service." at the next step. Matches legacy where the Service
+  // dropdown for routed only ever surfaced schedule-backed speeds.
   const speeds = useMemo(() => {
     if (isOnDemand) return allSpeeds;
-    if (!currentDepot || dayOfWeek == null) return allSpeeds;
+    if (!currentDepot || dayOfWeek == null) return [];
     // US "Valid ZIP - Rate By Distance" bucket (depotId === -1) has no real
     // schedule rows tied to it because those jobs price by distance rather
     // than by a fixed run. Fall back to the full client speed list so the

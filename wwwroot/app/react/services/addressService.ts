@@ -12,6 +12,10 @@ export interface SuburbDto {
   name: string;
   city: string | null;
   postCode: string | null;
+  // Comma-separated alternate spellings from tucSuburb.Alias. Used by the
+  // wizard to auto-map values like "Mount Eden" to canonical "Mt Eden" so
+  // the server-side ToSuburb lookup (BulkImportJobFactory.cs) still resolves.
+  alias: string | null;
 }
 
 export interface SuburbsResponse extends BulkBaseResponse {

@@ -64,7 +64,18 @@ builder.Host.UseSerilog();
 builder.Services.AddHealthChecks()
     .AddCheck<SqlServerHealthCheck>("despatch-db");
 
-builder.Services.AddControllersWithViews()
+builder.Services.AddControllersWithViews(mvc =>
+    {
+        // Match legacy BulkImportHyper's model-binding behaviour: legacy runs on
+        // a stack without Nullable Reference Types, so DTO strings without an
+        // explicit [Required] attribute accept JSON null happily. Under .NET 8+
+        // NRT semantics, every non-nullable `string` property becomes an
+        // implicit [Required], which rejected valid legacy payloads like
+        // PickupJobToCreateDto's Return/ShopRef1..5/CourierNotes/etc. with 400.
+        // Suppressing the implicit rule restores parity - explicit [Required]
+        // and FluentValidation rules still apply where authors added them.
+        mvc.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true;
+    })
     .AddNewtonsoftJson(options =>
     {
         options.SerializerSettings.ContractResolver =

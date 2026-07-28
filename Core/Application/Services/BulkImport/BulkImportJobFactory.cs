@@ -1082,7 +1082,7 @@ public partial class BulkImportServiceV2
 
                 if (client.CreatBulkHomeDeliveryPickupJob)
                 {
-                    response.PickupJob = await GetBulkHomeDeliveryPickupJob(request.MessageId, client, client.Schedule.StartTime.ToTimeSpan(), jobs, request.PickupJob);
+                    response.PickupJob = await GetBulkHomeDeliveryPickupJob(request.MessageId, client, (TimeSpan)(client.Schedule.StartTime ?? TimeSpan.Zero), jobs, request.PickupJob);
                 }
 
                 Log.Information($"({request.MessageId})({contactId}) Inserting Jobs Completed. BatchId {batch.Id}.");
@@ -1185,7 +1185,7 @@ public partial class BulkImportServiceV2
 
             if (client.CreatBulkHomeDeliveryPickupJob)
             {
-                response.PickupJob = await GetBulkHomeDeliveryPickupJob(request.MessageId, client, client.Schedule.StartTime.ToTimeSpan(), jobs, request.PickupJob);
+                response.PickupJob = await GetBulkHomeDeliveryPickupJob(request.MessageId, client, (TimeSpan)(client.Schedule.StartTime ?? TimeSpan.Zero), jobs, request.PickupJob);
             }
 
             Log.Information($"({request.MessageId})({contactId}) Inserting Jobs Completed. BatchId {batch.Id}.");
