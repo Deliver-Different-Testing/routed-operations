@@ -3,6 +3,9 @@ namespace RoutedOperations.Core.Application.Dtos.RecurringRoute;
 /// <summary>Zip code attached to a route (via the RouteZipcodes junction).</summary>
 public record RouteZipcodeDto(int ZipPolygonId, string Zip);
 
+/// <summary>Custom polygon summary attached to a route (name + centroid + attached id only; full WKT via /api/custom-polygons/{id}).</summary>
+public record RouteCustomPolygonDto(int CustomZipPolygonId, string Name, decimal CentroidLatitude, decimal CentroidLongitude);
+
 /// <summary>
 /// Read shape for a Route. Mirrors the Configurator TenantRouteDto contract
 /// so operators moving between the two apps see identical fields.
@@ -20,11 +23,12 @@ public record RouteDto(
     string ScheduleWindow,
     bool Active,
     List<RouteZipcodeDto> Zipcodes,
+    List<RouteCustomPolygonDto> CustomPolygons,
     int RosterEntryCount,
     DateTime CreatedAt,
     DateTime? UpdatedAt);
 
-/// <summary>Create or replace-in-full payload.</summary>
+/// <summary>Create or replace-in-full payload. Empty CustomPolygonIds clears all attached custom polygons; omit the field entirely to keep the default (also empty).</summary>
 public record UpsertRouteRequest(
     string Name,
     string Area,
@@ -32,7 +36,8 @@ public record UpsertRouteRequest(
     int? DefaultTargetId,
     int? ScheduleId,
     bool Active,
-    List<int> ZipPolygonIds);
+    List<int> ZipPolygonIds,
+    List<int>? CustomPolygonIds = null);
 
 /// <summary>Copy an existing route's geometry + defaults into a new route.</summary>
 public record CopyRouteRequest(

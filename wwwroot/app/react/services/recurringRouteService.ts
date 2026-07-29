@@ -17,6 +17,7 @@ export interface RecurringRoute {
   scheduleWindow: string;
   active: boolean;
   zipcodes: RouteZipcode[];
+  customPolygons: RouteCustomPolygonRef[];
   rosterEntryCount: number;
   createdAt: string;
   updatedAt: string | null;
@@ -30,6 +31,15 @@ export interface UpsertRouteBody {
   scheduleId: number | null;
   active: boolean;
   zipPolygonIds: number[];
+  /** Optional. Omit to keep existing custom polygons untouched; empty array clears them. */
+  customPolygonIds?: number[];
+}
+
+export interface RouteCustomPolygonRef {
+  customZipPolygonId: number;
+  name: string;
+  centroidLatitude: number;
+  centroidLongitude: number;
 }
 
 export interface CopyRouteBody {
