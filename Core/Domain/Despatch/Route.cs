@@ -61,4 +61,7 @@ public partial class Route
 
     /// <summary>Many-to-many with ZipPolygon via the RouteZipcodes junction (RouteId, ZipPolygonId).</summary>
     public virtual ICollection<ZipPolygon> ZipPolygons { get; set; } = new List<ZipPolygon>();
+
+    /// <summary>Many-to-many with CustomZipPolygon via the RouteCustomZipPolygon junction (RouteId, CustomZipPolygonId).</summary>
+    public virtual ICollection<CustomZipPolygon> CustomZipPolygons { get; set; } = new List<CustomZipPolygon>();
 }

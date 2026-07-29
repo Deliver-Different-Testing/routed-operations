@@ -27,6 +27,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     // implicit many-to-many junction configured in OnModelCreating below.
     public virtual DbSet<Despatch.Route> Routes { get; set; }
     public virtual DbSet<ZipPolygon> ZipPolygons { get; set; }
+    public virtual DbSet<CustomZipPolygon> CustomZipPolygons { get; set; }
     public virtual DbSet<DispatchRouteRoster> DispatchRouteRosters { get; set; }
     public virtual DbSet<TucAgent> TucAgents { get; set; }
     // Quoting module (Stage 2 - C.3). Shadow tables for pricing scenarios;
@@ -177,6 +178,26 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
                     {
                         j.HasKey("RouteId", "ZipPolygonId");
                         j.ToTable("RouteZipcodes");
+                    });
+
+            // Route <-> CustomZipPolygon many-to-many via the RouteCustomZipPolygon
+            // junction (see migration 20260729140000_CreateCustomZipPolygonAndAutoAssignFallback).
+            entity.HasMany(r => r.CustomZipPolygons)
+                .WithMany(z => z.Routes)
+                .UsingEntity<Dictionary<string, object>>(
+                    "RouteCustomZipPolygon",
+                    j => j.HasOne<CustomZipPolygon>().WithMany()
+                        .HasForeignKey("CustomZipPolygonId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("FK_RouteCustomZipPolygon_CustomZipPolygon"),
+                    j => j.HasOne<Despatch.Route>().WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("FK_RouteCustomZipPolygon_Route"),
+                    j =>
+                    {
+                        j.HasKey("RouteId", "CustomZipPolygonId");
+                        j.ToTable("RouteCustomZipPolygon");
                     });
         });
 

@@ -32,6 +32,7 @@ public class RecurringRouteService(
         var rows = await Context.Routes
             .AsNoTracking()
             .Include(r => r.ZipPolygons)
+            .Include(r => r.CustomZipPolygons)
             .Include(r => r.DispatchRouteRosters)
             .OrderByDescending(r => r.Active)
             .ThenBy(r => r.Name)
@@ -91,6 +92,13 @@ public class RecurringRouteService(
                     .OrderBy(z => z.Zip)
                     .Select(z => new RouteZipcodeDto(z.ZipPolygonId, z.Zip ?? string.Empty))
                     .ToList(),
+                r.CustomZipPolygons
+                    .Where(c => c.Active)
+                    .OrderBy(c => c.Name)
+                    .Select(c => new RouteCustomPolygonDto(
+                        c.CustomZipPolygonId, c.Name ?? string.Empty,
+                        c.CentroidLatitude, c.CentroidLongitude))
+                    .ToList(),
                 r.DispatchRouteRosters.Count(rr => rr.IsActive),
                 r.CreatedAt,
                 r.UpdatedAt);
@@ -130,10 +138,11 @@ public class RecurringRouteService(
             CreatedBy = CurrentUser(),
         };
         await AttachZipsAsync(route, req.ZipPolygonIds);
+        await AttachCustomPolygonsAsync(route, req.CustomPolygonIds ?? new List<int>());
         Context.Routes.Add(route);
         await Context.SaveChangesAsync();
-        Log.Information("Route {Id} ({Name}) created with {Zips} zip(s)",
-            route.RouteId, route.Name, route.ZipPolygons.Count);
+        Log.Information("Route {Id} ({Name}) created with {Zips} zip(s) and {Custom} custom polygon(s)",
+            route.RouteId, route.Name, route.ZipPolygons.Count, route.CustomZipPolygons.Count);
         return (await GetByIdAsync(route.RouteId))!;
     }
 
@@ -142,6 +151,7 @@ public class RecurringRouteService(
         ValidateUpsert(req);
         var route = await Context.Routes
             .Include(r => r.ZipPolygons)
+            .Include(r => r.CustomZipPolygons)
             .FirstOrDefaultAsync(r => r.RouteId == id);
         if (route is null) return null;
 
@@ -160,8 +170,16 @@ public class RecurringRouteService(
         // Replace zip coverage wholesale (matches Configurator UPDATE contract).
         route.ZipPolygons.Clear();
         await AttachZipsAsync(route, req.ZipPolygonIds);
+        // Custom polygons: only replace if the caller sent a non-null list.
+        // Null means "don't touch them" (backwards-compat with pre-Stage-2 callers).
+        if (req.CustomPolygonIds is not null)
+        {
+            route.CustomZipPolygons.Clear();
+            await AttachCustomPolygonsAsync(route, req.CustomPolygonIds);
+        }
         await Context.SaveChangesAsync();
-        Log.Information("Route {Id} updated ({Zips} zip(s))", id, route.ZipPolygons.Count);
+        Log.Information("Route {Id} updated ({Zips} zip(s), {Custom} custom polygon(s))",
+            id, route.ZipPolygons.Count, route.CustomZipPolygons.Count);
         return await GetByIdAsync(id);
     }
 
@@ -423,6 +441,16 @@ public class RecurringRouteService(
             .Where(z => distinct.Contains(z.ZipPolygonId))
             .ToListAsync();
         foreach (var z in found) route.ZipPolygons.Add(z);
+    }
+
+    private async Task AttachCustomPolygonsAsync(RouteEntity route, List<int> customPolygonIds)
+    {
+        var distinct = customPolygonIds.Distinct().ToList();
+        if (distinct.Count == 0) return;
+        var found = await Context.CustomZipPolygons
+            .Where(c => distinct.Contains(c.CustomZipPolygonId) && c.Active)
+            .ToListAsync();
+        foreach (var c in found) route.CustomZipPolygons.Add(c);
     }
 
     private static void ValidateUpsert(UpsertRouteRequest req)
