@@ -1,20 +1,22 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using RoutedOperations.Core.Application.Dtos.CustomPolygon;
-using RoutedOperations.Core.Application.Services.CustomPolygon;
+using RoutedOperations.Core.Application.Dtos.BulkPolygon;
+using RoutedOperations.Core.Application.Services.BulkPolygon;
 
 namespace RoutedOperations.API.Controllers;
 
 /// <summary>
-/// Operator-drawn custom polygons (Stage 2 - Polygon Builder). Live in a
-/// separate table (dbo.CustomZipPolygon) from the shipped-global ZipPolygon
-/// reference data. Participate in prebook auto-assign via the point-in-
-/// polygon fallback in UTL_stpRouteAutoAssign_ResolveOneSide.
+/// Operator-drawn coverage polygons (Stage 3 - Polygon Builder).
+/// Storage: dbo.tblBulkRunPolygon + dbo.tblBulkRunPolygonPoint per Steve's
+/// spec KEVIN-ZIP-POLYGON-TO-CUSTOM-COVERAGE-FLOW-2026-07-29. Participate
+/// in prebook auto-assign via the point-in-polygon fallback in
+/// UTL_stpRouteAutoAssign_ResolveOneSide when the zip-first pass returns
+/// no candidates and the booking carries pickup coords.
 /// </summary>
 [ApiController]
-[Route("api/custom-polygons")]
+[Route("api/bulk-polygons")]
 [Authorize(Policy = "RouteBuilder.Read")]
-public class CustomPolygonsController(CustomPolygonService svc) : BaseController
+public class BulkPolygonsController(BulkPolygonService svc) : BaseController
 {
     [HttpGet]
     public async Task<IActionResult> GetAll()
@@ -32,7 +34,7 @@ public class CustomPolygonsController(CustomPolygonService svc) : BaseController
 
     [HttpPost]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> Create([FromBody] CreateCustomPolygonRequest req)
+    public async Task<IActionResult> Create([FromBody] CreateBulkPolygonRequest req)
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         try
@@ -48,7 +50,7 @@ public class CustomPolygonsController(CustomPolygonService svc) : BaseController
 
     [HttpPut("{id:int}/shape")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> UpdateShape(int id, [FromBody] UpdateCustomPolygonShapeRequest req)
+    public async Task<IActionResult> UpdateShape(int id, [FromBody] UpdateBulkPolygonShapeRequest req)
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         try
@@ -64,7 +66,7 @@ public class CustomPolygonsController(CustomPolygonService svc) : BaseController
 
     [HttpPut("{id:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> UpdateMeta(int id, [FromBody] UpdateCustomPolygonMetaRequest req)
+    public async Task<IActionResult> UpdateMeta(int id, [FromBody] UpdateBulkPolygonMetaRequest req)
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         try

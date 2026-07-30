@@ -14,30 +14,37 @@ import {
   type AssignableTarget,
 } from '../services/recurringRouteService';
 import {
-  customPolygonService,
-  type CustomPolygon,
-} from '../services/customPolygonService';
+  bulkPolygonService,
+  type BulkPolygon,
+  type PolygonPoint,
+} from '../services/bulkPolygonService';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const CUSTOM_PALETTE = ['#f2994a', '#3bc7f4', '#606db4', '#10b981', '#ef4444', '#8b5cf6', '#eab308'];
+const POLYGON_PALETTE = ['#f2994a', '#3bc7f4', '#606db4', '#10b981', '#ef4444', '#8b5cf6', '#eab308'];
 const SNAP_PIXELS = 14;
 
 type Mode = 'view' | 'drawing' | { edit: number };
 interface LatLng { lat: number; lng: number; }
 
 /**
- * Polygon Builder page.
+ * Polygon Builder page (Stage 3 - bulk polygon storage + zip-to-coverage flow).
  *
  * TWO features share the same map:
- *   1. Zip picker (existing) - search a real ZipPolygon row, load its shape,
- *      click to select. Save-as-route writes a Route + RouteZipcodes entry.
- *   2. Custom polygon draw + edit (Stage 2 - 2026-07-29) - click to draw an
- *      arbitrary shape, save to CustomZipPolygon, later attach to a Route
- *      that participates in prebook auto-assign via the geometry fallback in
- *      UTL_stpRouteAutoAssign_ResolveOneSide.
+ *   1. Zip picker (existing) - search a real ZipPolygon row, load its
+ *      shape, click to select. Save-as-route writes a Route + RouteZipcodes
+ *      entry via the shipped recurring-route API. Source ZIP data is
+ *      READ-ONLY per Steve's spec KEVIN-ZIP-POLYGON-TO-CUSTOM-COVERAGE-FLOW.
+ *   2. Bulk coverage polygon (Stage 3) - operator draws or "converts" a
+ *      loaded ZIP shape into an editable operational-coverage polygon
+ *      stored in tblBulkRunPolygon + tblBulkRunPolygonPoint. Attaches to
+ *      Routes via a M:N junction and participates in the prebook
+ *      auto-assign geometry fallback.
  *
- * Snap-to-vertex + snap-to-edge fire against BOTH loaded zip shapes AND
- * existing custom shapes so adjacent polygons can share exact borders.
+ * The "Use as starting shape" button on each selected zip is the one-click
+ * conversion Steve wants: it copies the loaded ZIP's vertices into a new
+ * bulk polygon (sourceType=1, sourceCode=zip) then auto-enters edit mode
+ * so the operator can trim / extend the shape for real-world dispatch
+ * without ever mutating the ZIP source table.
  */
 export default function PolygonBuilder() {
   const user = useAuth();
@@ -48,7 +55,7 @@ export default function PolygonBuilder() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const zipOverlaysRef = useRef<Map<number, any>>(new Map());
-  const customOverlaysRef = useRef<Map<number, any>>(new Map());
+  const polygonOverlaysRef = useRef<Map<number, any>>(new Map());
   const drawPreviewPolyRef = useRef<any>(null);
   const drawPreviewMarkersRef = useRef<any[]>([]);
   const editHandlesRef = useRef<any[]>([]);
@@ -58,29 +65,29 @@ export default function PolygonBuilder() {
   const projectionHelperRef = useRef<any>(null);
   const [ready, setReady] = useState(false);
 
-  // Existing zip picker state.
+  // Zip picker state.
   const [loadedShapes, setLoadedShapes] = useState<ZipPolygonShape[]>([]);
   const [selected, setSelected] = useState<ZipcodeLookup[]>([]);
   const [zipSearch, setZipSearch] = useState('');
   const [zipResults, setZipResults] = useState<ZipcodeLookup[]>([]);
 
-  // Custom polygon state (Stage 2).
-  const [customs, setCustoms] = useState<CustomPolygon[]>([]);
+  // Bulk polygon state (Stage 3).
+  const [polygons, setPolygons] = useState<BulkPolygon[]>([]);
   const [mode, setMode] = useState<Mode>('view');
   const [drawingVertices, setDrawingVertices] = useState<LatLng[]>([]);
-  const [selectedCustom, setSelectedCustom] = useState<Set<number>>(new Set());
+  const [selectedPolygons, setSelectedPolygons] = useState<Set<number>>(new Set());
 
-  // Save modals: either "save selected zips as route" or "save selected customs as route".
   const [zipSaveOpen, setZipSaveOpen] = useState(false);
-  const [customSaveOpen, setCustomSaveOpen] = useState(false);
+  const [polygonSaveOpen, setPolygonSaveOpen] = useState(false);
 
-  // Two-step draw persistence: after Finish, ask for a name then POST /api/custom-polygons.
+  // Two-step draw persistence: after Finish, ask for a name then POST.
   const [pendingDraw, setPendingDraw] = useState<LatLng[] | null>(null);
+  // ZIP-to-coverage conversion in progress (source zip we seeded from).
+  const [converting, setConverting] = useState<ZipcodeLookup | null>(null);
 
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
 
-  // Wait for the Google Maps SDK.
   useEffect(() => {
     if (!apiKey) return;
     if (google && google.maps) { setReady(true); return; }
@@ -93,8 +100,6 @@ export default function PolygonBuilder() {
     return () => clearInterval(t);
   }, [apiKey, google]);
 
-  // Init map + a hidden OverlayView so we can convert LatLng -> container pixels
-  // for pixel-accurate snap detection at any zoom.
   useEffect(() => {
     if (!ready || !mapContainerRef.current || mapRef.current) return;
     const g = (window as any).google;
@@ -118,14 +123,12 @@ export default function PolygonBuilder() {
 
     // Testing hook: Playwright + manual browser sessions can call
     // google.maps.event.trigger(window.__pbMap, 'click', { latLng: ... })
-    // to drive the draw / edit flow without a source change. Leaving this
-    // always-on is harmless - the map instance was already reachable via
-    // React refs to anyone with devtools access.
+    // to drive the draw / edit flow without a source change.
     (window as any).__pbMap = map;
 
     return () => {
       zipOverlaysRef.current.forEach((p) => p.setMap(null));
-      customOverlaysRef.current.forEach((p) => p.setMap(null));
+      polygonOverlaysRef.current.forEach((p) => p.setMap(null));
       clearDrawPreview();
       clearEditHandles();
       snapHintRef.current?.setMap(null);
@@ -135,16 +138,18 @@ export default function PolygonBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Load custom polygons on mount.
+  // Load bulk polygons on mount.
   useEffect(() => {
-    void (async () => {
-      try {
-        const res = await customPolygonService.list();
-        setCustoms(res.response ?? []);
-      } catch (e) { toast.show((e as Error).message, 'error'); }
-    })();
+    void reloadPolygons();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const reloadPolygons = async () => {
+    try {
+      const res = await bulkPolygonService.list();
+      setPolygons(res.response ?? []);
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
 
   // Sync zip overlays.
   useEffect(() => {
@@ -185,34 +190,33 @@ export default function PolygonBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadedShapes, selected]);
 
-  // Sync custom overlays. The one currently being edited is skipped (it
-  // lives on editPolyRef so vertex drag mutates it directly without a rebuild).
+  // Sync coverage-polygon overlays.
   useEffect(() => {
     const g = (window as any).google;
     if (!mapRef.current || !g?.maps) return;
     const editingId = typeof mode === 'object' ? mode.edit : null;
-    const activeIds = new Set(customs.map((c) => c.customZipPolygonId));
+    const activeIds = new Set(polygons.map((p) => p.polygonId));
 
-    customOverlaysRef.current.forEach((poly, id) => {
+    polygonOverlaysRef.current.forEach((poly, id) => {
       if (!activeIds.has(id) || id === editingId) {
         poly.setMap(null);
-        customOverlaysRef.current.delete(id);
+        polygonOverlaysRef.current.delete(id);
       }
     });
 
-    customs.forEach((c, idx) => {
-      if (c.customZipPolygonId === editingId) return;
-      const path = parseWktPolygon(c.wkt);
-      if (!path || path.length < 3) return;
-      const color = CUSTOM_PALETTE[idx % CUSTOM_PALETTE.length];
-      const isSelected = selectedCustom.has(c.customZipPolygonId);
-      let poly = customOverlaysRef.current.get(c.customZipPolygonId);
+    polygons.forEach((p, idx) => {
+      if (p.polygonId === editingId) return;
+      const path = pointsToLatLngPath(p.points);
+      if (path.length < 3) return;
+      const color = POLYGON_PALETTE[idx % POLYGON_PALETTE.length];
+      const isSelected = selectedPolygons.has(p.polygonId);
+      let poly = polygonOverlaysRef.current.get(p.polygonId);
       if (!poly) {
         poly = new g.maps.Polygon({
           paths: path, map: mapRef.current, clickable: true,
         });
-        poly.addListener('click', () => toggleCustomSelected(c.customZipPolygonId));
-        customOverlaysRef.current.set(c.customZipPolygonId, poly);
+        poly.addListener('click', () => togglePolygonSelected(p.polygonId));
+        polygonOverlaysRef.current.set(p.polygonId, poly);
       } else {
         poly.setPath(path);
       }
@@ -225,7 +229,7 @@ export default function PolygonBuilder() {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customs, selectedCustom, mode]);
+  }, [polygons, selectedPolygons, mode]);
 
   const toggleZip = (shape: ZipPolygonShape) => {
     setSelected((prev) =>
@@ -237,15 +241,14 @@ export default function PolygonBuilder() {
           }]);
   };
 
-  const toggleCustomSelected = (id: number) => {
-    setSelectedCustom((prev) => {
+  const togglePolygonSelected = (id: number) => {
+    setSelectedPolygons((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
 
-  // Zip search - live autocomplete.
   useEffect(() => {
     if (!zipSearch.trim()) { setZipResults([]); return; }
     const t = setTimeout(async () => {
@@ -279,10 +282,45 @@ export default function PolygonBuilder() {
 
   const clearAll = () => {
     setSelected([]);
-    setSelectedCustom(new Set());
+    setSelectedPolygons(new Set());
     setLoadedShapes([]);
     zipOverlaysRef.current.forEach((p) => p.setMap(null));
     zipOverlaysRef.current.clear();
+  };
+
+  /** ZIP-to-coverage conversion. Copies the loaded ZIP shape into a new
+   *  bulk polygon (SourceType=1) and auto-enters edit mode. Source ZIP
+   *  polygon is not touched. */
+  const useZipAsStartingShape = async (z: ZipcodeLookup) => {
+    const shape = loadedShapes.find((s) => s.zipPolygonId === z.zipPolygonId);
+    if (!shape || !shape.wkt) {
+      toast.show(`No shape loaded for ${zipShortLower} ${z.zip}.`, 'error');
+      return;
+    }
+    const path = parseWktPolygon(shape.wkt);
+    if (!path || path.length < 3) {
+      toast.show(`${zipShortLower} ${z.zip} has no usable boundary.`, 'error');
+      return;
+    }
+    setConverting(z);
+    try {
+      const points: PolygonPoint[] = path.map((pt, i) => ({
+        orderIndex: i, lat: pt.lat, lng: pt.lng,
+      }));
+      const centroid = polygonCentroid(path);
+      const res = await bulkPolygonService.create({
+        name: `Zip ${z.zip} copy`,
+        centroidLatitude: centroid.lat,
+        centroidLongitude: centroid.lng,
+        points,
+        sourceType: 1,
+        sourceCode: z.zip,
+      });
+      setPolygons((prev) => [...prev, res.response]);
+      setMode({ edit: res.response.polygonId });
+      toast.show(`Coverage polygon created from ${zipShortLower} ${z.zip}. Drag to reshape.`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setConverting(null); }
   };
 
   // ─── Snap helpers ────────────────────────────────────────────────────
@@ -295,7 +333,6 @@ export default function PolygonBuilder() {
     return p ? { x: p.x, y: p.y } : null;
   };
 
-  /** Returns nearest vertex OR nearest point on any edge, within SNAP_PIXELS.  */
   const snapTo = (raw: LatLng): { point: LatLng; kind: 'vertex' | 'edge' | null } => {
     const clickPx = latLngToPixel(raw.lat, raw.lng);
     if (!clickPx) return { point: raw, kind: null };
@@ -305,15 +342,14 @@ export default function PolygonBuilder() {
       const p = parseWktPolygon(s.wkt);
       if (p && p.length >= 3) shapes.push(p);
     });
-    customs.forEach((c) => {
+    polygons.forEach((poly) => {
       const editingId = typeof mode === 'object' ? mode.edit : null;
-      if (c.customZipPolygonId === editingId) return;
-      const p = parseWktPolygon(c.wkt);
-      if (p && p.length >= 3) shapes.push(p);
+      if (poly.polygonId === editingId) return;
+      const p = pointsToLatLngPath(poly.points);
+      if (p.length >= 3) shapes.push(p);
     });
     if (drawingVertices.length > 0) shapes.push(drawingVertices);
 
-    // Pass 1: vertex snap (preferred).
     for (const ring of shapes) {
       for (const v of ring) {
         const px = latLngToPixel(v.lat, v.lng);
@@ -322,7 +358,6 @@ export default function PolygonBuilder() {
         if (d < SNAP_PIXELS) return { point: v, kind: 'vertex' };
       }
     }
-    // Also allow closing the in-progress polygon by snapping to its first point.
     if (drawingVertices.length >= 3) {
       const first = drawingVertices[0];
       const px = latLngToPixel(first.lat, first.lng);
@@ -332,7 +367,6 @@ export default function PolygonBuilder() {
       }
     }
 
-    // Pass 2: edge snap.
     let best: { point: LatLng; dist: number } | null = null;
     for (const ring of shapes) {
       for (let i = 0; i < ring.length; i++) {
@@ -344,7 +378,6 @@ export default function PolygonBuilder() {
         const proj = projectPointOnSegment(clickPx, aPx, bPx);
         const d = Math.hypot(clickPx.x - proj.x, clickPx.y - proj.y);
         if (d < SNAP_PIXELS && (!best || d < best.dist)) {
-          // Convert projected pixel back to LatLng via linear interpolation on the segment.
           const t = segmentT(aPx, bPx, proj);
           const lat = a.lat + (b.lat - a.lat) * t;
           const lng = a.lng + (b.lng - a.lng) * t;
@@ -356,7 +389,6 @@ export default function PolygonBuilder() {
     return { point: raw, kind: null };
   };
 
-  // Map click + mousemove hooks (mode-dispatched).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || mode !== 'drawing') return;
@@ -391,9 +423,8 @@ export default function PolygonBuilder() {
       snapHintRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, drawingVertices, loadedShapes, customs]);
+  }, [mode, drawingVertices, loadedShapes, polygons]);
 
-  // Draw-mode preview render.
   useEffect(() => {
     const g = (window as any).google;
     if (!mapRef.current || !g?.maps || mode !== 'drawing') {
@@ -463,15 +494,14 @@ export default function PolygonBuilder() {
     clearEditHandles();
     if (typeof mode !== 'object') return;
 
-    const custom = customs.find((c) => c.customZipPolygonId === mode.edit);
-    if (!custom) return;
-    const path = parseWktPolygon(custom.wkt);
-    if (!path || path.length < 3) return;
+    const polygon = polygons.find((p) => p.polygonId === mode.edit);
+    if (!polygon) return;
+    const path = pointsToLatLngPath(polygon.points);
+    if (path.length < 3) return;
 
-    // Mutable working copy - drag mutates in place, commit to server on dragend.
     const working: LatLng[] = path.map((p) => ({ lat: p.lat, lng: p.lng }));
-    const color = CUSTOM_PALETTE[
-      customs.findIndex((c) => c.customZipPolygonId === mode.edit) % CUSTOM_PALETTE.length
+    const color = POLYGON_PALETTE[
+      polygons.findIndex((p) => p.polygonId === mode.edit) % POLYGON_PALETTE.length
     ];
 
     editPolyRef.current = new g.maps.Polygon({
@@ -481,7 +511,7 @@ export default function PolygonBuilder() {
       clickable: false,
     });
 
-    const renderVertexAndMidHandles = () => {
+    const renderHandles = () => {
       editHandlesRef.current.forEach((h) => h.setMap(null));
       editMidpointsRef.current.forEach((h) => h.setMap(null));
       editHandlesRef.current = [];
@@ -510,7 +540,7 @@ export default function PolygonBuilder() {
         handle.addListener('dragend', async () => {
           mapRef.current.setOptions({ draggable: true, disableDoubleClickZoom: false });
           await commitShape(mode.edit, working);
-          renderVertexAndMidHandles();
+          renderHandles();
         });
         handle.addListener('rightclick', async () => {
           if (working.length <= 3) {
@@ -520,7 +550,7 @@ export default function PolygonBuilder() {
           working.splice(i, 1);
           editPolyRef.current?.setPath(working);
           await commitShape(mode.edit, working);
-          renderVertexAndMidHandles();
+          renderHandles();
         });
         editHandlesRef.current.push(handle);
       });
@@ -542,25 +572,27 @@ export default function PolygonBuilder() {
           working.splice(i + 1, 0, mid);
           editPolyRef.current?.setPath(working);
           await commitShape(mode.edit, working);
-          renderVertexAndMidHandles();
+          renderHandles();
         });
         editMidpointsRef.current.push(marker);
       });
     };
 
-    renderVertexAndMidHandles();
+    renderHandles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
   const commitShape = async (id: number, working: LatLng[]) => {
     try {
-      const wkt = latLngsToWkt(working);
+      const points: PolygonPoint[] = working.map((pt, i) => ({
+        orderIndex: i, lat: pt.lat, lng: pt.lng,
+      }));
       const centroid = polygonCentroid(working);
-      const res = await customPolygonService.updateShape(id, {
-        wkt, centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
+      const res = await bulkPolygonService.updateShape(id, {
+        points, centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
       });
-      setCustoms((prev) => prev.map((c) =>
-        c.customZipPolygonId === id ? res.response : c));
+      setPolygons((prev) => prev.map((p) =>
+        p.polygonId === id ? res.response : p));
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
@@ -573,25 +605,25 @@ export default function PolygonBuilder() {
     editPolyRef.current = null;
   };
 
-  const removeCustom = async (c: CustomPolygon) => {
-    const msg = c.attachedRouteCount > 0
-      ? `"${c.name}" is attached to ${c.attachedRouteCount} active route(s). Remove anyway?`
-      : `Remove "${c.name}"?`;
+  const removePolygon = async (p: BulkPolygon) => {
+    const msg = p.attachedRouteCount > 0
+      ? `"${p.name}" is attached to ${p.attachedRouteCount} active route(s). Remove anyway?`
+      : `Remove "${p.name}"?`;
     if (!confirm(msg)) return;
     try {
-      await customPolygonService.remove(c.customZipPolygonId);
-      setCustoms((prev) => prev.filter((x) => x.customZipPolygonId !== c.customZipPolygonId));
-      setSelectedCustom((prev) => {
+      await bulkPolygonService.remove(p.polygonId);
+      setPolygons((prev) => prev.filter((x) => x.polygonId !== p.polygonId));
+      setSelectedPolygons((prev) => {
         const next = new Set(prev);
-        next.delete(c.customZipPolygonId);
+        next.delete(p.polygonId);
         return next;
       });
-      toast.show('Custom polygon removed.', 'success');
+      toast.show('Coverage polygon removed.', 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
-  const onCustomCreated = (created: CustomPolygon) => {
-    setCustoms((prev) => [...prev, created]);
+  const onPolygonCreated = (created: BulkPolygon) => {
+    setPolygons((prev) => [...prev, created]);
     setPendingDraw(null);
   };
 
@@ -607,14 +639,14 @@ export default function PolygonBuilder() {
   }
 
   const editingId = typeof mode === 'object' ? mode.edit : null;
-  const selectedCustomList = customs.filter((c) => selectedCustom.has(c.customZipPolygonId));
+  const selectedPolygonList = polygons.filter((p) => selectedPolygons.has(p.polygonId));
 
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-white border-b border-border text-xs">
         <h1 className="text-base font-semibold text-text-primary">Polygon Builder</h1>
         <span className="text-text-muted">
-          - {loadedShapes.length} {zipShortLower}{loadedShapes.length === 1 ? '' : 's'} loaded, {selected.length} selected, {customs.length} custom, {selectedCustom.size} custom selected
+          - {loadedShapes.length} {zipShortLower}{loadedShapes.length === 1 ? '' : 's'} loaded, {selected.length} selected, {polygons.length} coverage, {selectedPolygons.size} coverage selected
         </span>
         <div className="flex-1" />
         {mode === 'drawing' ? (
@@ -645,9 +677,9 @@ export default function PolygonBuilder() {
               title={selected.length === 0 ? `Select some ${zipLongLower}s first` : 'Persist the selection as a recurring route'}>
               Save as Route ({selected.length})
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setCustomSaveOpen(true)} disabled={selectedCustom.size === 0}
-              title={selectedCustom.size === 0 ? 'Select some custom polygons first' : 'Persist the custom-polygon selection as a recurring route'}>
-              Save customs as Route ({selectedCustom.size})
+            <Button variant="secondary" size="sm" onClick={() => setPolygonSaveOpen(true)} disabled={selectedPolygons.size === 0}
+              title={selectedPolygons.size === 0 ? 'Select some coverage polygons first' : 'Persist the coverage-polygon selection as a recurring route'}>
+              Save coverage as Route ({selectedPolygons.size})
             </Button>
             <Button variant="primary" size="sm" onClick={startDraw}>+ Draw new polygon</Button>
           </>
@@ -690,12 +722,25 @@ export default function PolygonBuilder() {
               {selected.length === 0 && (
                 <div className="text-text-muted italic text-[10px]">No {zipShortLower}s selected yet.</div>
               )}
-              <ul className="space-y-0.5">
+              <ul className="space-y-1">
                 {selected.map((z) => (
-                  <li key={z.zipPolygonId} className="flex items-center gap-1 px-2 py-1 rounded bg-brand-cyan/10">
-                    <span className="flex-1 truncate">{z.zip}</span>
-                    <button type="button" onClick={() => removeSelection(z.zipPolygonId)}
-                      className="text-text-muted hover:text-error text-xs" title="Remove">x</button>
+                  <li key={z.zipPolygonId} className="px-2 py-1 rounded bg-brand-cyan/10 space-y-1">
+                    <div className="flex items-center gap-1">
+                      <span className="flex-1 truncate">{z.zip}</span>
+                      <button type="button" onClick={() => removeSelection(z.zipPolygonId)}
+                        className="text-text-muted hover:text-error text-xs" title="Remove">x</button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => useZipAsStartingShape(z)}
+                      disabled={converting?.zipPolygonId === z.zipPolygonId || mode === 'drawing' || editingId != null}
+                      className="w-full text-[10px] font-semibold text-brand-purple hover:underline disabled:opacity-40 disabled:no-underline text-left"
+                      title="Copy this ZIP boundary into a new editable coverage polygon. The source ZIP is not modified."
+                    >
+                      {converting?.zipPolygonId === z.zipPolygonId
+                        ? 'Creating coverage polygon...'
+                        : 'Use as starting shape ->'}
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -703,41 +748,61 @@ export default function PolygonBuilder() {
 
             <div>
               <div className="text-text-secondary text-[10px] uppercase tracking-wide mb-1">
-                Custom polygons ({customs.length})
+                Coverage polygons ({polygons.length})
               </div>
-              {customs.length === 0 && (
+              {polygons.length === 0 && (
                 <div className="text-text-muted italic text-[10px]">
-                  None yet. Click "+ Draw new polygon" to start.
+                  None yet. Click "+ Draw new polygon" or "Use as starting shape" on a loaded {zipShortLower}.
                 </div>
               )}
               <ul className="space-y-1">
-                {customs.map((c, idx) => {
-                  const color = CUSTOM_PALETTE[idx % CUSTOM_PALETTE.length];
-                  const isChecked = selectedCustom.has(c.customZipPolygonId);
-                  const isEditing = editingId === c.customZipPolygonId;
+                {polygons.map((p, idx) => {
+                  const color = POLYGON_PALETTE[idx % POLYGON_PALETTE.length];
+                  const isChecked = selectedPolygons.has(p.polygonId);
+                  const isEditing = editingId === p.polygonId;
                   return (
-                    <li key={c.customZipPolygonId}
+                    <li key={p.polygonId}
                       className={`px-2 py-1 rounded border ${isEditing ? 'border-warning bg-warning/10' : 'border-border-light'}`}>
                       <label className="flex items-center gap-1.5">
                         <input type="checkbox" checked={isChecked}
-                          onChange={() => toggleCustomSelected(c.customZipPolygonId)} />
+                          onChange={() => togglePolygonSelected(p.polygonId)} />
                         <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
-                        <span className="flex-1 truncate font-medium">{c.name}</span>
+                        <span className="flex-1 truncate font-medium">{p.name}</span>
                       </label>
+                      {p.sourceType === 1 && p.sourceCode && (
+                        <div className="ml-5 mt-0.5">
+                          <span className="inline-block px-1.5 py-0.5 rounded bg-brand-cyan/20 text-brand-dark text-[9px] font-semibold">
+                            from ZIP {p.sourceCode}
+                          </span>
+                        </div>
+                      )}
                       <div className="ml-5 mt-0.5 text-[10px] text-text-muted">
-                        {c.attachedRouteCount > 0
-                          ? `attached to ${c.attachedRouteCount} route(s)`
+                        {p.attachedRouteCount > 0
+                          ? `attached to ${p.attachedRouteCount} route(s)`
                           : 'not attached to any route'}
+                      </div>
+                      <div
+                        className="ml-5 mt-0.5 text-[10px] text-text-muted"
+                        title={
+                          `Created by ${p.createdBy} on ${formatAuditDate(p.createdUtc)}`
+                          + (p.lastModifiedUtc
+                            ? `\nLast updated by ${p.updatedBy ?? '(unknown)'} on ${formatAuditDate(p.lastModifiedUtc)}`
+                            : '\nNever updated since creation')
+                        }
+                      >
+                        {p.lastModifiedUtc
+                          ? `updated by ${p.updatedBy ?? '(unknown)'} - ${formatAuditDate(p.lastModifiedUtc)}`
+                          : `created by ${p.createdBy} - ${formatAuditDate(p.createdUtc)}`}
                       </div>
                       <div className="ml-5 mt-1 flex flex-wrap gap-1">
                         {isEditing
                           ? <button className="text-[10px] font-semibold text-success"
                               onClick={stopEdit}>Done editing</button>
                           : <button className="text-[10px] font-semibold text-brand-purple hover:underline"
-                              onClick={() => startEdit(c.customZipPolygonId)}
+                              onClick={() => startEdit(p.polygonId)}
                               disabled={mode === 'drawing'}>Edit shape</button>}
                         <button className="text-[10px] text-error hover:underline"
-                          onClick={() => removeCustom(c)}>Remove</button>
+                          onClick={() => removePolygon(p)}>Remove</button>
                       </div>
                     </li>
                   );
@@ -753,14 +818,14 @@ export default function PolygonBuilder() {
       </div>
 
       {pendingDraw && (
-        <SaveNewCustomModal vertices={pendingDraw}
+        <SaveNewPolygonModal vertices={pendingDraw}
           onCancel={() => setPendingDraw(null)}
-          onCreated={onCustomCreated} />
+          onCreated={onPolygonCreated} />
       )}
 
       {zipSaveOpen && (
         <SaveAsRouteModal
-          zipSelection={selected} customSelection={[]}
+          zipSelection={selected} polygonSelection={[]}
           onClose={() => setZipSaveOpen(false)}
           onSaved={() => {
             setZipSaveOpen(false);
@@ -770,14 +835,14 @@ export default function PolygonBuilder() {
         />
       )}
 
-      {customSaveOpen && (
+      {polygonSaveOpen && (
         <SaveAsRouteModal
-          zipSelection={[]} customSelection={selectedCustomList}
-          onClose={() => setCustomSaveOpen(false)}
+          zipSelection={[]} polygonSelection={selectedPolygonList}
+          onClose={() => setPolygonSaveOpen(false)}
           onSaved={() => {
-            setCustomSaveOpen(false);
+            setPolygonSaveOpen(false);
             toast.show('Route saved. Manage it under Scheduled Routes.', 'success');
-            setSelectedCustom(new Set());
+            setSelectedPolygons(new Set());
           }}
         />
       )}
@@ -785,38 +850,43 @@ export default function PolygonBuilder() {
   );
 }
 
-// ─── SaveNewCustomModal ────────────────────────────────────────────────
+// ─── SaveNewPolygonModal ────────────────────────────────────────────────
 
-interface SaveNewCustomProps {
+interface SaveNewPolygonProps {
   vertices: LatLng[];
   onCancel: () => void;
-  onCreated: (created: CustomPolygon) => void;
+  onCreated: (created: BulkPolygon) => void;
 }
 
-function SaveNewCustomModal({ vertices, onCancel, onCreated }: SaveNewCustomProps) {
+function SaveNewPolygonModal({ vertices, onCancel, onCreated }: SaveNewPolygonProps) {
   const toast = useToast();
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
 
   const commit = async () => {
     const trimmed = name.trim();
-    if (!trimmed) { toast.show('Custom polygon name is required.', 'error'); return; }
+    if (!trimmed) { toast.show('Coverage polygon name is required.', 'error'); return; }
     setSaving(true);
     try {
-      const wkt = latLngsToWkt(vertices);
+      const points: PolygonPoint[] = vertices.map((v, i) => ({
+        orderIndex: i, lat: v.lat, lng: v.lng,
+      }));
       const centroid = polygonCentroid(vertices);
-      const res = await customPolygonService.create({
-        name: trimmed, wkt,
+      const res = await bulkPolygonService.create({
+        name: trimmed,
         centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
+        points,
+        sourceType: 0,
+        sourceCode: null,
       });
       onCreated(res.response);
-      toast.show(`Custom polygon "${trimmed}" saved. Use "Save customs as Route" to attach it to a schedule.`, 'success');
+      toast.show(`Coverage polygon "${trimmed}" saved. Use "Save coverage as Route" to attach it to a schedule.`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }
   };
 
   return (
-    <Modal open={true} onClose={onCancel} title="Save custom polygon"
+    <Modal open={true} onClose={onCancel} title="Save coverage polygon"
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="neutral" onClick={onCancel}>Cancel</Button>
@@ -831,7 +901,7 @@ function SaveNewCustomModal({ vertices, onCancel, onCreated }: SaveNewCustomProp
             className={INPUT_CLASS} autoFocus placeholder="e.g. Zimmer AM Med Auckland" />
         </Field>
         <p className="text-[11px] text-text-muted italic">
-          The shape is saved to CustomZipPolygon and can be attached to one or more Routes later.
+          The shape is saved to tblBulkRunPolygon and can be attached to one or more Routes later.
           Bookings whose pickup falls inside this shape will auto-assign to those Routes via the
           prebook geometry fallback.
         </p>
@@ -840,21 +910,21 @@ function SaveNewCustomModal({ vertices, onCancel, onCreated }: SaveNewCustomProp
   );
 }
 
-// ─── SaveAsRouteModal (extended to handle zip OR custom polygon selection) ──
+// ─── SaveAsRouteModal ───────────────────────────────────────────────────
 
 interface SaveAsRouteProps {
   zipSelection: ZipcodeLookup[];
-  customSelection: CustomPolygon[];
+  polygonSelection: BulkPolygon[];
   onClose: () => void;
   onSaved: () => void;
 }
 
-function SaveAsRouteModal({ zipSelection, customSelection, onClose, onSaved }: SaveAsRouteProps) {
+function SaveAsRouteModal({ zipSelection, polygonSelection, onClose, onSaved }: SaveAsRouteProps) {
   const toast = useToast();
   const user = useAuth();
   const zipShortLower = postcodeLabel(user.isUsTenant, true).toLowerCase();
   const zipLongLower = postcodeLabel(user.isUsTenant, false).toLowerCase();
-  const isCustom = customSelection.length > 0;
+  const isPolygon = polygonSelection.length > 0;
   const [name, setName] = useState('');
   const [area, setArea] = useState('');
   const [scheduleId, setScheduleId] = useState<number | null>(null);
@@ -898,18 +968,18 @@ function SaveAsRouteModal({ zipSelection, customSelection, onClose, onSaved }: S
         scheduleId,
         active: true,
         zipPolygonIds: zipSelection.map((z) => z.zipPolygonId),
-        customPolygonIds: customSelection.map((c) => c.customZipPolygonId),
+        bulkPolygonIds: polygonSelection.map((p) => p.polygonId),
       });
       onSaved();
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }
   };
 
-  const count = isCustom ? customSelection.length : zipSelection.length;
-  const noun = isCustom ? 'custom polygon' : zipShortLower;
+  const count = isPolygon ? polygonSelection.length : zipSelection.length;
+  const noun = isPolygon ? 'coverage polygon' : zipShortLower;
 
   return (
-    <Modal open={true} onClose={onClose} title={`Save ${isCustom ? 'custom polygons' : 'zip selection'} as recurring route`}
+    <Modal open={true} onClose={onClose} title={`Save ${isPolygon ? 'coverage polygons' : 'zip selection'} as recurring route`}
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="neutral" onClick={onClose}>Cancel</Button>
@@ -960,13 +1030,13 @@ function SaveAsRouteModal({ zipSelection, customSelection, onClose, onSaved }: S
         </div>
         <div className="border border-border-light rounded p-2 bg-surface-cream text-xs">
           <div className="font-medium mb-1">
-            {isCustom ? `${customSelection.length} custom polygon(s)` : `${zipSelection.length} ${zipLongLower}s`} will be attached:
+            {isPolygon ? `${polygonSelection.length} coverage polygon(s)` : `${zipSelection.length} ${zipLongLower}s`} will be attached:
           </div>
           <div className="flex flex-wrap gap-1">
-            {isCustom
-              ? customSelection.map((c) => (
-                  <span key={c.customZipPolygonId} className="px-2 py-0.5 rounded bg-warning/15 text-brand-dark">
-                    {c.name}
+            {isPolygon
+              ? polygonSelection.map((p) => (
+                  <span key={p.polygonId} className="px-2 py-0.5 rounded bg-warning/15 text-brand-dark">
+                    {p.name}
                   </span>))
               : zipSelection.map((z) => (
                   <span key={z.zipPolygonId} className="px-2 py-0.5 rounded bg-brand-cyan/15 text-brand-dark">
@@ -981,7 +1051,7 @@ function SaveAsRouteModal({ zipSelection, customSelection, onClose, onSaved }: S
 
 // ─── Geometry helpers ──────────────────────────────────────────────────
 
-/** Parse WKT "POLYGON((lng lat, ...))" or "MULTIPOLYGON(((lng lat, ...)))" into a lat/lng ring. */
+/** Parse WKT "POLYGON((lng lat, ...))" or "MULTIPOLYGON(((lng lat, ...)))" into a lat/lng ring. Used for reading ZipPolygon source shapes. */
 function parseWktPolygon(wkt: string | null): LatLng[] | null {
   if (!wkt) return null;
   const upper = wkt.toUpperCase();
@@ -999,21 +1069,36 @@ function parseWktPolygon(wkt: string | null): LatLng[] | null {
   return path;
 }
 
-/** Serialise a lat/lng ring back to WKT POLYGON, auto-closing the ring. */
-function latLngsToWkt(ring: LatLng[]): string {
-  if (ring.length < 3) throw new Error('Need at least 3 vertices to form a polygon.');
-  const closed = [...ring];
-  const first = closed[0];
-  const last = closed[closed.length - 1];
-  if (first.lat !== last.lat || first.lng !== last.lng) closed.push(first);
-  const coords = closed.map((p) => `${p.lng} ${p.lat}`).join(', ');
-  return `POLYGON((${coords}))`;
+/** Convert a bulk polygon's points list into an ordered LatLng path. */
+function pointsToLatLngPath(points: PolygonPoint[]): LatLng[] {
+  return points
+    .slice()
+    .sort((a, b) => a.orderIndex - b.orderIndex)
+    .map((p) => ({ lat: p.lat, lng: p.lng }));
 }
 
-/** Simple average-vertex centroid. Not a true area centroid, but good enough for map centering + zoom-to.  */
 function polygonCentroid(ring: LatLng[]): LatLng {
   const sum = ring.reduce((acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lng }), { lat: 0, lng: 0 });
   return { lat: sum.lat / ring.length, lng: sum.lng / ring.length };
+}
+
+/** Compact audit date rendered in the user's local timezone. The API returns
+ *  UTC without a timezone marker (e.g. "2026-07-30T00:29:32.02"), which
+ *  JavaScript would otherwise misread as local time - so we force a Z suffix
+ *  when it's missing before parsing, then let toLocaleString convert to
+ *  local zone. Zone abbreviation included so the display is unambiguous. */
+function formatAuditDate(iso: string): string {
+  if (!iso) return '';
+  const hasTz = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso);
+  const utcIso = hasTz ? iso : iso + 'Z';
+  const d = new Date(utcIso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+    timeZoneName: 'short',
+  });
 }
 
 function projectPointOnSegment(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) {

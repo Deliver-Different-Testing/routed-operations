@@ -296,7 +296,7 @@ builder.Services.AddHttpClient<HereGeocodeService>(client =>
 // Stage 2 - sibling modules.
 builder.Services.AddScoped<QuoteService>();
 builder.Services.AddScoped<RecurringRouteService>();
-builder.Services.AddScoped<RoutedOperations.Core.Application.Services.CustomPolygon.CustomPolygonService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygon.BulkPolygonService>();
 // BulkImportHyper direct-insert service quartet (Phase 1 Task 6).
 // BulkImportServiceV2 is a partial class split across three files
 // (BulkImportServiceV2.cs + BulkImportJobFactory.cs + BulkImportRatingService.cs)
