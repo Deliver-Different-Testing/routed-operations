@@ -22,6 +22,16 @@ import {
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const POLYGON_PALETTE = ['#f2994a', '#3bc7f4', '#606db4', '#10b981', '#ef4444', '#8b5cf6', '#eab308'];
 const SNAP_PIXELS = 14;
+/** Target max vertex count when converting a raw ZIP polygon to editable
+ *  coverage. Real coastline ZIPs can have 1000+ vertices which freezes the
+ *  browser when we render one draggable Marker per vertex + midpoint. 120
+ *  keeps the shape recognisable while staying under the Google Maps handle
+ *  budget. */
+const ZIP_TO_COVERAGE_MAX_VERTICES = 120;
+/** Absolute cap on how many vertices we'll render draggable handles for.
+ *  Above this, edit mode shows a "Simplify shape" prompt instead of handles
+ *  to protect the browser. */
+const MAX_EDIT_HANDLE_VERTICES = 200;
 
 type Mode = 'view' | 'drawing' | { edit: number };
 interface LatLng { lat: number; lng: number; }
@@ -304,7 +314,19 @@ export default function PolygonBuilder() {
     }
     setConverting(z);
     try {
-      const points: PolygonPoint[] = path.map((pt, i) => ({
+      // Simplify the raw ZIP outline before saving. Coastal ZIPs often have
+      // hundreds of vertices tracing every rock; that shape kills edit-mode
+      // performance (one draggable Marker per vertex + midpoint). Coverage
+      // polygons are dispatch geometry, not cartography, so knock the vertex
+      // count down to something an operator can actually manipulate.
+      const simplifiedPath = simplifyToMax(path, ZIP_TO_COVERAGE_MAX_VERTICES);
+      if (simplifiedPath.length < path.length) {
+        toast.show(
+          `Simplified ${path.length} -> ${simplifiedPath.length} vertices for editability.`,
+          'success',
+        );
+      }
+      const points: PolygonPoint[] = simplifiedPath.map((pt, i) => ({
         orderIndex: i, lat: pt.lat, lng: pt.lng,
       }));
       const centroid = polygonCentroid(path);
@@ -511,6 +533,17 @@ export default function PolygonBuilder() {
       clickable: false,
     });
 
+    // Guard: drawing thousands of draggable Marker + midpoint pairs freezes
+    // the browser. Above the cap, skip handles and let the operator hit
+    // "Simplify shape" from the right-rail row.
+    if (working.length > MAX_EDIT_HANDLE_VERTICES) {
+      toast.show(
+        `${working.length} vertices is too many to edit safely. Click "Simplify shape" in the right rail to reduce.`,
+        'error',
+      );
+      return;
+    }
+
     const renderHandles = () => {
       editHandlesRef.current.forEach((h) => h.setMap(null));
       editMidpointsRef.current.forEach((h) => h.setMap(null));
@@ -603,6 +636,34 @@ export default function PolygonBuilder() {
     editMidpointsRef.current = [];
     editPolyRef.current?.setMap(null);
     editPolyRef.current = null;
+  };
+
+  /** Reduce a polygon's vertex count in place. Reads the current points,
+   *  runs Douglas-Peucker to hit ZIP_TO_COVERAGE_MAX_VERTICES, PUTs the
+   *  simplified shape back. Used to unblock edit mode on polygons that got
+   *  saved with a raw ZIP outline before the on-conversion simplification
+   *  landed. */
+  const simplifyPolygonInPlace = async (p: BulkPolygon) => {
+    const path: LatLng[] = pointsToLatLngPath(p.points);
+    const simplified = simplifyToMax(path, ZIP_TO_COVERAGE_MAX_VERTICES);
+    if (simplified.length >= p.points.length) {
+      toast.show(`"${p.name}" already has ${p.points.length} vertices; no simplification possible at the target tolerance.`, 'error');
+      return;
+    }
+    if (!confirm(`Simplify "${p.name}" from ${p.points.length} to ${simplified.length} vertices? Shape will be preserved approximately. Cannot be undone.`)) return;
+    try {
+      const newPoints: PolygonPoint[] = simplified.map((pt, i) => ({
+        orderIndex: i, lat: pt.lat, lng: pt.lng,
+      }));
+      const centroid = polygonCentroid(simplified);
+      const res = await bulkPolygonService.updateShape(p.polygonId, {
+        points: newPoints,
+        centroidLatitude: centroid.lat,
+        centroidLongitude: centroid.lng,
+      });
+      setPolygons((prev) => prev.map((x) => x.polygonId === p.polygonId ? res.response : x));
+      toast.show(`Simplified "${p.name}" to ${simplified.length} vertices.`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
   const removePolygon = async (p: BulkPolygon) => {
@@ -794,13 +855,25 @@ export default function PolygonBuilder() {
                           ? `updated by ${p.updatedBy ?? '(unknown)'} - ${formatAuditDate(p.lastModifiedUtc)}`
                           : `created by ${p.createdBy} - ${formatAuditDate(p.createdUtc)}`}
                       </div>
+                      {p.points.length > MAX_EDIT_HANDLE_VERTICES && (
+                        <div className="ml-5 mt-0.5 text-[10px] text-warning italic">
+                          {p.points.length} vertices - too many for direct edit. Simplify first.
+                        </div>
+                      )}
                       <div className="ml-5 mt-1 flex flex-wrap gap-1">
                         {isEditing
                           ? <button className="text-[10px] font-semibold text-success"
                               onClick={stopEdit}>Done editing</button>
                           : <button className="text-[10px] font-semibold text-brand-purple hover:underline"
                               onClick={() => startEdit(p.polygonId)}
-                              disabled={mode === 'drawing'}>Edit shape</button>}
+                              disabled={mode === 'drawing' || p.points.length > MAX_EDIT_HANDLE_VERTICES}
+                              title={p.points.length > MAX_EDIT_HANDLE_VERTICES ? 'Too many vertices - simplify first' : undefined}>Edit shape</button>}
+                        {p.points.length > ZIP_TO_COVERAGE_MAX_VERTICES && (
+                          <button className="text-[10px] font-semibold text-warning hover:underline"
+                            onClick={() => simplifyPolygonInPlace(p)}
+                            disabled={mode !== 'view'}
+                            title={`Reduce ${p.points.length} vertices via Douglas-Peucker to ~${ZIP_TO_COVERAGE_MAX_VERTICES}`}>Simplify shape</button>
+                        )}
                         <button className="text-[10px] text-error hover:underline"
                           onClick={() => removePolygon(p)}>Remove</button>
                       </div>
@@ -1080,6 +1153,63 @@ function pointsToLatLngPath(points: PolygonPoint[]): LatLng[] {
 function polygonCentroid(ring: LatLng[]): LatLng {
   const sum = ring.reduce((acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lng }), { lat: 0, lng: 0 });
   return { lat: sum.lat / ring.length, lng: sum.lng / ring.length };
+}
+
+/** Standard Ramer-Douglas-Peucker line simplification. Tolerance is in
+ *  degrees (lat/lng), which is a small distortion at NZ latitudes but fine
+ *  for dispatch-scale coverage polygons. Preserves the first + last vertex
+ *  (which for a closed ring are typically distinct as we don't repeat the
+ *  closing vertex client-side). */
+function douglasPeucker(points: LatLng[], tolerance: number): LatLng[] {
+  if (points.length < 3) return points;
+  const sqTol = tolerance * tolerance;
+
+  const perpSqDist = (p: LatLng, a: LatLng, b: LatLng): number => {
+    let x = a.lng, y = a.lat, dx = b.lng - x, dy = b.lat - y;
+    if (dx !== 0 || dy !== 0) {
+      const t = ((p.lng - x) * dx + (p.lat - y) * dy) / (dx * dx + dy * dy);
+      if (t > 1) { x = b.lng; y = b.lat; }
+      else if (t > 0) { x += dx * t; y += dy * t; }
+    }
+    dx = p.lng - x; dy = p.lat - y;
+    return dx * dx + dy * dy;
+  };
+
+  // Iterative implementation to avoid stack blow-up on huge inputs.
+  const keep = new Array<boolean>(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+  const stack: Array<[number, number]> = [[0, points.length - 1]];
+  while (stack.length > 0) {
+    const [first, last] = stack.pop()!;
+    let maxDist = 0, index = -1;
+    for (let i = first + 1; i < last; i++) {
+      const d = perpSqDist(points[i], points[first], points[last]);
+      if (d > maxDist) { maxDist = d; index = i; }
+    }
+    if (maxDist > sqTol && index !== -1) {
+      keep[index] = true;
+      stack.push([first, index], [index, last]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+/** Repeatedly Douglas-Peucker with a growing tolerance until the vertex
+ *  count is at or under `maxVertices`. Starts at ~11m tolerance (0.0001 deg
+ *  at the equator) and doubles until the target is met or tolerance blows
+ *  past a sanity ceiling. Returns the input unchanged if it's already
+ *  under the cap. */
+function simplifyToMax(points: LatLng[], maxVertices: number): LatLng[] {
+  if (points.length <= maxVertices) return points;
+  let tolerance = 0.0001;
+  let simplified = points;
+  for (let i = 0; i < 24 && tolerance < 1; i++) {
+    simplified = douglasPeucker(points, tolerance);
+    if (simplified.length <= maxVertices) return simplified;
+    tolerance *= 1.6;
+  }
+  return simplified;
 }
 
 /** Compact audit date rendered in the user's local timezone. The API returns
