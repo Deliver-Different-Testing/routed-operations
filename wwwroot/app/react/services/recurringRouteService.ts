@@ -135,6 +135,11 @@ export const recurringRouteService = {
 
   searchZipcodes: (q: string, max = 25) =>
     request<{ response: ZipcodeLookup[] }>(`/recurring-routes/zipcodes/search?q=${encodeURIComponent(q)}&max=${max}`),
+  /** Every zip's id + code + centroid, no shape data. Used to seed the
+   *  on-map marker layer at Polygon Builder load. Cache client-side; the
+   *  per-zip WKT still comes on demand from getPolygonShapes. */
+  getAllZipcodeCentroids: () =>
+    request<{ response: ZipcodeLookup[] }>('/recurring-routes/zipcodes/centroids'),
   getPolygonShapes: (zipPolygonIds: number[]) =>
     request<{ response: ZipPolygonShape[] }>('/recurring-routes/zipcodes/shapes', {
       method: 'POST', body: JSON.stringify(zipPolygonIds),
