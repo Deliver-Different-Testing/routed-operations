@@ -122,6 +122,19 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
         return Ok(new { response = list });
     }
 
+    /// <summary>
+    /// Returns every zip's identity + centroid so the Polygon Builder can
+    /// render a full-tenant marker layer client-side. Response is cached
+    /// for the browser session; per-zip WKT still fetched on demand via
+    /// the shapes endpoint below.
+    /// </summary>
+    [HttpGet("zipcodes/centroids")]
+    public async Task<IActionResult> GetAllZipcodeCentroids()
+    {
+        var list = await routes.GetAllZipcodeCentroidsAsync();
+        return Ok(new { response = list });
+    }
+
     [HttpPost("zipcodes/shapes")]
     public async Task<IActionResult> GetPolygonShapes([FromBody] List<int> zipPolygonIds)
     {

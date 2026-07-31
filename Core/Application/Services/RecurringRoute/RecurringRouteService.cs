@@ -325,6 +325,27 @@ public class RecurringRouteService(
 
     // ─── LOOKUPS ───────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Returns every zip's lightweight identity + centroid. Used by
+    /// Polygon Builder to seed the on-map marker layer client-side so the
+    /// operator can see every postcode at a glance without paying the
+    /// per-zip WKT cost (that comes on-demand via GetPolygonShapesAsync
+    /// when a marker is clicked).
+    ///
+    /// Payload shape matches the existing search endpoint so the
+    /// frontend can reuse the ZipcodeLookup client type. On US DFRNT
+    /// this is ~33k rows, roughly 400KB gzipped over the wire.
+    /// </summary>
+    public async Task<List<ZipcodeLookupDto>> GetAllZipcodeCentroidsAsync()
+    {
+        return await Context.ZipPolygons
+            .AsNoTracking()
+            .Where(z => z.Latitude != null && z.Longitude != null && z.Zip != null)
+            .OrderBy(z => z.Zip)
+            .Select(z => new ZipcodeLookupDto(z.ZipPolygonId, z.Zip!, z.Latitude, z.Longitude))
+            .ToListAsync();
+    }
+
     public async Task<List<ZipcodeLookupDto>> SearchZipcodesAsync(string q, int max = 25)
     {
         if (string.IsNullOrWhiteSpace(q))
