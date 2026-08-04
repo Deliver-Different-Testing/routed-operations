@@ -7,6 +7,7 @@ const items = [
   { to: '/quoting', label: 'Quoting' },
   { to: '/scheduled-routes', label: 'Scheduled Routes' },
   { to: '/polygon-builder', label: 'Polygon Builder' },
+  { to: '/auto-assign-log', label: 'Auto-Assign Log' },
 ];
 
 export function Sidebar() {

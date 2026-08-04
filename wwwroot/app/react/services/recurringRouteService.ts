@@ -5,6 +5,13 @@ export interface RouteZipcode {
   zip: string;
 }
 
+export interface RouteScheduleRef {
+  scheduleId: number;
+  name: string;
+  window: string;
+  days: number[];
+}
+
 export interface RecurringRoute {
   routeId: number;
   name: string;
@@ -12,9 +19,15 @@ export interface RecurringRoute {
   defaultTargetType: number | null;   // 1=Courier, 2=Agent, 3=NetworkPartner
   defaultTargetId: number | null;
   defaultTargetName: string;
+  /** @deprecated Legacy 1:1 pointer. Use `schedules` for the full bound list.
+   *  Retained for readback of the primary (first) schedule. */
   scheduleId: number | null;
+  /** @deprecated Legacy display; falls back to the primary schedule's name. */
   scheduleName: string;
+  /** @deprecated Legacy display; falls back to the primary schedule's window. */
   scheduleWindow: string;
+  /** Full M:N list of bound schedules (may be empty). */
+  schedules: RouteScheduleRef[];
   active: boolean;
   zipcodes: RouteZipcode[];
   bulkPolygons: RouteBulkPolygonRef[];
@@ -28,7 +41,8 @@ export interface UpsertRouteBody {
   area: string;
   defaultTargetType: number | null;
   defaultTargetId: number | null;
-  scheduleId: number | null;
+  /** M:N bound schedules. Empty array clears every binding. */
+  scheduleIds: number[];
   active: boolean;
   zipPolygonIds: number[];
   /** Optional. Omit to keep existing bulk polygons untouched; empty array clears them. */
@@ -46,7 +60,9 @@ export interface CopyRouteBody {
   name: string;
   defaultTargetType?: number | null;
   defaultTargetId?: number | null;
-  scheduleId?: number | null;
+  /** Null = inherit source's schedules; empty array = start with none;
+   *  non-empty = start with those. */
+  scheduleIds?: number[] | null;
   copyZipcodes: boolean;
 }
 

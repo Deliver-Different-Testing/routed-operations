@@ -34,6 +34,7 @@ public class RecurringRouteService(
             .Include(r => r.ZipPolygons)
             .Include(r => r.BulkRunPolygons)
             .Include(r => r.DispatchRouteRosters)
+            .Include(r => r.Schedules)
             .OrderByDescending(r => r.Active)
             .ThenBy(r => r.Name)
             .ToListAsync();
@@ -57,26 +58,25 @@ public class RecurringRouteService(
                 .Where(a => agentIds.Contains(a.UcagId))
                 .ToDictionaryAsync(a => a.UcagId, a => a.UcagName ?? string.Empty);
 
-        var scheduleIds = rows.Where(r => r.ScheduleId.HasValue)
-            .Select(r => r.ScheduleId!.Value).Distinct().ToList();
-        var schedules = scheduleIds.Count == 0
-            ? new Dictionary<int, (string Name, string Window)>()
-            : (await Context.TblBulkRunSchedules.AsNoTracking()
-                .Where(s => scheduleIds.Contains(s.BulkRunScheduleId))
-                .Select(s => new { s.BulkRunScheduleId, s.Name, s.StartTime, s.EndTime })
-                .ToListAsync())
-              .ToDictionary(
-                  s => s.BulkRunScheduleId,
-                  s => (
-                      s.Name ?? string.Empty,
-                      FormatWindow(s.StartTime, s.EndTime)));
+        // Fetch every day-of-week row for every bound schedule id (schedules
+        // are 1-row-per-DoW in tblBulkRunSchedule; the id on the junction is
+        // the representative id, so we look up siblings by representative
+        // fields to build the days list per schedule group).
+        var scheduleIds = rows
+            .SelectMany(r => r.Schedules.Select(s => s.BulkRunScheduleId))
+            .Distinct().ToList();
+        var scheduleMap = await BuildScheduleLookupAsync(scheduleIds);
 
         return rows.Select(r =>
         {
             var (targetId, targetName) = ResolveTarget(r, couriers, agents);
-            var (schedName, schedWin) = r.ScheduleId.HasValue && schedules.TryGetValue(r.ScheduleId.Value, out var s)
-                ? s
-                : (string.Empty, string.Empty);
+            var schedules = r.Schedules
+                .Select(s => scheduleMap.GetValueOrDefault(s.BulkRunScheduleId))
+                .Where(x => x is not null)
+                .Select(x => x!)
+                .OrderBy(x => x.Name)
+                .ToList();
+            var primary = schedules.FirstOrDefault();
             return new RouteDto(
                 r.RouteId,
                 r.Name ?? string.Empty,
@@ -84,9 +84,10 @@ public class RecurringRouteService(
                 r.DefaultTargetType,
                 targetId,
                 targetName,
-                r.ScheduleId,
-                schedName,
-                schedWin,
+                primary?.ScheduleId,
+                primary?.Name ?? string.Empty,
+                primary?.Window ?? string.Empty,
+                schedules,
                 r.Active,
                 r.ZipPolygons
                     .OrderBy(z => z.Zip)
@@ -103,6 +104,64 @@ public class RecurringRouteService(
                 r.CreatedAt,
                 r.UpdatedAt);
         }).ToList();
+    }
+
+    /// <summary>Groups tblBulkRunSchedule rows (one per DoW) into a
+    /// per-representative-id lookup that also aggregates the days list
+    /// under each group's representative id. Mirrors the group-by used in
+    /// GetSchedulesLookupAsync so the picker and the read-side agree on
+    /// which id represents which group.</summary>
+    private async Task<Dictionary<int, RouteScheduleDto>> BuildScheduleLookupAsync(List<int> scheduleIds)
+    {
+        if (scheduleIds.Count == 0) return new Dictionary<int, RouteScheduleDto>();
+
+        // Load the identity fields for the specific schedule ids so we can
+        // find each one's peer rows (same schedule, other days-of-week).
+        var reps = await Context.TblBulkRunSchedules
+            .AsNoTracking()
+            .Where(s => scheduleIds.Contains(s.BulkRunScheduleId))
+            .Select(s => new
+            {
+                s.BulkRunScheduleId, s.Name, s.StartTime, s.EndTime,
+                s.ClientId, s.Region, s.SpeedId, s.DayOfWeek,
+            })
+            .ToListAsync();
+
+        // Second pass: pull EVERY row that matches any representative's
+        // group so we can list all bound days-of-week per schedule.
+        var repKeys = reps
+            .Select(s => new { s.Name, s.StartTime, s.EndTime, s.ClientId, s.Region, s.SpeedId })
+            .Distinct()
+            .ToList();
+        var names = repKeys.Select(k => k.Name).Distinct().ToList();
+        var siblings = await Context.TblBulkRunSchedules
+            .AsNoTracking()
+            .Where(s => names.Contains(s.Name))
+            .Select(s => new
+            {
+                s.BulkRunScheduleId, s.Name, s.StartTime, s.EndTime,
+                s.ClientId, s.Region, s.SpeedId, s.DayOfWeek,
+            })
+            .ToListAsync();
+        var siblingsByKey = siblings
+            .GroupBy(s => new { s.Name, s.StartTime, s.EndTime, s.ClientId, s.Region, s.SpeedId })
+            .ToDictionary(
+                g => g.Key,
+                g => g.Where(x => x.DayOfWeek.HasValue).Select(x => (int)x.DayOfWeek!.Value).OrderBy(x => x).ToList());
+
+        var result = new Dictionary<int, RouteScheduleDto>();
+        foreach (var s in reps)
+        {
+            var days = siblingsByKey.GetValueOrDefault(
+                new { s.Name, s.StartTime, s.EndTime, s.ClientId, s.Region, s.SpeedId },
+                new List<int>());
+            result[s.BulkRunScheduleId] = new RouteScheduleDto(
+                s.BulkRunScheduleId,
+                s.Name ?? string.Empty,
+                FormatWindow(s.StartTime, s.EndTime),
+                days);
+        }
+        return result;
     }
 
     public async Task<RouteDto?> GetByIdAsync(int id)
@@ -132,17 +191,17 @@ public class RecurringRouteService(
             DefaultTargetType = req.DefaultTargetType,
             DefaultCourierId = courierId,
             DefaultAgentId = agentId,
-            ScheduleId = req.ScheduleId,
             Active = req.Active,
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
         };
         await AttachZipsAsync(route, req.ZipPolygonIds);
         await AttachBulkPolygonsAsync(route, req.BulkPolygonIds ?? new List<int>());
+        await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
         Context.Routes.Add(route);
         await Context.SaveChangesAsync();
-        Log.Information("Route {Id} ({Name}) created with {Zips} zip(s) and {Custom} bulk polygon(s)",
-            route.RouteId, route.Name, route.ZipPolygons.Count, route.BulkRunPolygons.Count);
+        Log.Information("Route {Id} ({Name}) created with {Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s)",
+            route.RouteId, route.Name, route.ZipPolygons.Count, route.BulkRunPolygons.Count, route.Schedules.Count);
         return (await GetByIdAsync(route.RouteId))!;
     }
 
@@ -152,6 +211,7 @@ public class RecurringRouteService(
         var route = await Context.Routes
             .Include(r => r.ZipPolygons)
             .Include(r => r.BulkRunPolygons)
+            .Include(r => r.Schedules)
             .FirstOrDefaultAsync(r => r.RouteId == id);
         if (route is null) return null;
 
@@ -162,7 +222,6 @@ public class RecurringRouteService(
         route.DefaultTargetType = req.DefaultTargetType;
         route.DefaultCourierId = courierId;
         route.DefaultAgentId = agentId;
-        route.ScheduleId = req.ScheduleId;
         route.Active = req.Active;
         route.UpdatedAt = DateTime.UtcNow;
         route.UpdatedBy = CurrentUser();
@@ -177,9 +236,14 @@ public class RecurringRouteService(
             route.BulkRunPolygons.Clear();
             await AttachBulkPolygonsAsync(route, req.BulkPolygonIds);
         }
+        // Schedules: same replace-wholesale semantics. Empty list clears
+        // every bound schedule.
+        route.Schedules.Clear();
+        await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
+
         await Context.SaveChangesAsync();
-        Log.Information("Route {Id} updated ({Zips} zip(s), {Custom} bulk polygon(s))",
-            id, route.ZipPolygons.Count, route.BulkRunPolygons.Count);
+        Log.Information("Route {Id} updated ({Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s))",
+            id, route.ZipPolygons.Count, route.BulkRunPolygons.Count, route.Schedules.Count);
         return await GetByIdAsync(id);
     }
 
@@ -188,6 +252,7 @@ public class RecurringRouteService(
         var source = await Context.Routes
             .AsNoTracking()
             .Include(r => r.ZipPolygons)
+            .Include(r => r.Schedules)
             .FirstOrDefaultAsync(r => r.RouteId == sourceRouteId);
         if (source is null) return null;
         var (courierId, agentId) = SplitTarget(req.DefaultTargetType, req.DefaultTargetId);
@@ -199,7 +264,6 @@ public class RecurringRouteService(
             DefaultTargetType = req.DefaultTargetType ?? source.DefaultTargetType,
             DefaultCourierId = courierId ?? source.DefaultCourierId,
             DefaultAgentId = agentId ?? source.DefaultAgentId,
-            ScheduleId = req.ScheduleId ?? source.ScheduleId,
             Active = true,
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
@@ -209,6 +273,11 @@ public class RecurringRouteService(
             var zipIds = source.ZipPolygons.Select(z => z.ZipPolygonId).ToList();
             await AttachZipsAsync(copy, zipIds);
         }
+        // Null ScheduleIds = inherit source's bound schedules; empty list
+        // = start with no schedules; non-empty = start with those.
+        var scheduleIds = req.ScheduleIds
+            ?? source.Schedules.Select(s => s.BulkRunScheduleId).ToList();
+        await AttachSchedulesAsync(copy, scheduleIds);
         Context.Routes.Add(copy);
         await Context.SaveChangesAsync();
         Log.Information("Route {SourceId} copied to {CopyId} ({Name})",
@@ -335,15 +404,44 @@ public class RecurringRouteService(
     /// Payload shape matches the existing search endpoint so the
     /// frontend can reuse the ZipcodeLookup client type. On US DFRNT
     /// this is ~33k rows, roughly 400KB gzipped over the wire.
+    ///
+    /// Some tenants (e.g. NZ Urgent staging) have ZipPolygon rows where
+    /// the Latitude / Longitude columns were never backfilled but the
+    /// GeographyData column is populated. Fall back to the geography
+    /// envelope centre in that case so those tenants still show
+    /// postcodes on the map instead of "no postcodes on this tenant".
     /// </summary>
     public async Task<List<ZipcodeLookupDto>> GetAllZipcodeCentroidsAsync()
     {
-        return await Context.ZipPolygons
-            .AsNoTracking()
-            .Where(z => z.Latitude != null && z.Longitude != null && z.Zip != null)
-            .OrderBy(z => z.Zip)
-            .Select(z => new ZipcodeLookupDto(z.ZipPolygonId, z.Zip!, z.Latitude, z.Longitude))
+        var rows = await Context.Database
+            .SqlQueryRaw<ZipCentroidRow>(
+                """
+                SELECT
+                    ZipPolygonID AS ZipPolygonId,
+                    Zip,
+                    CAST(COALESCE(Latitude,  GeographyData.EnvelopeCenter().Lat)  AS decimal(18,8)) AS Latitude,
+                    CAST(COALESCE(Longitude, GeographyData.EnvelopeCenter().Long) AS decimal(18,8)) AS Longitude
+                FROM dbo.ZipPolygon
+                WHERE Zip IS NOT NULL
+                  AND ((Latitude IS NOT NULL AND Longitude IS NOT NULL) OR GeographyData IS NOT NULL)
+                ORDER BY Zip;
+                """)
             .ToListAsync();
+
+        return rows
+            .Select(r => new ZipcodeLookupDto(r.ZipPolygonId, r.Zip, r.Latitude, r.Longitude))
+            .ToList();
+    }
+
+    /// <summary>Row shape for the raw centroid query. Must have a parameterless
+    /// constructor + settable properties for SqlQueryRaw column mapping to work
+    /// (records with primary constructors are unsupported).</summary>
+    public class ZipCentroidRow
+    {
+        public int ZipPolygonId { get; set; }
+        public string Zip { get; set; } = string.Empty;
+        public decimal? Latitude { get; set; }
+        public decimal? Longitude { get; set; }
     }
 
     public async Task<List<ZipcodeLookupDto>> SearchZipcodesAsync(string q, int max = 25)
@@ -472,6 +570,20 @@ public class RecurringRouteService(
             .Where(p => distinct.Contains(p.PolygonId) && p.Active)
             .ToListAsync();
         foreach (var p in found) route.BulkRunPolygons.Add(p);
+    }
+
+    /// <summary>Attach schedules to a route via the M:N junction. Silently
+    /// drops ids that don't resolve to a real tblBulkRunSchedule row - the
+    /// FK would fail at SaveChanges anyway, and the picker should never
+    /// hand us a stale id in normal flow.</summary>
+    private async Task AttachSchedulesAsync(RouteEntity route, List<int> scheduleIds)
+    {
+        var distinct = scheduleIds.Distinct().ToList();
+        if (distinct.Count == 0) return;
+        var found = await Context.TblBulkRunSchedules
+            .Where(s => distinct.Contains(s.BulkRunScheduleId))
+            .ToListAsync();
+        foreach (var s in found) route.Schedules.Add(s);
     }
 
     private static void ValidateUpsert(UpsertRouteRequest req)

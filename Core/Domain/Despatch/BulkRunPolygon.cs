@@ -56,6 +56,13 @@ public partial class BulkRunPolygon
     [MaxLength(100)]
     public string UpdatedBy { get; set; }
 
+    /// <summary>Comma-delimited zip list (with leading + trailing commas)
+    /// derived at save time via spatial overlay against dbo.ZipPolygon.
+    /// Consumed by UTL_stpRouteAutoAssign_ResolveOneSide as a pre-filter
+    /// before running the STIntersects spatial containment test. NULL when
+    /// derivation returned zero overlapping zips.</summary>
+    public string PartiallyIncludedZips { get; set; }
+
     public virtual ICollection<BulkRunPolygonPoint> Points { get; set; } = new List<BulkRunPolygonPoint>();
 
     public virtual ICollection<Route> Routes { get; set; } = new List<Route>();

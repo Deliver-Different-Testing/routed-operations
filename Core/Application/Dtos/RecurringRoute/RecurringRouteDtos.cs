@@ -6,10 +6,19 @@ public record RouteZipcodeDto(int ZipPolygonId, string Zip);
 /// <summary>Bulk polygon summary attached to a route (id + name + centroid; full points list via /api/bulk-polygons/{id}).</summary>
 public record RouteBulkPolygonDto(int PolygonId, string Name, decimal CentroidLatitude, decimal CentroidLongitude);
 
+/// <summary>Schedule attached to a route (via the tblRouteSchedule junction).
+/// Days is the list of ISO days-of-week (1=Mon...7=Sun) the schedule covers.</summary>
+public record RouteScheduleDto(int ScheduleId, string Name, string Window, List<int> Days);
+
 /// <summary>
 /// Read shape for a Route. Mirrors the Configurator TenantRouteDto contract
 /// so operators moving between the two apps see identical fields.
 /// TargetType: 1=Courier, 2=Agent, 3=NetworkPartner.
+///
+/// 2026-08-03: Schedule became M:N. The single ScheduleId/ScheduleName/
+/// ScheduleWindow fields are kept for backwards-compat display (they show
+/// the FIRST bound schedule so pre-migration UIs stay readable) but the
+/// authoritative list lives in Schedules.
 /// </summary>
 public record RouteDto(
     int RouteId,
@@ -21,6 +30,7 @@ public record RouteDto(
     int? ScheduleId,
     string ScheduleName,
     string ScheduleWindow,
+    List<RouteScheduleDto> Schedules,
     bool Active,
     List<RouteZipcodeDto> Zipcodes,
     List<RouteBulkPolygonDto> BulkPolygons,
@@ -28,23 +38,28 @@ public record RouteDto(
     DateTime CreatedAt,
     DateTime? UpdatedAt);
 
-/// <summary>Create or replace-in-full payload. Empty BulkPolygonIds clears all attached bulk polygons; omit the field entirely to keep them untouched.</summary>
+/// <summary>Create or replace-in-full payload. Empty BulkPolygonIds clears
+/// all attached bulk polygons; omit the field entirely to keep them untouched.
+/// ScheduleIds replaces the legacy single ScheduleId - empty list clears
+/// all bound schedules.</summary>
 public record UpsertRouteRequest(
     string Name,
     string Area,
     byte? DefaultTargetType,
     int? DefaultTargetId,
-    int? ScheduleId,
+    List<int> ScheduleIds,
     bool Active,
     List<int> ZipPolygonIds,
     List<int>? BulkPolygonIds = null);
 
-/// <summary>Copy an existing route's geometry + defaults into a new route.</summary>
+/// <summary>Copy an existing route's geometry + defaults into a new route.
+/// Null ScheduleIds means "keep the source's schedules"; empty list means
+/// "start with no schedules".</summary>
 public record CopyRouteRequest(
     string Name,
     byte? DefaultTargetType,
     int? DefaultTargetId,
-    int? ScheduleId,
+    List<int>? ScheduleIds,
     bool CopyZipcodes);
 
 /// <summary>Autocomplete result for the zip search picker.</summary>

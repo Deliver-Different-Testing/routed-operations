@@ -5,6 +5,7 @@ import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
 import ScheduledRoutes from './pages/ScheduledRoutes';
 import PolygonBuilder from './pages/PolygonBuilder';
+import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
 
 // Phase 6 perf note: route-level code splitting via React.lazy() was
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/quoting" element={<Quoting />} />
         <Route path="/scheduled-routes" element={<ScheduledRoutes />} />
         <Route path="/polygon-builder" element={<PolygonBuilder />} />
+        <Route path="/auto-assign-log" element={<AutoAssignLog />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

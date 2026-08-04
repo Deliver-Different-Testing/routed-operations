@@ -15,9 +15,11 @@ import {
 } from '../services/recurringRouteService';
 import {
   bulkPolygonService,
+  parsePartiallyIncludedZips,
   type BulkPolygon,
   type PolygonPoint,
 } from '../services/bulkPolygonService';
+import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -47,6 +49,14 @@ const VIEWPORT_SYNC_DEBOUNCE_MS = 300;
  *  spatial index) but Marker construction is not. Cluster count still
  *  reflects the ACTUAL viewport population separately. */
 const MAX_VIEWPORT_MARKERS = 2000;
+/** Cap on how many postal-polygon SHAPES we auto-load into the map at
+ *  once. Each WKT can be 100KB+ and rendering a Google Maps Polygon per
+ *  postcode is expensive; above this cap we skip auto-load and let the
+ *  operator click individual centroids instead. */
+const MAX_AUTO_SHAPES_IN_VIEWPORT = 300;
+/** Batch size for the per-viewport shape fetch. Kept small enough that a
+ *  single response stays under a few MB even on tenants with rich WKT. */
+const AUTO_SHAPE_FETCH_BATCH_SIZE = 50;
 
 type Mode = 'view' | 'drawing' | 'lassoing' | 'rectangling' | 'circling' | 'pending' | { edit: number };
 /** Vertex count used to approximate a drawn circle as a polygon. 32 is
@@ -149,8 +159,34 @@ export default function PolygonBuilder() {
   const [visibleCentroidCount, setVisibleCentroidCount] = useState(0);
   const [currentZoom, setCurrentZoom] = useState(11);
 
+  // Auto-shape-load tracking. Auto-loaded shapes render on the map by
+  // default but are NOT added to the "selected" set - they are read-only
+  // boundaries the operator can see, click, or use as a starting shape.
+  // Refs (not state) so bounds_changed can dedupe against in-flight ids
+  // without re-renders churning the effect chain.
+  const inFlightShapeIdsRef = useRef<Set<number>>(new Set());
+  const shapeAutoLoadFailedRef = useRef<Set<number>>(new Set());
+  // Tracks the previous selected-count so the zip overlay sync effect
+  // only fitBounds when the operator explicitly added a selection
+  // (search / marker click). Auto-loaded shapes grow loadedShapes
+  // without growing selected, so their arrival must not fit-bounds and
+  // wipe out the operator's current pan/zoom.
+  const prevSelectedCountRef = useRef<number>(0);
+  // Flag consumed by the zip overlay effect on the next render: when set,
+  // fitBounds fires unconditionally against the current `selected` shapes
+  // (bypasses the "selection just grew" gate). Used by the "click a zone
+  // to focus" affordances in ZonesDrawer and coverage polygon rows, which
+  // REPLACE the selection wholesale (may shrink it) but still want the map
+  // to snap to the new shapes.
+  const pendingFocusRef = useRef<boolean>(false);
+
   // Stage 4: right-click context menu (see ContextMenuState type).
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  // View Zones drawer open state. Fetches lazily on first open (see
+  // ZonesDrawer). Keeps state at the page level so re-opens after a
+  // save/reshape read the same cached payload.
+  const [zonesDrawerOpen, setZonesDrawerOpen] = useState(false);
 
   // Stage 4: freehand lasso in-progress buffer + live polyline ref.
   const lassoBufferRef = useRef<LatLng[]>([]);
@@ -224,6 +260,7 @@ export default function PolygonBuilder() {
         centroidMarkersRef.current.clear();
         ensureAllCentroidMarkers();
         syncCentroidMarkersToViewport();
+        autoLoadShapesInViewport();
       }
     });
 
@@ -238,11 +275,16 @@ export default function PolygonBuilder() {
       setCurrentZoom(map.getZoom() ?? 11);
     });
 
-    // Debounced viewport sync for zip centroid markers.
+    // Debounced viewport sync for zip centroid markers + auto-loaded
+    // postal polygon shapes. Both piggyback on the same bounds_changed
+    // event so a single pan/zoom triggers one sync cycle.
     let syncTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleSync = () => {
       if (syncTimer) clearTimeout(syncTimer);
-      syncTimer = setTimeout(() => { syncCentroidMarkersToViewport(); }, VIEWPORT_SYNC_DEBOUNCE_MS);
+      syncTimer = setTimeout(() => {
+        syncCentroidMarkersToViewport();
+        autoLoadShapesInViewport();
+      }, VIEWPORT_SYNC_DEBOUNCE_MS);
     };
     const boundsListener = map.addListener('bounds_changed', scheduleSync);
 
@@ -319,6 +361,7 @@ export default function PolygonBuilder() {
     const run = () => {
       ensureAllCentroidMarkers();
       syncCentroidMarkersToViewport();
+      autoLoadShapesInViewport();
     };
     if (map.getProjection()) { run(); }
     else { g.maps.event.addListenerOnce(map, 'idle', run); }
@@ -376,8 +419,27 @@ export default function PolygonBuilder() {
       });
       path.forEach((pt) => { bounds.extend(pt); boundsCount++; });
     });
-    if (boundsCount > 0 && loadedShapes.length <= 15) {
-      mapRef.current.fitBounds(bounds);
+    // Fit-bounds triggers when the operator either just added a selection
+    // (search / centroid click) OR explicitly clicked a "focus this zone /
+    // polygon" affordance that sets pendingFocusRef. The focus flag is a
+    // one-shot: pending overrides the growth check and always refits.
+    const selectionJustGrew = selected.length > prevSelectedCountRef.current;
+    const focusRequested = pendingFocusRef.current;
+    prevSelectedCountRef.current = selected.length;
+    if (focusRequested) pendingFocusRef.current = false;
+    if ((selectionJustGrew || focusRequested)
+        && boundsCount > 0
+        && selected.length > 0
+        && selected.length <= 15) {
+      const selectedBounds = new g.maps.LatLngBounds();
+      let selectedBoundsCount = 0;
+      loadedShapes.forEach((s) => {
+        if (!selectedSet.has(s.zipPolygonId)) return;
+        const path = parseWktPolygon(s.wkt);
+        if (!path || path.length < 3) return;
+        path.forEach((pt) => { selectedBounds.extend(pt); selectedBoundsCount++; });
+      });
+      if (selectedBoundsCount > 0) mapRef.current.fitBounds(selectedBounds);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadedShapes, selected]);
@@ -538,6 +600,53 @@ export default function PolygonBuilder() {
     clusterer.render();
   };
 
+  /** Auto-load postal polygon SHAPES for postcodes in the current
+   *  viewport so operators see boundaries by default without clicking
+   *  each centroid. Only fires when zoom is high enough for individual
+   *  pills (below that, we're showing cluster bubbles and shapes would
+   *  overwhelm the map). Skips when the viewport contains more than
+   *  MAX_AUTO_SHAPES_IN_VIEWPORT postcodes to protect memory / render
+   *  budget. Failed fetches are quarantined so we don't retry-storm. */
+  const autoLoadShapesInViewport = () => {
+    const map = mapRef.current;
+    const g = (window as any).google;
+    if (!map || !g?.maps) return;
+    if (currentZoom < INDIVIDUAL_PILL_MIN_ZOOM) return;
+    const bounds = map.getBounds();
+    if (!bounds) return;
+
+    const alreadyLoaded = new Set(loadedShapes.map((s) => s.zipPolygonId));
+    const wanted: number[] = [];
+    for (const c of zipCentroidsRef.current) {
+      if (c.latitude == null || c.longitude == null) continue;
+      if (alreadyLoaded.has(c.zipPolygonId)) continue;
+      if (inFlightShapeIdsRef.current.has(c.zipPolygonId)) continue;
+      if (shapeAutoLoadFailedRef.current.has(c.zipPolygonId)) continue;
+      if (!bounds.contains(new g.maps.LatLng(c.latitude, c.longitude))) continue;
+      wanted.push(c.zipPolygonId);
+      if (wanted.length > MAX_AUTO_SHAPES_IN_VIEWPORT) return;
+    }
+    if (wanted.length === 0) return;
+
+    const batch = wanted.slice(0, AUTO_SHAPE_FETCH_BATCH_SIZE);
+    batch.forEach((id) => inFlightShapeIdsRef.current.add(id));
+    void (async () => {
+      try {
+        const res = await recurringRouteService.getPolygonShapes(batch);
+        const shapes = res.response ?? [];
+        setLoadedShapes((prev) => {
+          const map = new Map(prev.map((s) => [s.zipPolygonId, s]));
+          shapes.forEach((s) => map.set(s.zipPolygonId, s));
+          return Array.from(map.values());
+        });
+      } catch {
+        batch.forEach((id) => shapeAutoLoadFailedRef.current.add(id));
+      } finally {
+        batch.forEach((id) => inFlightShapeIdsRef.current.delete(id));
+      }
+    })();
+  };
+
   /** Update icons for markers whose selection / loaded state changed.
    *  Runs when `selected` or `loadedShapes` diff. */
   const refreshCentroidMarkerIcons = () => {
@@ -554,6 +663,18 @@ export default function PolygonBuilder() {
       marker.setZIndex(isSelected ? 30 : isLoaded ? 25 : 20);
       marker.setClickable(mode === 'view');
     });
+  };
+
+  /** Format a "derived N postcode(s)" trailer for the post-save toast.
+   *  Called after every polygon create/reshape so operators can see what
+   *  the auto-overlay computed. Truncates long lists to 6 postcodes + " +N
+   *  more" so a big shape doesn't blow past the toast width. */
+  const derivedZipsToastTrailer = (polygon: BulkPolygon): string => {
+    const zips = parsePartiallyIncludedZips(polygon.partiallyIncludedZips);
+    if (zips.length === 0) return ' (no overlapping postcodes)';
+    const head = zips.slice(0, 6).join(', ');
+    const tail = zips.length > 6 ? `, +${zips.length - 6} more` : '';
+    return ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${head}${tail}.`;
   };
 
   const clearLassoPreview = () => {
@@ -583,7 +704,10 @@ export default function PolygonBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, loadedShapes, mode]);
   useEffect(() => {
-    if (ready && zipCentroidsReady && mapRef.current) syncCentroidMarkersToViewport();
+    if (ready && zipCentroidsReady && mapRef.current) {
+      syncCentroidMarkersToViewport();
+      autoLoadShapesInViewport();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentZoom]);
 
@@ -621,6 +745,66 @@ export default function PolygonBuilder() {
         prev.some((x) => x.zipPolygonId === z.zipPolygonId) ? prev : [...prev, z]);
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
+
+  /** Load the ZipPolygon shapes for a set of zip strings onto the map,
+   *  highlighting them in the "selected" orange colour so they visually
+   *  pop against the ~200 blue auto-loaded viewport shapes. Reused by:
+   *    - "Show on map" on a coverage polygon's sidebar entry (from
+   *      PartiallyIncludedZips)
+   *    - a click on a zone row inside the VIEW Zones drawer
+   *
+   *  Selection is REPLACED wholesale (not merged) so each click is a
+   *  clean "focus my attention on these zips" gesture and previously-
+   *  highlighted zips fall back to the default blue. pendingFocusRef is
+   *  set so the overlay effect refits bounds even when the new selection
+   *  is smaller than the previous. Side effect: the highlighted zips
+   *  count toward the "Save as Route (N)" button, which is the natural
+   *  next step for both flows. */
+  const showZipStringsOnMap = async (zipStrings: string[], contextLabel: string) => {
+    if (zipStrings.length === 0) {
+      toast.show(`${contextLabel} has no zips to show.`, 'error');
+      return;
+    }
+    const zipToLookup = new Map<string, ZipcodeLookup>();
+    for (const c of zipCentroidsRef.current) {
+      if (c.zip) zipToLookup.set(c.zip, c);
+    }
+    const resolved: ZipcodeLookup[] = [];
+    const missing: string[] = [];
+    for (const zs of zipStrings) {
+      const hit = zipToLookup.get(zs);
+      if (hit) resolved.push(hit);
+      else missing.push(zs);
+    }
+    if (resolved.length === 0) {
+      toast.show(`Could not resolve any of the ${zipStrings.length} zip(s) to shapes.`, 'error');
+      return;
+    }
+    try {
+      const res = await recurringRouteService.getPolygonShapes(
+        resolved.map((z) => z.zipPolygonId));
+      const shapes = res.response ?? [];
+      setLoadedShapes((prev) => {
+        const map = new Map(prev.map((s) => [s.zipPolygonId, s]));
+        shapes.forEach((s) => map.set(s.zipPolygonId, s));
+        return Array.from(map.values());
+      });
+      // Replace selection wholesale + request an unconditional fitBounds
+      // so the map snaps to the clicked zone even when the new selection
+      // is smaller than the previous one.
+      pendingFocusRef.current = true;
+      setSelected(resolved);
+      const msg = missing.length > 0
+        ? `Focused ${shapes.length} zip(s) on the map. ${missing.length} zip(s) could not be resolved.`
+        : `Focused ${shapes.length} zip(s) on the map.`;
+      toast.show(msg, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
+  const showIncludedZipsOnMap = (polygon: BulkPolygon) =>
+    showZipStringsOnMap(
+      parsePartiallyIncludedZips(polygon.partiallyIncludedZips),
+      `Coverage polygon "${polygon.name}"`);
 
   const removeSelection = (id: number) => {
     setSelected((prev) => prev.filter((z) => z.zipPolygonId !== id));
@@ -676,7 +860,9 @@ export default function PolygonBuilder() {
       });
       setPolygons((prev) => [...prev, res.response]);
       setMode({ edit: res.response.polygonId });
-      toast.show(`Coverage polygon created from ${zipShortLower} ${z.zip}. Drag to reshape.`, 'success');
+      toast.show(
+        `Coverage polygon created from ${zipShortLower} ${z.zip}. Drag to reshape.${derivedZipsToastTrailer(res.response)}`,
+        'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setConverting(null); }
   };
@@ -1351,6 +1537,7 @@ export default function PolygonBuilder() {
       });
       setPolygons((prev) => prev.map((p) =>
         p.polygonId === id ? res.response : p));
+      toast.show(`Shape saved.${derivedZipsToastTrailer(res.response)}`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
@@ -1536,6 +1723,10 @@ export default function PolygonBuilder() {
           </>
         ) : (
           <>
+            <Button variant="neutral" size="sm" onClick={() => setZonesDrawerOpen(true)}
+              title="Open the rating postcode / ZIP drawer (read-only Client Manager data).">
+              View Zones
+            </Button>
             <Button variant="neutral" size="sm" onClick={clearAll}
               disabled={loadedShapes.length === 0 && selected.length === 0}>
               Clear {zipShortLower}s
@@ -1669,6 +1860,37 @@ export default function PolygonBuilder() {
                           ? `attached to ${p.attachedRouteCount} route(s)`
                           : 'not attached to any route'}
                       </div>
+                      {(() => {
+                        const includedZips = parsePartiallyIncludedZips(p.partiallyIncludedZips);
+                        if (includedZips.length === 0) return null;
+                        return (
+                          <div className="ml-5 mt-1">
+                            <div className="flex items-center gap-1 mb-0.5">
+                              <span className="text-[9px] uppercase tracking-wide text-text-muted">
+                                Covers {includedZips.length} {zipShortLower}{includedZips.length === 1 ? '' : 's'}
+                              </span>
+                              <button type="button"
+                                onClick={() => showIncludedZipsOnMap(p)}
+                                className="text-[9px] font-semibold text-brand-purple hover:underline"
+                                title={`Load the ${includedZips.length} ${zipShortLower} boundar${includedZips.length === 1 ? 'y' : 'ies'} onto the map for visual confirmation`}>
+                                Show on map
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap gap-0.5">
+                              {includedZips.slice(0, 12).map((z) => (
+                                <span key={z}
+                                  className="inline-block px-1 py-0.5 rounded bg-brand-cyan/15 text-brand-dark text-[9px]"
+                                >{z}</span>
+                              ))}
+                              {includedZips.length > 12 && (
+                                <span className="inline-block px-1 py-0.5 text-text-muted text-[9px]"
+                                  title={includedZips.slice(12).join(', ')}
+                                >+{includedZips.length - 12} more</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div
                         className="ml-5 mt-0.5 text-[10px] text-text-muted"
                         title={
@@ -1775,6 +1997,12 @@ export default function PolygonBuilder() {
           }}
         />
       )}
+
+      <ZonesDrawer
+        open={zonesDrawerOpen}
+        onClose={() => setZonesDrawerOpen(false)}
+        onShowZipsOnMap={(zips, ctx) => showZipStringsOnMap(zips, ctx)}
+      />
     </div>
   );
 }
@@ -1809,7 +2037,11 @@ function SaveNewPolygonModal({ vertices, onCancel, onCreated }: SaveNewPolygonPr
         sourceCode: null,
       });
       onCreated(res.response);
-      toast.show(`Coverage polygon "${trimmed}" saved. Use "Save coverage as Route" to attach it to a schedule.`, 'success');
+      const zips = parsePartiallyIncludedZips(res.response.partiallyIncludedZips);
+      const zipTrailer = zips.length === 0
+        ? ' (no overlapping postcodes)'
+        : ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${zips.slice(0, 6).join(', ')}${zips.length > 6 ? `, +${zips.length - 6} more` : ''}.`;
+      toast.show(`Coverage polygon "${trimmed}" saved.${zipTrailer}`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }
   };
@@ -1862,6 +2094,9 @@ function SaveAsRouteModal({ zipSelection, polygonSelection, onClose, onSaved }: 
   const [schedules, setSchedules] = useState<ScheduleLookup[]>([]);
   const [targets, setTargets] = useState<AssignableTargets | null>(null);
   const [saving, setSaving] = useState(false);
+  // Save-as-route is a quick path from Polygon Builder that supports a
+  // single schedule pick; wrapped into a 1-element scheduleIds list at
+  // commit time. Multi-schedule editing lives on the ScheduledRoutes page.
 
   useEffect(() => {
     void (async () => {
@@ -1894,7 +2129,7 @@ function SaveAsRouteModal({ zipSelection, polygonSelection, onClose, onSaved }: 
         area: area.trim(),
         defaultTargetType: targetType,
         defaultTargetId: targetType ? targetId : null,
-        scheduleId,
+        scheduleIds: scheduleId != null ? [scheduleId] : [],
         active: true,
         zipPolygonIds: zipSelection.map((z) => z.zipPolygonId),
         bulkPolygonIds: polygonSelection.map((p) => p.polygonId),

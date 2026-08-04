@@ -18,10 +18,24 @@ export interface BulkPolygon {
   active: boolean;
   points: PolygonPoint[];
   attachedRouteCount: number;
+  /** Comma-delimited zip list with leading + trailing commas, derived at
+   *  save/reshape time by spatial overlay against ZipPolygon. Null when the
+   *  overlay found zero intersections OR the polygon predates the feature. */
+  partiallyIncludedZips: string | null;
   createdUtc: string;
   createdBy: string;
   lastModifiedUtc: string | null;
   updatedBy: string | null;
+}
+
+/** Parse the comma-delimited PartiallyIncludedZips string (with sentinel
+ *  leading + trailing commas) into an ordered list. Empty-list-safe. */
+export function parsePartiallyIncludedZips(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((z) => z.trim())
+    .filter((z) => z.length > 0);
 }
 
 export interface CreateBulkPolygonBody {
