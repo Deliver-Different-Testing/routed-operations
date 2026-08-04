@@ -3,7 +3,10 @@ namespace RoutedOperations.Core.Application.Dtos.BulkPolygon;
 /// <summary>One vertex. OrderIndex ascending around the ring; ring auto-closes.</summary>
 public record PolygonPointDto(int OrderIndex, double Lat, double Lng);
 
-/// <summary>SourceType: 0 = Manual draw, 1 = seeded from a ZipPolygon.</summary>
+/// <summary>SourceType: 0 = Manual draw, 1 = seeded from a ZipPolygon.
+/// PartiallyIncludedZips carries the leading/trailing-comma zip string
+/// derived on save via spatial overlay against ZipPolygon; frontend
+/// strips the sentinel commas before splitting.</summary>
 public record BulkPolygonDto(
     int PolygonId,
     string Name,
@@ -14,6 +17,7 @@ public record BulkPolygonDto(
     bool Active,
     List<PolygonPointDto> Points,
     int AttachedRouteCount,
+    string? PartiallyIncludedZips,
     DateTime CreatedUtc,
     string CreatedBy,
     DateTime? LastModifiedUtc,

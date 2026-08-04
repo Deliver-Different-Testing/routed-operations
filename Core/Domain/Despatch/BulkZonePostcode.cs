@@ -26,4 +26,5 @@ public partial class BulkZonePostcode
     public int? PostcodeGroupId { get; set; }
 
     public virtual TblBulkRegion Depot { get; set; }
+    public virtual BulkZonePostcodeGroup PostcodeGroup { get; set; }
 }

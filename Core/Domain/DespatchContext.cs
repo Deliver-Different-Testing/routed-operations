@@ -52,6 +52,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<BulkImportTemplate> BulkImportTemplates { get; set; }
     public virtual DbSet<BulkImportTemplateMapping> BulkImportTemplateMappings { get; set; }
     public virtual DbSet<BulkZonePostcode> BulkZonePostcodes { get; set; }
+    public virtual DbSet<BulkZonePostcodeGroup> BulkZonePostcodeGroups { get; set; }
     public virtual DbSet<BulkZonePostcodeSurcharge> BulkZonePostcodeSurcharges { get; set; }
     public virtual DbSet<BulkZoneSchedule> BulkZoneSchedules { get; set; }
     public virtual DbSet<JobDeliveryJourney> JobDeliveryJourneys { get; set; }
@@ -73,6 +74,10 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<ZoneGroup> ZoneGroups { get; set; }
     public virtual DbSet<ZoneName> ZoneNames { get; set; }
     public virtual DbSet<ZoneZip> ZoneZips { get; set; }
+    // Auto-assign resolver audit table (populated by
+    // UTL_stpRouteAutoAssign_ResolveOneSide). Consumed by the Auto-Assign Log
+    // diagnostic page under `/auto-assign-log`.
+    public virtual DbSet<RouteAutoAssignLog> RouteAutoAssignLogs { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -111,6 +116,32 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         {
             entity.ToTable("tblBulkRegion");
             entity.HasKey(e => e.BulkRegionId);
+            // ViewZones read-side back-refs. The forward-facing HasOne(...)
+            // .WithMany(x => x.<collection>).HasForeignKey(...) declarations
+            // live on the child entity blocks (BulkZonePostcode, ZoneName)
+            // below - declaring them here again would create duplicate
+            // relationships and EF generates a shadow "TblBulkRegionBulkRegionId"
+            // FK. The BulkZonePostcodeGroup collection is wired below in the
+            // BulkZonePostcodeGroup block for the same reason.
+        });
+
+        // BulkZonePostcodeGroup: NZ rating-postcode group (spec sec. "NZ meaning").
+        modelBuilder.Entity<BulkZonePostcodeGroup>(entity =>
+        {
+            entity.ToTable("BulkZonePostcodeGroup");
+            entity.HasKey(e => e.Id);
+            entity.HasOne(e => e.Depot)
+                .WithMany(t => t.BulkZonePostcodeGroups)
+                .HasForeignKey(e => e.DepotId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        // RouteAutoAssignLog: audit table populated by the resolver SP. We
+        // never write to it from EF - reads only for the diagnostic page.
+        modelBuilder.Entity<RouteAutoAssignLog>(entity =>
+        {
+            entity.ToTable("RouteAutoAssignLog");
+            entity.HasKey(e => e.LogId);
         });
 
         modelBuilder.Entity<TucJobType>(entity =>
@@ -199,6 +230,27 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
                     {
                         j.HasKey("RouteId", "PolygonId");
                         j.ToTable("tblBulkRunPolygonRoute");
+                    });
+
+            // Route <-> TblBulkRunSchedule many-to-many via the tblRouteSchedule
+            // junction (see migration 20260803100000_RouteSchedulesManyToMany).
+            // Replaces the legacy 1:1 Routes.ScheduleId pointer.
+            entity.HasMany(r => r.Schedules)
+                .WithMany(s => s.Routes)
+                .UsingEntity<Dictionary<string, object>>(
+                    "RouteSchedule",
+                    j => j.HasOne<TblBulkRunSchedule>().WithMany()
+                        .HasForeignKey("ScheduleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("FK_tblRouteSchedule_Schedule"),
+                    j => j.HasOne<Despatch.Route>().WithMany()
+                        .HasForeignKey("RouteId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("FK_tblRouteSchedule_Route"),
+                    j =>
+                    {
+                        j.HasKey("RouteId", "ScheduleId");
+                        j.ToTable("tblRouteSchedule");
                     });
         });
 
@@ -711,8 +763,12 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<BulkZonePostcode>(entity =>
         {
             entity.HasOne(e => e.Depot)
-                .WithMany()
+                .WithMany(d => d.BulkZonePostcodes)
                 .HasForeignKey(e => e.DepotId)
+                .OnDelete(DeleteBehavior.NoAction);
+            entity.HasOne(e => e.PostcodeGroup)
+                .WithMany(g => g.BulkZonePostcodes)
+                .HasForeignKey(e => e.PostcodeGroupId)
                 .OnDelete(DeleteBehavior.NoAction);
         });
 
@@ -780,9 +836,10 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             // server returns "Invalid column name 'ZoneName1'" (500 on
             // GET /api/address/zipcodes and any other consumer).
             entity.Property(e => e.ZoneName1).HasColumnName("ZoneName");
-            // Location -> TblBulkRegion (slim, no back-ref).
+            // Location -> TblBulkRegion. ZoneNames back-ref surfaced 2026-08-03
+            // for the Polygon Builder VIEW Zones drawer.
             entity.HasOne(e => e.Location)
-                .WithMany()
+                .WithMany(t => t.ZoneNames)
                 .HasForeignKey(e => e.LocationId)
                 .OnDelete(DeleteBehavior.NoAction);
             // ZoneComboFrom/To collections wired from ZoneCombo above.

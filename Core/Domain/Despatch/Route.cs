@@ -48,7 +48,11 @@ public partial class Route
 
     public int? DefaultAgentId { get; set; }
 
-    /// <summary>FK into tblBulkRunSchedule (representative id of the schedule group).</summary>
+    /// <summary>Legacy 1:1 FK into tblBulkRunSchedule (representative id of the
+    /// schedule group). Superseded 2026-08-03 by the M:N Schedules collection
+    /// (see the tblRouteSchedule junction). Kept on the entity so external
+    /// readers that still project the column don't error; the service layer
+    /// stops writing to it. New code should read/write Schedules.</summary>
     public int? ScheduleId { get; set; }
 
     [ForeignKey(nameof(DefaultCourierId))]
@@ -64,4 +68,8 @@ public partial class Route
 
     /// <summary>Many-to-many with BulkRunPolygon via the tblBulkRunPolygonRoute junction (RouteId, PolygonId).</summary>
     public virtual ICollection<BulkRunPolygon> BulkRunPolygons { get; set; } = new List<BulkRunPolygon>();
+
+    /// <summary>Many-to-many with tblBulkRunSchedule via the tblRouteSchedule junction
+    /// (RouteId, ScheduleId). Replaces the legacy 1:1 ScheduleId pointer.</summary>
+    public virtual ICollection<TblBulkRunSchedule> Schedules { get; set; } = new List<TblBulkRunSchedule>();
 }

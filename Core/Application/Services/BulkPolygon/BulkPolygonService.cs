@@ -49,6 +49,7 @@ public class BulkPolygonService(
                 p.CentroidLatitude,
                 p.CentroidLongitude,
                 p.Active,
+                p.PartiallyIncludedZips,
                 p.CreatedUtc,
                 p.CreatedBy,
                 p.LastModifiedUtc,
@@ -64,7 +65,7 @@ public class BulkPolygonService(
         return rows.Select(r => new BulkPolygonDto(
             r.PolygonId, r.Name, r.SourceType, r.SourceCode,
             r.CentroidLatitude, r.CentroidLongitude, r.Active,
-            r.Points, r.AttachedRouteCount,
+            r.Points, r.AttachedRouteCount, r.PartiallyIncludedZips,
             r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy)).ToList();
     }
 
@@ -82,6 +83,7 @@ public class BulkPolygonService(
                 p.CentroidLatitude,
                 p.CentroidLongitude,
                 p.Active,
+                p.PartiallyIncludedZips,
                 p.CreatedUtc,
                 p.CreatedBy,
                 p.LastModifiedUtc,
@@ -97,7 +99,7 @@ public class BulkPolygonService(
         return row is null ? null : new BulkPolygonDto(
             row.PolygonId, row.Name, row.SourceType, row.SourceCode,
             row.CentroidLatitude, row.CentroidLongitude, row.Active,
-            row.Points, row.AttachedRouteCount,
+            row.Points, row.AttachedRouteCount, row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy);
     }
 
@@ -156,6 +158,7 @@ public class BulkPolygonService(
         }
 
         await InsertPointsAsync(newId, req.Points);
+        await RefreshPartiallyIncludedZipsAsync(newId);
 
         Log.Information(
             "BulkRunPolygon {Id} ({Name}) created; source={Src}, code={Code}, points={PointCount}",
@@ -205,6 +208,7 @@ public class BulkPolygonService(
             "DELETE FROM dbo.tblBulkRunPolygonPoint WHERE PolygonId = @id;",
             new SqlParameter("@id", id));
         await InsertPointsAsync(id, req.Points);
+        await RefreshPartiallyIncludedZipsAsync(id);
 
         Log.Information("BulkRunPolygon {Id} shape updated ({PointCount} points)", id, req.Points.Count);
         return await GetByIdAsync(id);
@@ -255,6 +259,68 @@ public class BulkPolygonService(
                 new SqlParameter("@lat", pt.Lat),
                 new SqlParameter("@lng", pt.Lng));
         }
+    }
+
+    /// <summary>Overlay the polygon's stored geography against dbo.ZipPolygon
+    /// and persist the intersecting zip list into PartiallyIncludedZips.
+    /// Storage format: leading + trailing commas so
+    /// UTL_stpRouteAutoAssign_ResolveOneSide can match by
+    /// `LIKE '%,<zip>,%'` without prefix-collision (1234 vs 12345).
+    /// Called after Create + Reshape - runs one round-trip so the caller
+    /// pays for the overlay only when the geometry actually changed.
+    /// Silently no-ops when the shape overlaps zero ZipPolygon rows
+    /// (column left NULL).</summary>
+    private async Task RefreshPartiallyIncludedZipsAsync(int polygonId)
+    {
+        var zips = new List<string>();
+        try
+        {
+            var stream = Context.Database
+                .SqlQueryRaw<string>(
+                    """
+                    SELECT DISTINCT zp.Zip AS Value
+                    FROM dbo.ZipPolygon zp
+                    WHERE zp.GeographyData IS NOT NULL
+                      AND zp.Zip IS NOT NULL
+                      AND zp.GeographyData.STIntersects(
+                            (SELECT p.GeographyData
+                             FROM dbo.tblBulkRunPolygon p
+                             WHERE p.PolygonId = @id)
+                          ) = 1
+                    """,
+                    new SqlParameter("@id", polygonId))
+                .AsAsyncEnumerable();
+            await foreach (var z in stream)
+            {
+                if (!string.IsNullOrWhiteSpace(z)) zips.Add(z.Trim());
+            }
+        }
+        catch (SqlException ex)
+        {
+            // Overlay failed (rare - typically a malformed source shape).
+            // Log and leave the column untouched. Resolver falls through
+            // to spatial-only pass when the pre-filter column is NULL.
+            Log.Warning(ex,
+                "PartiallyIncludedZips overlay failed for BulkRunPolygon {Id}; leaving column untouched",
+                polygonId);
+            return;
+        }
+
+        var packed = zips.Count == 0
+            ? null
+            : "," + string.Join(",",
+                zips.Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(z => z, StringComparer.Ordinal))
+              + ",";
+
+        await Context.Database.ExecuteSqlRawAsync(
+            "UPDATE dbo.tblBulkRunPolygon SET PartiallyIncludedZips = @z WHERE PolygonId = @id",
+            new SqlParameter("@z", (object?)packed ?? DBNull.Value),
+            new SqlParameter("@id", polygonId));
+
+        Log.Information(
+            "BulkRunPolygon {Id} PartiallyIncludedZips refreshed - {ZipCount} zip(s)",
+            polygonId, zips.Count);
     }
 
     private static void ValidateName(string name)

@@ -40,4 +40,8 @@ public partial class TblBulkRunSchedule
     public bool? ApplyPickupCutoff { get; set; }
     public int? PickupCutoff { get; set; }
     public bool? BookPickup { get; set; }
+
+    /// <summary>Many-to-many with Route via the tblRouteSchedule junction
+    /// (RouteId, ScheduleId). Reciprocal of Route.Schedules.</summary>
+    public virtual ICollection<Route> Routes { get; set; } = new List<Route>();
 }
