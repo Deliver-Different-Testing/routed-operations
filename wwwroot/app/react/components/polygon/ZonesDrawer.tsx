@@ -21,6 +21,14 @@ interface ZonesDrawerProps {
    *  of zip strings + a human context label, the parent Polygon Builder
    *  resolves them to ZipPolygon shapes and highlights them on the map. */
   onShowZipsOnMap?: (zips: string[], contextLabel: string) => void;
+  /** Prefetched zones payload from the parent. When present, the drawer
+   *  opens instantly with data already in hand and skips the internal
+   *  fetch entirely. Refresh button still hits the network on demand.
+   *  Passing `null` means "parent tried to prefetch but the request
+   *  hasn't landed yet" - drawer will fall back to its own on-open fetch.
+   *  Passing `undefined` means the parent isn't managing prefetch at all
+   *  (preserves the original standalone behaviour for other callers). */
+  prefetchedDepots?: RatingZoneDepot[] | null;
 }
 
 /**
@@ -37,11 +45,27 @@ interface ZonesDrawerProps {
  * zone number / postcode/ZIP simultaneously - fine because the largest
  * observed payload is ~4.5k rows and comes over gzipped as ~200KB.
  */
-export function ZonesDrawer({ open, onClose, onShowZipsOnMap }: ZonesDrawerProps) {
+export function ZonesDrawer({ open, onClose, onShowZipsOnMap, prefetchedDepots }: ZonesDrawerProps) {
   const toast = useToast();
-  const [depots, setDepots] = useState<RatingZoneDepot[] | null>(null);
+  // Seed from the prefetched payload if the parent supplied one. The parent
+  // fires this fetch in the background right after the page settles, so
+  // by the time the operator clicks "View Zones" the drawer opens with
+  // data already in hand instead of showing a "Fetching…" state.
+  const [depots, setDepots] = useState<RatingZoneDepot[] | null>(
+    prefetchedDepots ?? null,
+  );
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+
+  // Absorb the prefetched payload if it arrives after the drawer has
+  // already mounted with null (i.e. the operator clicks View Zones before
+  // the background fetch completes). Once we have local state, ignore
+  // subsequent parent updates - the internal state is the source of
+  // truth after that (Refresh button lives here).
+  useEffect(() => {
+    if (prefetchedDepots && depots === null) setDepots(prefetchedDepots);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefetchedDepots]);
 
   const load = async () => {
     setLoading(true);
@@ -55,7 +79,8 @@ export function ZonesDrawer({ open, onClose, onShowZipsOnMap }: ZonesDrawerProps
     }
   };
 
-  // Fetch on first open. Subsequent opens read from the cached state.
+  // Fetch on first open if nothing was prefetched. Subsequent opens read
+  // from the cached state.
   useEffect(() => {
     if (open && depots === null && !loading) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
