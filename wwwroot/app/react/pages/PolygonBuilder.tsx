@@ -20,6 +20,7 @@ import {
   type PolygonPoint,
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
+import { zoneService, type RatingZoneDepot } from '../services/zoneService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -117,6 +118,30 @@ export default function PolygonBuilder() {
   const projectionHelperRef = useRef<any>(null);
   const [ready, setReady] = useState(false);
 
+  // ── PERF: state mirror refs ──────────────────────────────────────────
+  // The drawing hot-path (snapTo, mousemove listener) reads loadedShapes,
+  // polygons, and drawingVertices on every event fire. If we let the
+  // drawing effect depend on those state atoms, every zip-shape auto-load
+  // or vertex click tears down + re-adds the map click/mousemove listeners
+  // (many times/second during draw). Mirror the three state atoms into
+  // refs so the drawing effect stays mounted with `[mode]` deps only, and
+  // snapTo() reads the current values from refs.
+  const loadedShapesRef = useRef<ZipPolygonShape[]>([]);
+  const polygonsListRef = useRef<BulkPolygon[]>([]);
+  const drawingVerticesRef = useRef<LatLng[]>([]);
+  const modeRef = useRef<Mode>('view');
+
+  // ── PERF: pre-parsed snap-target cache ───────────────────────────────
+  // Vertex draw was the laggiest tool because snapTo() parsed every WKT
+  // string on every mousemove (300 shapes x ~100 vertices = ~30k
+  // parseFloat calls per event, at 60Hz). The parsed geometry only
+  // changes when loadedShapes or polygons change, so cache it in refs
+  // and rebuild on those state deltas via a dedicated effect (see
+  // below). snapTo now iterates cached LatLng[][] arrays with zero
+  // parsing on the hot path.
+  const parsedZipShapesRef = useRef<LatLng[][]>([]);
+  const parsedCoverageShapesRef = useRef<{ id: number; path: LatLng[] }[]>([]);
+
   // Zip picker state.
   const [loadedShapes, setLoadedShapes] = useState<ZipPolygonShape[]>([]);
   const [selected, setSelected] = useState<ZipcodeLookup[]>([]);
@@ -187,6 +212,13 @@ export default function PolygonBuilder() {
   // ZonesDrawer). Keeps state at the page level so re-opens after a
   // save/reshape read the same cached payload.
   const [zonesDrawerOpen, setZonesDrawerOpen] = useState(false);
+  // 2026-08-05 (George feedback): prefetch the zones payload in the
+  // background right after the page settles so the first click on
+  // "View Zones" opens the drawer with data already in hand instead
+  // of showing a "Fetching…" spinner. Fetch fires from the map's
+  // first idle so it competes with nothing on the critical path.
+  const [prefetchedZones, setPrefetchedZones] = useState<RatingZoneDepot[] | null>(null);
+  const zonesPrefetchStartedRef = useRef(false);
 
   // Stage 4: freehand lasso in-progress buffer + live polyline ref.
   const lassoBufferRef = useRef<LatLng[]>([]);
@@ -260,7 +292,12 @@ export default function PolygonBuilder() {
         centroidMarkersRef.current.clear();
         ensureAllCentroidMarkers();
         syncCentroidMarkersToViewport();
-        autoLoadShapesInViewport();
+        // PERF: intentionally do NOT call autoLoadShapesInViewport()
+        // here. WKT body fetch + parse + Polygon render for the first
+        // viewport was the biggest single load-lag contributor on NZ
+        // Urgent Staging (George feedback 2026-08-05). Shape auto-load
+        // now waits for the user's first pan / zoom - the bounds
+        // `idle` listener below picks it up naturally.
       }
     });
 
@@ -275,18 +312,31 @@ export default function PolygonBuilder() {
       setCurrentZoom(map.getZoom() ?? 11);
     });
 
-    // Debounced viewport sync for zip centroid markers + auto-loaded
-    // postal polygon shapes. Both piggyback on the same bounds_changed
-    // event so a single pan/zoom triggers one sync cycle.
+    // Viewport sync for zip centroid markers + auto-loaded postal polygon
+    // shapes. PERF: fires on `idle` (Google's recommended event for
+    // heavy overlay work - fires once when the user stops panning /
+    // zooming, versus `bounds_changed` which fires on every frame during
+    // an active drag). Kept a small debounce as an extra safety net for
+    // rapid zoom-in / zoom-out sequences that fire idle back-to-back.
+    // See https://developers.google.com/maps/optimization-guide.
+    //
+    // PERF: skip the first idle event entirely. The addListenerOnce
+    // above (marker population) already handles the first idle for
+    // centroid rendering; scheduling ANOTHER sync + shape-load on the
+    // same first idle just duplicates work and pulls WKT bodies before
+    // the user has expressed intent to look at the map. From the second
+    // idle onwards (any user pan / zoom), the full sync runs normally.
+    let firstIdleSeen = false;
     let syncTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleSync = () => {
+      if (!firstIdleSeen) { firstIdleSeen = true; return; }
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
         syncCentroidMarkersToViewport();
         autoLoadShapesInViewport();
       }, VIEWPORT_SYNC_DEBOUNCE_MS);
     };
-    const boundsListener = map.addListener('bounds_changed', scheduleSync);
+    const boundsListener = map.addListener('idle', scheduleSync);
 
     // Right-click on the map background opens the "New polygon / Lasso" menu.
     const rcListener = map.addListener('rightclick', (e: any) => {
@@ -329,9 +379,60 @@ export default function PolygonBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
+  // ── PERF: mirror state into refs on every render so the drawing
+  // hot-path can read current values without triggering listener re-wire.
+  loadedShapesRef.current = loadedShapes;
+  polygonsListRef.current = polygons;
+  drawingVerticesRef.current = drawingVertices;
+  modeRef.current = mode;
+
+  // ── PERF: rebuild the pre-parsed snap-target cache when either input
+  // dataset changes. This runs O(N vertices) once per dataset change
+  // instead of once per mousemove (~60Hz). The cache is the single
+  // biggest reason vertex draw feels laggy without this - before caching,
+  // each mousemove was parsing 300 WKT strings and re-materialising
+  // ~30k LatLng objects.
+  useEffect(() => {
+    const parsed: LatLng[][] = [];
+    loadedShapes.forEach((s) => {
+      const p = parseWktPolygon(s.wkt);
+      if (p && p.length >= 3) parsed.push(p);
+    });
+    parsedZipShapesRef.current = parsed;
+  }, [loadedShapes]);
+
+  useEffect(() => {
+    parsedCoverageShapesRef.current = polygons
+      .map((poly) => ({ id: poly.polygonId, path: pointsToLatLngPath(poly.points) }))
+      .filter((entry) => entry.path.length >= 3);
+  }, [polygons]);
+
   // Load bulk polygons on mount.
   useEffect(() => {
     void reloadPolygons();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── PERF: prefetch View Zones data in the background so the drawer
+  // opens instantly when the operator clicks View Zones. Fires 800ms
+  // after mount to yield the critical path to the map load + centroid
+  // fetch + polygon list. Ref guard prevents duplicate fetches under
+  // React StrictMode double-mount in dev.
+  useEffect(() => {
+    if (zonesPrefetchStartedRef.current) return;
+    zonesPrefetchStartedRef.current = true;
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await zoneService.getRatingZones();
+          setPrefetchedZones(res.response ?? []);
+        } catch {
+          // Silent - the drawer will fall back to its own on-open fetch
+          // and surface the error via toast at that point.
+        }
+      })();
+    }, 800);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -354,6 +455,17 @@ export default function PolygonBuilder() {
   // map are ready. Also wait for the map to be idle so the clusterer's
   // projection is available (see the idle listener in map-init above
   // for why this matters).
+  //
+  // PERF: intentionally does NOT call autoLoadShapesInViewport() on the
+  // first paint. Loading the WKT bodies for every zip in the initial
+  // viewport was the biggest single contributor to "click Polygon
+  // Builder -> sits there for seconds" - one batch of 50 shapes can
+  // pull 250KB-2.5MB of coordinate strings, then each has to be parsed
+  // + rendered as a Google Maps Polygon. Now the first shape batch
+  // fires on the first `idle` after the user pans / zooms (the
+  // boundsListener wired up in map-init already handles this), which
+  // (a) gets the operator onto the page immediately and (b) means the
+  // shape load happens in the background while they orient themselves.
   useEffect(() => {
     const g = (window as any).google;
     if (!ready || !zipCentroidsReady || !mapRef.current || !g?.maps) return;
@@ -361,7 +473,6 @@ export default function PolygonBuilder() {
     const run = () => {
       ensureAllCentroidMarkers();
       syncCentroidMarkersToViewport();
-      autoLoadShapesInViewport();
     };
     if (map.getProjection()) { run(); }
     else { g.maps.event.addListenerOnce(map, 'idle', run); }
@@ -441,8 +552,19 @@ export default function PolygonBuilder() {
       });
       if (selectedBoundsCount > 0) mapRef.current.fitBounds(selectedBounds);
     }
+    // BUGFIX 2026-08-05 (George): `mode` MUST be in the deps so this effect
+    // re-runs when the operator switches from 'view' to 'drawing' /
+    // 'lasso' / 'circling' / 'edit'. The `clickable: mode === 'view'`
+    // update at the poly.setOptions call above only lands on existing
+    // overlays if the effect re-fires. Without this dep, zip polygons
+    // kept their `clickable: true` from creation-time, so Google Maps
+    // consumed the vertex-add click at the polygon layer (firing
+    // toggleZip) and the map's click handler never received it -> user
+    // couldn't add a vertex when the cursor was over an existing zip
+    // polygon. Coverage-polygon effect below already has `mode` in deps
+    // and works correctly; this is the counterpart fix for zip overlays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedShapes, selected]);
+  }, [loadedShapes, selected, mode]);
 
   // Sync coverage-polygon overlays.
   useEffect(() => {
@@ -881,18 +1003,26 @@ export default function PolygonBuilder() {
     const clickPx = latLngToPixel(raw.lat, raw.lng);
     if (!clickPx) return { point: raw, kind: null };
 
+    // PERF: read PRE-PARSED shapes from the cache refs. WKT parsing +
+    // point-to-LatLng conversion happens once per state change in the
+    // cache-build effects above, not per mousemove event. This is the
+    // biggest single win for vertex-draw smoothness on tenants with
+    // many loaded zip boundaries in the viewport.
+    const currentDrawingVertices = drawingVerticesRef.current;
+    const currentMode = modeRef.current;
+    const editingId = typeof currentMode === 'object' ? currentMode.edit : null;
+
     const shapes: LatLng[][] = [];
-    loadedShapes.forEach((s) => {
-      const p = parseWktPolygon(s.wkt);
-      if (p && p.length >= 3) shapes.push(p);
-    });
-    polygons.forEach((poly) => {
-      const editingId = typeof mode === 'object' ? mode.edit : null;
-      if (poly.polygonId === editingId) return;
-      const p = pointsToLatLngPath(poly.points);
-      if (p.length >= 3) shapes.push(p);
-    });
-    if (drawingVertices.length > 0) shapes.push(drawingVertices);
+    // Zip boundary shapes - all get snapped to.
+    for (const ring of parsedZipShapesRef.current) shapes.push(ring);
+    // Coverage polygons - skip the one currently being edited so its own
+    // vertices don't act as snap targets for themselves.
+    for (const entry of parsedCoverageShapesRef.current) {
+      if (entry.id === editingId) continue;
+      shapes.push(entry.path);
+    }
+    // In-progress polygon vertices are snap targets too (close-the-loop).
+    if (currentDrawingVertices.length > 0) shapes.push(currentDrawingVertices);
 
     for (const ring of shapes) {
       for (const v of ring) {
@@ -902,8 +1032,8 @@ export default function PolygonBuilder() {
         if (d < SNAP_PIXELS) return { point: v, kind: 'vertex' };
       }
     }
-    if (drawingVertices.length >= 3) {
-      const first = drawingVertices[0];
+    if (currentDrawingVertices.length >= 3) {
+      const first = currentDrawingVertices[0];
       const px = latLngToPixel(first.lat, first.lng);
       if (px) {
         const d = Math.hypot(px.x - clickPx.x, px.y - clickPx.y);
@@ -1150,20 +1280,40 @@ export default function PolygonBuilder() {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || mode !== 'drawing') return;
+    const g = (window as any).google;
+    if (!map || !g?.maps || mode !== 'drawing') return;
 
-    const clickListener = map.addListener('click', (e: any) => {
-      const raw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+    // PERF: reuse a single hint marker across mousemove events. Prior
+    // impl destroyed + reallocated the Marker on every event (~60Hz
+    // during active drawing), which starved the main thread on lower-
+    // spec devices. Now the marker lives for the entire draw session and
+    // just moves via setPosition + setMap(null|map) toggles.
+    let lastKind: 'vertex' | 'edge' | null = null;
+
+    // PERF: rAF-throttle the snap work. Google Maps mousemove fires very
+    // frequently (per pointer sample - up to 240Hz on high-refresh mice /
+    // trackpads). Snap logic, even with the pre-parsed cache, projects
+    // every candidate vertex to pixels to test proximity - 300 shapes x
+    // 100 vertices = 30k projections per call. Storing only the latest
+    // event and processing it inside a scheduled rAF collapses N events
+    // per frame into a single snap query, capped at the display refresh
+    // rate (60-120Hz). The visible cursor hint still tracks smoothly
+    // because rAF fires just before paint.
+    let pendingRaw: LatLng | null = null;
+    let rafId: number | null = null;
+
+    const updateSnapHint = () => {
+      rafId = null;
+      const raw = pendingRaw;
+      pendingRaw = null;
+      if (!raw) return;
       const snap = snapTo(raw);
-      setDrawingVertices((p) => [...p, snap.point]);
-    });
-    const moveListener = map.addListener('mousemove', (e: any) => {
-      snapHintRef.current?.setMap(null);
-      snapHintRef.current = null;
-      const raw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-      const snap = snapTo(raw);
-      if (snap.kind) {
-        const g = (window as any).google;
+      if (!snap.kind) {
+        if (snapHintRef.current) snapHintRef.current.setMap(null);
+        lastKind = null;
+        return;
+      }
+      if (!snapHintRef.current) {
         snapHintRef.current = new g.maps.Marker({
           position: snap.point, map,
           icon: {
@@ -1173,16 +1323,50 @@ export default function PolygonBuilder() {
           },
           clickable: false, zIndex: 999,
         });
+        lastKind = snap.kind;
+      } else {
+        snapHintRef.current.setPosition(snap.point);
+        snapHintRef.current.setMap(map);
+        // Icon changes are relatively expensive (allocates a new symbol
+        // options object). Only re-set when the snap kind actually flips
+        // between vertex and edge, not on every event.
+        if (snap.kind !== lastKind) {
+          snapHintRef.current.setIcon({
+            path: g.maps.SymbolPath.CIRCLE,
+            scale: 8, strokeColor: snap.kind === 'vertex' ? '#ef4444' : '#f59e0b',
+            fillColor: '#fff', fillOpacity: 1, strokeWeight: 3,
+          });
+          lastKind = snap.kind;
+        }
       }
+    };
+
+    const clickListener = map.addListener('click', (e: any) => {
+      // Click MUST snap synchronously (the vertex we commit needs to
+      // reflect the current snap target). Only mousemove is rAF-throttled.
+      const raw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+      const snap = snapTo(raw);
+      setDrawingVertices((p) => [...p, snap.point]);
+    });
+    const moveListener = map.addListener('mousemove', (e: any) => {
+      pendingRaw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+      if (rafId === null) rafId = window.requestAnimationFrame(updateSnapHint);
     });
     return () => {
-      (window as any).google.maps.event.removeListener(clickListener);
-      (window as any).google.maps.event.removeListener(moveListener);
+      g.maps.event.removeListener(clickListener);
+      g.maps.event.removeListener(moveListener);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
       snapHintRef.current?.setMap(null);
       snapHintRef.current = null;
     };
+    // PERF: deps intentionally narrowed to [mode]. Prior deps
+    // (drawingVertices + loadedShapes + polygons) caused the listeners
+    // to unmount + remount on every vertex click and every zip auto-load
+    // during a draw session. snapTo now reads those atoms from mirror
+    // refs, so this effect only fires when the user enters / leaves
+    // drawing mode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, drawingVertices, loadedShapes, polygons]);
+  }, [mode]);
 
   useEffect(() => {
     const g = (window as any).google;
@@ -1221,10 +1405,11 @@ export default function PolygonBuilder() {
     drawPreviewMarkersRef.current = [];
   };
 
-  const startDraw = () => {
-    setMode('drawing');
-    setDrawingVertices([]);
-  };
+  // startDraw (click-to-add-vertex flow) removed 2026-08-05. Toolbar +
+  // right-click menu + keyboard shortcut all dropped. The mode ===
+  // 'drawing' effect below stays in the file as dead code because
+  // nothing sets the mode anymore, but it's cheap to leave for a
+  // possible future re-enable and removing it would balloon the diff.
   const cancelDraw = () => {
     setDrawingVertices([]);
     setMode('view');
@@ -1289,9 +1474,10 @@ export default function PolygonBuilder() {
       }
       // Tool shortcuts fire in view OR edit mode (edit-mode operator can
       // jump straight into drawing another polygon without clicking "Done editing" first).
+      // 'P' (vertex polygon) shortcut removed 2026-08-05 alongside the
+      // toolbar item; the drag-based tools cover the same use cases.
       if (mode === 'view' || editingId != null) {
         if (e.key === 'l' || e.key === 'L') { e.preventDefault(); startLasso(); return; }
-        if (e.key === 'p' || e.key === 'P') { e.preventDefault(); startDraw(); return; }
         if (e.key === 'r' || e.key === 'R') { e.preventDefault(); startRect(); return; }
         if (e.key === 'c' || e.key === 'C') { e.preventDefault(); startCircle(); return; }
         if (e.key === '/') {
@@ -1697,7 +1883,6 @@ export default function PolygonBuilder() {
               Drag the purple squares to refine ({pendingPolygon?.length ?? 0} vertices). Click white circles to insert, right-click a square to delete. Click "Finish drawing" to name + save.
             </span>
             <DrawingToolsMenu
-              onStartDraw={startDraw}
               onStartLasso={startLasso}
               onStartRect={startRect}
               onStartCircle={startCircle}
@@ -1714,7 +1899,6 @@ export default function PolygonBuilder() {
               Drag the coloured squares to reshape; click a white circle to insert a vertex; right-click a square to delete it.
             </span>
             <DrawingToolsMenu
-              onStartDraw={startDraw}
               onStartLasso={startLasso}
               onStartRect={startRect}
               onStartCircle={startCircle}
@@ -1740,7 +1924,6 @@ export default function PolygonBuilder() {
               Save coverage as Route ({selectedPolygons.size})
             </Button>
             <DrawingToolsMenu
-              onStartDraw={startDraw}
               onStartLasso={startLasso}
               onStartRect={startRect}
               onStartCircle={startCircle}
@@ -1959,7 +2142,6 @@ export default function PolygonBuilder() {
           onEditPolygon={(p) => { setContextMenu(null); startEdit(p.polygonId); }}
           onSimplifyPolygon={(p) => { setContextMenu(null); void simplifyPolygonInPlace(p); }}
           onRemovePolygon={(p) => { setContextMenu(null); void removePolygon(p); }}
-          onStartDraw={() => { setContextMenu(null); startDraw(); }}
           onStartLasso={() => { setContextMenu(null); startLasso(); }}
           onStartRect={() => { setContextMenu(null); startRect(); }}
           onStartCircle={() => { setContextMenu(null); startCircle(); }}
@@ -2002,6 +2184,7 @@ export default function PolygonBuilder() {
         open={zonesDrawerOpen}
         onClose={() => setZonesDrawerOpen(false)}
         onShowZipsOnMap={(zips, ctx) => showZipStringsOnMap(zips, ctx)}
+        prefetchedDepots={prefetchedZones}
       />
     </div>
   );
@@ -2437,7 +2620,6 @@ interface PolygonContextMenuProps {
   onEditPolygon: (p: BulkPolygon) => void;
   onSimplifyPolygon: (p: BulkPolygon) => void;
   onRemovePolygon: (p: BulkPolygon) => void;
-  onStartDraw: () => void;
   onStartLasso: () => void;
   onStartRect: () => void;
   onStartCircle: () => void;
@@ -2513,7 +2695,9 @@ function PolygonContextMenu(props: PolygonContextMenuProps) {
       )}
       {state.target.kind === 'mapBackground' && (
         <>
-          <MenuItem label="Draw new polygon (P)" onClick={props.onStartDraw} />
+          {/* "Draw new polygon (P)" entry removed 2026-08-05 with the
+              Vertex Polygon tool. Lasso is now the primary freehand
+              polygon tool. */}
           <MenuItem label="Freehand lasso (L)" onClick={props.onStartLasso} />
           <MenuItem label="Draw rectangle (R)" onClick={props.onStartRect} />
           <MenuItem label="Draw circle (C)" onClick={props.onStartCircle} />
@@ -2542,19 +2726,18 @@ function MenuItem({ label, onClick, disabled, danger }: {
 }
 
 // ─── DrawingToolsMenu ───────────────────────────────────────────────────
-// Consolidates the 4 draw modes (Lasso, Rect, Circle, Vertex-draw) behind
+// Consolidates the 3 drag-based draw modes (Lasso, Rect, Circle) behind
 // a single "Drawing Tools" button + dropdown, each with an inline-SVG
 // glyph so the operator can pick a tool at a glance. Click-outside + Esc
 // dismiss. Keyboard shortcuts (L / R / C / P) still fire independently.
 
 interface DrawingToolsMenuProps {
-  onStartDraw: () => void;
   onStartLasso: () => void;
   onStartRect: () => void;
   onStartCircle: () => void;
 }
 
-function DrawingToolsMenu({ onStartDraw, onStartLasso, onStartRect, onStartCircle }: DrawingToolsMenuProps) {
+function DrawingToolsMenu({ onStartLasso, onStartRect, onStartCircle }: DrawingToolsMenuProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -2578,13 +2761,19 @@ function DrawingToolsMenu({ onStartDraw, onStartLasso, onStartRect, onStartCircl
 
   const fire = (fn: () => void) => { setOpen(false); fn(); };
 
+  // 2026-08-05 (George feedback): "Vertex polygon" (click-to-add-vertex)
+  // dropped from the toolbar. It felt unusable compared to the drag-based
+  // tools even after the snap-cache + rAF perf fixes - the click-to-add
+  // UX is fundamentally slower than lasso/rect/circle. Operators can
+  // still get per-vertex precision by drawing with any of the three
+  // remaining tools and then reshaping in edit mode (every vertex is a
+  // draggable handle there). The `mode === 'drawing'` code path stays
+  // in the file for now in case a future affordance re-enables it.
   const items: Array<{ label: string; shortcut: string; onClick: () => void; icon: React.ReactNode; primary?: boolean }> = [
-    { label: 'Freehand lasso', shortcut: 'L', onClick: onStartLasso, icon: <IconLasso /> },
+    { label: 'Freehand lasso', shortcut: 'L', onClick: onStartLasso, icon: <IconLasso />, primary: true },
     { label: 'Rectangle',      shortcut: 'R', onClick: onStartRect,   icon: <IconRect /> },
     { label: 'Circle',         shortcut: 'C', onClick: onStartCircle, icon: <IconCircle /> },
-    { label: 'Vertex polygon', shortcut: 'P', onClick: onStartDraw,   icon: <IconPolygon />, primary: true },
   ];
-
   return (
     <div ref={wrapRef} className="relative">
       <Button variant="primary" size="sm" onClick={() => setOpen((o) => !o)}
