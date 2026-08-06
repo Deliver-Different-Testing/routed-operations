@@ -1,9 +1,20 @@
 import { request } from './api';
 
 export interface PolygonPoint {
+  /** 0 = the polygon's first ring. Multi-ring polygons use 1, 2, ... for
+   *  holes and / or disjoint pieces. Winding order distinguishes hole vs
+   *  outer (CCW = new outer piece, CW = hole of the preceding outer),
+   *  matching Google Maps Polygon.setPaths() interpretation. Legacy
+   *  pre-2026-08-06 rows are all ringIndex = 0. */
+  ringIndex: number;
   orderIndex: number;
   lat: number;
   lng: number;
+}
+
+export interface BulkPolygonAttachedRoute {
+  routeId: number;
+  routeName: string;
 }
 
 export interface BulkPolygon {
@@ -18,6 +29,11 @@ export interface BulkPolygon {
   active: boolean;
   points: PolygonPoint[];
   attachedRouteCount: number;
+  /** Active routes this polygon is attached to (empty if unattached).
+   *  Polygon Builder sidebar renders these as clickable links that
+   *  jump into the route editor via `?edit=<routeId>` on the
+   *  Scheduled Routes page. */
+  attachedRoutes: BulkPolygonAttachedRoute[];
   /** Comma-delimited zip list with leading + trailing commas, derived at
    *  save/reshape time by spatial overlay against ZipPolygon. Null when the
    *  overlay found zero intersections OR the polygon predates the feature. */
