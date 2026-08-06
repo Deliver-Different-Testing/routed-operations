@@ -55,9 +55,14 @@ public class BulkPolygonService(
                 p.LastModifiedUtc,
                 p.UpdatedBy,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
+                AttachedRoutes = p.Routes
+                    .Where(r => r.Active)
+                    .OrderBy(r => r.Name)
+                    .Select(r => new BulkPolygonAttachedRouteDto(r.RouteId, r.Name ?? string.Empty))
+                    .ToList(),
                 Points = p.Points
-                    .OrderBy(pt => pt.OrderIndex)
-                    .Select(pt => new PolygonPointDto(pt.OrderIndex, pt.Lat, pt.Lng))
+                    .OrderBy(pt => pt.RingIndex).ThenBy(pt => pt.OrderIndex)
+                    .Select(pt => new PolygonPointDto(pt.RingIndex, pt.OrderIndex, pt.Lat, pt.Lng))
                     .ToList(),
             })
             .ToListAsync();
@@ -65,7 +70,8 @@ public class BulkPolygonService(
         return rows.Select(r => new BulkPolygonDto(
             r.PolygonId, r.Name, r.SourceType, r.SourceCode,
             r.CentroidLatitude, r.CentroidLongitude, r.Active,
-            r.Points, r.AttachedRouteCount, r.PartiallyIncludedZips,
+            r.Points, r.AttachedRouteCount, r.AttachedRoutes,
+            r.PartiallyIncludedZips,
             r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy)).ToList();
     }
 
@@ -89,9 +95,14 @@ public class BulkPolygonService(
                 p.LastModifiedUtc,
                 p.UpdatedBy,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
+                AttachedRoutes = p.Routes
+                    .Where(r => r.Active)
+                    .OrderBy(r => r.Name)
+                    .Select(r => new BulkPolygonAttachedRouteDto(r.RouteId, r.Name ?? string.Empty))
+                    .ToList(),
                 Points = p.Points
-                    .OrderBy(pt => pt.OrderIndex)
-                    .Select(pt => new PolygonPointDto(pt.OrderIndex, pt.Lat, pt.Lng))
+                    .OrderBy(pt => pt.RingIndex).ThenBy(pt => pt.OrderIndex)
+                    .Select(pt => new PolygonPointDto(pt.RingIndex, pt.OrderIndex, pt.Lat, pt.Lng))
                     .ToList(),
             })
             .FirstOrDefaultAsync();
@@ -99,7 +110,8 @@ public class BulkPolygonService(
         return row is null ? null : new BulkPolygonDto(
             row.PolygonId, row.Name, row.SourceType, row.SourceCode,
             row.CentroidLatitude, row.CentroidLongitude, row.Active,
-            row.Points, row.AttachedRouteCount, row.PartiallyIncludedZips,
+            row.Points, row.AttachedRouteCount, row.AttachedRoutes,
+            row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy);
     }
 
@@ -249,12 +261,13 @@ public class BulkPolygonService(
         // Small batches (< 1k vertices in normal use) - individual INSERTs
         // are simpler than table-valued params and adequate at this volume.
         // Wrapped in a single ExecuteSqlRaw per point so parameterisation
-        // is safe. Order preserved by OrderIndex column.
-        foreach (var pt in points.OrderBy(p => p.OrderIndex))
+        // is safe. Order preserved by (RingIndex, OrderIndex) column pair.
+        foreach (var pt in points.OrderBy(p => p.RingIndex).ThenBy(p => p.OrderIndex))
         {
             await Context.Database.ExecuteSqlRawAsync(
-                "INSERT INTO dbo.tblBulkRunPolygonPoint (PolygonId, OrderIndex, Lat, Lng) VALUES (@pid, @oi, @lat, @lng);",
+                "INSERT INTO dbo.tblBulkRunPolygonPoint (PolygonId, RingIndex, OrderIndex, Lat, Lng) VALUES (@pid, @ri, @oi, @lat, @lng);",
                 new SqlParameter("@pid", polygonId),
+                new SqlParameter("@ri", pt.RingIndex),
                 new SqlParameter("@oi", pt.OrderIndex),
                 new SqlParameter("@lat", pt.Lat),
                 new SqlParameter("@lng", pt.Lng));
@@ -275,18 +288,42 @@ public class BulkPolygonService(
         var zips = new List<string>();
         try
         {
+            // Include a zip in the derived list only when it MEANINGFULLY
+            // overlaps the polygon - i.e. the intersection area is at least
+            // 10% of that zip's own area OR the polygon completely engulfs
+            // the zip. Bare STIntersects was too permissive: neighbouring
+            // zips share edges cleanly at their borders, so unioning two
+            // adjacent zips (e.g. 94575 + 94556) produced a polygon whose
+            // boundary touched EVERY neighbour, and every neighbour got
+            // listed as "partially included" even though 0 area actually
+            // fell inside. Under the resolver's zip-pre-filter this meant
+            // false-positive candidate shapes and unnecessary STIntersects
+            // work at booking time. The 10% threshold aligns
+            // "partially included" with operator intuition ("this zip is
+            // meaningfully covered by the polygon"). Fully-contained zips
+            // are always included via the STWithin short-circuit.
             var stream = Context.Database
                 .SqlQueryRaw<string>(
                     """
+                    DECLARE @Poly geography =
+                        (SELECT p.GeographyData FROM dbo.tblBulkRunPolygon p
+                         WHERE p.PolygonId = @id);
                     SELECT DISTINCT zp.Zip AS Value
                     FROM dbo.ZipPolygon zp
                     WHERE zp.GeographyData IS NOT NULL
                       AND zp.Zip IS NOT NULL
-                      AND zp.GeographyData.STIntersects(
-                            (SELECT p.GeographyData
-                             FROM dbo.tblBulkRunPolygon p
-                             WHERE p.PolygonId = @id)
-                          ) = 1
+                      AND zp.GeographyData.STIntersects(@Poly) = 1
+                      AND (
+                            -- Zip is fully engulfed by the polygon (fast path,
+                            -- avoids STIntersection cost when clearly inside).
+                            zp.GeographyData.STWithin(@Poly) = 1
+                         OR -- Or the actual overlap area is >= 10% of the
+                            -- zip's total area. Excludes edge-only touches
+                            -- (intersection area = 0) and sliver overlaps
+                            -- caused by ZIP-boundary noise.
+                            zp.GeographyData.STIntersection(@Poly).STArea()
+                              >= 0.1 * zp.GeographyData.STArea()
+                          )
                     """,
                     new SqlParameter("@id", polygonId))
                 .AsAsyncEnumerable();
@@ -337,26 +374,118 @@ public class BulkPolygonService(
             throw new InvalidOperationException("A polygon needs at least 3 vertices.");
     }
 
-    /// <summary>Assemble a WKT POLYGON string from a points list, auto-closing the ring.</summary>
+    /// <summary>Assemble a WKT string from a points list, auto-closing every
+    /// ring. Handles the full range:
+    ///   - Single ring       -> POLYGON((...))
+    ///   - Outer + holes     -> POLYGON((outer), (hole1), (hole2))
+    ///   - Multi-piece union -> MULTIPOLYGON(((piece1)), ((piece2 outer), (piece2 hole)))
+    ///
+    /// Piece boundaries are inferred from ring winding order: a CCW ring
+    /// starts a new piece (outer); subsequent CW rings attach as holes to
+    /// the current piece; the next CCW starts the next piece. This mirrors
+    /// Google Maps' Polygon.setPaths() interpretation, so the frontend and
+    /// backend agree without an explicit "is this a hole" flag on each
+    /// point row.
+    ///
+    /// SQL Server's `.MakeValid()` + `.ReorientObject()` normalise the
+    /// final geography so a slightly wrong ordering still produces a
+    /// valid geography (albeit possibly with pieces merged or holes
+    /// dropped). Winding is computed via signed area (shoelace formula).</summary>
     private static string BuildPolygonWkt(List<PolygonPointDto> points)
     {
-        var ordered = points.OrderBy(p => p.OrderIndex).ToList();
-        var sb = new StringBuilder("POLYGON((");
+        // Group points by ring, preserving ring order.
+        var ringsInOrder = points
+            .GroupBy(p => p.RingIndex)
+            .OrderBy(g => g.Key)
+            .Select(g => g.OrderBy(p => p.OrderIndex).ToList())
+            .Where(r => r.Count >= 3)
+            .ToList();
+
+        if (ringsInOrder.Count == 0)
+            throw new InvalidOperationException("BuildPolygonWkt: no rings with >= 3 vertices.");
+
+        // Group rings into pieces. First ring starts piece 0 as its outer;
+        // subsequent CCW rings start new pieces; CW rings attach as holes
+        // to the current piece.
+        var pieces = new List<List<List<PolygonPointDto>>>();
+        foreach (var ring in ringsInOrder)
+        {
+            var isCcw = SignedRingArea(ring) > 0;
+            if (pieces.Count == 0 || isCcw)
+                pieces.Add(new List<List<PolygonPointDto>> { ring });
+            else
+                pieces[^1].Add(ring); // CW ring - hole of the current piece.
+        }
+
         var inv = CultureInfo.InvariantCulture;
-        for (int i = 0; i < ordered.Count; i++)
+        var sb = new StringBuilder();
+        var isMulti = pieces.Count > 1;
+
+        // Local helper: append one ring's coordinate sequence as `(x y, x y, ...)`,
+        // auto-closing if the ring doesn't already close.
+        void AppendRing(List<PolygonPointDto> ring)
         {
-            if (i > 0) sb.Append(", ");
-            sb.Append(ordered[i].Lng.ToString(inv)).Append(' ').Append(ordered[i].Lat.ToString(inv));
+            sb.Append('(');
+            for (int i = 0; i < ring.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(ring[i].Lng.ToString(inv)).Append(' ').Append(ring[i].Lat.ToString(inv));
+            }
+            var first = ring[0];
+            var last = ring[^1];
+            if (first.Lat != last.Lat || first.Lng != last.Lng)
+                sb.Append(", ").Append(first.Lng.ToString(inv)).Append(' ').Append(first.Lat.ToString(inv));
+            sb.Append(')');
         }
-        // Close the ring by repeating the first vertex if it isn't already the last.
-        var first = ordered[0];
-        var last = ordered[^1];
-        if (first.Lat != last.Lat || first.Lng != last.Lng)
+
+        if (isMulti)
         {
-            sb.Append(", ").Append(first.Lng.ToString(inv)).Append(' ').Append(first.Lat.ToString(inv));
+            // MULTIPOLYGON(((outer), (hole)), ((outer2)))
+            sb.Append("MULTIPOLYGON(");
+            for (int p = 0; p < pieces.Count; p++)
+            {
+                if (p > 0) sb.Append(", ");
+                sb.Append('(');
+                var piece = pieces[p];
+                for (int r = 0; r < piece.Count; r++)
+                {
+                    if (r > 0) sb.Append(", ");
+                    AppendRing(piece[r]);
+                }
+                sb.Append(')');
+            }
+            sb.Append(')');
         }
-        sb.Append("))");
+        else
+        {
+            // POLYGON((outer), (hole1), (hole2))
+            sb.Append("POLYGON(");
+            var piece = pieces[0];
+            for (int r = 0; r < piece.Count; r++)
+            {
+                if (r > 0) sb.Append(", ");
+                AppendRing(piece[r]);
+            }
+            sb.Append(')');
+        }
         return sb.ToString();
+    }
+
+    /// <summary>Shoelace signed area. Positive = CCW, negative = CW. Uses
+    /// (lng, lat) as (x, y) - planar approximation is fine for winding
+    /// detection at continental / city scale.</summary>
+    private static double SignedRingArea(List<PolygonPointDto> ring)
+    {
+        double sum = 0;
+        for (int i = 0; i < ring.Count; i++)
+        {
+            var a = ring[i];
+            var b = ring[(i + 1) % ring.Count];
+            sum += (b.Lng - a.Lng) * (b.Lat + a.Lat);
+        }
+        // Shoelace as written gives sign inverted for our y-up convention;
+        // flip so positive = CCW.
+        return -sum / 2.0;
     }
 
     private string CurrentUser()

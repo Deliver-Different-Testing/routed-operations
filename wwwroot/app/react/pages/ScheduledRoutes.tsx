@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { useAuth } from '../context/AuthContext';
 import { postcodeLabel } from '../lib/tenantLabels';
 import { tenantMapCentre } from '../lib/mapDefaults';
@@ -19,6 +20,7 @@ import {
   type RouteRosterEntry,
   type UpsertRosterBody,
 } from '../services/recurringRouteService';
+import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 /** Zoom threshold at which we render INDIVIDUAL zip pills. Below this the
@@ -39,6 +41,7 @@ const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
  */
 export default function ScheduledRoutes() {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const user = useAuth();
   const zipLongLabel = postcodeLabel(user.isUsTenant, false);
   const [routes, setRoutes] = useState<RecurringRoute[]>([]);
@@ -57,12 +60,44 @@ export default function ScheduledRoutes() {
   };
   useEffect(() => { void load(); }, []);
 
+  // URL param handler: `?edit=<routeId>` auto-opens that route's edit
+  // modal after the route list loads. Set by Polygon Builder's route
+  // link so the operator jumps directly into the coverage-polygon
+  // route's editor. Consumes the param after opening so a refresh
+  // doesn't re-open unexpectedly.
+  useEffect(() => {
+    if (routes.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const editIdRaw = params.get('edit');
+    if (!editIdRaw) return;
+    const editId = Number(editIdRaw);
+    if (!Number.isFinite(editId)) return;
+    const target = routes.find((r) => r.routeId === editId);
+    if (target) {
+      setEditing(target);
+      // Clear the param so a refresh doesn't re-open + so subsequent
+      // deep-links can be re-fired without a full page load.
+      params.delete('edit');
+      const newSearch = params.toString();
+      const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : '') + window.location.hash;
+      window.history.replaceState({}, '', newUrl);
+    } else {
+      toast.show(`Route #${editId} not found or inactive - can't open editor.`, 'error');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routes]);
+
   const visible = useMemo(
     () => showInactive ? routes : routes.filter((r) => r.active),
     [routes, showInactive]);
 
   const doDelete = async (r: RecurringRoute) => {
-    if (!confirm(`Deactivate route "${r.name}"? It stays in the table but stops driving downstream prebook.`)) return;
+    if (!(await askConfirm({
+      title: 'Deactivate route',
+      message: `Deactivate route "${r.name}"? It stays in the table but stops driving downstream prebook.`,
+      confirmLabel: 'Deactivate',
+      danger: true,
+    }))) return;
     try {
       await recurringRouteService.remove(r.routeId);
       toast.show('Route deactivated', 'success');
@@ -256,6 +291,7 @@ interface EditorProps {
 
 function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const user = useAuth();
   const zipLongLabel = postcodeLabel(user.isUsTenant, false);
   const isNew = initial === null;
@@ -281,6 +317,15 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   // doesn't re-fetch.
   const [zipShapes, setZipShapes] = useState<Map<number, ZipPolygonShape>>(new Map());
 
+  // Coverage (bulk) polygons attached to this route via Polygon Builder's
+  // "Save coverage as Route" flow. The route DTO carries just the polygon
+  // id + name + centroid, so full shapes are fetched lazily and cached.
+  // Local state tracks add / remove within the editor - persisted to the
+  // route on Save via UpsertRouteBody.bulkPolygonIds.
+  const [bulkPolygonIds, setBulkPolygonIds] = useState<Set<number>>(
+    new Set(initial?.bulkPolygons.map((p) => p.polygonId) ?? []));
+  const [bulkPolygonShapes, setBulkPolygonShapes] = useState<Map<number, BulkPolygon>>(new Map());
+
   // Snapshot of the form's initial state, taken on mount. Compared field by
   // field on every render to compute isDirty for the "unsaved changes" close
   // guard below. Ref (not state) because we never want the snapshot itself
@@ -293,11 +338,13 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
     targetId: initial?.defaultTargetId ?? null,
     active: initial?.active ?? true,
     zipIds: [...(initial?.zipcodes.map((z) => z.zipPolygonId) ?? [])].sort((a, b) => a - b),
+    bulkPolygonIds: [...(initial?.bulkPolygons.map((p) => p.polygonId) ?? [])].sort((a, b) => a - b),
   });
   const isDirty = useMemo(() => {
     const snap = initialSnapshotRef.current;
     const currentScheduleIds = [...scheduleIds].sort((a, b) => a - b);
     const currentZipIds = [...zips.map((z) => z.zipPolygonId)].sort((a, b) => a - b);
+    const currentBulkPolygonIds = [...bulkPolygonIds].sort((a, b) => a - b);
     const arraysEqual = (a: number[], b: number[]) =>
       a.length === b.length && a.every((v, i) => v === b[i]);
     return (
@@ -307,9 +354,10 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
       targetType !== snap.targetType ||
       (targetType ? targetId : null) !== snap.targetId ||
       active !== snap.active ||
-      !arraysEqual(currentZipIds, snap.zipIds)
+      !arraysEqual(currentZipIds, snap.zipIds) ||
+      !arraysEqual(currentBulkPolygonIds, snap.bulkPolygonIds)
     );
-  }, [name, area, scheduleIds, targetType, targetId, active, zips]);
+  }, [name, area, scheduleIds, targetType, targetId, active, zips, bulkPolygonIds]);
 
   // Confirmation dialog when the operator tries to close with unsaved changes.
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -381,6 +429,56 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zips]);
 
+  // Fetch full shapes for bulk polygons attached to the route, on demand.
+  // One GET per polygon (rare - a route usually has 1-3 attached; N+1 is
+  // acceptable here since we cache). Silent on failure - the polygon
+  // just won't render, sidebar list will still show the name.
+  useEffect(() => {
+    const missing = [...bulkPolygonIds].filter((id) => !bulkPolygonShapes.has(id));
+    if (missing.length === 0) return;
+    void (async () => {
+      const fetched: [number, BulkPolygon][] = [];
+      for (const id of missing) {
+        try {
+          const res = await bulkPolygonService.get(id);
+          if (res.response) fetched.push([id, res.response]);
+        } catch { /* silent */ }
+      }
+      if (fetched.length > 0) {
+        setBulkPolygonShapes((prev) => {
+          const next = new Map(prev);
+          fetched.forEach(([id, poly]) => next.set(id, poly));
+          return next;
+        });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkPolygonIds]);
+
+  const removeBulkPolygon = (polygonId: number) => {
+    setBulkPolygonIds((prev) => {
+      const next = new Set(prev);
+      next.delete(polygonId);
+      return next;
+    });
+  };
+
+  // Pill-click focus: bumping the nonce forces the map's focus effect to
+  // re-fire even when the operator clicks the same pill twice (useful
+  // after they've panned away from it).
+  const [focusRequest, setFocusRequest] = useState<
+    { kind: 'zip' | 'bulkPolygon'; id: number; nonce: number } | null
+  >(null);
+  const focusNonceRef = useRef(0);
+  const focusZip = (zipPolygonId: number) => {
+    focusNonceRef.current += 1;
+    setFocusRequest({ kind: 'zip', id: zipPolygonId, nonce: focusNonceRef.current });
+  };
+  const focusBulkPolygon = (polygonId: number) => {
+    focusNonceRef.current += 1;
+    setFocusRequest({ kind: 'bulkPolygon', id: polygonId, nonce: focusNonceRef.current });
+  };
+
   const filteredSchedules = useMemo(() => {
     const needle = scheduleFilter.trim().toLowerCase();
     if (!needle) return schedules;
@@ -408,6 +506,10 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
         scheduleIds: Array.from(scheduleIds),
         active,
         zipPolygonIds: zips.map((z) => z.zipPolygonId),
+        // Include the bulk polygon list on every save (empty array clears
+        // the M:N binding; omitting would leave the server-side list
+        // untouched, which is wrong when the operator has removed all).
+        bulkPolygonIds: Array.from(bulkPolygonIds),
       };
       if (isNew) {
         await recurringRouteService.create(body);
@@ -441,6 +543,57 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
         </div>
       }
     >
+      {/* 2026-08-06: warning banner when the route has BOTH zip codes
+          and coverage polygons attached. Resolver treats them as OR (a
+          job matches this route if EITHER the zip binding or the
+          polygon PIP hits), which is fine mechanically but usually
+          means the operator defined the same coverage area two ways.
+          The banner offers quick-clear buttons so the operator can
+          pick one mechanism in one click. Not a hard block - some
+          rare cases legitimately want both (e.g. small polygon carve-
+          out + big zip catch-all) - but the yellow banner surfaces
+          the overlap so it's a choice, not an accident. */}
+      {zips.length > 0 && bulkPolygonIds.size > 0 && (
+        <div className="mb-3 p-3 rounded border border-warning/40 bg-warning/10 text-xs text-brand-dark flex items-start gap-3">
+          <span aria-hidden className="text-warning text-lg leading-none mt-0.5">!</span>
+          <div className="flex-1">
+            <div className="font-semibold mb-0.5">Route uses both zip codes AND coverage polygons.</div>
+            <div className="text-text-secondary">
+              The resolver treats them as OR - a job matches if EITHER the {zips.length} zip{zips.length === 1 ? '' : 's'} covers it OR the {bulkPolygonIds.size} coverage polygon{bulkPolygonIds.size === 1 ? '' : 's'} contain{bulkPolygonIds.size === 1 ? 's' : ''} it. Usually you want just one mechanism per route.
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Button variant="neutral" size="sm"
+              onClick={async () => {
+                if (await askConfirm({
+                  title: 'Clear zip codes',
+                  message: `Clear all ${zips.length} zip code${zips.length === 1 ? '' : 's'} from this route? The coverage polygon${bulkPolygonIds.size === 1 ? '' : 's'} will stay attached.`,
+                  confirmLabel: 'Clear zips',
+                  danger: true,
+                })) {
+                  setZips([]);
+                }
+              }}
+              title="Detach every zip code, keep coverage polygons only">
+              Clear zips
+            </Button>
+            <Button variant="neutral" size="sm"
+              onClick={async () => {
+                if (await askConfirm({
+                  title: 'Detach coverage polygons',
+                  message: `Detach all ${bulkPolygonIds.size} coverage polygon${bulkPolygonIds.size === 1 ? '' : 's'} from this route? The zip code${zips.length === 1 ? '' : 's'} will stay attached.`,
+                  confirmLabel: 'Detach coverage',
+                  danger: true,
+                })) {
+                  setBulkPolygonIds(new Set());
+                }
+              }}
+              title="Detach every coverage polygon, keep zip codes only">
+              Clear coverage
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-sm">
         <div className="space-y-3">
           <Field label="Name">
@@ -514,10 +667,20 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                 <div className="flex flex-wrap gap-1 mb-2">
                   {zips.map((z) => (
                     <span key={z.zipPolygonId}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-brand-cyan/15 text-brand-dark text-xs">
-                      {z.zip}
-                      <button type="button" onClick={() => removeZip(z.zipPolygonId)}
-                        className="hover:text-error font-bold">×</button>
+                      className="inline-flex items-center gap-0.5 rounded bg-brand-cyan/15 text-brand-dark text-xs">
+                      {/* Label click = zoom map to this shape. Only the ×
+                          removes. Two distinct hit targets so a mis-hit
+                          on the label doesn't drop coverage. */}
+                      <button type="button"
+                        onClick={() => focusZip(z.zipPolygonId)}
+                        className="pl-2 py-0.5 hover:underline"
+                        title={`Zoom map to ${z.zip}`}>
+                        {z.zip}
+                      </button>
+                      <button type="button"
+                        onClick={() => removeZip(z.zipPolygonId)}
+                        className="px-2 py-0.5 hover:text-error font-bold"
+                        title={`Remove ${z.zip} from route`}>×</button>
                     </span>
                   ))}
                 </div>
@@ -538,6 +701,45 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               )}
             </div>
           </Field>
+          <Field label={`Coverage polygons (${bulkPolygonIds.size})`}>
+            <div className="border border-border rounded-lg p-2 bg-surface-white">
+              {bulkPolygonIds.size === 0 ? (
+                <div className="text-[10px] text-text-muted italic">
+                  No coverage polygons attached. Attach via Polygon Builder -&gt;
+                  Save coverage as Route, or via the map on the right.
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {[...bulkPolygonIds].map((id) => {
+                    const shape = bulkPolygonShapes.get(id);
+                    // Fall back to the RouteBulkPolygonRef name from the
+                    // initial payload while the full shape is still fetching.
+                    const initialRef = initial?.bulkPolygons.find((p) => p.polygonId === id);
+                    const label = shape?.name ?? initialRef?.name ?? `Polygon #${id}`;
+                    return (
+                      <span key={id}
+                        className="inline-flex items-center gap-0.5 rounded bg-brand-purple/15 text-brand-dark text-xs">
+                        {/* Label click = zoom map to this coverage
+                            polygon. × detaches. Two distinct hit
+                            targets so a mis-hit on the label doesn't
+                            drop coverage. */}
+                        <button type="button"
+                          onClick={() => focusBulkPolygon(id)}
+                          className="pl-2 py-0.5 hover:underline"
+                          title={`Zoom map to "${label}"`}>
+                          {label}
+                        </button>
+                        <button type="button"
+                          onClick={() => removeBulkPolygon(id)}
+                          className="px-2 py-0.5 hover:text-error font-bold"
+                          title={`Detach "${label}" from route`}>×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Field>
           <label className="inline-flex items-center gap-2 text-xs">
             <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
             Active
@@ -549,17 +751,16 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
             the loaded shapes so operators see the whole coverage area at a
             glance. */}
         <div className="min-h-[400px] lg:min-h-0">
-          <div className="text-xs text-text-secondary mb-1">
-            Coverage map - {routeZipShapes.length} of {zips.length} {zipLongLabel.toLowerCase()}s drawn.
-            <span className="text-text-muted ml-1">
-              Click a pill to add / remove a {zipLongLabel.toLowerCase()}. Click a shape to remove it.
-            </span>
-          </div>
           <RouteCoverageMap
             shapes={routeZipShapes}
             boundZipIds={new Set(zips.map((z) => z.zipPolygonId))}
             onAddZip={addZip}
             onRemoveZip={removeZip}
+            bulkPolygons={[...bulkPolygonIds]
+              .map((id) => bulkPolygonShapes.get(id))
+              .filter((p): p is BulkPolygon => !!p)}
+            onRemoveBulkPolygon={removeBulkPolygon}
+            focusRequest={focusRequest}
             isUsTenant={user.isUsTenant}
             googleMapsKey={user.googleMapsKey}
           />
@@ -637,13 +838,26 @@ function RouteCoverageMap({
   boundZipIds,
   onAddZip,
   onRemoveZip,
+  bulkPolygons,
+  onRemoveBulkPolygon,
+  focusRequest,
   isUsTenant,
   googleMapsKey,
 }: {
   shapes: ZipPolygonShape[];
   boundZipIds: Set<number>;
   onAddZip: (z: ZipcodeLookup) => void;
+  /** No longer used by the map (map is display-only 2026-08-06) but kept
+   *  in the prop list so future unbound-pill-click flows can add + remove
+   *  via the same callback ref pair. */
   onRemoveZip: (id: number) => void;
+  bulkPolygons: BulkPolygon[];
+  /** Symmetrical to onRemoveZip - kept for the same reason. */
+  onRemoveBulkPolygon: (id: number) => void;
+  /** Focus request from the parent's pill-click handler. Nonce bumps on
+   *  every request so the effect re-fires even when the same shape is
+   *  clicked twice. Kind + id identifies the target shape. */
+  focusRequest: { kind: 'zip' | 'bulkPolygon'; id: number; nonce: number } | null;
   isUsTenant: boolean;
   googleMapsKey: string | null;
 }) {
@@ -675,6 +889,14 @@ function RouteCoverageMap({
   onAddRef.current = onAddZip;
   const onRemoveRef = useRef(onRemoveZip);
   onRemoveRef.current = onRemoveZip;
+  const onRemoveBulkRef = useRef(onRemoveBulkPolygon);
+  onRemoveBulkRef.current = onRemoveBulkPolygon;
+
+  // Coverage-polygon overlay store. Renders as purple shapes (distinct
+  // from orange zip polygons) so operators can see at a glance where the
+  // route's shape-based coverage lives. Click a shape to detach it from
+  // the route (calls onRemoveBulkPolygon via ref).
+  const bulkOverlaysRef = useRef<Map<number, any>>(new Map());
 
   // Wait for the Google Maps JS SDK loaded by the Razor host.
   useEffect(() => {
@@ -742,6 +964,8 @@ function RouteCoverageMap({
       overlaysRef.current.clear();
       unboundOverlaysRef.current.forEach((p) => p.setMap(null));
       unboundOverlaysRef.current.clear();
+      bulkOverlaysRef.current.forEach((p) => p.setMap(null));
+      bulkOverlaysRef.current.clear();
       clustererRef.current?.clearMarkers();
       (clustererRef.current as any)?.setMap(null);
       clustererRef.current = null;
@@ -873,16 +1097,14 @@ function RouteCoverageMap({
       if (!path || path.length < 3) return;
       let poly = overlaysRef.current.get(s.zipPolygonId);
       if (!poly) {
+        // 2026-08-06 (George): map is display-only. Overlay is not
+        // clickable - removal is exclusively via the × on the sidebar
+        // pill so an accidental pan-click can't silently drop coverage.
         poly = new g.maps.Polygon({
           paths: path,
           strokeColor: '#F2994A', strokeOpacity: 0.9, strokeWeight: 2,
           fillColor: '#F2994A', fillOpacity: 0.35,
-          map, clickable: true,
-        });
-        poly.addListener('click', () => {
-          // Bound polygon click = remove from route. Confirms via toast so
-          // an accidental map click doesn't silently drop coverage.
-          onRemoveRef.current(s.zipPolygonId);
+          map, clickable: false,
         });
         overlaysRef.current.set(s.zipPolygonId, poly);
       } else {
@@ -897,6 +1119,112 @@ function RouteCoverageMap({
       didInitialFitRef.current = true;
     }
   }, [shapes]);
+
+  // Sync coverage (bulk) polygon overlays. Renders each attached bulk
+  // polygon as a PURPLE multi-ring shape (distinct from the orange zip
+  // polygons above). Click a shape to detach it from the route. Uses
+  // setPaths(rings) so multi-piece bulk polygons produced by Polygon
+  // Builder's Combine flow render every piece.
+  useEffect(() => {
+    const g = (window as any).google;
+    const map = mapRef.current;
+    if (!map || !g?.maps) return;
+
+    const wantedIds = new Set(bulkPolygons.map((p) => p.polygonId));
+    bulkOverlaysRef.current.forEach((poly, id) => {
+      if (!wantedIds.has(id)) { poly.setMap(null); bulkOverlaysRef.current.delete(id); }
+    });
+
+    // Local ring-grouping helper (mirrors PolygonBuilder.pointsToLatLngRings).
+    // Kept inline to avoid a cross-page import; the shape is small.
+    const pointsToRings = (pts: BulkPolygon['points']) => {
+      const byRing = new Map<number, typeof pts>();
+      for (const p of pts) {
+        const ri = p.ringIndex ?? 0;
+        const list = byRing.get(ri);
+        if (list) list.push(p);
+        else byRing.set(ri, [p]);
+      }
+      return [...byRing.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, list]) =>
+          list.slice().sort((a, b) => a.orderIndex - b.orderIndex)
+            .map((p) => ({ lat: p.lat, lng: p.lng })));
+    };
+
+    const bounds = new g.maps.LatLngBounds();
+    let boundsCount = 0;
+    bulkPolygons.forEach((bp) => {
+      const rings = pointsToRings(bp.points);
+      if (rings.length === 0 || rings[0].length < 3) return;
+      let poly = bulkOverlaysRef.current.get(bp.polygonId);
+      if (!poly) {
+        // 2026-08-06 (George): map is display-only. Overlay is not
+        // clickable - detach is exclusively via the × on the sidebar
+        // pill so an accidental pan-click can't silently drop coverage.
+        poly = new g.maps.Polygon({
+          paths: rings,
+          // 2026-08-06 (George): match Polygon Builder's coverage-polygon
+          // colour (#f2994a orange, POLYGON_PALETTE[0]) so the same
+          // shape reads the same across both pages. Zip polygons on
+          // this map also render orange (#F2994A) - the two overlap
+          // visually because they represent the same class of thing
+          // (route coverage geometry); the sidebar pill colouring
+          // (cyan for zips, purple for coverage) still distinguishes
+          // them in the field editor.
+          strokeColor: '#f2994a', strokeOpacity: 0.9, strokeWeight: 2,
+          fillColor: '#f2994a', fillOpacity: 0.25,
+          map, clickable: false,
+        });
+        bulkOverlaysRef.current.set(bp.polygonId, poly);
+      } else {
+        poly.setPaths(rings);
+      }
+      rings.forEach((ring) => ring.forEach((pt) => { bounds.extend(pt); boundsCount++; }));
+    });
+    // Fit to the coverage polygons on the first render that has any -
+    // route-created-from-coverage-polygon flow lands here with no zip
+    // shapes to fit to, so this becomes the initial focus.
+    if (boundsCount > 0 && !didInitialFitRef.current) {
+      map.fitBounds(bounds);
+      didInitialFitRef.current = true;
+    }
+  }, [bulkPolygons]);
+
+  // Focus request handler. Parent bumps focusRequest.nonce on every pill
+  // click; this effect resolves the target shape (by kind + id) and
+  // fitBounds the map onto it. Overlays stay rendered - only the
+  // viewport moves. Effect deps include nonce so consecutive clicks on
+  // the same pill still re-fit (useful after the operator pans away).
+  useEffect(() => {
+    if (!focusRequest) return;
+    const g = (window as any).google;
+    const map = mapRef.current;
+    if (!map || !g?.maps) return;
+    const bounds = new g.maps.LatLngBounds();
+    let count = 0;
+    if (focusRequest.kind === 'zip') {
+      const shape = shapes.find((s) => s.zipPolygonId === focusRequest.id);
+      const path = shape ? parseWktPolygon(shape.wkt) : null;
+      if (path) path.forEach((pt) => { bounds.extend(pt); count++; });
+    } else {
+      const bp = bulkPolygons.find((p) => p.polygonId === focusRequest.id);
+      if (bp) {
+        // Same inline ring-grouping used by the bulk overlay sync above.
+        const byRing = new Map<number, typeof bp.points>();
+        for (const p of bp.points) {
+          const ri = p.ringIndex ?? 0;
+          const list = byRing.get(ri);
+          if (list) list.push(p);
+          else byRing.set(ri, [p]);
+        }
+        byRing.forEach((pts) => {
+          pts.forEach((pt) => { bounds.extend({ lat: pt.lat, lng: pt.lng }); count++; });
+        });
+      }
+    }
+    if (count > 0) map.fitBounds(bounds);
+  }, [focusRequest, shapes, bulkPolygons]);
 
   // Sync unbound blue-boundary overlays. Renders every fetched unbound
   // shape as a light-blue Google Maps Polygon. Removes overlays for zips
@@ -1043,6 +1371,7 @@ interface RosterProps {
 
 function RosterModal({ route, onClose, onChanged }: RosterProps) {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const [entries, setEntries] = useState<RouteRosterEntry[]>([]);
   const [showInactive, setShowInactive] = useState(false);
   const [targets, setTargets] = useState<AssignableTargets | null>(null);
@@ -1098,7 +1427,12 @@ function RosterModal({ route, onClose, onChanged }: RosterProps) {
   };
 
   const doRemove = async (r: RouteRosterEntry) => {
-    if (!confirm('Deactivate this roster entry?')) return;
+    if (!(await askConfirm({
+      title: 'Deactivate roster entry',
+      message: 'Deactivate this roster entry?',
+      confirmLabel: 'Deactivate',
+      danger: true,
+    }))) return;
     try {
       await recurringRouteService.removeRoster(route.routeId, r.routeRosterId);
       toast.show('Roster entry deactivated', 'success');

@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { tenantMapCentre } from '../lib/mapDefaults';
 import { postcodeLabel } from '../lib/tenantLabels';
 import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import {
@@ -21,6 +22,7 @@ import {
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine } from '../lib/polygonOps';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -102,6 +104,7 @@ interface ContextMenuState {
 export default function PolygonBuilder() {
   const user = useAuth();
   const toast = useToast();
+  const askConfirm = useConfirm();
   const zipShortLower = postcodeLabel(user.isUsTenant, true).toLowerCase();
   const zipLongLower = postcodeLabel(user.isUsTenant, false).toLowerCase();
 
@@ -158,11 +161,18 @@ export default function PolygonBuilder() {
   const [polygonSaveOpen, setPolygonSaveOpen] = useState(false);
 
   // Draft polygon awaiting operator review before save. When drawing
-  // finishes (mouseup / auto-close / +Finish), points land here and mode
-  // switches to 'pending' - the polygon becomes editable in place. The
-  // save-name modal only opens when the operator explicitly clicks
-  // "Finish drawing" (which sets openSaveModal true).
-  const [pendingPolygon, setPendingPolygon] = useState<LatLng[] | null>(null);
+  // finishes (mouseup / auto-close / +Finish), rings land here and mode
+  // switches to 'pending' - the polygon becomes editable in place with
+  // the SAME toolbar as edit-mode (Shape picker + Add / Cut / Clip /
+  // Split + Undo). The save-name modal only opens when the operator
+  // explicitly clicks "Finish drawing" (which sets openSaveModal true).
+  //
+  // Shape: LatLng[][] to match saved polygons (multi-ring, winding-
+  // order encoded: CCW = new piece, CW = hole). Fresh draws land as a
+  // single ring `[ring]`; subsequent Cut / Split ops may grow the array.
+  // 2026-08-06 (user request): unified with edit-mode so operators see
+  // the same tools whether the shape is new or saved.
+  const [pendingPolygon, setPendingPolygon] = useState<LatLng[][] | null>(null);
   const [openSaveModal, setOpenSaveModal] = useState(false);
   // Refs for the pending-polygon editable overlay + handles (parallel set
   // to the edit-mode refs above so pending edits don't interfere with a
@@ -222,6 +232,47 @@ export default function PolygonBuilder() {
 
   // Stage 4: freehand lasso in-progress buffer + live polyline ref.
   const lassoBufferRef = useRef<LatLng[]>([]);
+
+  // ── Edit-mode boolean-op state (2026-08-06 Add / Cut / Keep) ────────
+  // When the operator clicks Add / Cut / Keep from the edit-mode
+  // toolbar, we capture the pending op + the polygon being edited into
+  // this ref, then flip mode to 'lassoing' so the operator can trace
+  // the region on the map. The lasso's finishStroke consults this ref:
+  // if set, it applies the boolean op (via polygon-clipping) instead of
+  // creating a fresh pending polygon.
+  //
+  // Sentinel for the pending (unsaved) polygon. applyBooleanOp +
+  // undoLastBooleanOp branch on this to skip the server round-trip
+  // (pendingPolygon lives in local state only until Save).
+  const PENDING_ID = -1;
+  const pendingBooleanOpRef = useRef<{
+    op: 'add' | 'cut' | 'keep' | 'split';
+    // Which drawing tool the operator picked to specify the region /
+    // line for this op. Freehand for lasso, rect for rectangle, circle
+    // for circle. Split always uses freehand (rect / circle don't yield
+    // a polyline that can meaningfully split a polygon).
+    shape: 'freehand' | 'rect' | 'circle';
+    polygonId: number;
+  } | null>(null);
+  // Which drawing tool the boolean-op buttons use in edit mode. Persists
+  // across ops so an operator carving multiple rectangular chunks picks
+  // "Rectangle" once and keeps clicking Cut. Freehand is the default -
+  // it's the most flexible and covers the widest range of shapes.
+  const [editShapeInput, setEditShapeInput] = useState<'freehand' | 'rect' | 'circle'>('freehand');
+  // Multi-step undo STACK: pushes a snapshot of the polygon's ring set
+  // BEFORE each edit op (vertex drag / midpoint insert / vertex delete /
+  // Add / Cut / Clip). Undo pops the top entry and restores it, so
+  // repeated Undo clicks walk backwards through the whole edit session
+  // one step at a time. Capped at MAX_UNDO_STACK to bound memory (a
+  // large multi-ring polygon can be ~50KB per snapshot); when the cap
+  // is hit, the OLDEST entry is dropped rather than refusing new ops.
+  // Cleared on stopEdit - undo is a within-session concept only.
+  const MAX_UNDO_STACK = 20;
+  const editUndoStackRef = useRef<Array<{ polygonId: number; rings: LatLng[][] }>>([]);
+  // Version counter to force re-render of the Undo button's disabled
+  // state when the stack changes. The ref itself doesn't trigger
+  // renders; bumping this on every push / pop does.
+  const [undoVersion, setUndoVersion] = useState(0);
   const lassoPreviewRef = useRef<any>(null);
   const lassoRafRef = useRef<number | null>(null);
   // Rectangle drawing in-progress refs.
@@ -402,9 +453,16 @@ export default function PolygonBuilder() {
   }, [loadedShapes]);
 
   useEffect(() => {
-    parsedCoverageShapesRef.current = polygons
-      .map((poly) => ({ id: poly.polygonId, path: pointsToLatLngPath(poly.points) }))
-      .filter((entry) => entry.path.length >= 3);
+    // Cache flattens multi-ring polygons into per-ring entries so snap
+    // targets include holes and disjoint pieces, not just the outer.
+    // Same `id` may repeat if a polygon has multiple rings - snapTo
+    // treats them all as candidate snap targets against the current
+    // cursor, which is what we want.
+    parsedCoverageShapesRef.current = polygons.flatMap((poly) =>
+      pointsToLatLngRings(poly.points)
+        .filter((ring) => ring.length >= 3)
+        .map((path) => ({ id: poly.polygonId, path })),
+    );
   }, [polygons]);
 
   // Load bulk polygons on mount.
@@ -582,14 +640,17 @@ export default function PolygonBuilder() {
 
     polygons.forEach((p, idx) => {
       if (p.polygonId === editingId) return;
-      const path = pointsToLatLngPath(p.points);
-      if (path.length < 3) return;
+      // Multi-ring aware: setPaths accepts LatLng[][] for both single- and
+      // multi-piece polygons (Google Maps infers hole vs new piece from
+      // winding order). Single-ring polygons come out as [outer].
+      const rings = pointsToLatLngRings(p.points);
+      if (rings.length === 0 || rings[0].length < 3) return;
       const color = POLYGON_PALETTE[idx % POLYGON_PALETTE.length];
       const isSelected = selectedPolygons.has(p.polygonId);
       let poly = polygonOverlaysRef.current.get(p.polygonId);
       if (!poly) {
         poly = new g.maps.Polygon({
-          paths: path, map: mapRef.current, clickable: mode === 'view',
+          paths: rings, map: mapRef.current, clickable: mode === 'view',
         });
         poly.addListener('click', () => togglePolygonSelected(p.polygonId));
         poly.addListener('rightclick', (e: any) => {
@@ -602,7 +663,7 @@ export default function PolygonBuilder() {
         });
         polygonOverlaysRef.current.set(p.polygonId, poly);
       } else {
-        poly.setPath(path);
+        poly.setPaths(rings);
       }
       poly.setOptions({
         clickable: mode === 'view',
@@ -969,7 +1030,7 @@ export default function PolygonBuilder() {
         );
       }
       const points: PolygonPoint[] = simplifiedPath.map((pt, i) => ({
-        orderIndex: i, lat: pt.lat, lng: pt.lng,
+        ringIndex: 0, orderIndex: i, lat: pt.lat, lng: pt.lng,
       }));
       const centroid = polygonCentroid(path);
       const res = await bulkPolygonService.create({
@@ -987,6 +1048,386 @@ export default function PolygonBuilder() {
         'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setConverting(null); }
+  };
+
+  /** Combine {N} selected zip polygons into a single coverage shape and
+   *  drop the operator into edit mode on the result. Adjacent zips union
+   *  into one merged piece; disjoint zips produce a multi-piece shape
+   *  (persisted via the RingIndex column added 2026-08-06). Requires
+   *  all selected zip shapes to be loaded in `loadedShapes` (auto-
+   *  loaded when they enter the viewport at high zoom, or clicked).
+   *  Any selected zips without a loaded WKT get skipped with a toast
+   *  telling the operator to pan to them first. */
+  const [combining, setCombining] = useState(false);
+  const combineSelectedAsShape = async () => {
+    if (selected.length < 2) return;
+
+    // Gather rings from loaded shapes; each zip becomes [outerRing] (a
+    // single-ring shape passed to unionShapes as one item).
+    const shapes: LatLng[][][] = [];
+    const missing: string[] = [];
+    for (const z of selected) {
+      const loaded = loadedShapes.find((s) => s.zipPolygonId === z.zipPolygonId);
+      const path = loaded ? parseWktPolygon(loaded.wkt) : null;
+      if (!path || path.length < 3) {
+        missing.push(z.zip);
+        continue;
+      }
+      shapes.push([path]);
+    }
+    if (shapes.length < 2) {
+      toast.show(
+        missing.length > 0
+          ? `Load shapes for ${missing.join(', ')} first (pan to them at zoom ${INDIVIDUAL_PILL_MIN_ZOOM}+).`
+          : `Need at least 2 loaded ${zipShortLower} shapes to combine.`,
+        'error',
+      );
+      return;
+    }
+    if (missing.length > 0) {
+      toast.show(
+        `Skipped ${missing.length} ${missing.length === 1 ? zipShortLower : `${zipShortLower}s`} without a loaded shape (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? '…' : ''}). Combining the remaining ${shapes.length}.`,
+        'error',
+      );
+    }
+
+    setCombining(true);
+    try {
+      // Union all loaded zip shapes. Adjacent ones merge; disjoint stay
+      // as separate pieces in the returned ring list (encoded via
+      // winding order that Google Maps + our RingIndex storage both
+      // consume directly).
+      const unionedRings = unionShapes(shapes);
+      if (unionedRings.length === 0 || unionedRings[0].length < 3) {
+        toast.show('Union produced an empty shape - selected zips do not overlap or touch cleanly.', 'error');
+        return;
+      }
+
+      // Simplify each ring if over the edit-mode vertex cap. Coastal
+      // zips can have 500+ vertices tracing every rock; the union
+      // inherits all of them and edit-mode falls over.
+      const simplifiedRings = unionedRings.map((ring) =>
+        ring.length > ZIP_TO_COVERAGE_MAX_VERTICES
+          ? simplifyToMax(ring, ZIP_TO_COVERAGE_MAX_VERTICES)
+          : ring,
+      );
+      const totalVertsBefore = unionedRings.reduce((n, r) => n + r.length, 0);
+      const totalVertsAfter = simplifiedRings.reduce((n, r) => n + r.length, 0);
+      if (totalVertsAfter < totalVertsBefore) {
+        toast.show(
+          `Simplified ${totalVertsBefore} -> ${totalVertsAfter} vertices for editability.`,
+          'success',
+        );
+      }
+
+      // Flatten rings to the single PolygonPoint[] the API expects, with
+      // ringIndex encoding piece / hole membership.
+      const points: PolygonPoint[] = [];
+      simplifiedRings.forEach((ring, ringIndex) => {
+        ring.forEach((pt, orderIndex) => {
+          points.push({ ringIndex, orderIndex, lat: pt.lat, lng: pt.lng });
+        });
+      });
+      // Centroid stamped from the first (outer) ring - accurate enough
+      // for the map centre pin and matches the single-ring convention.
+      const centroid = polygonCentroid(simplifiedRings[0]);
+
+      const zipsSummary = selected.length <= 4
+        ? selected.map((z) => z.zip).join(', ')
+        : `${selected.length} ${zipShortLower}s`;
+      const res = await bulkPolygonService.create({
+        name: `Combined ${zipsSummary}`,
+        centroidLatitude: centroid.lat,
+        centroidLongitude: centroid.lng,
+        points,
+        sourceType: 0, // Manual - not a single-zip copy.
+        sourceCode: null,
+      });
+      setPolygons((prev) => [...prev, res.response]);
+      setSelected([]); // Clear selection - the operator is now editing the combined shape.
+      setMode({ edit: res.response.polygonId });
+      const pieceCount = simplifiedRings.filter((r, i) =>
+        i === 0 || signedRingArea(r) > 0,
+      ).length;
+      toast.show(
+        `Combined ${shapes.length} ${zipShortLower}s into ${pieceCount === 1 ? 'a single shape' : `${pieceCount} disjoint pieces`}. Drag the handles to refine.${derivedZipsToastTrailer(res.response)}`,
+        'success',
+      );
+    } catch (e) {
+      toast.show((e as Error).message, 'error');
+    } finally {
+      setCombining(false);
+    }
+  };
+
+  // ── Edit-mode Add / Cut / Keep tools (2026-08-06) ────────────────────
+  // Each button captures the target polygon + the pending op into
+  // pendingBooleanOpRef, then flips mode to 'lassoing'. The lasso
+  // finishStroke below consults the ref and routes to applyBooleanOp
+  // when set; otherwise falls back to the normal "new pending polygon"
+  // flow. Escape / cancel-lasso clears the ref so a stray Esc doesn't
+  // leak an op into the operator's next lasso.
+  /** After a boolean-op stroke completes (or cancels), return to the
+   *  source mode that started the op. Saved polygons resume edit; the
+   *  pending draft resumes pending. Centralized so every finish-stroke
+   *  / cancel-stroke site routes identically. */
+  const returnToTargetMode = (polygonId: number) => {
+    if (polygonId === PENDING_ID) setMode('pending');
+    else setMode({ edit: polygonId });
+  };
+
+  const startBooleanOp = (op: 'add' | 'cut' | 'keep' | 'split') => {
+    // Boolean ops fire from either edit mode (saved polygon) or pending
+    // mode (unsaved draft). Route to the correct target via the
+    // PENDING_ID sentinel; downstream applyBooleanOp branches on it.
+    const editingId = typeof mode === 'object' ? mode.edit : null;
+    const targetId = editingId ?? (mode === 'pending' ? PENDING_ID : null);
+    if (targetId == null) return;
+    // Split always uses freehand - a rectangle or circle doesn't
+    // produce a polyline that can split a polygon into two pieces.
+    const shape = op === 'split' ? 'freehand' : editShapeInput;
+    pendingBooleanOpRef.current = { op, shape, polygonId: targetId };
+    if (shape === 'freehand') setMode('lassoing');
+    else if (shape === 'rect') setMode('rectangling');
+    else setMode('circling');
+  };
+
+  /** Apply a boolean op (union / difference / intersection) to the
+   *  polygon being edited, PUT the new shape, snapshot the prior state
+   *  for undo, and re-enter edit mode. */
+  const applyBooleanOp = async (
+    op: 'add' | 'cut' | 'keep' | 'split',
+    polygonId: number,
+    drawn: LatLng[],
+  ) => {
+    // Two flavours: saved (polygonId > 0, hits the server) vs pending
+    // (polygonId === PENDING_ID, local state only). Snapshot source
+    // rings differs; everything downstream (ops, undo, toast) is shared.
+    const isPending = polygonId === PENDING_ID;
+    let currentRings: LatLng[][];
+    if (isPending) {
+      if (!pendingPolygon || pendingPolygon.length === 0) {
+        toast.show('No pending shape to modify.', 'error');
+        return;
+      }
+      currentRings = pendingPolygon.map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng })));
+    } else {
+      const target = polygons.find((p) => p.polygonId === polygonId);
+      if (!target) {
+        toast.show('Target polygon vanished mid-op.', 'error');
+        return;
+      }
+      currentRings = pointsToLatLngRings(target.points);
+    }
+    if (currentRings.length === 0 || currentRings[0].length < 3) {
+      toast.show('Target polygon has no valid geometry to modify.', 'error');
+      return;
+    }
+    // Split needs 2+ points (a polyline); the other ops need 3+ (a
+    // closed region). Enforce per-op so a short freehand split line
+    // doesn't get rejected as "region too small".
+    if (op === 'split' ? drawn.length < 2 : drawn.length < 3) {
+      toast.show(
+        op === 'split'
+          ? 'Split line too short - drag across the polygon boundary.'
+          : 'Drawn region too small.',
+        'error',
+      );
+      return;
+    }
+
+    let resultRings: LatLng[][];
+    try {
+      if (op === 'add') resultRings = addRegion(currentRings, drawn);
+      else if (op === 'cut') resultRings = cutRegion(currentRings, drawn);
+      else if (op === 'keep') resultRings = keepRegion(currentRings, drawn);
+      else {
+        const split = splitByLine(currentRings, drawn);
+        if (!split.wasSplit) {
+          toast.show(
+            'Split line must cross the polygon boundary at 2+ points. Try again.',
+            'error',
+          );
+          return;
+        }
+        resultRings = split.rings;
+      }
+    } catch (e) {
+      toast.show(`Boolean op failed: ${(e as Error).message}`, 'error');
+      return;
+    }
+
+    if (resultRings.length === 0 || resultRings[0].length < 3) {
+      toast.show(
+        op === 'keep'
+          ? 'Clip region does not overlap the polygon - no change applied.'
+          : op === 'cut'
+          ? 'Cut region would erase the entire polygon - no change applied.'
+          : op === 'split'
+          ? 'Split produced no valid geometry - no change applied.'
+          : 'Add op produced an empty result - no change applied.',
+        'error',
+      );
+      return;
+    }
+
+    // Push the PRIOR shape onto the undo stack BEFORE we mutate. Same
+    // stack for pending + saved (keyed by polygonId or PENDING_ID). Cap
+    // at MAX_UNDO_STACK; oldest entry drops when full so ops never fail
+    // because of undo storage.
+    pushUndoSnapshot({ polygonId, rings: currentRings });
+
+    // Cap vertex explosion. Boolean ops can double or triple the vertex
+    // count on complex shapes. Simplify per-ring to keep edit handles
+    // sane. Toast when simplification actually kicks in.
+    const totalBefore = resultRings.reduce((n, r) => n + r.length, 0);
+    const simplifiedRings = resultRings.map((r) =>
+      r.length > MAX_EDIT_HANDLE_VERTICES
+        ? simplifyToMax(r, MAX_EDIT_HANDLE_VERTICES)
+        : r,
+    );
+    const totalAfter = simplifiedRings.reduce((n, r) => n + r.length, 0);
+    if (totalAfter < totalBefore) {
+      toast.show(
+        `Simplified ${totalBefore} -> ${totalAfter} vertices for editability.`,
+        'success',
+      );
+    }
+
+    const pieceCount = simplifiedRings.filter((r) => signedRingArea(r) > 0).length;
+    const opLabel =
+      op === 'add'
+        ? 'Added to'
+        : op === 'cut'
+        ? 'Cut from'
+        : op === 'split'
+        ? 'Split'
+        : 'Clipped';
+
+    if (isPending) {
+      // Pending mode: update local state only, no server round-trip
+      // (the polygon doesn't exist server-side yet). Derived-zip
+      // trailer is only meaningful after save, so omit it here.
+      setPendingPolygon(simplifiedRings.map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng }))));
+      toast.show(
+        `${opLabel} shape. ${pieceCount === 1 ? '1 piece' : `${pieceCount} pieces`}. Save when ready.`,
+        'success',
+      );
+      return;
+    }
+
+    const points: PolygonPoint[] = [];
+    simplifiedRings.forEach((ring, ringIndex) => {
+      ring.forEach((pt, orderIndex) => {
+        points.push({ ringIndex, orderIndex, lat: pt.lat, lng: pt.lng });
+      });
+    });
+    const centroid = polygonCentroid(simplifiedRings[0]);
+
+    try {
+      const res = await bulkPolygonService.updateShape(polygonId, {
+        centroidLatitude: centroid.lat,
+        centroidLongitude: centroid.lng,
+        points,
+      });
+      setPolygons((prev) => prev.map((p) =>
+        p.polygonId === polygonId ? res.response : p,
+      ));
+      toast.show(
+        `${opLabel} shape. ${pieceCount === 1 ? '1 piece' : `${pieceCount} pieces`}${derivedZipsToastTrailer(res.response)}`,
+        'success',
+      );
+    } catch (e) {
+      // Roll back the client-side undo snapshot on server failure - the
+      // op didn't actually happen so we shouldn't offer an undo of a
+      // change that never landed.
+      popUndoSnapshot();
+      toast.show(`Save failed: ${(e as Error).message}`, 'error');
+    }
+  };
+
+  /** Push a new snapshot onto the undo stack. Enforces the depth cap by
+   *  dropping the oldest entry when full - never refuses a snapshot,
+   *  since refusing would silently break future undos. */
+  const pushUndoSnapshot = (snap: { polygonId: number; rings: LatLng[][] }) => {
+    editUndoStackRef.current.push(snap);
+    if (editUndoStackRef.current.length > MAX_UNDO_STACK) {
+      editUndoStackRef.current.shift();
+    }
+    setUndoVersion((v) => v + 1);
+  };
+
+  /** Pop the top snapshot without applying it. Used to roll back an
+   *  undo push after the server rejected the op. */
+  const popUndoSnapshot = () => {
+    editUndoStackRef.current.pop();
+    setUndoVersion((v) => v + 1);
+  };
+
+  /** Revert the polygon one step by popping the top snapshot and
+   *  applying it. Repeatable - click multiple times to walk all the way
+   *  back to the state at edit-mode / pending-mode entry. */
+  const undoLastBooleanOp = async () => {
+    // Same routing as startBooleanOp: saved (editingId > 0) or pending
+    // (PENDING_ID). Undo stack entries carry their target polygonId so
+    // orphans from a prior target are discarded harmlessly.
+    const editingId = typeof mode === 'object' ? mode.edit : null;
+    const targetId = editingId ?? (mode === 'pending' ? PENDING_ID : null);
+    if (targetId == null) return;
+
+    // Discard any orphan snapshots pointing at a different polygon (can
+    // happen if the operator hops between edit targets in one session).
+    while (editUndoStackRef.current.length > 0
+        && editUndoStackRef.current[editUndoStackRef.current.length - 1].polygonId !== targetId) {
+      editUndoStackRef.current.pop();
+    }
+    const snap = editUndoStackRef.current.pop();
+    setUndoVersion((v) => v + 1);
+    if (!snap) return;
+
+    // Pending undo: local state only, no server round-trip.
+    if (snap.polygonId === PENDING_ID) {
+      setPendingPolygon(snap.rings.map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng }))));
+      const remaining = editUndoStackRef.current.length;
+      toast.show(
+        remaining > 0
+          ? `Reverted one step. ${remaining} more step${remaining === 1 ? '' : 's'} available.`
+          : 'Reverted to the start of this drawing session.',
+        'success',
+      );
+      return;
+    }
+
+    const points: PolygonPoint[] = [];
+    snap.rings.forEach((ring, ringIndex) => {
+      ring.forEach((pt, orderIndex) => {
+        points.push({ ringIndex, orderIndex, lat: pt.lat, lng: pt.lng });
+      });
+    });
+    const centroid = polygonCentroid(snap.rings[0]);
+
+    try {
+      const res = await bulkPolygonService.updateShape(snap.polygonId, {
+        centroidLatitude: centroid.lat,
+        centroidLongitude: centroid.lng,
+        points,
+      });
+      setPolygons((prev) => prev.map((p) =>
+        p.polygonId === snap.polygonId ? res.response : p,
+      ));
+      const remaining = editUndoStackRef.current.length;
+      toast.show(
+        remaining > 0
+          ? `Reverted one step. ${remaining} more step${remaining === 1 ? '' : 's'} available.`
+          : 'Reverted to the start of this edit session.',
+        'success',
+      );
+    } catch (e) {
+      // Put the snapshot back so the operator can retry.
+      editUndoStackRef.current.push(snap);
+      setUndoVersion((v) => v + 1);
+      toast.show(`Undo failed: ${(e as Error).message}`, 'error');
+    }
   };
 
   // ─── Snap helpers ────────────────────────────────────────────────────
@@ -1086,13 +1527,46 @@ export default function PolygonBuilder() {
       recording = false;
       const raw = lassoBufferRef.current.slice();
       clearLassoPreview();
+
+      // Boolean-op sub-flow: the operator entered lasso via an Add /
+      // Cut / Keep / Split button while editing a polygon. Route to
+      // applyBooleanOp, then re-enter edit mode. Clearing the pending ref
+      // FIRST so a failure in applyBooleanOp doesn't leave a stale op
+      // queued for the operator's next lasso stroke.
+      const pendingOp = pendingBooleanOpRef.current;
+      if (pendingOp) {
+        pendingBooleanOpRef.current = null;
+        // Split needs at least 2 points (a line); Add / Cut / Clip need
+        // 3+ (a closed region).
+        const minPts = pendingOp.op === 'split' ? 2 : 3;
+        if (raw.length < minPts) {
+          toast.show(
+            pendingOp.op === 'split'
+              ? 'Split line too short - drag across the polygon boundary.'
+              : 'Region too small - needs at least a few points.',
+            'error',
+          );
+          returnToTargetMode(pendingOp.polygonId);
+          return;
+        }
+        // Simplify the drawn stroke before feeding polygon-clipping /
+        // polygon-splitter. Douglas-Peucker is fine on polylines too.
+        const simplifiedDrawn = simplifyToMax(raw, ZIP_TO_COVERAGE_MAX_VERTICES);
+        void applyBooleanOp(pendingOp.op, pendingOp.polygonId, simplifiedDrawn)
+          .finally(() => returnToTargetMode(pendingOp.polygonId));
+        return;
+      }
+
       if (raw.length < 3) {
         toast.show('Lasso stroke too short - needs at least a few points.', 'error');
         setMode('view');
         return;
       }
       const simplified = simplifyToMax(raw, ZIP_TO_COVERAGE_MAX_VERTICES);
-      setPendingPolygon(simplified);
+      // Wrap the single drawn ring in [ring] to match the multi-ring
+      // pendingPolygon shape. Cut / Split in pending mode may grow this
+      // into multiple pieces later.
+      setPendingPolygon([simplified]);
       setMode('pending');
     };
 
@@ -1118,7 +1592,15 @@ export default function PolygonBuilder() {
         lassoPreviewRef.current?.setPath(lassoBufferRef.current);
         // Auto-close when the pen approaches the start point (after
         // enough vertices so a jitter on entry doesn't fire this).
-        if (lassoBufferRef.current.length >= MIN_LEN_BEFORE_AUTOCLOSE && startPx) {
+        // Skipped when the pending op is 'split' - split needs an OPEN
+        // polyline, so returning near the start must not close-and-finish
+        // the stroke as a polygon.
+        const pendingOp = pendingBooleanOpRef.current;
+        if (
+          pendingOp?.op !== 'split'
+          && lassoBufferRef.current.length >= MIN_LEN_BEFORE_AUTOCLOSE
+          && startPx
+        ) {
           const curPx = latLngToPixel(latLng.lat, latLng.lng);
           if (curPx) {
             const d = Math.hypot(curPx.x - startPx.x, curPx.y - startPx.y);
@@ -1185,6 +1667,29 @@ export default function PolygonBuilder() {
       clearRectPreview();
       const n = Math.max(s.lat, cur.lat), sLat = Math.min(s.lat, cur.lat);
       const eLng = Math.max(s.lng, cur.lng), wLng = Math.min(s.lng, cur.lng);
+      // Boolean-op sub-flow: if the operator entered rectangle mode via
+      // an Add / Cut / Clip button while editing, route the rectangle
+      // into applyBooleanOp instead of opening the save modal. Clear
+      // the pending ref FIRST so a failure doesn't leak into the next
+      // stroke.
+      const pendingOp = pendingBooleanOpRef.current;
+      if (pendingOp) {
+        pendingBooleanOpRef.current = null;
+        if (n === sLat || eLng === wLng) {
+          toast.show('Rectangle needs some width and height. Try again.', 'error');
+          returnToTargetMode(pendingOp.polygonId);
+          return;
+        }
+        const pts: LatLng[] = [
+          { lat: n,    lng: wLng },
+          { lat: n,    lng: eLng },
+          { lat: sLat, lng: eLng },
+          { lat: sLat, lng: wLng },
+        ];
+        void applyBooleanOp(pendingOp.op, pendingOp.polygonId, pts)
+          .finally(() => returnToTargetMode(pendingOp.polygonId));
+        return;
+      }
       if (n === sLat || eLng === wLng) {
         toast.show('Rectangle needs some width and height. Try again.', 'error');
         return;
@@ -1195,7 +1700,7 @@ export default function PolygonBuilder() {
         { lat: sLat, lng: eLng }, // SE
         { lat: sLat, lng: wLng }, // SW
       ];
-      setPendingPolygon(pts);
+      setPendingPolygon([pts]);
       setMode('pending');
     });
 
@@ -1248,6 +1753,31 @@ export default function PolygonBuilder() {
       const centre = circleCentreRef.current;
       const radiusM = flatMetres(centre, { lat: e.latLng.lat(), lng: e.latLng.lng() });
       clearCirclePreview();
+      // Boolean-op sub-flow: if entered via Add / Cut / Clip in edit
+      // mode, route the circle-approximated polygon into applyBooleanOp
+      // and re-enter edit mode. Clear the pending ref FIRST.
+      const pendingOp = pendingBooleanOpRef.current;
+      if (pendingOp) {
+        pendingBooleanOpRef.current = null;
+        if (radiusM < 50) {
+          toast.show('Circle radius too small (< 50m). Drag further from the centre.', 'error');
+          returnToTargetMode(pendingOp.polygonId);
+          return;
+        }
+        const radiusLatDeg = radiusM / 111320;
+        const radiusLngDeg = radiusM / (111320 * Math.cos((centre.lat * Math.PI) / 180));
+        const pts: LatLng[] = [];
+        for (let i = 0; i < CIRCLE_APPROX_SIDES; i++) {
+          const t = (i / CIRCLE_APPROX_SIDES) * 2 * Math.PI;
+          pts.push({
+            lat: centre.lat + Math.sin(t) * radiusLatDeg,
+            lng: centre.lng + Math.cos(t) * radiusLngDeg,
+          });
+        }
+        void applyBooleanOp(pendingOp.op, pendingOp.polygonId, pts)
+          .finally(() => returnToTargetMode(pendingOp.polygonId));
+        return;
+      }
       if (radiusM < 50) {
         toast.show('Circle radius too small (< 50m). Drag further from the centre.', 'error');
         return;
@@ -1264,7 +1794,7 @@ export default function PolygonBuilder() {
           lng: centre.lng + Math.cos(t) * radiusLngDeg,
         });
       }
-      setPendingPolygon(pts);
+      setPendingPolygon([pts]);
       setMode('pending');
     });
 
@@ -1420,18 +1950,43 @@ export default function PolygonBuilder() {
       toast.show('A polygon needs at least 3 points.', 'error');
       return;
     }
-    setPendingPolygon(drawingVertices);
+    setPendingPolygon([drawingVertices]);
     setDrawingVertices([]);
     setMode('pending');
   };
 
   // Stage 4 - lasso mode entry/exit.
   const startLasso = () => { setDrawingVertices([]); setMode('lassoing'); };
-  const cancelLasso = () => { clearLassoPreview(); setMode('view'); };
+  const cancelLasso = () => {
+    clearLassoPreview();
+    // If the operator was mid-Add/Cut/Keep, bounce back to edit mode
+    // instead of view. Clear the pending op so it doesn't leak into a
+    // subsequent fresh lasso.
+    const pendingOp = pendingBooleanOpRef.current;
+    pendingBooleanOpRef.current = null;
+    if (pendingOp) returnToTargetMode(pendingOp.polygonId);
+    else setMode('view');
+  };
   const startRect = () => { setDrawingVertices([]); setMode('rectangling'); };
-  const cancelRect = () => { clearRectPreview(); setMode('view'); };
+  const cancelRect = () => {
+    clearRectPreview();
+    // Same bounce-back-to-edit rule as cancelLasso: if the operator was
+    // mid-Add / Cut / Clip via the Rectangle input tool, Escape should
+    // land them back in edit mode - not the view mode which would drop
+    // them out of the polygon they were reshaping.
+    const pendingOp = pendingBooleanOpRef.current;
+    pendingBooleanOpRef.current = null;
+    if (pendingOp) returnToTargetMode(pendingOp.polygonId);
+    else setMode('view');
+  };
   const startCircle = () => { setDrawingVertices([]); setMode('circling'); };
-  const cancelCircle = () => { clearCirclePreview(); setMode('view'); };
+  const cancelCircle = () => {
+    clearCirclePreview();
+    const pendingOp = pendingBooleanOpRef.current;
+    pendingBooleanOpRef.current = null;
+    if (pendingOp) returnToTargetMode(pendingOp.polygonId);
+    else setMode('view');
+  };
 
   // Stage 4 - keyboard shortcuts. Bound at window level; skips input/textarea
   // targets so search + name-input fields still get their raw keystrokes.
@@ -1472,14 +2027,23 @@ export default function PolygonBuilder() {
         undoVertex();
         return;
       }
-      // Tool shortcuts fire in view OR edit mode (edit-mode operator can
-      // jump straight into drawing another polygon without clicking "Done editing" first).
+      // Tool shortcuts.
+      // View mode: L / R / C start a new polygon in that drawing mode.
+      // Edit mode: L / R / C flip the boolean-op input shape (picker) -
+      // they do NOT drop the operator into a fresh-polygon session,
+      // which was the confusing pre-2026-08-06 behaviour.
       // 'P' (vertex polygon) shortcut removed 2026-08-05 alongside the
       // toolbar item; the drag-based tools cover the same use cases.
-      if (mode === 'view' || editingId != null) {
+      if (mode === 'view') {
         if (e.key === 'l' || e.key === 'L') { e.preventDefault(); startLasso(); return; }
         if (e.key === 'r' || e.key === 'R') { e.preventDefault(); startRect(); return; }
         if (e.key === 'c' || e.key === 'C') { e.preventDefault(); startCircle(); return; }
+      } else if (editingId != null) {
+        if (e.key === 'l' || e.key === 'L') { e.preventDefault(); setEditShapeInput('freehand'); return; }
+        if (e.key === 'r' || e.key === 'R') { e.preventDefault(); setEditShapeInput('rect'); return; }
+        if (e.key === 'c' || e.key === 'C') { e.preventDefault(); setEditShapeInput('circle'); return; }
+      }
+      if (mode === 'view' || editingId != null) {
         if (e.key === '/') {
           e.preventDefault();
           document.querySelector<HTMLInputElement>('input[placeholder^="Type a"]')?.focus();
@@ -1493,8 +2057,11 @@ export default function PolygonBuilder() {
 
   // Pending polygon mode: renders the draft polygon on the map with
   // draggable vertex + midpoint handles so the operator can refine it
-  // before saving. Same UX as edit mode but writes back to
-  // pendingPolygon state (no server call) instead of updateShape.
+  // before saving. Same visual + edit UX as edit mode, but writes back
+  // to pendingPolygon state (no server call) instead of updateShape.
+  // 2026-08-06: multi-ring support so boolean-op splits (Cut / Split)
+  // performed in pending mode keep every piece drawn + editable, and
+  // toolbar reuses the same tools as edit mode.
   useEffect(() => {
     const g = (window as any).google;
     const map = mapRef.current;
@@ -1506,19 +2073,44 @@ export default function PolygonBuilder() {
     pendingHandlesRef.current = [];
     pendingMidpointsRef.current.forEach((h) => h.setMap(null));
     pendingMidpointsRef.current = [];
-    if (mode !== 'pending' || !pendingPolygon || pendingPolygon.length < 3) return;
+    if (mode !== 'pending' || !pendingPolygon || pendingPolygon.length === 0) return;
 
-    const working: LatLng[] = pendingPolygon.map((p) => ({ lat: p.lat, lng: p.lng }));
+    // Deep-clone rings into a mutable working set. All drag / insert /
+    // delete handlers mutate workingRings then push a fresh snapshot
+    // to pendingPolygon state.
+    const workingRings: LatLng[][] = pendingPolygon
+      .filter((r) => r.length >= 3)
+      .map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng })));
+    if (workingRings.length === 0) return;
+
     const color = '#8b5cf6'; // purple to distinguish from saved polygons
+    const currentPaths = (): LatLng[][] => workingRings;
+
     pendingPolyRef.current = new g.maps.Polygon({
-      paths: working, map,
+      paths: currentPaths(), map,
       strokeColor: color, strokeOpacity: 1, strokeWeight: 2,
       fillColor: color, fillOpacity: 0.25,
       clickable: false,
     });
 
+    // Guard against handle-storm on a huge multi-ring shape. Same cap
+    // as edit mode - drawing thousands of draggable Markers freezes
+    // the browser.
+    const totalVerts = workingRings.reduce((n, r) => n + r.length, 0);
+    if (totalVerts > MAX_EDIT_HANDLE_VERTICES) {
+      toast.show(
+        `${totalVerts} vertices across ${workingRings.length} ring${workingRings.length === 1 ? '' : 's'} is too many to edit safely. Use Cut / Clip to shrink first, or discard + re-draw.`,
+        'error',
+      );
+      return;
+    }
+
     const commitPending = () => {
-      setPendingPolygon(working.map((p) => ({ lat: p.lat, lng: p.lng })));
+      // Push a fresh deep-clone into state so pendingPolygon.length dep
+      // fires and React re-renders anything watching the ring count.
+      setPendingPolygon(
+        workingRings.map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng }))),
+      );
     };
 
     const renderHandles = () => {
@@ -1527,66 +2119,98 @@ export default function PolygonBuilder() {
       pendingHandlesRef.current = [];
       pendingMidpointsRef.current = [];
 
-      working.forEach((pt, i) => {
-        const handle = new g.maps.Marker({
-          position: pt, map, draggable: true,
-          icon: {
-            path: 'M -6 -6 L 6 -6 L 6 6 L -6 6 Z',
-            fillColor: color, fillOpacity: 1,
-            strokeColor: '#fff', strokeWeight: 2, scale: 1,
-          },
-          title: `Vertex ${i + 1} - drag to move, right-click to delete`,
-          zIndex: 500,
+      workingRings.forEach((ring, ri) => {
+        ring.forEach((pt, vi) => {
+          const handle = new g.maps.Marker({
+            position: pt, map, draggable: true,
+            icon: {
+              path: 'M -6 -6 L 6 -6 L 6 6 L -6 6 Z',
+              fillColor: color, fillOpacity: 1,
+              strokeColor: '#fff', strokeWeight: 2, scale: 1,
+            },
+            title: workingRings.length > 1
+              ? `Ring ${ri + 1} vertex ${vi + 1} - drag to move, right-click to delete`
+              : `Vertex ${vi + 1} - drag to move, right-click to delete`,
+            zIndex: 500,
+          });
+          handle.addListener('dragstart', () => {
+            map.setOptions({ draggable: false, disableDoubleClickZoom: true });
+            pendingMidpointsRef.current.forEach((m) => m.setMap(null));
+            pendingMidpointsRef.current = [];
+          });
+          handle.addListener('drag', (e: any) => {
+            workingRings[ri][vi] = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+            pendingPolyRef.current?.setPaths(currentPaths());
+          });
+          handle.addListener('dragend', () => {
+            map.setOptions({ draggable: true, disableDoubleClickZoom: false });
+            pushPendingUndoSnapshot();
+            commitPending();
+            renderHandles();
+          });
+          handle.addListener('rightclick', () => {
+            if (workingRings[ri].length <= 3) {
+              // Would leave THIS ring with < 3 verts. Drop the whole
+              // ring if there are others; block if it's the only ring
+              // (an empty pending polygon has no meaning).
+              if (workingRings.length > 1) {
+                pushPendingUndoSnapshot();
+                workingRings.splice(ri, 1);
+                pendingPolyRef.current?.setPaths(currentPaths());
+                commitPending();
+                renderHandles();
+                return;
+              }
+              toast.show('A polygon must keep at least 3 vertices.', 'error');
+              return;
+            }
+            pushPendingUndoSnapshot();
+            workingRings[ri].splice(vi, 1);
+            pendingPolyRef.current?.setPaths(currentPaths());
+            commitPending();
+            renderHandles();
+          });
+          pendingHandlesRef.current.push(handle);
         });
-        handle.addListener('dragstart', () => {
-          map.setOptions({ draggable: false, disableDoubleClickZoom: true });
-          pendingMidpointsRef.current.forEach((m) => m.setMap(null));
-          pendingMidpointsRef.current = [];
-        });
-        handle.addListener('drag', (e: any) => {
-          working[i] = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-          pendingPolyRef.current?.setPath(working);
-        });
-        handle.addListener('dragend', () => {
-          map.setOptions({ draggable: true, disableDoubleClickZoom: false });
-          commitPending();
-          renderHandles();
-        });
-        handle.addListener('rightclick', () => {
-          if (working.length <= 3) {
-            toast.show('A polygon must keep at least 3 vertices.', 'error');
-            return;
-          }
-          working.splice(i, 1);
-          pendingPolyRef.current?.setPath(working);
-          commitPending();
-          renderHandles();
-        });
-        pendingHandlesRef.current.push(handle);
       });
 
-      working.forEach((a, i) => {
-        const b = working[(i + 1) % working.length];
-        const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
-        const marker = new g.maps.Marker({
-          position: mid, map,
-          icon: {
-            path: g.maps.SymbolPath.CIRCLE, scale: 6,
-            fillColor: '#fff', fillOpacity: 1,
-            strokeColor: color, strokeWeight: 2,
-          },
-          title: 'Click to insert a vertex here',
-          zIndex: 400,
+      workingRings.forEach((ring, ri) => {
+        ring.forEach((a, vi) => {
+          const b = ring[(vi + 1) % ring.length];
+          const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+          const marker = new g.maps.Marker({
+            position: mid, map,
+            icon: {
+              path: g.maps.SymbolPath.CIRCLE, scale: 6,
+              fillColor: '#fff', fillOpacity: 1,
+              strokeColor: color, strokeWeight: 2,
+            },
+            title: 'Click to insert a vertex here',
+            zIndex: 400,
+          });
+          marker.addListener('click', () => {
+            pushPendingUndoSnapshot();
+            workingRings[ri].splice(vi + 1, 0, mid);
+            pendingPolyRef.current?.setPaths(currentPaths());
+            commitPending();
+            renderHandles();
+          });
+          pendingMidpointsRef.current.push(marker);
         });
-        marker.addListener('click', () => {
-          working.splice(i + 1, 0, mid);
-          pendingPolyRef.current?.setPath(working);
-          commitPending();
-          renderHandles();
-        });
-        pendingMidpointsRef.current.push(marker);
       });
     };
+
+    /** Snapshot the PRE-mutation ring set onto the shared undo stack
+     *  under the PENDING_ID sentinel. Callers invoke this before any
+     *  destructive edit (drag / insert / delete) so Undo can walk back
+     *  through the whole session. */
+    const pushPendingUndoSnapshot = () => {
+      pushUndoSnapshot({
+        polygonId: PENDING_ID,
+        rings: workingRings.map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng }))),
+      });
+    };
+
     renderHandles();
 
     return () => {
@@ -1597,15 +2221,39 @@ export default function PolygonBuilder() {
       pendingMidpointsRef.current.forEach((h) => h.setMap(null));
       pendingMidpointsRef.current = [];
     };
+    // Structural signature only: total vertex count + ring count. Drags
+    // mutate vertex positions in place (workingRings) without changing
+    // either, so this dep skips the effect on drag - saving handle
+    // recreation churn on every dragend. Fires on insert / delete /
+    // Add / Cut / Clip / Split / Undo which DO change the structure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, pendingPolygon?.length]);
+  }, [
+    mode,
+    (pendingPolygon ?? []).length,
+    (pendingPolygon ?? []).reduce((n, r) => n + r.length, 0),
+  ]);
 
   // ─── Edit mode ───────────────────────────────────────────────────────
   const startEdit = (id: number) => {
     setDrawingVertices([]);
     setMode({ edit: id });
+    // 2026-08-06 (George): auto-zoom the map to the polygon so the
+    // operator doesn't have to hunt for it after clicking Edit shape.
+    // fitBounds fires ASYNC via requestAnimationFrame so it lands
+    // AFTER the edit-mode overlay renders (rings are drawn on the
+    // effect fire that comes from the setMode above); without the RAF
+    // the fit sometimes measured against the pre-edit polygon and
+    // undershot on multi-piece shapes.
+    const p = polygons.find((x) => x.polygonId === id);
+    if (p) requestAnimationFrame(() => zoomToPolygon(p));
   };
-  const stopEdit = () => setMode('view');
+  const stopEdit = () => {
+    // Discard the whole undo stack when the operator exits edit mode -
+    // undo is a within-session concept only.
+    editUndoStackRef.current = [];
+    setUndoVersion((v) => v + 1);
+    setMode('view');
+  };
 
   useEffect(() => {
     const g = (window as any).google;
@@ -1615,27 +2263,38 @@ export default function PolygonBuilder() {
 
     const polygon = polygons.find((p) => p.polygonId === mode.edit);
     if (!polygon) return;
-    const path = pointsToLatLngPath(polygon.points);
-    if (path.length < 3) return;
-
-    const working: LatLng[] = path.map((p) => ({ lat: p.lat, lng: p.lng }));
+    // 2026-08-06 (George): ALL rings editable. `workingRings` holds
+    // every ring's mutable vertex list; handles + midpoints are
+    // generated per-ring per-vertex. Each handler knows its
+    // (ringIndex, vertexIndex) so drag / insert / delete mutates the
+    // right ring without touching the others. commitShape(id, rings)
+    // then sends the whole ring set back to the server so every piece
+    // stays intact through the round-trip.
+    const workingRings: LatLng[][] = pointsToLatLngRings(polygon.points)
+      .filter((r) => r.length >= 3)
+      .map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng })));
+    if (workingRings.length === 0) return;
     const color = POLYGON_PALETTE[
       polygons.findIndex((p) => p.polygonId === mode.edit) % POLYGON_PALETTE.length
     ];
 
+    // Helper: current paths for the overlay = every ring, in order.
+    const currentPaths = (): LatLng[][] => workingRings;
+
     editPolyRef.current = new g.maps.Polygon({
-      paths: working, map: mapRef.current,
+      paths: currentPaths(), map: mapRef.current,
       strokeColor: color, strokeOpacity: 1, strokeWeight: 2,
       fillColor: color, fillOpacity: 0.3,
       clickable: false,
     });
 
-    // Guard: drawing thousands of draggable Marker + midpoint pairs freezes
-    // the browser. Above the cap, skip handles and let the operator hit
-    // "Simplify shape" from the right-rail row.
-    if (working.length > MAX_EDIT_HANDLE_VERTICES) {
+    // Guard: drawing thousands of draggable Markers freezes the browser.
+    // Sum across ALL rings against the cap so multi-piece polygons don't
+    // sneak past by having each piece under-cap.
+    const totalVerts = workingRings.reduce((n, r) => n + r.length, 0);
+    if (totalVerts > MAX_EDIT_HANDLE_VERTICES) {
       toast.show(
-        `${working.length} vertices is too many to edit safely. Click "Simplify shape" in the right rail to reduce.`,
+        `${totalVerts} vertices across ${workingRings.length} ring${workingRings.length === 1 ? '' : 's'} is too many to edit safely. Use Cut / Clip to shrink first, or delete + re-create the polygon.`,
         'error',
       );
       return;
@@ -1647,82 +2306,153 @@ export default function PolygonBuilder() {
       editHandlesRef.current = [];
       editMidpointsRef.current = [];
 
-      working.forEach((pt, i) => {
-        const handle = new g.maps.Marker({
-          position: pt, map: mapRef.current, draggable: true,
-          icon: {
-            path: 'M -6 -6 L 6 -6 L 6 6 L -6 6 Z',
-            fillColor: color, fillOpacity: 1,
-            strokeColor: '#fff', strokeWeight: 2, scale: 1,
-          },
-          title: `Vertex ${i + 1} - drag to move, right-click to delete`,
-          zIndex: 500,
+      // Vertex handles - one per ring per vertex, keyed by (ri, vi) in
+      // the closures so mutations land on the right ring.
+      workingRings.forEach((ring, ri) => {
+        ring.forEach((pt, vi) => {
+          const handle = new g.maps.Marker({
+            position: pt, map: mapRef.current, draggable: true,
+            icon: {
+              path: 'M -6 -6 L 6 -6 L 6 6 L -6 6 Z',
+              fillColor: color, fillOpacity: 1,
+              strokeColor: '#fff', strokeWeight: 2, scale: 1,
+            },
+            title: workingRings.length > 1
+              ? `Ring ${ri + 1} vertex ${vi + 1} - drag to move, right-click to delete`
+              : `Vertex ${vi + 1} - drag to move, right-click to delete`,
+            zIndex: 500,
+          });
+          handle.addListener('dragstart', () => {
+            mapRef.current.setOptions({ draggable: false, disableDoubleClickZoom: true });
+            editMidpointsRef.current.forEach((m) => m.setMap(null));
+            editMidpointsRef.current = [];
+          });
+          handle.addListener('drag', (e: any) => {
+            workingRings[ri][vi] = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+            editPolyRef.current?.setPaths(currentPaths());
+          });
+          handle.addListener('dragend', async () => {
+            mapRef.current.setOptions({ draggable: true, disableDoubleClickZoom: false });
+            await commitShape(mode.edit, workingRings);
+            renderHandles();
+          });
+          handle.addListener('rightclick', async () => {
+            if (workingRings[ri].length <= 3) {
+              // Would leave this ring with < 3 verts. If it's not the
+              // only ring, drop the whole ring instead of blocking; if
+              // it IS the only ring, block (a polygon needs 3 verts).
+              if (workingRings.length > 1) {
+                workingRings.splice(ri, 1);
+                editPolyRef.current?.setPaths(currentPaths());
+                await commitShape(mode.edit, workingRings);
+                renderHandles();
+                return;
+              }
+              toast.show('A polygon must keep at least 3 vertices.', 'error');
+              return;
+            }
+            workingRings[ri].splice(vi, 1);
+            editPolyRef.current?.setPaths(currentPaths());
+            await commitShape(mode.edit, workingRings);
+            renderHandles();
+          });
+          editHandlesRef.current.push(handle);
         });
-        handle.addListener('dragstart', () => {
-          mapRef.current.setOptions({ draggable: false, disableDoubleClickZoom: true });
-          editMidpointsRef.current.forEach((m) => m.setMap(null));
-          editMidpointsRef.current = [];
-        });
-        handle.addListener('drag', (e: any) => {
-          working[i] = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-          editPolyRef.current?.setPath(working);
-        });
-        handle.addListener('dragend', async () => {
-          mapRef.current.setOptions({ draggable: true, disableDoubleClickZoom: false });
-          await commitShape(mode.edit, working);
-          renderHandles();
-        });
-        handle.addListener('rightclick', async () => {
-          if (working.length <= 3) {
-            toast.show('A polygon must keep at least 3 vertices.', 'error');
-            return;
-          }
-          working.splice(i, 1);
-          editPolyRef.current?.setPath(working);
-          await commitShape(mode.edit, working);
-          renderHandles();
-        });
-        editHandlesRef.current.push(handle);
       });
 
-      working.forEach((a, i) => {
-        const b = working[(i + 1) % working.length];
-        const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
-        const marker = new g.maps.Marker({
-          position: mid, map: mapRef.current,
-          icon: {
-            path: g.maps.SymbolPath.CIRCLE, scale: 6,
-            fillColor: '#fff', fillOpacity: 1,
-            strokeColor: color, strokeWeight: 2,
-          },
-          title: 'Click to insert a vertex here',
-          zIndex: 400,
+      // Testing hook - Playwright grabs the current handle array and
+      // triggers events (dragend / rightclick) via
+      // google.maps.event.trigger(handle, 'dragend'). Cheap enough at
+      // runtime that we don't bother stripping in prod builds.
+      (window as any).__pbEditHandles = editHandlesRef.current;
+      (window as any).__pbEditMidpoints = editMidpointsRef.current;
+
+      // Midpoint insert markers - between each consecutive vertex pair
+      // in each ring. Click inserts a new vertex at the midpoint.
+      workingRings.forEach((ring, ri) => {
+        ring.forEach((a, vi) => {
+          const b = ring[(vi + 1) % ring.length];
+          const mid = { lat: (a.lat + b.lat) / 2, lng: (a.lng + b.lng) / 2 };
+          const marker = new g.maps.Marker({
+            position: mid, map: mapRef.current,
+            icon: {
+              path: g.maps.SymbolPath.CIRCLE, scale: 6,
+              fillColor: '#fff', fillOpacity: 1,
+              strokeColor: color, strokeWeight: 2,
+            },
+            title: 'Click to insert a vertex here',
+            zIndex: 400,
+          });
+          marker.addListener('click', async () => {
+            workingRings[ri].splice(vi + 1, 0, mid);
+            editPolyRef.current?.setPaths(currentPaths());
+            await commitShape(mode.edit, workingRings);
+            renderHandles();
+          });
+          editMidpointsRef.current.push(marker);
         });
-        marker.addListener('click', async () => {
-          working.splice(i + 1, 0, mid);
-          editPolyRef.current?.setPath(working);
-          await commitShape(mode.edit, working);
-          renderHandles();
-        });
-        editMidpointsRef.current.push(marker);
       });
     };
 
     renderHandles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [
+    mode,
+    // BUGFIX 2026-08-06 (George): re-fire the edit effect whenever the
+    // polygon being edited gets a server-side shape update. Undo /
+    // Add / Cut / Clip all round-trip to the server and set a fresh
+    // lastModifiedUtc via bulkPolygonService.updateShape. Without this
+    // dep the edit-mode effect kept the stale `working` ring + handles
+    // from the initial mount, so an Undo would land on the server + in
+    // React state but leave the visible edit overlay unchanged. Note:
+    // vertex-drag / midpoint-insert / vertex-delete ALSO trigger this
+    // via commitShape -> setPolygons; the manual renderHandles() calls
+    // in those handlers become redundant but stay in place as a safety
+    // net so an in-flight PUT failure still leaves handles usable.
+    typeof mode === 'object'
+      ? polygons.find((p) => p.polygonId === mode.edit)?.lastModifiedUtc
+      : null,
+  ]);
 
-  const commitShape = async (id: number, working: LatLng[]) => {
+  /** Persist a full ring set for the polygon under edit. 2026-08-06:
+   *  signature widened from single ring (LatLng[]) to all rings
+   *  (LatLng[][]) so multi-piece polygons round-trip through vertex
+   *  edits without losing pieces. Caller passes workingRings which
+   *  already includes every editable ring; commitShape flattens to
+   *  the PolygonPointDto structure the API expects, snapshots the
+   *  prior state onto the undo stack after server-accept, and updates
+   *  local polygon state from the response. */
+  const commitShape = async (id: number, workingRings: LatLng[][]) => {
+    // Snapshot the current state BEFORE the API round-trip so Undo can
+    // revert the change (single stack entry per commit, across all
+    // ops - vertex drag / midpoint insert / vertex delete / boolean).
+    const current = polygons.find((p) => p.polygonId === id);
+    const currentRings = current ? pointsToLatLngRings(current.points) : [];
+    const priorSnapshot = currentRings.length > 0
+      ? { polygonId: id, rings: currentRings }
+      : null;
+
     try {
-      const points: PolygonPoint[] = working.map((pt, i) => ({
-        orderIndex: i, lat: pt.lat, lng: pt.lng,
-      }));
-      const centroid = polygonCentroid(working);
+      const points: PolygonPoint[] = [];
+      workingRings.forEach((ring, ringIndex) => {
+        ring.forEach((pt, orderIndex) => {
+          points.push({ ringIndex, orderIndex, lat: pt.lat, lng: pt.lng });
+        });
+      });
+      // Centroid stamped from ring 0 - accurate enough for the map
+      // centre pin and matches the single-outer-ring convention.
+      const centroid = polygonCentroid(workingRings[0]);
       const res = await bulkPolygonService.updateShape(id, {
         points, centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
       });
       setPolygons((prev) => prev.map((p) =>
         p.polygonId === id ? res.response : p));
+      // Push the pre-op snapshot onto the undo stack only after the
+      // server accepted the change - a failure below leaves the prior
+      // undo state intact.
+      if (priorSnapshot) {
+        pushUndoSnapshot(priorSnapshot);
+      }
       toast.show(`Shape saved.${derivedZipsToastTrailer(res.response)}`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
@@ -1736,33 +2466,15 @@ export default function PolygonBuilder() {
     editPolyRef.current = null;
   };
 
-  /** Reduce a polygon's vertex count in place. Reads the current points,
-   *  runs Douglas-Peucker to hit ZIP_TO_COVERAGE_MAX_VERTICES, PUTs the
-   *  simplified shape back. Used to unblock edit mode on polygons that got
-   *  saved with a raw ZIP outline before the on-conversion simplification
-   *  landed. */
-  const simplifyPolygonInPlace = async (p: BulkPolygon) => {
-    const path: LatLng[] = pointsToLatLngPath(p.points);
-    const simplified = simplifyToMax(path, ZIP_TO_COVERAGE_MAX_VERTICES);
-    if (simplified.length >= p.points.length) {
-      toast.show(`"${p.name}" already has ${p.points.length} vertices; no simplification possible at the target tolerance.`, 'error');
-      return;
-    }
-    if (!confirm(`Simplify "${p.name}" from ${p.points.length} to ${simplified.length} vertices? Shape will be preserved approximately. Cannot be undone.`)) return;
-    try {
-      const newPoints: PolygonPoint[] = simplified.map((pt, i) => ({
-        orderIndex: i, lat: pt.lat, lng: pt.lng,
-      }));
-      const centroid = polygonCentroid(simplified);
-      const res = await bulkPolygonService.updateShape(p.polygonId, {
-        points: newPoints,
-        centroidLatitude: centroid.lat,
-        centroidLongitude: centroid.lng,
-      });
-      setPolygons((prev) => prev.map((x) => x.polygonId === p.polygonId ? res.response : x));
-      toast.show(`Simplified "${p.name}" to ${simplified.length} vertices.`, 'success');
-    } catch (e) { toast.show((e as Error).message, 'error'); }
-  };
+  // simplifyPolygonInPlace + the "Simplify shape" affordances removed
+  // 2026-08-06 (George). The Douglas-Peucker simplification flattens
+  // every ring's outer path but treats the polygon as one shape, so
+  // multi-piece coverage polygons produced by Combine {N} or by a
+  // Cut-that-split lost every piece beyond ring 0 whenever the operator
+  // tried to simplify. Auto-simplification on ingest still runs (the
+  // Combine flow caps rings to ZIP_TO_COVERAGE_MAX_VERTICES at create
+  // time), so operators shouldn't need this manual button in practice.
+  // If a legacy pre-cap polygon needs shrinking, delete + re-create it.
 
   /** Pan + fit the map to a coverage polygon's bounds. Used when the
    *  operator clicks a polygon name in the right rail, or "Zoom to fit"
@@ -1779,7 +2491,12 @@ export default function PolygonBuilder() {
     const msg = p.attachedRouteCount > 0
       ? `"${p.name}" is attached to ${p.attachedRouteCount} active route(s). Remove anyway?`
       : `Remove "${p.name}"?`;
-    if (!confirm(msg)) return;
+    if (!(await askConfirm({
+      title: 'Remove coverage polygon',
+      message: msg,
+      confirmLabel: 'Remove',
+      danger: true,
+    }))) return;
     try {
       await bulkPolygonService.remove(p.polygonId);
       setPolygons((prev) => prev.filter((x) => x.polygonId !== p.polygonId));
@@ -1796,12 +2513,17 @@ export default function PolygonBuilder() {
     setPolygons((prev) => [...prev, created]);
     setPendingPolygon(null);
     setOpenSaveModal(false);
+    // Clear the pending draft's undo stack - the session is over.
+    editUndoStackRef.current = editUndoStackRef.current.filter(
+      (s) => s.polygonId !== PENDING_ID,
+    );
+    setUndoVersion((v) => v + 1);
     setMode('view');
   };
 
   // Explicit "Finish drawing" click from pending mode -> open save modal.
   const openSaveForPending = () => {
-    if (!pendingPolygon || pendingPolygon.length < 3) {
+    if (!pendingPolygon || pendingPolygon.length === 0 || pendingPolygon[0].length < 3) {
       toast.show('Nothing to finish - draw a shape first.', 'error');
       return;
     }
@@ -1810,6 +2532,11 @@ export default function PolygonBuilder() {
   const discardPending = () => {
     setPendingPolygon(null);
     setOpenSaveModal(false);
+    // Wipe pending undo entries so the next new-draft session starts clean.
+    editUndoStackRef.current = editUndoStackRef.current.filter(
+      (s) => s.polygonId !== PENDING_ID,
+    );
+    setUndoVersion((v) => v + 1);
     setMode('view');
   };
 
@@ -1880,29 +2607,138 @@ export default function PolygonBuilder() {
         ) : mode === 'pending' ? (
           <>
             <span className="text-text-muted">
-              Drag the purple squares to refine ({pendingPolygon?.length ?? 0} vertices). Click white circles to insert, right-click a square to delete. Click "Finish drawing" to name + save.
+              {(() => {
+                const totalVerts = (pendingPolygon ?? []).reduce((n, r) => n + r.length, 0);
+                const pieceCount = (pendingPolygon ?? []).filter((r) => signedRingArea(r) > 0).length || 1;
+                const pieceLabel = pieceCount === 1 ? '1 piece' : `${pieceCount} pieces`;
+                return `Drag the purple squares to refine (${totalVerts} vertices, ${pieceLabel}). Click white circles to insert, right-click a square to delete. Pick a shape below to Add / Cut / Clip / Split. Click "Finish drawing" to name + save.`;
+              })()}
             </span>
-            <DrawingToolsMenu
-              onStartLasso={startLasso}
-              onStartRect={startRect}
-              onStartCircle={startCircle}
+            {/* Same tool-set as edit mode - Shape picker + Add / Cut /
+                Clip / Split + Undo. Both surfaces share applyBooleanOp
+                and the undo stack; the pending draft is targeted via
+                the PENDING_ID sentinel so no server round-trips happen
+                until the operator clicks "Finish drawing". */}
+            <ShapeInputPicker
+              value={editShapeInput}
+              onChange={setEditShapeInput}
             />
+            <div className="inline-flex items-center gap-1">
+              {(() => {
+                const shapeLabel = editShapeInput === 'freehand'
+                  ? 'freehand region'
+                  : editShapeInput === 'rect'
+                  ? 'rectangle'
+                  : 'circle';
+                return (
+                  <>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('add')}
+                      title={`Draw a ${shapeLabel} to grow the polygon into it (union).`}>
+                      Add
+                    </Button>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('cut')}
+                      title={`Draw a ${shapeLabel} to subtract from the polygon (may split it into pieces or carve a hole).`}>
+                      Cut
+                    </Button>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('keep')}
+                      title={`Draw a ${shapeLabel} to trim the polygon down to only the parts inside it (intersection).`}>
+                      Clip
+                    </Button>
+                  </>
+                );
+              })()}
+              <Button variant="neutral" size="sm" onClick={() => startBooleanOp('split')}
+                title="Drag a freehand line that crosses the polygon boundary at both ends to split it into two pieces. Always uses freehand (rectangle / circle can't split a polygon).">
+                Split
+              </Button>
+              {(() => {
+                const undoableCount = editUndoStackRef.current.filter(
+                  (s) => s.polygonId === PENDING_ID,
+                ).length;
+                return (
+                  <Button variant="neutral" size="sm" onClick={undoLastBooleanOp}
+                    disabled={undoableCount === 0}
+                    title={undoableCount === 0
+                      ? 'Nothing to undo yet - make an edit first.'
+                      : `Revert the last edit (Add / Cut / Clip / Split / drag / insert / delete). ${undoableCount} step${undoableCount === 1 ? '' : 's'} available.`}
+                    data-undo-version={undoVersion}>
+                    {undoableCount > 1 ? `Undo (${undoableCount})` : 'Undo'}
+                  </Button>
+                );
+              })()}
+            </div>
             <Button variant="neutral" size="sm" onClick={discardPending}>Discard</Button>
             <Button variant="secondary" size="sm" onClick={openSaveForPending}
-              disabled={!pendingPolygon || pendingPolygon.length < 3}>
+              disabled={!pendingPolygon || pendingPolygon.length === 0 || pendingPolygon[0].length < 3}>
               Finish drawing
             </Button>
           </>
         ) : editingId != null ? (
           <>
             <span className="text-text-muted">
-              Drag the coloured squares to reshape; click a white circle to insert a vertex; right-click a square to delete it.
+              Drag squares to reshape; click a white circle to insert a vertex; right-click a square to delete it. Pick a shape below, then use Add / Cut / Clip to reshape by drawn region; Split cuts the polygon in two with a freehand line.
             </span>
-            <DrawingToolsMenu
-              onStartLasso={startLasso}
-              onStartRect={startRect}
-              onStartCircle={startCircle}
+            {/* Shape-input picker: the boolean-op buttons below use this
+                to decide what tool to hand the operator when they click
+                Add / Cut / Clip. Freehand covers the widest range; the
+                picker persists across ops so an operator carving multiple
+                rectangular chunks doesn't have to re-pick each time.
+                Split always overrides to freehand (rect / circle don't
+                yield a polyline that can split a polygon in two). */}
+            <ShapeInputPicker
+              value={editShapeInput}
+              onChange={setEditShapeInput}
             />
+            <div className="inline-flex items-center gap-1">
+              {(() => {
+                const shapeLabel = editShapeInput === 'freehand'
+                  ? 'freehand region'
+                  : editShapeInput === 'rect'
+                  ? 'rectangle'
+                  : 'circle';
+                return (
+                  <>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('add')}
+                      title={`Draw a ${shapeLabel} to grow the polygon into it (union).`}>
+                      Add
+                    </Button>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('cut')}
+                      title={`Draw a ${shapeLabel} to subtract from the polygon (may split it into pieces or carve a hole).`}>
+                      Cut
+                    </Button>
+                    <Button variant="neutral" size="sm" onClick={() => startBooleanOp('keep')}
+                      title={`Draw a ${shapeLabel} to trim the polygon down to only the parts inside it (intersection).`}>
+                      Clip
+                    </Button>
+                  </>
+                );
+              })()}
+              <Button variant="neutral" size="sm" onClick={() => startBooleanOp('split')}
+                title="Drag a freehand line that crosses the polygon boundary at both ends to split it into two pieces. Always uses freehand (rectangle / circle can't split a polygon).">
+                Split
+              </Button>
+              {/* Multi-step Undo. Depth is refreshed via undoVersion so
+                  React re-evaluates disabled + label when the stack
+                  changes (ref updates don't trigger renders on their
+                  own). Stack only counts entries pointing at the
+                  current polygon; orphan entries from a prior edit
+                  target are silently discarded on click. */}
+              {(() => {
+                const undoableCount = editUndoStackRef.current.filter(
+                  (s) => s.polygonId === editingId,
+                ).length;
+                return (
+                  <Button variant="neutral" size="sm" onClick={undoLastBooleanOp}
+                    disabled={undoableCount === 0}
+                    title={undoableCount === 0
+                      ? 'Nothing to undo yet - make an edit first.'
+                      : `Revert the last edit (Add / Cut / Clip / drag / insert / delete). ${undoableCount} step${undoableCount === 1 ? '' : 's'} available.`}
+                    data-undo-version={undoVersion}>
+                    {undoableCount > 1 ? `Undo (${undoableCount})` : 'Undo'}
+                  </Button>
+                );
+              })()}
+            </div>
             <Button variant="secondary" size="sm" onClick={stopEdit}>Done editing</Button>
           </>
         ) : (
@@ -1918,6 +2754,13 @@ export default function PolygonBuilder() {
             <Button variant="secondary" size="sm" onClick={() => setZipSaveOpen(true)} disabled={selected.length === 0}
               title={selected.length === 0 ? `Select some ${zipLongLower}s first` : 'Persist the selection as a recurring route'}>
               Save as Route ({selected.length})
+            </Button>
+            <Button variant="secondary" size="sm" onClick={combineSelectedAsShape}
+              disabled={selected.length < 2 || combining}
+              title={selected.length < 2
+                ? `Select 2+ ${zipShortLower}s to combine them into a single editable coverage shape`
+                : 'Union the selected zip polygons into one coverage shape (adjacent zips merge; disjoint ones become multi-piece) and open it in edit mode'}>
+              {combining ? 'Combining…' : `Combine ${selected.length} as shape`}
             </Button>
             <Button variant="secondary" size="sm" onClick={() => setPolygonSaveOpen(true)} disabled={selectedPolygons.size === 0}
               title={selectedPolygons.size === 0 ? 'Select some coverage polygons first' : 'Persist the coverage-polygon selection as a recurring route'}>
@@ -2039,9 +2882,33 @@ export default function PolygonBuilder() {
                         </div>
                       )}
                       <div className="ml-5 mt-0.5 text-[10px] text-text-muted">
-                        {p.attachedRouteCount > 0
-                          ? `attached to ${p.attachedRouteCount} route(s)`
-                          : 'not attached to any route'}
+                        {p.attachedRoutes && p.attachedRoutes.length > 0 ? (
+                          <>
+                            <span>attached to </span>
+                            {p.attachedRoutes.map((r, i) => (
+                              <span key={r.routeId}>
+                                {i > 0 && <span>, </span>}
+                                {/* Click jumps to the Scheduled Routes page
+                                    with the route's edit modal auto-opened
+                                    via the ?edit=<id> URL param. */}
+                                <a
+                                  href={`/scheduled-routes?edit=${r.routeId}`}
+                                  className="text-brand-purple hover:underline font-semibold"
+                                  title={`Open route "${r.routeName}" in the Scheduled Routes editor`}
+                                >
+                                  {r.routeName || `Route #${r.routeId}`}
+                                </a>
+                              </span>
+                            ))}
+                          </>
+                        ) : p.attachedRouteCount > 0 ? (
+                          // Fallback for pre-2026-08-06 payloads that only
+                          // carried the count. Should not fire once every
+                          // pod is on the new build.
+                          <span>attached to {p.attachedRouteCount} route(s)</span>
+                        ) : (
+                          <span>not attached to any route</span>
+                        )}
                       </div>
                       {(() => {
                         const includedZips = parsePartiallyIncludedZips(p.partiallyIncludedZips);
@@ -2089,7 +2956,7 @@ export default function PolygonBuilder() {
                       </div>
                       {p.points.length > MAX_EDIT_HANDLE_VERTICES && (
                         <div className="ml-5 mt-0.5 text-[10px] text-warning italic">
-                          {p.points.length} vertices - too many for direct edit. Simplify first.
+                          {p.points.length} vertices - too many for direct edit. Reshape via Cut / Add / Clip.
                         </div>
                       )}
                       <div className="ml-5 mt-1 flex flex-wrap gap-1">
@@ -2099,13 +2966,7 @@ export default function PolygonBuilder() {
                           : <button className="text-[10px] font-semibold text-brand-purple hover:underline"
                               onClick={() => startEdit(p.polygonId)}
                               disabled={mode === 'drawing' || p.points.length > MAX_EDIT_HANDLE_VERTICES}
-                              title={p.points.length > MAX_EDIT_HANDLE_VERTICES ? 'Too many vertices - simplify first' : undefined}>Edit shape</button>}
-                        {p.points.length > ZIP_TO_COVERAGE_MAX_VERTICES && (
-                          <button className="text-[10px] font-semibold text-warning hover:underline"
-                            onClick={() => simplifyPolygonInPlace(p)}
-                            disabled={mode !== 'view'}
-                            title={`Reduce ${p.points.length} vertices via Douglas-Peucker to ~${ZIP_TO_COVERAGE_MAX_VERTICES}`}>Simplify shape</button>
-                        )}
+                              title={p.points.length > MAX_EDIT_HANDLE_VERTICES ? 'Too many vertices - use Cut/Add/Clip in edit mode instead' : undefined}>Edit shape</button>}
                         <button className="text-[10px] text-error hover:underline"
                           onClick={() => removePolygon(p)}>Remove</button>
                       </div>
@@ -2140,18 +3001,16 @@ export default function PolygonBuilder() {
           }}
           onZoomToPolygon={(p) => { setContextMenu(null); zoomToPolygon(p); }}
           onEditPolygon={(p) => { setContextMenu(null); startEdit(p.polygonId); }}
-          onSimplifyPolygon={(p) => { setContextMenu(null); void simplifyPolygonInPlace(p); }}
           onRemovePolygon={(p) => { setContextMenu(null); void removePolygon(p); }}
           onStartLasso={() => { setContextMenu(null); startLasso(); }}
           onStartRect={() => { setContextMenu(null); startRect(); }}
           onStartCircle={() => { setContextMenu(null); startCircle(); }}
           maxEditVertices={MAX_EDIT_HANDLE_VERTICES}
-          simplifyThreshold={ZIP_TO_COVERAGE_MAX_VERTICES}
         />
       )}
 
-      {openSaveModal && pendingPolygon && (
-        <SaveNewPolygonModal vertices={pendingPolygon}
+      {openSaveModal && pendingPolygon && pendingPolygon.length > 0 && (
+        <SaveNewPolygonModal rings={pendingPolygon}
           onCancel={() => setOpenSaveModal(false)}
           onCreated={onPolygonCreated} />
       )}
@@ -2193,25 +3052,35 @@ export default function PolygonBuilder() {
 // ─── SaveNewPolygonModal ────────────────────────────────────────────────
 
 interface SaveNewPolygonProps {
-  vertices: LatLng[];
+  // 2026-08-06: widened from single ring (vertices: LatLng[]) to multi-
+  // ring (rings: LatLng[][]) so pending-mode boolean ops (Cut / Split
+  // producing multiple pieces) round-trip through save with every piece
+  // intact. Fresh single-drag polygons come in as [oneRing].
+  rings: LatLng[][];
   onCancel: () => void;
   onCreated: (created: BulkPolygon) => void;
 }
 
-function SaveNewPolygonModal({ vertices, onCancel, onCreated }: SaveNewPolygonProps) {
+function SaveNewPolygonModal({ rings, onCancel, onCreated }: SaveNewPolygonProps) {
   const toast = useToast();
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
+  const totalVerts = rings.reduce((n, r) => n + r.length, 0);
 
   const commit = async () => {
     const trimmed = name.trim();
     if (!trimmed) { toast.show('Coverage polygon name is required.', 'error'); return; }
     setSaving(true);
     try {
-      const points: PolygonPoint[] = vertices.map((v, i) => ({
-        orderIndex: i, lat: v.lat, lng: v.lng,
-      }));
-      const centroid = polygonCentroid(vertices);
+      const points: PolygonPoint[] = [];
+      rings.forEach((ring, ringIndex) => {
+        ring.forEach((pt, orderIndex) => {
+          points.push({ ringIndex, orderIndex, lat: pt.lat, lng: pt.lng });
+        });
+      });
+      // Centroid is stamped off ring 0 - matches the single-outer-ring
+      // convention used by saved polygons + edit-mode commitShape.
+      const centroid = polygonCentroid(rings[0]);
       const res = await bulkPolygonService.create({
         name: trimmed,
         centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
@@ -2235,7 +3104,7 @@ function SaveNewPolygonModal({ vertices, onCancel, onCreated }: SaveNewPolygonPr
         <div className="flex justify-end gap-2">
           <Button variant="neutral" onClick={onCancel}>Cancel</Button>
           <Button variant="secondary" data-primary="true" onClick={commit} disabled={saving || !name.trim()}>
-            {saving ? 'Saving...' : `Save (${vertices.length} vertices)`}
+            {saving ? 'Saving...' : `Save (${totalVerts} vertices)`}
           </Button>
         </div>
       }>
@@ -2416,17 +3285,54 @@ function parseWktPolygon(wkt: string | null): LatLng[] | null {
   return path;
 }
 
-/** Convert a bulk polygon's points list into an ordered LatLng path. */
+/** Convert a bulk polygon's points list into an ordered array of rings,
+ *  each ring an ordered LatLng list. Ring 0 is always first. Winding
+ *  order distinguishes outer (CCW) from hole (CW); Google Maps'
+ *  Polygon.setPaths() consumes this directly. Multi-ring polygons are
+ *  handled by grouping on ringIndex. */
+function pointsToLatLngRings(points: PolygonPoint[]): LatLng[][] {
+  const byRing = new Map<number, PolygonPoint[]>();
+  for (const p of points) {
+    const ri = p.ringIndex ?? 0;
+    const list = byRing.get(ri);
+    if (list) list.push(p);
+    else byRing.set(ri, [p]);
+  }
+  return [...byRing.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, pts]) =>
+      pts
+        .slice()
+        .sort((a, b) => a.orderIndex - b.orderIndex)
+        .map((p) => ({ lat: p.lat, lng: p.lng })),
+    );
+}
+
+/** Backward-compat single-ring accessor. Returns the outer (ring 0) path
+ *  only. Multi-ring polygons will have their additional rings ignored by
+ *  callers still using this - migrate them to pointsToLatLngRings when the
+ *  feature calls for it. */
 function pointsToLatLngPath(points: PolygonPoint[]): LatLng[] {
-  return points
-    .slice()
-    .sort((a, b) => a.orderIndex - b.orderIndex)
-    .map((p) => ({ lat: p.lat, lng: p.lng }));
+  const rings = pointsToLatLngRings(points);
+  return rings[0] ?? [];
 }
 
 function polygonCentroid(ring: LatLng[]): LatLng {
   const sum = ring.reduce((acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lng }), { lat: 0, lng: 0 });
   return { lat: sum.lat / ring.length, lng: sum.lng / ring.length };
+}
+
+/** Signed area (shoelace) of a ring. Positive = counter-clockwise
+ *  (outer ring in Google Maps convention), negative = clockwise (hole).
+ *  Used to count how many disjoint pieces a multi-ring polygon has. */
+function signedRingArea(ring: LatLng[]): number {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    sum += (b.lng - a.lng) * (b.lat + a.lat);
+  }
+  return -sum / 2;
 }
 
 /** MarkerClusterer renderer: emits a pill-shaped marker showing the
@@ -2618,13 +3524,11 @@ interface PolygonContextMenuProps {
   onZoomToShape: (s: ZipPolygonShape) => void;
   onZoomToPolygon: (p: BulkPolygon) => void;
   onEditPolygon: (p: BulkPolygon) => void;
-  onSimplifyPolygon: (p: BulkPolygon) => void;
   onRemovePolygon: (p: BulkPolygon) => void;
   onStartLasso: () => void;
   onStartRect: () => void;
   onStartCircle: () => void;
   maxEditVertices: number;
-  simplifyThreshold: number;
 }
 
 function PolygonContextMenu(props: PolygonContextMenuProps) {
@@ -2685,10 +3589,6 @@ function PolygonContextMenu(props: PolygonContextMenuProps) {
               : 'Edit shape'}
             disabled={state.target.polygon.points.length > props.maxEditVertices}
             onClick={() => props.onEditPolygon((state.target as { kind: 'polygon'; polygon: BulkPolygon }).polygon)} />
-          {state.target.polygon.points.length > props.simplifyThreshold && (
-            <MenuItem label="Simplify shape"
-              onClick={() => props.onSimplifyPolygon((state.target as { kind: 'polygon'; polygon: BulkPolygon }).polygon)} />
-          )}
           <MenuItem label="Remove" danger
             onClick={() => props.onRemovePolygon((state.target as { kind: 'polygon'; polygon: BulkPolygon }).polygon)} />
         </>
@@ -2725,11 +3625,64 @@ function MenuItem({ label, onClick, disabled, danger }: {
   );
 }
 
-// ─── DrawingToolsMenu ───────────────────────────────────────────────────
+// ─── ShapeInputPicker (edit-mode) ───────────────────────────────────────
+// Segmented button row that picks which drawing tool the boolean-op
+// buttons (Add / Cut / Clip) hand to the operator. Only rendered inside
+// edit mode - view mode uses DrawingToolsMenu below for creating new
+// polygons. Split doesn't consult this picker: rect / circle can't
+// yield a polyline, so Split always uses freehand.
+interface ShapeInputPickerProps {
+  value: 'freehand' | 'rect' | 'circle';
+  onChange: (v: 'freehand' | 'rect' | 'circle') => void;
+}
+
+function ShapeInputPicker({ value, onChange }: ShapeInputPickerProps) {
+  const options: Array<{
+    key: 'freehand' | 'rect' | 'circle';
+    label: string;
+    hint: string;
+    icon: React.ReactNode;
+  }> = [
+    { key: 'freehand', label: 'Freehand', hint: 'Freehand lasso - drag to trace any shape (L).', icon: <IconLasso /> },
+    { key: 'rect',     label: 'Rectangle', hint: 'Rectangle - drag from corner to corner (R).',    icon: <IconRect /> },
+    { key: 'circle',   label: 'Circle',    hint: 'Circle - drag from centre outward (C).',         icon: <IconCircle /> },
+  ];
+  return (
+    <div className="inline-flex items-center gap-1" role="radiogroup" aria-label="Input shape">
+      <span className="text-text-muted mr-1">Shape:</span>
+      {options.map((opt) => {
+        const active = opt.key === value;
+        return (
+          <button
+            key={opt.key}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(opt.key)}
+            title={opt.hint}
+            className={`px-2 py-1 rounded border inline-flex items-center gap-1 text-xs transition-colors ${
+              active
+                ? 'border-brand-purple bg-brand-purple text-surface-white'
+                : 'border-border bg-surface-white text-text-secondary hover:bg-surface-cream'
+            }`}
+          >
+            <span className="w-4 h-4 inline-flex items-center justify-center">{opt.icon}</span>
+            <span>{opt.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── DrawingToolsMenu ("New Drawing") ───────────────────────────────────
 // Consolidates the 3 drag-based draw modes (Lasso, Rect, Circle) behind
-// a single "Drawing Tools" button + dropdown, each with an inline-SVG
-// glyph so the operator can pick a tool at a glance. Click-outside + Esc
-// dismiss. Keyboard shortcuts (L / R / C / P) still fire independently.
+// a single "New Drawing" button + dropdown - each option starts a fresh
+// coverage polygon. Once the initial shape is drawn the operator can
+// refine it in pending mode using the same Add / Cut / Clip / Split
+// tools that saved polygons offer. Click-outside + Esc dismiss the
+// dropdown. Keyboard shortcuts (L / R / C) still fire independently.
+// Renamed 2026-08-06 from "Drawing Tools" (unclear to first-time users).
 
 interface DrawingToolsMenuProps {
   onStartLasso: () => void;
@@ -2777,10 +3730,10 @@ function DrawingToolsMenu({ onStartLasso, onStartRect, onStartCircle }: DrawingT
   return (
     <div ref={wrapRef} className="relative">
       <Button variant="primary" size="sm" onClick={() => setOpen((o) => !o)}
-        title="Choose a drawing tool">
+        title="Start a new coverage polygon - pick a drawing tool to lay down the initial shape, then refine with Add / Cut / Clip / Split before saving.">
         <span className="inline-flex items-center gap-1">
-          <IconPencil />
-          Drawing Tools
+          <IconNewDrawing />
+          New Drawing
           <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
             <path d="M2 3 L5 7 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" />
           </svg>
@@ -2838,5 +3791,28 @@ const IconPencil = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M2 14 L3 10 L11 2 L14 5 L6 13 Z" />
     <path d="M10 3 L13 6" />
+  </svg>
+);
+// Icon for the "New Drawing" toolbar button: a coverage-polygon outline
+// with a small filled "+" badge in the top-right corner. Reads as
+// "start a new shape" at a glance without needing to squint at the
+// label. Uses currentColor so it inherits the surrounding button
+// palette (primary variant = light on dark).
+const IconNewDrawing = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+    <polygon
+      points="6,4 10.5,4.5 11.5,9.5 8.5,13 3.5,11 3.5,6.5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+    />
+    <circle cx="12.5" cy="3.5" r="2.75" fill="currentColor" />
+    <path
+      d="M 12.5 2 L 12.5 5 M 11 3.5 L 14 3.5"
+      stroke="#fff"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    />
   </svg>
 );

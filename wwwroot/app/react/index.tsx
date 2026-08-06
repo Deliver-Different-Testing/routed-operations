@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
+import { ConfirmProvider } from './context/ConfirmContext';
 import { GlobalSearchProvider } from './context/GlobalSearchContext';
 import './index.css';
 
@@ -33,9 +34,11 @@ if (container) {
         <BrowserRouter>
           <AuthProvider>
             <ToastProvider>
-              <GlobalSearchProvider>
-                <App />
-              </GlobalSearchProvider>
+              <ConfirmProvider>
+                <GlobalSearchProvider>
+                  <App />
+                </GlobalSearchProvider>
+              </ConfirmProvider>
             </ToastProvider>
           </AuthProvider>
         </BrowserRouter>
