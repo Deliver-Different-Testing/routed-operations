@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Card } from '../components/common/Card';
@@ -33,6 +34,7 @@ const SERVICE_LEVELS = [
  */
 export default function Quoting() {
   const toast = useToast();
+  const confirm = useConfirm();
   const [sets, setSets] = useState<QuoteSetSummary[]>([]);
   const [selectedSet, setSelectedSet] = useState<string | null>(null);
   const [csvText, setCsvText] = useState('');
@@ -102,7 +104,13 @@ export default function Quoting() {
   };
 
   const doDelete = async (code: string) => {
-    if (!confirm(`Delete quote set "${code}" and its ${sets.find((s) => s.quoteSetCode === code)?.jobCount ?? '?'} rows?`)) return;
+    const proceed = await confirm({
+      title: 'Delete quote set',
+      message: `Delete quote set "${code}" and its ${sets.find((s) => s.quoteSetCode === code)?.jobCount ?? '?'} rows?`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!proceed) return;
     try {
       await quoteService.deleteSet(code);
       toast.show(`Quote set "${code}" deleted`, 'success');
@@ -133,8 +141,7 @@ export default function Quoting() {
   return (
     <div className="h-full flex flex-col overflow-auto">
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-white border-b border-border text-xs">
-        <h1 className="text-base font-semibold text-text-primary">Quoting</h1>
-        <span className="text-text-muted">- {sets.length} set{sets.length === 1 ? '' : 's'}</span>
+        <span className="text-text-muted">{sets.length} set{sets.length === 1 ? '' : 's'}</span>
         <div className="flex-1" />
         <Button variant="neutral" size="sm" onClick={loadSets}>Refresh</Button>
       </div>

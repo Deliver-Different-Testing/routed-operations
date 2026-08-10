@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react';
+
 type ModalSize = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl' | '6xl' | '7xl';
 
 interface ModalProps {
@@ -12,6 +14,10 @@ interface ModalProps {
   loading?: boolean;
   /** Text shown under the spinner when loading is true. */
   loadingMessage?: string;
+  /** When true, disables the built-in Escape-to-close handler.
+   *  Only set this for modals where an accidental Esc must not
+   *  discard operator input (e.g. a long booking wizard mid-flow). */
+  disableEscapeClose?: boolean;
 }
 
 const SIZE_CLASS: Record<ModalSize, string> = {
@@ -36,10 +42,36 @@ export function Modal({
   size = 'lg',
   loading = false,
   loadingMessage,
+  disableEscapeClose = false,
 }: ModalProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Escape-to-close is built into the primitive so every call site gets
+  // it for free. Nested-modal correctness: only the topmost modal in
+  // the DOM handles the key. We rank by document order of the
+  // [data-modal-open="true"] backdrop divs and only fire when this
+  // modal is the last one. Loading state suppresses the handler so an
+  // Esc press during a long submit does not cancel the operator's
+  // work mid-flight. Callers that must NOT be Esc-dismissable (rare -
+  // long wizards with unsaved input) can pass disableEscapeClose.
+  useEffect(() => {
+    if (!open || loading || disableEscapeClose) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const allOpen = document.querySelectorAll('[data-modal-open="true"]');
+      if (allOpen.length === 0) return;
+      if (allOpen[allOpen.length - 1] !== rootRef.current) return;
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, loading, disableEscapeClose, onClose]);
+
   if (!open) return null;
   return (
     <div
+      ref={rootRef}
       className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40"
       onClick={onClose}
       data-modal-open="true"

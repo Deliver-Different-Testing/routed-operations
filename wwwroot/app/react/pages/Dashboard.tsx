@@ -12,7 +12,19 @@ interface ModuleCard {
 
 function buildModules(isUs: boolean): ModuleCard[] {
   const shortLower = postcodeLabel(isUs, true).toLowerCase();
+  // Order matches the Sidebar so the Dashboard cards read top-to-bottom
+  // in the same sequence as the left nav: Bulk Import → Routes →
+  // Route Viewer → Quoting → Scheduled Routes → Polygon Builder.
+  // (Dashboard + Auto-Assign Log have no card - Dashboard is this page,
+  // Auto-Assign Log is a diagnostics tool that operators rarely open
+  // from a card.)
   return [
+    {
+      to: '/bulk-import',
+      title: 'Data Import',
+      blurb: 'Direct-insert wizard that replaces BulkImportHyper. Auto column mapping, suburb / address fixup, per-depot schedule pick, staff import bypass, bulk complete and bulk delete with FK cascade.',
+      cta: 'Open Data Import',
+    },
     {
       to: '/routes',
       title: 'Route Builder',
@@ -20,10 +32,10 @@ function buildModules(isUs: boolean): ModuleCard[] {
       cta: 'Open Route Builder',
     },
     {
-      to: '/bulk-import',
-      title: 'Data Import',
-      blurb: 'Direct-insert wizard that replaces BulkImportHyper. Auto column mapping, suburb / address fixup, per-depot schedule pick, staff import bypass, bulk complete and bulk delete with FK cascade.',
-      cta: 'Open Data Import',
+      to: '/route-viewer',
+      title: 'Route Viewer',
+      blurb: 'Operator cockpit that replaces the legacy RunViewer suite. Six sub-modules: Run Viewer (primary dispatch), Scan Manager (Bulk + Routed), Print Manager, Customer Services, Linehaul, Mobile. Backend endpoints under /api/runviewer/* are live and returning real tenant data; frontend UI builds out P3+.',
+      cta: 'Open Route Viewer',
     },
     {
       to: '/quoting',
@@ -51,9 +63,7 @@ export default function Dashboard() {
   const modules = buildModules(user.isUsTenant);
   return (
     <div className="h-full p-6 overflow-auto">
-      <h1 className="text-2xl font-semibold text-text-primary mb-4">Dashboard</h1>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+<div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         <Card title="You">
           <div className="text-sm text-text-secondary space-y-1">
             <div>Name: {user.fullName ?? 'Unknown'}</div>

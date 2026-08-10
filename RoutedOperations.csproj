@@ -42,6 +42,12 @@
          the latest AWSSDK.Core (the 4.0.139.0 in the advisory is the SDK
          release-train number, not this package's version). -->
     <PackageReference Include="AWSSDK.Core" Version="4.0.100.5" />
+    <!-- Route Viewer P0: S3 for POD photo + Client Intel image read
+         (Detail carousel + intel dialog). SES adds later in P7 for the
+         SendPOD email path. Extensions.NETCore.Setup pinned to the
+         version DataProtection.SSM transitively requires. -->
+    <PackageReference Include="AWSSDK.S3" Version="4.0.10" />
+    <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.3.11" />
 
     <!-- Logging -->
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />

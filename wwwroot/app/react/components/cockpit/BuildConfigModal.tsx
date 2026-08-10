@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
+import { useAlert } from '../../context/ConfirmContext';
 import type { BuildConfig, BulkJob, RoutingMode, VehicleSize } from '../../types';
 
 interface Props {
@@ -32,6 +33,7 @@ export function BuildConfigModal({
   onConfirm,
 }: Props) {
   const [draft, setDraft] = useState<BuildConfig>(config);
+  const alert = useAlert();
 
   // Reset draft whenever modal reopens.
   useEffect(() => { if (open) setDraft(config); }, [open, config]);
@@ -47,13 +49,13 @@ export function BuildConfigModal({
 
   const commit = () => {
     if (isNaN(draft.minutesPerStop) || draft.minutesPerStop < 0) {
-      alert('Minutes per stop must be a non-negative number.');
+      void alert({ title: 'Invalid value', message: 'Minutes per stop must be a non-negative number.' });
       return;
     }
     if (draft.vehicleCapacityEnabled) {
       const cap = Number(draft.vehicleCubicCap);
       if (isNaN(cap) || cap <= 0) {
-        alert('Vehicle cubic capacity must be greater than 0.');
+        void alert({ title: 'Invalid value', message: 'Vehicle cubic capacity must be greater than 0.' });
         return;
       }
     }

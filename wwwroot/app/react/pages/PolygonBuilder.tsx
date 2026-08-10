@@ -2543,7 +2543,6 @@ export default function PolygonBuilder() {
   if (!apiKey) {
     return (
       <div className="h-full p-6">
-        <h1 className="text-2xl font-semibold text-text-primary mb-4">Polygon Builder</h1>
         <div className="text-error text-sm">
           Google Maps API key is not set (GoogleMapsKey env var).
         </div>
@@ -2557,9 +2556,8 @@ export default function PolygonBuilder() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-white border-b border-border text-xs">
-        <h1 className="text-base font-semibold text-text-primary">Polygon Builder</h1>
         <span className="text-text-muted">
-          - {(() => {
+          {(() => {
             const total = zipCentroidsRef.current.length;
             if (!zipCentroidsReady) return `loading ${zipLongLower}s...`;
             if (total === 0) return `no ${zipLongLower}s on this tenant`;

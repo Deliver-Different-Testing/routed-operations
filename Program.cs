@@ -259,6 +259,28 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("RouteBuilder.Polygon", policy =>
         policy.RequireAssertion(context =>
             !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+
+    // Route Viewer P0 policies (2026-08-07). Parallel to the RouteBuilder
+    // set so downstream policy changes on RouteBuilder cannot silently
+    // affect Route Viewer. NpScope is a marker that a controller expects
+    // to run under NP-aware guard rails; the actual row-level enforcement
+    // is done via INpScopeGuard.
+    options.AddPolicy("RouteViewer.Read", policy =>
+        policy.RequireAssertion(context =>
+            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+    options.AddPolicy("RouteViewer.Admin", policy =>
+        policy.RequireAssertion(context =>
+        {
+            var userGroupId = context.User.FindFirst("UserGroupID")?.Value;
+            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
+            var isCourier = context.User.FindFirst("IsCourier")?.Value;
+            if (string.Equals(userGroupId, "1", StringComparison.Ordinal)) return true;
+            return !string.IsNullOrEmpty(tenantId)
+                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
+        }));
+    options.AddPolicy("RouteViewer.NpScope", policy =>
+        policy.RequireAssertion(context =>
+            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
 });
 
 builder.Services.AddHttpClient();
@@ -300,6 +322,47 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();
+
+// Route Viewer P0 (2026-08-07) - NP-scope services. Scoped lifetime so
+// the per-request HttpContext.Items cache on NpScopeResolver behaves.
+// Every Route Viewer read/write path resolves scope + guards rows before
+// returning; controllers translate NpLabelScopeException to HTTP 403.
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Np.INpScopeResolver,
+    RoutedOperations.Core.Application.Services.Np.NpScopeResolver>();
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Np.INpScopeGuard,
+    RoutedOperations.Core.Application.Services.Np.NpScopeGuard>();
+
+// Route Viewer P1 (2026-08-07) - read-side services. Scoped lifetime;
+// each service extends BaseService for lazy DynamicDespatchDbContext.
+// SqlTimeZoneNormalizer is scoped too even though the host-platform
+// probe is static-cached, because it takes IDbContextFactory to run
+// the probe on first use.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.SqlTimeZoneNormalizer>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerRunService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerFilterService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerCourierService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerJobService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerScanService>();
+
+// Route Viewer P0 close-out (2026-08-07) - AWS S3 for POD photo +
+// Client Intel image reads. Region defaults to APSoutheast2 to match
+// legacy RunViewer (Program.cs used same). Credentials resolve via the
+// standard AWSSDK chain (env vars in prod, SSO / FallbackFactory in
+// dev). SES adds in P7 once the SendPOD email path lands.
+builder.Services.AddDefaultAWSOptions(new Amazon.Extensions.NETCore.Setup.AWSOptions
+{
+    Region = Amazon.RegionEndpoint.APSoutheast2,
+});
+builder.Services.AddAWSService<Amazon.S3.IAmazonS3>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.S3PhotoReader>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerEventService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerAssignmentService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerRouteTransferService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerReportService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerJobActionService>();
 // BulkImportHyper direct-insert service quartet (Phase 1 Task 6).
 // BulkImportServiceV2 is a partial class split across three files
 // (BulkImportServiceV2.cs + BulkImportJobFactory.cs + BulkImportRatingService.cs)

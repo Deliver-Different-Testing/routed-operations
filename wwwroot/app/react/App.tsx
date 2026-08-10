@@ -7,6 +7,12 @@ import ScheduledRoutes from './pages/ScheduledRoutes';
 import PolygonBuilder from './pages/PolygonBuilder';
 import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
+import RunViewer from './pages/route-viewer/RunViewer';
+import ScanManager from './pages/route-viewer/ScanManager';
+import PrintManager from './pages/route-viewer/PrintManager';
+import CustomerServices from './pages/route-viewer/CustomerServices';
+import Linehaul from './pages/route-viewer/Linehaul';
+import Mobile from './pages/route-viewer/Mobile';
 
 // Phase 6 perf note: route-level code splitting via React.lazy() was
 // attempted but reverted - a Vite chunk-boundary interaction with
@@ -28,6 +34,15 @@ export default function App() {
         <Route path="/scheduled-routes" element={<ScheduledRoutes />} />
         <Route path="/polygon-builder" element={<PolygonBuilder />} />
         <Route path="/auto-assign-log" element={<AutoAssignLog />} />
+        {/* Route Viewer module (2026-08-07). 6 sub-pages under /route-viewer/*.
+             Placeholder shells today; feature builds land per P3+ of the build
+             plan (Runviewer-migration-buildplan.md). */}
+        <Route path="/route-viewer" element={<RunViewer />} />
+        <Route path="/route-viewer/scans" element={<ScanManager />} />
+        <Route path="/route-viewer/print" element={<PrintManager />} />
+        <Route path="/route-viewer/cs" element={<CustomerServices />} />
+        <Route path="/route-viewer/linehaul" element={<Linehaul />} />
+        <Route path="/route-viewer/mobile" element={<Mobile />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

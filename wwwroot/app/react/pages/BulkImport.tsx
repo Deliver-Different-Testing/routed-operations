@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../components/common/Button';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { bulkImportService, type BulkJobDto } from '../services/bulkImportService';
 import { NewImportWizard } from '../components/bulk-import/NewImportWizard';
 import { StaffImportModal } from '../components/bulk-import/StaffImportModal';
@@ -36,6 +37,7 @@ const PAGE_SIZE = 50;
 export default function BulkImportPage() {
   const toast = useToast();
   const { isUsTenant, isInternal } = useAuth();
+  const confirm = useConfirm();
   const [rows, setRows] = useState<BulkJobDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
@@ -214,7 +216,13 @@ export default function BulkImportPage() {
   async function bulkDeleteSelected() {
     const rowsToDelete = filtered.filter((r) => selectedKeys.has(rowKey(r)) && r.canDelete);
     if (rowsToDelete.length === 0) return;
-    if (!window.confirm(`Delete ${rowsToDelete.length} selected import${rowsToDelete.length === 1 ? '' : 's'}?`)) return;
+    const proceed = await confirm({
+      title: 'Delete imports',
+      message: `Delete ${rowsToDelete.length} selected import${rowsToDelete.length === 1 ? '' : 's'}?`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!proceed) return;
     setBulkDeleting(true);
     const failed: Array<{ jobNumber: string | null; err: string }> = [];
     const succeededKeys = new Set<string>();
@@ -282,7 +290,7 @@ export default function BulkImportPage() {
       </header>
 
       <div className="flex items-center justify-between px-4 py-3 border-b border-border-light bg-surface-white">
-        <h1 className="text-lg font-semibold text-text-primary">Bulk Import</h1>
+        <div />
         <div className="flex gap-2">
           {selectedCount > 0 && (
             <Button
@@ -479,8 +487,14 @@ export default function BulkImportPage() {
                       aria-label={`Delete job ${r.jobNumber ?? r.id}`}
                       title={r.canDelete ? 'Delete this import' : 'Delete unavailable'}
                       disabled={!r.canDelete || pendingDeleteId === r.id}
-                      onClick={() => {
-                        if (!window.confirm(`Delete import ${r.jobNumber ?? r.id}?`)) return;
+                      onClick={async () => {
+                        const proceed = await confirm({
+                          title: 'Delete import',
+                          message: `Delete import ${r.jobNumber ?? r.id}?`,
+                          confirmLabel: 'Delete',
+                          danger: true,
+                        });
+                        if (!proceed) return;
                         confirmDelete(r);
                       }}
                       className="text-text-muted hover:text-error disabled:opacity-30 disabled:cursor-not-allowed"

@@ -11,6 +11,16 @@ const defaultUser: AppUser = {
   isInternal: false,
   hereMapsApiKey: null,
   googleMapsKey: null,
+  // Route Viewer defaults - safe values that behave as "no NP scope, no
+  // client scope" so an unauthenticated pre-bootstrap render never
+  // surfaces cross-tenant data.
+  isNetworkPartner: false,
+  npAgentId: null,
+  clientTypeId: null,
+  contactId: null,
+  clientId: null,
+  clientCount: null,
+  clientString: null,
 };
 
 const AuthContext = createContext<AppUser>(defaultUser);
