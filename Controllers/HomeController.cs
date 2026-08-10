@@ -16,7 +16,18 @@ public record AppUserBootstrap(
     bool IsUsTenant,
     bool IsInternal,
     string? HereMapsApiKey,
-    string? GoogleMapsKey);
+    string? GoogleMapsKey,
+    // Route Viewer P0 additions (2026-08-07). All optional - existing modules
+    // (Route Builder, Auto-Assign, Polygons, Scheduled Routes, BulkImport) do
+    // not read them. NP-scope guard + CS event visibility + client filter
+    // dropdowns downstream consume these.
+    bool IsNetworkPartner,
+    int? NpAgentId,
+    string? ClientTypeId,
+    int? ContactId,
+    int? ClientId,
+    int? ClientCount,
+    string? ClientString);
 
 /// <summary>
 /// SPA fallback + tenant claim enrichment. Also seeds the tenant Despatch
@@ -97,6 +108,33 @@ public class HomeController(
             && bool.TryParse(internalClaim, out var internalValue)
             && internalValue;
 
+        // Route Viewer P0 - stamp NP-scope + client-scope claims onto the
+        // bootstrap. All optional; NP-scope guard + CS module downstream
+        // consume via useAuth() in the React app. Legacy RunViewer stamped
+        // these via Razor globals; Route Viewer flows them through the same
+        // AppUserBootstrap the rest of the SPA already uses.
+        var isNetworkPartnerClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "IsNetworkPartner")?.Value;
+        var isNetworkPartner = !string.IsNullOrEmpty(isNetworkPartnerClaim)
+            && bool.TryParse(isNetworkPartnerClaim, out var npFlag)
+            && npFlag;
+        var npAgentIdClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "NpAgentId")?.Value;
+        var npAgentId = int.TryParse(npAgentIdClaim, out var npId) ? npId : (int?)null;
+        var clientTypeId = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "ClientTypeId")?.Value;
+        var contactIdClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "ContactID")?.Value;
+        var contactId = int.TryParse(contactIdClaim, out var cid) ? cid : (int?)null;
+        var clientIdClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "ClientID")?.Value;
+        var clientId = int.TryParse(clientIdClaim, out var clid) ? clid : (int?)null;
+        var clientCountClaim = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "ClientCount")?.Value;
+        var clientCount = int.TryParse(clientCountClaim, out var cc) ? cc : (int?)null;
+        var clientString = HttpContext.User.Claims
+            .FirstOrDefault(x => x.Type == "ClientString")?.Value;
+
         var bootstrap = new AppUserBootstrap(
             CurrentTenantId: int.TryParse(tenantId, out var tid) ? tid : null,
             FullName: fullName,
@@ -106,7 +144,14 @@ public class HomeController(
             IsUsTenant: string.Equals(countryCode, "US", StringComparison.OrdinalIgnoreCase),
             IsInternal: isInternal,
             HereMapsApiKey: appSettings.HereMapsApiKey,
-            GoogleMapsKey: appSettings.GoogleMapsKey);
+            GoogleMapsKey: appSettings.GoogleMapsKey,
+            IsNetworkPartner: isNetworkPartner,
+            NpAgentId: npAgentId,
+            ClientTypeId: clientTypeId,
+            ContactId: contactId,
+            ClientId: clientId,
+            ClientCount: clientCount,
+            ClientString: clientString);
 
         return View(bootstrap);
     }

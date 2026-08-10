@@ -37,7 +37,15 @@ interface Pin {
   lat: number;
   lng: number;
   label: string;
-  kind: 'pickup' | 'delivery' | 'start' | 'end' | 'sequenced' | 'unassigned' | 'multiRun';
+  // Route Viewer P8 added 'completed' (grey #c7c7c7) + 'voided' (yellow) to
+  // the palette so operator surfaces that show finished jobs (Home map
+  // box in read-only mode; Print Manager map) render them muted vs the
+  // live orange stops. Route Builder's buildPins() does not currently
+  // emit these two - they are consumed by Route Viewer callers that
+  // decide job status from `jobStatus === 'C' / 'V'` before pushing pins
+  // in. Kept in the shared union so downstream shared components
+  // (MapContextMenu etc.) don't need per-caller kind narrowing.
+  kind: 'pickup' | 'delivery' | 'start' | 'end' | 'sequenced' | 'unassigned' | 'multiRun' | 'completed' | 'voided';
   sequence?: number;
   bulkJobId: number;
   jobNumber: string | null;
@@ -538,6 +546,8 @@ function makeIcon(g: any, p: Pin) {
     : p.kind === 'end' ? '#6fb4f0'
     : p.kind === 'sequenced' ? '#F2994A'
     : p.kind === 'unassigned' ? '#c7c7c7'
+    : p.kind === 'completed' ? '#c7c7c7'   // Route Viewer P8: finished job (muted)
+    : p.kind === 'voided' ? '#eab308'      // Route Viewer P8: voided job (yellow)
     : p.kind === 'pickup' ? '#43C7F4'
     : '#EF4444';
   const seqText = (p.kind === 'sequenced' || p.kind === 'start' || p.kind === 'end') && p.sequence != null

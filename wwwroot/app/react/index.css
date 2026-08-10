@@ -13,7 +13,8 @@ body {
   color: #0d0c2c;
 }
 
-/* React Resizable Panels handle */
+/* React Resizable Panels handle - shared between the Route Builder
+   cockpit and the Route Viewer cockpit. */
 [data-panel-resize-handle-enabled] {
   background: #e8ecf1;
   transition: background 0.15s ease;

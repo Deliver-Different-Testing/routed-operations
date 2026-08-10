@@ -30,6 +30,7 @@ import { routeService, type SavvyLocation } from '../../services/routeService';
 import { vehicleSizeService } from '../../services/vehicleSizeService';
 import type { BuildConfig, BulkJob, Courier, JobFilters, Run, RunJob, VehicleSize } from '../../types';
 import { useToast } from '../../context/ToastContext';
+import { useConfirm, useAlert } from '../../context/ConfirmContext';
 import { bucketJobs, buildModeLabel, loadBuildConfig, saveBuildConfig, splitOrderedJobsByConstraints, windowMinutes } from '../../lib/buildConfig';
 import { expandMultiboxSiblings } from '../../lib/multibox';
 import { VoidRelationshipDialog, type VoidRelationshipContext } from './VoidRelationshipDialog';
@@ -46,6 +47,8 @@ interface ClientOption { id: number; label: string; }
 export function CockpitPage() {
   const [state, dispatch] = useCockpitState();
   const toast = useToast();
+  const confirm = useConfirm();
+  const alert = useAlert();
   // P1.4 global cross-jobs search. The Header owns the input; we consume the
   // query below to widen filtering across jobs / runs / groups, and register
   // a jump handler so a header result click selects the target job.
@@ -299,7 +302,13 @@ export function CockpitPage() {
       });
       return;
     }
-    if (!confirm(`${isVoid ? 'Void' : 'Un-void'} ${ids.length} job(s)?`)) return;
+    const proceed = await confirm({
+      title: isVoid ? 'Void jobs' : 'Un-void jobs',
+      message: `${isVoid ? 'Void' : 'Un-void'} ${ids.length} job(s)?`,
+      confirmLabel: isVoid ? 'Void' : 'Un-void',
+      danger: isVoid,
+    });
+    if (!proceed) return;
     await executeVoid(ids, isVoid);
   };
 
@@ -474,9 +483,12 @@ export function CockpitPage() {
     // job DTO can lag behind an in-flight update).
     const owningRun = state.runs.find((r) => r.jobs.some((j) => j.bulkJobId === jobId));
     if (owningRun && owningRun.status != null && owningRun.status > 0) {
-      const ok = window.confirm(
-        `Are you sure you want to remove this job from the locked run "${owningRun.name}"?`
-      );
+      const ok = await confirm({
+        title: 'Remove from locked run',
+        message: `Are you sure you want to remove this job from the locked run "${owningRun.name}"?`,
+        confirmLabel: 'Remove',
+        danger: true,
+      });
       if (!ok) return;
     }
     try {
@@ -680,7 +692,12 @@ export function CockpitPage() {
   const handlePrebook = async () => {
     const locked = state.runs.filter((r) => (r.status ?? 0) === 1 && !r.isVoidRun);
     if (locked.length === 0) return;
-    if (!confirm(`Stage ${locked.length} locked run(s) as prebook? They will not dispatch to Live until the next scheduled push.`)) return;
+    const proceed = await confirm({
+      title: 'Stage as prebook',
+      message: `Stage ${locked.length} locked run(s) as prebook? They will not dispatch to Live until the next scheduled push.`,
+      confirmLabel: 'Stage',
+    });
+    if (!proceed) return;
     let ok = 0;
     for (const run of locked) {
       try {
@@ -706,20 +723,31 @@ export function CockpitPage() {
     if (unlocked.length > 0) {
       const names = unlocked.slice(0, 4).map((r) => r.name ?? `#${r.id}`).join(', ');
       const tail = unlocked.length > 4 ? `, +${unlocked.length - 4} more` : '';
-      alert(`You have ${unlocked.length} unlocked run(s) (${names}${tail}). ` +
-            `Please lock all runs before dispatch, or continue to dispatch only the ${locked.length} locked run(s).`);
+      await alert({
+        title: 'Unlocked runs',
+        message: `You have ${unlocked.length} unlocked run(s) (${names}${tail}). ` +
+                 `Please lock all runs before dispatch, or continue to dispatch only the ${locked.length} locked run(s).`,
+      });
       // Fall through to the normal confirm so the operator can still choose
       // to dispatch just the locked ones - matches legacy prompt-then-continue.
     }
 
     // P1.1 client-filter warning (legacy homeControl.js:1804-1810).
     if (state.filters.clientIds.length > 0) {
-      if (!confirm(`A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
-                   `Only jobs from those clients are visible - are you sure you want to dispatch?`)) {
-        return;
-      }
+      const clientOk = await confirm({
+        title: 'Client filter active',
+        message: `A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
+                 `Only jobs from those clients are visible - are you sure you want to dispatch?`,
+        confirmLabel: 'Continue',
+      });
+      if (!clientOk) return;
     }
-    if (!confirm(`Send ${locked.length} locked run(s) to Live?`)) return;
+    const sendOk = await confirm({
+      title: 'Send to Live',
+      message: `Send ${locked.length} locked run(s) to Live?`,
+      confirmLabel: 'Send',
+    });
+    if (!sendOk) return;
     try {
       const body = locked.map((r) => runToBody(r, {}));
       const res = await runService.dispatch(body);
@@ -747,10 +775,13 @@ export function CockpitPage() {
     // guard before the courier prompt so the operator can bail early if the
     // filter narrows the visible pool more than they meant to.
     if (state.filters.clientIds.length > 0) {
-      if (!confirm(`A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
-                   `Only jobs from those clients are visible - are you sure you want to dispatch the selection?`)) {
-        return;
-      }
+      const clientOk = await confirm({
+        title: 'Client filter active',
+        message: `A client filter is active (${state.filters.clientIds.length} client(s) selected). ` +
+                 `Only jobs from those clients are visible - are you sure you want to dispatch the selection?`,
+        confirmLabel: 'Continue',
+      });
+      if (!clientOk) return;
     }
 
     // P2.7 Replaced the legacy window.prompt courier picker with SendSelectedModal.
@@ -1230,7 +1261,12 @@ export function CockpitPage() {
   const handleBulkDispatchSelected = async () => {
     const locked = state.runs.filter((r) => state.selectedRunIds.includes(r.id) && (r.status ?? 0) > 0);
     if (locked.length === 0) return;
-    if (!confirm(`Dispatch ${locked.length} locked run(s) from selection?`)) return;
+    const proceed = await confirm({
+      title: 'Dispatch selection',
+      message: `Dispatch ${locked.length} locked run(s) from selection?`,
+      confirmLabel: 'Dispatch',
+    });
+    if (!proceed) return;
     try {
       const body = locked.map((r) => runToBody(r, {}));
       const res = await runService.dispatch(body);
@@ -1246,7 +1282,13 @@ export function CockpitPage() {
 
   const handleBulkDeleteSelected = async () => {
     if (state.selectedRunIds.length === 0) return;
-    if (!confirm(`Delete ${state.selectedRunIds.length} run(s)? Jobs stay behind unassigned.`)) return;
+    const proceed = await confirm({
+      title: 'Delete runs',
+      message: `Delete ${state.selectedRunIds.length} run(s)? Jobs stay behind unassigned.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!proceed) return;
     // Single reload at the end (see bulkLockSelected for rationale).
     let ok = 0;
     const targetIds = [...state.selectedRunIds];
@@ -1301,7 +1343,10 @@ export function CockpitPage() {
         const bucketJobs = state.jobs.filter((j) => jobIds.includes(j.bulkJobId));
         const spread = bookTimeSpreadMs(bucketJobs);
         if (spread != null && spread > 60 * 60 * 1000) {
-          alert(`WARNING: The time range you have picked spans ${Math.round(spread / 60000)} minutes (>1 hour).`);
+          void alert({
+            title: 'Wide time range',
+            message: `WARNING: The time range you have picked spans ${Math.round(spread / 60000)} minutes (>1 hour).`,
+          });
         }
         dispatch({ type: 'REPLACE_MULTISELECT', payload: jobIds });
         dispatch({ type: 'SET_GROUP_MODE', payload: 'postcode' });

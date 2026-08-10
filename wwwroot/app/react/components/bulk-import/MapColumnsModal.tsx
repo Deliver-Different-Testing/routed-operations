@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { useConfirm } from '../../context/ConfirmContext';
 import { clientsService, type ClientSettingsDto } from '../../services/clientsService';
 import { addressService, type RegionDto } from '../../services/addressService';
 import { templatesService, type TemplateDto } from '../../services/templatesService';
@@ -35,6 +36,7 @@ interface Props {
 export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCancel }: Props) {
   const auth = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
   const isUsTenant = auth.isUsTenant || state.client?.isUsTenant || false;
 
   const [settings, setSettings] = useState<ClientSettingsDto | null>(null);
@@ -512,7 +514,13 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
                     if (id == null) return;
                     const tpl = templates.find((t) => t.id === id);
                     const name = tpl?.name ?? 'this template';
-                    if (!window.confirm(`Delete template "${name}"?`)) return;
+                    const proceed = await confirm({
+                      title: 'Delete template',
+                      message: `Delete template "${name}"?`,
+                      confirmLabel: 'Delete',
+                      danger: true,
+                    });
+                    if (!proceed) return;
                     try {
                       await templatesService.deleteTemplate(id);
                       setTemplates((prev) => prev.filter((t) => t.id !== id));

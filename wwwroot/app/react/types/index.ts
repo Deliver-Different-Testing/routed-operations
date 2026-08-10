@@ -13,6 +13,17 @@ export interface AppUser {
   isInternal: boolean;
   hereMapsApiKey: string | null;
   googleMapsKey: string | null;
+  // Route Viewer P0 additions (2026-08-07). All optional - Route Viewer
+  // module consumes for NP-scope gating, CS event visibility, top-bar
+  // client dropdown, and the initial pickDate filter. Other modules
+  // (Route Builder etc.) ignore these fields.
+  isNetworkPartner: boolean;
+  npAgentId: number | null;
+  clientTypeId: string | null;
+  contactId: number | null;
+  clientId: number | null;
+  clientCount: number | null;
+  clientString: string | null;
 }
 
 declare global {
