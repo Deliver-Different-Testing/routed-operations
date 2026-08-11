@@ -38,8 +38,17 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
   const [assignOpen, setAssignOpen] = useState(false);
   const [transferRouteOpen, setTransferRouteOpen] = useState(false);
   const [bookRedeliveryOpen, setBookRedeliveryOpen] = useState(false);
+  // Legacy has three booking dialogs (Redelivery / RTB / TopUp) that
+  // share one endpoint - the mode discriminator switches title +
+  // JobNotificationType default so operators pick the right flow.
+  const [bookMode, setBookMode] = useState<'redelivery' | 'return-to-base'>('redelivery');
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [eventOpen, setEventOpen] = useState(false);
+  // Section S.2 landmine: when the CreateEvent dialog auto-opens after
+  // a successful booking (Redelivery / TopUp), the dialog banner reads
+  // "your booking succeeded, now log the event". Manual opens keep
+  // this false so operators don't see a stale success banner.
+  const [eventChainedFromBooking, setEventChainedFromBooking] = useState(false);
   const [intelOpen, setIntelOpen] = useState(false);
 
   const primary = jobs[0];
@@ -86,6 +95,10 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
   const doActivate = () => bulkRun('Activate', (j) => routeViewerService.activateJob(j.jobId));
   const doPickup = () => bulkRun('Pickup', (j) => routeViewerService.pickupJob(j.jobId));
   const doMissing = () => bulkRun('Missing', (j) => routeViewerService.missingJob(j.jobId), true);
+  // Release Job wraps RVW_stpReleaseJob per legacy homeControl job menu.
+  // Soft release - clears the courier assignment without moving the job
+  // back to RunBuilder. Distinct from Void / Cancel.
+  const doRelease = () => bulkRun('Release', (j) => routeViewerService.releaseJob(j.jobId), true);
   const doComplete = async () => {
     onClose();
     const podName = window.prompt('POD Name (recipient signature)') ?? '';
@@ -171,7 +184,9 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
     <>
       <div
         ref={menuRef}
-        className="fixed z-50 bg-surface-white border border-border rounded-md shadow-lg py-1 text-sm min-w-[18rem]"
+        className={`fixed z-50 bg-surface-white border border-border rounded-md shadow-lg py-1 text-sm min-w-[18rem] ${
+          anyDialogOpen ? 'hidden' : ''
+        }`}
         style={{ left: x, top: y }}
       >
         <div className="px-3 py-1 text-[10px] uppercase text-text-muted border-b border-border">
@@ -200,11 +215,15 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
             <MenuItem onClick={doMissing} disabled={running}>Missing</MenuItem>
             <MenuItem onClick={doComplete} disabled={running}>Complete</MenuItem>
             <MenuItem onClick={doMakeLmc} disabled={running}>Make LMC</MenuItem>
+            <MenuItem onClick={doRelease} disabled={running}>Release</MenuItem>
             <MenuItem onClick={doVoid} disabled={running}>Void</MenuItem>
 
             <div className="border-t border-border my-1" />
-            <MenuItem onClick={() => setBookRedeliveryOpen(true)} disabled={running || isBulk}>
+            <MenuItem onClick={() => { setBookMode('redelivery'); setBookRedeliveryOpen(true); }} disabled={running || isBulk}>
               Book Direct Redelivery
+            </MenuItem>
+            <MenuItem onClick={() => { setBookMode('return-to-base'); setBookRedeliveryOpen(true); }} disabled={running || isBulk}>
+              Return to Base
             </MenuItem>
             <MenuItem onClick={() => setTopUpOpen(true)} disabled={running || isBulk}>
               Top Up
@@ -244,11 +263,14 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
       {bookRedeliveryOpen && (
         <BookRedeliveryDialog
           sourceJobId={primary.bulkJobId}
+          mode={bookMode}
           onClose={() => { setBookRedeliveryOpen(false); onClose(); }}
           onBooked={(newJobId) => {
             setBookRedeliveryOpen(false);
             toast.show(`Redelivery booked (job #${newJobId})`, 'success');
             // Section S.2: chain to Create Event after successful booking
+            // so operators can log the follow-up event in one flow.
+            setEventChainedFromBooking(true);
             setEventOpen(true);
           }}
         />
@@ -258,7 +280,14 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
           jobId={primary.bulkJobId}
           jobNumber={primary.jobNumber ?? undefined}
           onClose={() => { setTopUpOpen(false); onClose(); }}
-          onBooked={() => { setTopUpOpen(false); onClose(); toast.show('Top up booked.', 'success'); onDone(); }}
+          onBooked={() => {
+            setTopUpOpen(false);
+            toast.show('Top up booked.', 'success');
+            // Section S.2: same chain-to-event flow as Redelivery so the
+            // TopUp booking gets its follow-up event log entry.
+            setEventChainedFromBooking(true);
+            setEventOpen(true);
+          }}
         />
       )}
       {eventOpen && (
@@ -266,9 +295,9 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
           jobId={primary.bulkJobId}
           jobNumber={primary.jobNumber ?? undefined}
           courierCode={primary.courierCode}
-          chainedFromBooking={false}
-          onClose={() => { setEventOpen(false); onClose(); }}
-          onCreated={() => { setEventOpen(false); onClose(); toast.show('Event created.', 'success'); onDone(); }}
+          chainedFromBooking={eventChainedFromBooking}
+          onClose={() => { setEventOpen(false); setEventChainedFromBooking(false); onClose(); }}
+          onCreated={() => { setEventOpen(false); setEventChainedFromBooking(false); onClose(); toast.show('Event created.', 'success'); onDone(); }}
         />
       )}
       {intelOpen && primary.proofOfDeliveryMobile && (

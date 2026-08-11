@@ -54,3 +54,51 @@ public class EventListRequest
     public bool ClientInternal { get; set; }
     public bool IncludeClosed { get; set; }
 }
+
+/// <summary>Payload for POST /api/runviewer/events. Mirrors legacy
+/// BookController.CreateEventAsync signature; email dispatch on
+/// Notify is deferred until tenant notification transport is
+/// wired.</summary>
+public class CreateEventRequest
+{
+    public int? BulkJobId { get; set; }
+    public int? CourierId { get; set; }
+    public string? Notes { get; set; }
+    public string? Name { get; set; }
+    public bool Internal { get; set; }
+    public bool ClientFollowup { get; set; }
+    public bool ClientCreated { get; set; }
+    public DateTime EventDate { get; set; }
+    public int? ClientId { get; set; }
+    public bool Notify { get; set; }
+    public string? ClientName { get; set; }
+}
+
+/// <summary>Payload for POST /api/runviewer/events/{id}/close. The
+/// closedBy string carries the operator's display name (already
+/// prefixed with tenant/client on the frontend so it renders in the
+/// Closed By column verbatim).</summary>
+public class CloseEventRequest
+{
+    public string? ClosedBy { get; set; }
+}
+
+/// <summary>Payload for POST /api/runviewer/events/{id}/reply.</summary>
+public class AddEventReplyRequest
+{
+    public string Note { get; set; } = string.Empty;
+    public string? UserName { get; set; }
+}
+
+/// <summary>Payload for POST /api/runviewer/jobs/client-intel.
+/// Metadata-only interim; file upload to S3 lands with the CS
+/// module upload flow.</summary>
+public class ClientIntelRequest
+{
+    public string Mobile { get; set; } = string.Empty;
+    public bool Dog { get; set; }
+    public bool HasPhoto { get; set; }
+    public string? Notes { get; set; }
+    public string? PhotoDescription { get; set; }
+    public bool IsNew { get; set; } = true;
+}

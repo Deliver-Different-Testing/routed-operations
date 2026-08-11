@@ -34,6 +34,39 @@ public class BulkUnassignRequest
     public string Target { get; set; } = "Courier";
 }
 
+/// <summary>Payload for POST /api/runviewer/jobs/preassign-run.
+/// Drag-drop entry point; wraps RVW_stpPreAssignRun (single SP call
+/// covers the whole run in one round-trip).</summary>
+public class PreAssignRunRequest
+{
+    public int RunId { get; set; }
+    public string? FromCourierCode { get; set; }
+    public string ToCourierCode { get; set; } = string.Empty;
+}
+
+/// <summary>Payload for POST /api/runviewer/jobs/transfer-run.
+/// Wraps RVW_stpTransferRun.</summary>
+public class TransferRunRequest
+{
+    public int RunId { get; set; }
+    public string? FromCourierCode { get; set; }
+    public string ToCourierCode { get; set; } = string.Empty;
+}
+
+/// <summary>Payload for POST /api/runviewer/jobs/release-run.</summary>
+public class ReleaseRunRequest
+{
+    public int RunId { get; set; }
+    public string CourierCode { get; set; } = string.Empty;
+}
+
+/// <summary>Payload for POST /api/runviewer/jobs/unassign-run.</summary>
+public class UnAssignRunRequest
+{
+    public int RunId { get; set; }
+    public string CourierCode { get; set; } = string.Empty;
+}
+
 public class BulkAssignmentResult
 {
     public int Succeeded { get; set; }

@@ -20,6 +20,13 @@ interface Props {
   sourceJobId: number;
   onClose: () => void;
   onBooked: (newJobId: number) => void;
+  /** 'redelivery' (default) = customer-facing Direct Redelivery with
+   *  optional email/mobile notification. 'return-to-base' = internal
+   *  RTB flow which forces JobNotificationType='WEBSITE' server-side
+   *  and swaps the dialog title so operators can tell them apart.
+   *  Backend endpoint is the same /booking/one-off - the mode is
+   *  purely a UI + payload discriminator. */
+  mode?: 'redelivery' | 'return-to-base';
 }
 
 // Minimal payload the legacy /booking/OneOff endpoint expects. Extended
@@ -39,7 +46,8 @@ interface BookingPayload {
   QuoteId: string;
 }
 
-export function BookRedeliveryDialog({ sourceJobId, onClose, onBooked }: Props) {
+export function BookRedeliveryDialog({ sourceJobId, onClose, onBooked, mode = 'redelivery' }: Props) {
+  const isRtb = mode === 'return-to-base';
   const alert = useAlert();
   const [company, setCompany] = useState('');
   const [contact, setContact] = useState('');
@@ -82,7 +90,11 @@ export function BookRedeliveryDialog({ sourceJobId, onClose, onBooked }: Props) 
         },
         // QuoteId as string even though it looks numeric per landmine.
         QuoteId: String(sourceJobId),
-      };
+        // RTB flow forces JobNotificationType='WEBSITE' per legacy
+        // BookController.BookReturnToBaseJob. Redelivery leaves it
+        // unset and lets the WebAPI derive from email/mobile presence.
+        ...(isRtb ? { JobNotificationType: 'WEBSITE' } : {}),
+      } as BookingPayload & { JobNotificationType?: string };
       // WebAPI error surfacing per Section 3.2.2 - the fetch wrapper
       // already extracts messages[0].message + err.hint from the JSON body,
       // so a failure lands here with the real reason string ready for the
@@ -113,7 +125,7 @@ export function BookRedeliveryDialog({ sourceJobId, onClose, onBooked }: Props) 
     <Modal
       open
       onClose={onClose}
-      title="Book direct redelivery"
+      title={isRtb ? 'Book return to base' : 'Book direct redelivery'}
       size="lg"
       loading={submitting}
       loadingMessage="Booking..."

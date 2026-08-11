@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle } from 'react-resizable-panels';
 import { useAuth } from '../../context/AuthContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
@@ -17,6 +17,8 @@ import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 import { RvRunListLite } from '../../components/route-viewer/RvRunListLite';
 import { RvMapBox } from '../../components/route-viewer/RvMapBox';
 import { RvScanDetailBox } from '../../components/route-viewer/RvScanDetailBox';
+import { RvCouriersBox } from '../../components/route-viewer/RvCouriersBox';
+import { RvClientIntelBox } from '../../components/route-viewer/RvClientIntelBox';
 import { RvUtilityActions } from '../../components/route-viewer/RvUtilityActions';
 import { TopUpDialog } from '../../components/route-viewer/TopUpDialog';
 import { DEFAULT_LAYOUT, type CockpitLayout } from '../../lib/layouts';
@@ -53,14 +55,28 @@ export default function RunViewer() {
     [user.isUsTenant, user.timeZone],
   );
 
+  // Tier-2 item 9: filter persistence via localStorage scoped to the
+  // current tenant + operator so different users don't clobber each
+  // other's filter state. runDate is intentionally NOT persisted (each
+  // session should default to today unless the URL says otherwise).
+  const filterStorageKey = `rv-filters:${user.currentTenantId ?? 0}:${user.email ?? 'anon'}`;
+  const loadStoredFilters = (): Partial<FilterState> => {
+    try {
+      const raw = window.localStorage.getItem(filterStorageKey);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  };
+  const stored = loadStoredFilters();
+
   const [filters, setFilters] = useState<FilterState>({
     runDate: searchParams.get('runDate') ?? initialDate,
-    clientIds: [],
-    regionIds: [],
-    speedIds: [],
-    activeRegionsOnly: true,
+    clientIds: stored.clientIds ?? [],
+    regionIds: stored.regionIds ?? [],
+    speedIds: stored.speedIds ?? [],
+    courierId: (stored as any).courierId ?? null,
+    activeRegionsOnly: stored.activeRegionsOnly ?? true,
   });
-  const [viewMode, setViewMode] = useState<ViewMode>('Combined');
+  const [viewMode, setViewMode] = useState<ViewMode>((stored as any).viewMode ?? 'Combined');
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; runId: number } | null>(null);
@@ -105,6 +121,22 @@ export default function RunViewer() {
     staleTime: 5_000,
   });
 
+  // Tier-2 items 8 + 15: when 2+ runs selected, fetch jobs for the
+  // extra runs so the map can render every selected run's pins with
+  // its own tint colour. Uses useQueries (not useQuery in a loop) so
+  // hook count is stable across selection changes.
+  const extraRunIds = selectedRunIds.length > 1 ? selectedRunIds.slice(1) : [];
+  const extraRunJobsQueries = useQueries({
+    queries: extraRunIds.map((rid) => ({
+      queryKey: ['rv-run-jobs', rid, filters.runDate, viewMode],
+      queryFn: () => routeViewerService.getRunJobs(rid, filters.runDate, viewMode),
+      staleTime: 5_000,
+    })),
+  });
+  const extraRunJobs = extraRunIds
+    .map((rid, i) => ({ runId: rid, jobs: (extraRunJobsQueries[i]?.data as any[]) ?? [] }))
+    .filter((g) => g.jobs.length > 0);
+
   useAutoPoll(
     () => {
       runsQuery.refetch();
@@ -130,15 +162,37 @@ export default function RunViewer() {
     }).catch(() => {});
   }, [searchParams, runsQuery.isLoading, setSearchParams]);
 
+  // Anchor for shift-range selection on the Run List. Set to the id
+  // of the last plain-click. Shift+click extends selection from anchor
+  // to clicked row (inclusive) using the currently-visible run order.
+  const runAnchorRef = useRef<number | null>(null);
   const onSelectRun = useCallback((id: number, mods: { ctrl: boolean; shift: boolean }) => {
     setSelectedRunIds((prev) => {
-      if (mods.ctrl) return prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id];
+      if (mods.shift && runAnchorRef.current != null) {
+        // Tier-3 item 18: shift-range across the sorted run list. We
+        // read the list off runsQuery.data at call time so the range
+        // matches whatever the operator currently sees.
+        const runs = runsQuery.data ?? [];
+        const anchorIdx = runs.findIndex((r) => r.id === runAnchorRef.current);
+        const clickedIdx = runs.findIndex((r) => r.id === id);
+        if (anchorIdx >= 0 && clickedIdx >= 0) {
+          const [lo, hi] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+          const ids = runs.slice(lo, hi + 1).map((r) => r.id);
+          return ids;
+        }
+        return prev;
+      }
+      if (mods.ctrl) {
+        runAnchorRef.current = id;
+        return prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id];
+      }
+      runAnchorRef.current = id;
       return [id];
     });
     setSelectedJobId(null);
     setSelectedJobIds([]);   // clear job multi-select on run change
     setSiblingOverride(null);
-  }, []);
+  }, [runsQuery.data]);
 
   const onSelectJob = useCallback((bulkJobId: number, mods: { ctrl: boolean }) => {
     if (mods.ctrl) {
@@ -171,7 +225,26 @@ export default function RunViewer() {
     const params = new URLSearchParams(searchParams);
     params.set('runDate', next.runDate);
     setSearchParams(params, { replace: true });
-  }, [searchParams, setSearchParams]);
+    // Tier-2 item 9: persist filter selections (not runDate).
+    try {
+      window.localStorage.setItem(filterStorageKey, JSON.stringify({
+        clientIds: next.clientIds,
+        regionIds: next.regionIds,
+        speedIds: next.speedIds,
+        courierId: next.courierId,
+        activeRegionsOnly: next.activeRegionsOnly,
+        viewMode,
+      }));
+    } catch { /* quota / disabled localStorage - skip */ }
+  }, [searchParams, setSearchParams, filterStorageKey, viewMode]);
+
+  // Persist viewMode changes too since it lives in the same storage key.
+  useEffect(() => {
+    try {
+      const cur = JSON.parse(window.localStorage.getItem(filterStorageKey) || '{}');
+      window.localStorage.setItem(filterStorageKey, JSON.stringify({ ...cur, viewMode }));
+    } catch { /* skip */ }
+  }, [viewMode, filterStorageKey]);
 
   // Snapshot the live layout for the Save-current-layout action. Falls
   // back to DEFAULT_LAYOUT arrays if a ref isn't attached yet (should
@@ -194,7 +267,83 @@ export default function RunViewer() {
   };
 
   const singleRun = runsQuery.data?.find((r) => r.id === singleRunId) ?? null;
-  const runJobs = runJobsQuery.data ?? [];
+  const rawRunJobs = runJobsQuery.data ?? [];
+
+  // Audit 7.4: client-side courier filter. Runs SP doesn't take a
+  // courier param; look up the selected courier's code from the same
+  // courier list the FilterBar dropdown reads, then keep only runs
+  // whose courierCode matches. Falls back to all runs when the
+  // selected courier isn't in the current-day list.
+  const courierListForFilter = useQuery({
+    queryKey: ['rv-filter-couriers', filters.runDate],
+    queryFn: () => routeViewerService.getActiveCouriers(filters.runDate),
+    enabled: !user.isNetworkPartner && filters.courierId != null && !!filters.runDate,
+    staleTime: 30_000,
+  });
+  const selectedCourierCode = filters.courierId != null
+    ? courierListForFilter.data?.find((c) => c.courierId === filters.courierId)?.code ?? null
+    : null;
+  const visibleRuns = useMemo(() => {
+    const all = runsQuery.data ?? [];
+    if (!selectedCourierCode) return all;
+    return all.filter((r) => r.courierCode === selectedCourierCode);
+  }, [runsQuery.data, selectedCourierCode]);
+
+  // Tier-2 item 15: multi-run colour tinting. When operator has 2+
+  // selected runs, assign each a distinct hue from an 8-colour palette
+  // so Run List rows + map pins line up visually. Palette keeps the
+  // brand-cyan default for single-select so the everyday UX is
+  // unchanged. Order = selection order for stable colour identity
+  // across re-renders.
+  const runColorMap = useMemo(() => {
+    const map: Record<number, string> = {};
+    if (selectedRunIds.length <= 1) return map;
+    const palette = ['#0891b2', '#7c3aed', '#f59e0b', '#dc2626', '#059669', '#d946ef', '#0ea5e9', '#65a30d'];
+    selectedRunIds.forEach((id, i) => { map[id] = palette[i % palette.length]; });
+    return map;
+  }, [selectedRunIds]);
+
+  // Tier-2 item 14: Run Jobs grid sort + filter. Cancelled (jobStatus =
+  // 'V') and multibox child rows (MultiboxParentID != null) are hidden
+  // by default per master spec because they clutter the primary run
+  // view. Operators can toggle them on individually. Sort is
+  // client-side over the fetched page.
+  const [rjSort, setRjSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'runOrder', dir: 'asc' });
+  const [rjShowCancelled, setRjShowCancelled] = useState(false);
+  const [rjShowMultibox, setRjShowMultibox] = useState(false);
+  const toggleRjSort = (key: string) => {
+    setRjSort((cur) => (cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+  };
+  const runJobs = useMemo(() => {
+    const filtered = rawRunJobs.filter((j: any) => {
+      if (!rjShowCancelled && j.jobStatus === 'V') return false;
+      if (!rjShowMultibox && j.multiboxParentId != null && j.multiboxParentId !== 0) return false;
+      return true;
+    });
+    const sorted = filtered.slice().sort((a: any, b: any) => {
+      const va = (a as any)[rjSort.key];
+      const vb = (b as any)[rjSort.key];
+      const nulla = va == null || va === '';
+      const nullb = vb == null || vb === '';
+      if (nulla && nullb) return 0;
+      if (nulla) return 1;
+      if (nullb) return -1;
+      if (va < vb) return rjSort.dir === 'asc' ? -1 : 1;
+      if (va > vb) return rjSort.dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [rawRunJobs, rjShowCancelled, rjShowMultibox, rjSort]);
+
+  // Currently-selected job payload used by the right-column Client
+  // Intel box to look up per-mobile intel. Picks the sibling override
+  // first (LH legs live only in the sibling payload) then falls back
+  // to the primary runJobs cache entry. MUST be declared after
+  // `runJobs` above - referencing it earlier hits a TDZ error at
+  // render time the moment selectedJobId becomes non-null.
+  const selectedJobDetail = siblingOverride?.job
+    ?? (selectedJobId != null ? runJobs.find((j) => j.bulkJobId === selectedJobId) : null)
+    ?? null;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -260,13 +409,24 @@ export default function RunViewer() {
               <Panel defaultSize={DEFAULT_LAYOUT.rvLeftV![1]} minSize={20}>
                 <RvBox title="Run List">
                   <RvRunList
-                    runs={runsQuery.data ?? []}
+                    runs={visibleRuns}
                     selectedIds={selectedRunIds}
                     onSelect={onSelectRun}
                     onContextMenu={onContextMenu}
                     viewMode={viewMode}
                     onViewModeChange={setViewMode}
                     isLoading={runsQuery.isLoading}
+                    runColorMap={runColorMap}
+                    onDropCourier={(runId, courierCode) => {
+                      const run = visibleRuns.find((r) => r.id === runId);
+                      const from = run?.courierCode ?? null;
+                      routeViewerService.preAssignRun(runId, courierCode, from)
+                        .then(() => {
+                          toast.show(`Pre-assigned ${courierCode} to run ${run?.name ?? runId}.`);
+                          runsQuery.refetch();
+                        })
+                        .catch((err) => toast.show(`Assign failed: ${err.message}`));
+                    }}
                   />
                 </RvBox>
               </Panel>
@@ -283,6 +443,47 @@ export default function RunViewer() {
                   title={singleRun ? `Run - ${singleRun.name ?? singleRun.id}` : 'Run - (select a run)'}
                   actions={
                     <>
+                      {/* Tier-2 item 14: cancelled + multibox toggles.
+                          Hidden by default (per master spec) so the
+                          grid isn't cluttered with V-status jobs or
+                          child boxes; operators opt in when needed. */}
+                      <label className="flex items-center gap-1 text-[10px] text-text-muted cursor-pointer" title="Show cancelled (V) jobs">
+                        <input
+                          type="checkbox"
+                          checked={rjShowCancelled}
+                          onChange={(e) => setRjShowCancelled(e.target.checked)}
+                          className="accent-brand-cyan"
+                        />
+                        Cancelled
+                      </label>
+                      <label className="flex items-center gap-1 text-[10px] text-text-muted cursor-pointer" title="Show multibox child rows">
+                        <input
+                          type="checkbox"
+                          checked={rjShowMultibox}
+                          onChange={(e) => setRjShowMultibox(e.target.checked)}
+                          className="accent-brand-cyan"
+                        />
+                        Multibox
+                      </label>
+                      <button
+                        type="button"
+                        title="Print labels for run"
+                        onClick={() => {
+                          if (singleRunId == null) return;
+                          const ids = runJobs.map((j) => j.bulkJobId).filter((n) => n > 0);
+                          if (ids.length === 0) { toast.show('No jobs to label.'); return; }
+                          routeViewerService.printLabels(ids)
+                            .then(() => toast.show(`Print labels queued for ${ids.length} job(s).`))
+                            .catch(() => toast.show('Print labels failed - check network.'));
+                        }}
+                        className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/5 text-text-secondary"
+                      >
+                        {/* tag icon */}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20.59 13.41 13.41 20.59a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+                          <line x1="7" y1="7" x2="7.01" y2="7" />
+                        </svg>
+                      </button>
                       <button
                         type="button"
                         title="Print run"
@@ -328,16 +529,16 @@ export default function RunViewer() {
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-surface-white border-b border-border">
                         <tr className="text-left text-text-muted">
-                          <th className="px-2 py-1">Status</th>
-                          <th className="px-2 py-1">Client</th>
-                          <th className="px-2 py-1">Job #</th>
-                          <th className="px-2 py-1">D Date</th>
-                          <th className="px-2 py-1">R Time</th>
-                          <th className="px-2 py-1">Address</th>
-                          <th className="px-2 py-1">City</th>
-                          <th className="px-2 py-1">Agent/NP</th>
-                          <th className="px-2 py-1">Courier</th>
-                          <th className="px-2 py-1">Speed</th>
+                          <SortableTh label="Status" k="jobStatus" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Client" k="clientCode" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Job #" k="jobNumber" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="D Date" k="bookDate" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="R Time" k="bookTime" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Address" k="toAddress" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="City" k="toCity" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Agent/NP" k="agentName" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Courier" k="courierName" cur={rjSort} onClick={toggleRjSort} />
+                          <SortableTh label="Speed" k="speedName" cur={rjSort} onClick={toggleRjSort} />
                         </tr>
                       </thead>
                       <tbody>
@@ -421,7 +622,18 @@ export default function RunViewer() {
                     }
                   }}
                   onPrint={() => toast.show('Print job report - endpoint scaffold (P14).')}
-                  onSend={() => toast.show('Send job link / POD - endpoint scaffold (P14).')}
+                  onSend={(j) => {
+                    // POD email: proxies to legacy /Home/SendPOD via the
+                    // same env-gated proxy the labels use. Prompt for the
+                    // destination address; default to trackingEmail /
+                    // deliverToPhone contact email if the job carries one.
+                    const suggested = j.trackingEmail || j.proofOfDeliveryEmail || '';
+                    const to = window.prompt('Send POD to email:', suggested);
+                    if (!to) return;
+                    routeViewerService.sendPodEmail(j.bulkJobId, to.trim())
+                      .then(() => toast.show(`POD emailed to ${to}.`))
+                      .catch((err) => toast.show(`SendPOD failed: ${err.message}`));
+                  }}
                   onTransferRoute={(j) => {
                     if (j.bulkRunId != null) {
                       setSelectedRunIds([j.bulkRunId]);
@@ -437,42 +649,49 @@ export default function RunViewer() {
 
           <PanelResizeHandle className="w-1" />
 
-          {/* Slim column: Pre Assigned / Returns / Exceptions */}
-          <Panel defaultSize={DEFAULT_LAYOUT.rvHorizontal![2]} minSize={10}>
-            <PanelGroup direction="vertical" ref={slimVRef}>
-              <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![0]} minSize={10}>
-                <RvRunListLite
-                  variant="preAssigned"
-                  runs={runsQuery.data ?? []}
-                  selectedIds={selectedRunIds}
-                  onSelect={onSelectRun}
-                  onContextMenu={onContextMenu}
-                />
+          {/* Slim column: Pre Assigned / Returns / Exceptions.
+              Tier-3 item 16: admin-only. NP operators only see their own
+              work in the main Run List; the operational slim column is
+              reserved for internal admin who dispatch across all runs. */}
+          {!user.isNetworkPartner && (
+            <>
+              <Panel defaultSize={DEFAULT_LAYOUT.rvHorizontal![2]} minSize={10}>
+                <PanelGroup direction="vertical" ref={slimVRef}>
+                  <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![0]} minSize={10}>
+                    <RvRunListLite
+                      variant="preAssigned"
+                      runs={runsQuery.data ?? []}
+                      selectedIds={selectedRunIds}
+                      onSelect={onSelectRun}
+                      onContextMenu={onContextMenu}
+                    />
+                  </Panel>
+                  <PanelResizeHandle className="h-1" />
+                  <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![1]} minSize={10}>
+                    <RvRunListLite
+                      variant="returns"
+                      runs={runsQuery.data ?? []}
+                      selectedIds={selectedRunIds}
+                      onSelect={onSelectRun}
+                      onContextMenu={onContextMenu}
+                    />
+                  </Panel>
+                  <PanelResizeHandle className="h-1" />
+                  <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![2]} minSize={10}>
+                    <RvRunListLite
+                      variant="exceptions"
+                      runs={runsQuery.data ?? []}
+                      selectedIds={selectedRunIds}
+                      onSelect={onSelectRun}
+                      onContextMenu={onContextMenu}
+                    />
+                  </Panel>
+                </PanelGroup>
               </Panel>
-              <PanelResizeHandle className="h-1" />
-              <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![1]} minSize={10}>
-                <RvRunListLite
-                  variant="returns"
-                  runs={runsQuery.data ?? []}
-                  selectedIds={selectedRunIds}
-                  onSelect={onSelectRun}
-                  onContextMenu={onContextMenu}
-                />
-              </Panel>
-              <PanelResizeHandle className="h-1" />
-              <Panel defaultSize={DEFAULT_LAYOUT.rvSlimV![2]} minSize={10}>
-                <RvRunListLite
-                  variant="exceptions"
-                  runs={runsQuery.data ?? []}
-                  selectedIds={selectedRunIds}
-                  onSelect={onSelectRun}
-                  onContextMenu={onContextMenu}
-                />
-              </Panel>
-            </PanelGroup>
-          </Panel>
 
-          <PanelResizeHandle className="w-1" />
+              <PanelResizeHandle className="w-1" />
+            </>
+          )}
 
           {/* Right column: Map + Scan Detail */}
           <Panel defaultSize={DEFAULT_LAYOUT.rvHorizontal![3]} minSize={15}>
@@ -483,7 +702,20 @@ export default function RunViewer() {
                   runJobs={runJobs}
                   selectedJobId={selectedJobId}
                   viewMode={viewMode}
+                  runColorMap={runColorMap}
+                  extraRunJobs={extraRunJobs}
                 />
+              </Panel>
+              <PanelResizeHandle className="h-1" />
+              <Panel defaultSize={12} minSize={8}>
+                <RvCouriersBox
+                  runDate={filters.runDate}
+                  onPick={(courierId) => onFiltersChange({ ...filters, courierId })}
+                />
+              </Panel>
+              <PanelResizeHandle className="h-1" />
+              <Panel defaultSize={12} minSize={8}>
+                <RvClientIntelBox mobile={selectedJobDetail?.deliverToPhone ?? selectedJobDetail?.phone ?? null} />
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={DEFAULT_LAYOUT.rvRightV![1]} minSize={15}>
@@ -526,6 +758,29 @@ export default function RunViewer() {
         />
       )}
     </div>
+  );
+}
+
+// Sortable table header for the middle-pane Run Jobs grid. Click
+// cycles asc -> desc for that column; clicking a different column
+// resets to asc. Renders a small caret indicating current dir.
+function SortableTh({
+  label, k, cur, onClick,
+}: {
+  label: string;
+  k: string;
+  cur: { key: string; dir: 'asc' | 'desc' };
+  onClick: (k: string) => void;
+}) {
+  const active = cur.key === k;
+  return (
+    <th
+      className="px-2 py-1 cursor-pointer select-none hover:text-text-primary"
+      onClick={() => onClick(k)}
+    >
+      {label}
+      {active && <span className="ml-1">{cur.dir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
   );
 }
 

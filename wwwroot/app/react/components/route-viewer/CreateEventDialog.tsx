@@ -44,13 +44,15 @@ export function CreateEventDialog({
       await request('/runviewer/events', {
         method: 'POST',
         body: JSON.stringify({
-          BulkJobId: jobId,
-          ClientFollowup: !!followupClient,
-          Internal: !followupClient,
-          YourName: yourName,
-          ClientVisible: !!clientVisible,
-          NotifyClient: !!notifyClient,
-          Notes: notes,
+          bulkJobId: jobId,
+          courierId: null,
+          notes,
+          name: yourName,
+          internal: !followupClient,
+          clientFollowup: !!followupClient,
+          clientCreated: !!clientVisible,
+          eventDate: new Date().toISOString(),
+          notify: !!notifyClient,
         }),
       });
       onCreated();

@@ -26,12 +26,17 @@ export function CreateIntelDialog({ mobile, onClose, onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      await request('/runviewer/jobs/client-intel', {
+      // Endpoint lives on the events controller because ClientIntel
+      // is a CS-module concern that ships with the event surface.
+      await request('/runviewer/events/client-intel', {
         method: 'POST',
         body: JSON.stringify({
-          Mobile: mobile,
-          DangerousDog: dangerousDog,
-          Notes: notes,
+          mobile,
+          dog: dangerousDog,
+          hasPhoto: false,
+          notes,
+          photoDescription: null,
+          isNew: true,
         }),
       });
       onCreated();

@@ -54,6 +54,15 @@ public class SendSmsRequest
     public string Message { get; set; } = string.Empty;
 }
 
+/// <summary>Broadcast SMS to every driver on a run. Wraps legacy
+/// RVW_stpMessageRun; user name is resolved from claims server-side
+/// for the SP's audit column.</summary>
+public class SendSmsRunRequest
+{
+    public int RunId { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
 public class MoveJobsBackToRunBuilderRequest
 {
     public int[] BulkJobIds { get; set; } = Array.Empty<int>();

@@ -68,4 +68,16 @@ public class RunViewerScanController(
         var rows = await scanService.GetItemProgressAsync(rootJobId);
         return Ok(new { response = rows });
     }
+
+    /// <summary>POST /api/runviewer/scans/remove-missing - admin bulk
+    /// purge of missing-scan LHP / DEL child rows for a run-date +
+    /// filter slice. Wraps RVW_stpRemoveMissingScanJobs.</summary>
+    [HttpPost("remove-missing")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> RemoveMissing([FromBody] RemoveMissingScanRequest request)
+    {
+        var ok = await scanService.RemoveMissingScanJobsAsync(request);
+        if (!ok) return Forbid();
+        return Ok(new { response = "ok" });
+    }
 }

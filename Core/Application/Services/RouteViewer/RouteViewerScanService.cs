@@ -29,17 +29,71 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<BulkScanJobDto>();
 
-        return await Context.Database.SqlQueryRaw<BulkScanJobDto>(
+        // SP signature (verified 2026-08-11): 4 params.
+        // SP output (verified via sp_describe_first_result_set):
+        // ClientID, ClientCode, JobNumber, DeliveryDate (varchar),
+        // ReadyTime, CompanyName, ToAddress, ToSuburb, JobStatus,
+        // JobID, BulkJobID, SortScanned, RunScanned, PickScanned,
+        // InvalidPickScanned, TransferScanned, TransitScanned, BookTime,
+        // Speed, SpeedID, Items, Multibox, BulkParentID.
+        // DTO has DateOnly? on DeliveryDate + missing columns - use a
+        // raw row + client-side mapper.
+        var rows = await Context.Database.SqlQueryRaw<RawBulkScanRow>(
             @"EXEC dbo.RVW_stpScanJobs
-                @RunDate, @ClientID, @ClientInternal, @MultipleClients,
-                @ClientIds, @RegionIds",
-            SpParam.Of("@RunDate", request.RunDate),
+                @ClientID = @ClientID,
+                @RunDate = @RunDate,
+                @Regions = @Regions,
+                @ClientIDs = @ClientIDs",
             SpParam.Of("@ClientID", request.ClientId),
-            SpParam.Of("@ClientInternal", request.ClientInternal),
-            SpParam.Of("@MultipleClients", request.MultipleClients),
-            SpParam.Of("@ClientIds", request.ClientIds),
-            SpParam.Of("@RegionIds", request.RegionIds))
+            SpParam.Of("@RunDate", request.RunDate),
+            SpParam.Of("@Regions", request.RegionIds),
+            SpParam.Of("@ClientIDs", request.ClientIds))
             .ToListAsync();
+        return rows.Select(r => new BulkScanJobDto
+        {
+            BulkJobId = r.BulkJobID,
+            BulkParentId = r.BulkParentID,
+            JobNumber = r.JobNumber,
+            ClientCode = r.ClientCode,
+            DeliveryDate = r.DeliveryDate,
+            ReadyTime = r.ReadyTime,
+            ToAddress = r.ToAddress,
+            Items = r.Items ?? 0,
+            SortScanned = (byte)(r.SortScanned ?? 0),
+            RunScanned = (byte)(r.RunScanned ?? 0),
+            PickScanned = (byte)(r.PickScanned ?? 0),
+            InvalidPickScanned = (byte)(r.InvalidPickScanned ?? 0),
+            TransferScanned = (byte)(r.TransferScanned ?? 0),
+            TransitScanned = (byte)(r.TransitScanned ?? 0),
+        }).ToList();
+    }
+
+    /// <summary>Exact column shape of RVW_stpScanJobs output.</summary>
+    private class RawBulkScanRow
+    {
+        public int ClientID { get; set; }
+        public string? ClientCode { get; set; }
+        public string? JobNumber { get; set; }
+        public string? DeliveryDate { get; set; }
+        public string? ReadyTime { get; set; }
+        public string? CompanyName { get; set; }
+        public string? ToAddress { get; set; }
+        public string? ToSuburb { get; set; }
+        public string? JobStatus { get; set; }
+        public int? JobID { get; set; }
+        public int BulkJobID { get; set; }
+        public int? SortScanned { get; set; }
+        public int? RunScanned { get; set; }
+        public int? PickScanned { get; set; }
+        public int? InvalidPickScanned { get; set; }
+        public int? TransferScanned { get; set; }
+        public int? TransitScanned { get; set; }
+        public DateTime BookTime { get; set; }
+        public string? Speed { get; set; }
+        public int? SpeedID { get; set; }
+        public short? Items { get; set; }
+        public bool? Multibox { get; set; }
+        public int? BulkParentID { get; set; }
     }
 
     /// <summary>GET /api/runviewer/scans/routed - Routed-mode Scan
@@ -53,18 +107,75 @@ public class RouteViewerScanService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        return await Context.Database.SqlQueryRaw<RoutedScanJobDto>(
+        // SP signature (verified 2026-08-11 via sys.parameters): 4 params
+        // @ClientID / @RunDate / @Regions / @ClientIDs.
+        // SP output columns (verified via sp_describe_first_result_set):
+        // ClientID, ClientCode, JobNumber, JobID, DeliveryDate, ReadyTime,
+        // ToAddress, ToSuburb, Items, ScannedItems, ExpectedItems, Totes,
+        // LinehaulRuns, ExceptionCount, OpenTaskCount, LatestScanTime,
+        // LatestScanType, JobStatus, Legs, CurrentLeg, ItemCount, Stage,
+        // IsDivergent, HasShort. DTO has BulkJobId + CompanyName + Suburb
+        // which don't map - use a raw row + client-side mapper.
+        var rows = await Context.Database.SqlQueryRaw<RawRoutedScanRow>(
             @"EXEC dbo.RVW_stpScanJobsRouted
-                @RunDate, @ClientID, @ClientInternal, @MultipleClients,
-                @ClientIds, @RegionIds, @NpAgentId",
-            SpParam.Of("@RunDate", request.RunDate),
+                @ClientID = @ClientID,
+                @RunDate = @RunDate,
+                @Regions = @Regions,
+                @ClientIDs = @ClientIDs",
             SpParam.Of("@ClientID", effectiveClientId),
-            SpParam.Of("@ClientInternal", request.ClientInternal),
-            SpParam.Of("@MultipleClients", request.MultipleClients),
-            SpParam.Of("@ClientIds", effectiveClientIds),
-            SpParam.Of("@RegionIds", request.RegionIds),
-            SpParam.Of("@NpAgentId", scope.NpAgentId))
+            SpParam.Of("@RunDate", request.RunDate),
+            SpParam.Of("@Regions", request.RegionIds),
+            SpParam.Of("@ClientIDs", effectiveClientIds))
             .ToListAsync();
+        return rows.Select(r => new RoutedScanJobDto
+        {
+            JobId = r.JobID,
+            BulkJobId = 0, // SP doesn't project a BulkJobID column; caller derives from JobID via jobs endpoint
+            JobNumber = r.JobNumber,
+            ClientCode = r.ClientCode,
+            ToAddress = r.ToAddress,
+            Suburb = r.ToSuburb,
+            CompanyName = null,
+            Stage = r.Stage,
+            CurrentLeg = r.CurrentLeg,
+            ItemCount = r.ItemCount,
+            ScannedItems = r.ScannedItems,
+            ExpectedItems = r.ExpectedItems,
+            Legs = r.Legs,
+            HasShort = r.HasShort ?? false,
+            IsDivergent = r.IsDivergent ?? false,
+        }).ToList();
+    }
+
+    /// <summary>Exact column shape of RVW_stpScanJobsRouted output. Kept
+    /// separate from the wire DTO so EF's strict FromSql column-match
+    /// stays happy and the DTO can grow independent client-side aliases.</summary>
+    private class RawRoutedScanRow
+    {
+        public int? ClientID { get; set; }
+        public string? ClientCode { get; set; }
+        public string? JobNumber { get; set; }
+        public int JobID { get; set; }
+        public string? DeliveryDate { get; set; }
+        public string? ReadyTime { get; set; }
+        public string? ToAddress { get; set; }
+        public string? ToSuburb { get; set; }
+        public short? Items { get; set; }
+        public int ScannedItems { get; set; }
+        public int ExpectedItems { get; set; }
+        public string? Totes { get; set; }
+        public string? LinehaulRuns { get; set; }
+        public int? ExceptionCount { get; set; }
+        public int? OpenTaskCount { get; set; }
+        public DateTime? LatestScanTime { get; set; }
+        public string? LatestScanType { get; set; }
+        public string? JobStatus { get; set; }
+        public string Legs { get; set; } = string.Empty;
+        public string? CurrentLeg { get; set; }
+        public int ItemCount { get; set; }
+        public string? Stage { get; set; }
+        public bool? IsDivergent { get; set; }
+        public bool? HasShort { get; set; }
     }
 
     /// <summary>GET /api/runviewer/scans/routed-detail?rootJobId=&runDate=
@@ -150,4 +261,43 @@ public class RouteViewerScanService(
             SpParam.Of("@RootJobID", rootJobId))
             .ToListAsync();
     }
+
+    /// <summary>POST /api/runviewer/scans/remove-missing - purges
+    /// missing-scan LHP / DEL child rows for the given run-date + filter
+    /// slice. Wraps legacy RVW_stpRemoveMissingScanJobs. Admin only per
+    /// legacy behaviour - NP short-circuits (no missing-scan surface on
+    /// the NP-scoped Scan Manager).</summary>
+    public async Task<bool> RemoveMissingScanJobsAsync(RemoveMissingScanRequest request)
+    {
+        var scope = await scopeResolver.ResolveAsync();
+        if (!scope.IsAdmin)
+        {
+            logger.LogWarning("RemoveMissingScanJobs blocked for NP session.");
+            return false;
+        }
+        logger.LogInformation("RVW_stpRemoveMissingScanJobs runDate={RunDate} clientId={ClientId} clientIds={ClientIds} regions={Regions} speeds={Speeds}",
+            request.RunDate, request.ClientId, request.ClientIds, request.RegionIds, request.SpeedIds);
+        await Context.Database.ExecuteSqlRawAsync(
+            @"EXEC dbo.RVW_stpRemoveMissingScanJobs
+                @ClientID = @ClientID,
+                @RunDate = @RunDate,
+                @Regions = @Regions,
+                @ClientIDs = @ClientIDs,
+                @SpeedIDs = @SpeedIDs",
+            SpParam.Of("@ClientID", request.ClientId),
+            SpParam.Of("@RunDate", request.RunDate),
+            SpParam.Of("@Regions", request.RegionIds),
+            SpParam.Of("@ClientIDs", request.ClientIds),
+            SpParam.Of("@SpeedIDs", request.SpeedIds));
+        return true;
+    }
+}
+
+public class RemoveMissingScanRequest
+{
+    public DateTime? RunDate { get; set; }
+    public int? ClientId { get; set; }
+    public string? ClientIds { get; set; }
+    public string? RegionIds { get; set; }
+    public string? SpeedIds { get; set; }
 }
