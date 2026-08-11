@@ -34,17 +34,26 @@ public class RunViewerReportController(
     public Task<IActionResult> GetMissingTransitScan([FromQuery] ReportRequest request) =>
         CsvReport(reportService.GetMissingTransitScanCsvAsync(request), "missing-transit-scan", request.RunDate);
 
-    /// <summary>GET /api/runviewer/reports/woop-run-number - XLSX
-    /// (NZ-only per Section Z, hardcoded ucclGroupID=16867).</summary>
+    /// <summary>GET /api/runviewer/reports/woop-run-number - XLSX.
+    /// Optional `groupId` query param overrides the NZ default (16867).
+    /// Date window comes from `fromDate` + `toDate`.</summary>
     [HttpGet("woop-run-number")]
-    public IActionResult GetWoopRunNumber([FromQuery] ReportRequest request) => NotImplemented(
-        "Woop XLSX report is Section Z-gated (hardcoded NZ ucclGroupID). Awaiting stakeholder decision.");
+    public async Task<IActionResult> GetWoopRunNumber([FromQuery] ReportRequest request)
+    {
+        var bytes = await reportService.GetWoopRunNumberXlsxAsync(request);
+        var from = (request.FromDate ?? DateTime.Today).ToString("yyyyMMdd");
+        var to = (request.ToDate ?? DateTime.Today).ToString("yyyyMMdd");
+        return File(bytes,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"WoopRunNumberReport_{from}_to_{to}.xlsx");
+    }
 
-    /// <summary>GET /api/runviewer/reports/linehaul - CSV (NZ-only per
-    /// Section Z, hardcoded 18 speed IDs).</summary>
+    /// <summary>GET /api/runviewer/reports/linehaul - CSV. Optional
+    /// `linehaulSpeedIds` query param overrides the NZ default (18 ids).
+    /// `excludeClientName` + `excludeFromSuburb` also configurable.</summary>
     [HttpGet("linehaul")]
-    public IActionResult GetLinehaulReport([FromQuery] ReportRequest request) => NotImplemented(
-        "Linehaul CSV is Section Z-gated (hardcoded NZ speed IDs). Awaiting stakeholder decision.");
+    public Task<IActionResult> GetLinehaulReport([FromQuery] ReportRequest request) =>
+        CsvReport(reportService.GetLinehaulCsvAsync(request), "linehaul-report", DateTime.Today);
 
     private async Task<IActionResult> CsvReport(Task<byte[]> generator, string prefix, DateTime? runDate)
     {

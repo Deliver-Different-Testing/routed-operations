@@ -23,6 +23,15 @@ interface Props {
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
   isLoading?: boolean;
+  /** Tier-2 item 15: per-run tint colour keyed by run id, populated
+   *  only when 2+ runs are selected. Row background uses the tint
+   *  instead of the default brand-cyan so operators can match rows
+   *  to same-coloured map pins. */
+  runColorMap?: Record<number, string>;
+  /** Audit item 13: drop handler for the drag-drop courier-onto-run
+   *  flow. Called when the operator drags a row out of the Couriers
+   *  box and drops it on a run row here. */
+  onDropCourier?: (runId: number, courierCode: string) => void;
 }
 
 type SortKey = 'Name' | 'area' | 'Jobs' | 'Status' | 'Velocity' | 'AgentName' | 'CourierName';
@@ -106,7 +115,10 @@ export function RvRunList({
   viewMode,
   onViewModeChange,
   isLoading,
+  runColorMap,
+  onDropCourier,
 }: Props) {
+  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('Name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -190,14 +202,38 @@ export function RvRunList({
               //  falls straight to suburbs when fromCities is empty.)
               const fromValue = run.fromCities || firstSuburb(run.suburbs) || '';
               const toValue = run.toLocationName || run.area || '';
+              const tint = selected ? runColorMap?.[run.id] : undefined;
+              const dropHover = dropTargetId === run.id;
               return (
                 <tr
                   key={run.id}
                   onClick={(e) => onSelect(run.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                   onContextMenu={onContextMenu ? (e) => onContextMenu(e, run.id) : undefined}
+                  onDragOver={onDropCourier ? (e) => {
+                    // Only accept the drag when the payload is a courier row
+                    // (from RvCouriersBox). Prevents unrelated drags (files,
+                    // browser images etc.) from firing our onDrop.
+                    if (e.dataTransfer.types.includes('application/rv-courier-code')) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      if (dropTargetId !== run.id) setDropTargetId(run.id);
+                    }
+                  } : undefined}
+                  onDragLeave={onDropCourier ? () => {
+                    if (dropTargetId === run.id) setDropTargetId(null);
+                  } : undefined}
+                  onDrop={onDropCourier ? (e) => {
+                    e.preventDefault();
+                    setDropTargetId(null);
+                    const code = e.dataTransfer.getData('application/rv-courier-code');
+                    if (code) onDropCourier(run.id, code);
+                  } : undefined}
+                  style={tint ? { backgroundColor: tint + '33' /* 20% alpha */, borderLeft: `4px solid ${tint}` } : undefined}
                   className={`cursor-pointer border-b border-border/50 ${
-                    selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
-                  } ${run.isMissing ? 'border-l-4 border-l-amber-400' : ''}`}
+                    dropHover ? 'bg-emerald-100 outline outline-2 outline-emerald-400' : ''
+                  } ${
+                    !dropHover && (tint ? '' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60')
+                  } ${run.isMissing && !tint ? 'border-l-4 border-l-amber-400' : ''}`}
                   title={run.suburbs ?? undefined}
                 >
                   <td className="px-2 py-1 font-medium">

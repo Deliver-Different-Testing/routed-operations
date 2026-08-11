@@ -7,21 +7,23 @@ import { RvBox } from './RvBox';
 // click narrows the parent's region filter to just that region so the
 // operator can drill into a specific area. Auto-polled with the run
 // list at 25s cadence (parent invalidates this query key).
+//
+// Fields sourced from the `RVW_stpRunOverview` SP (see
+// RouteViewerRunService.GetRunRegionOverviewAsync). Matches legacy
+// `RegionOverview` viewmodel: `class` drives the row's percent-bar
+// colour ("green" / "orange" / "red"), Percent drives its width.
 
 interface OverviewRow {
   regionId: number;
-  // SP emits `region` (not `regionName`) + `total` (not `jobs`) +
-  // `toDo` (not `incomplete`). Kept the alt names as optional so a
-  // future SP rename doesn't silently break the row render.
-  region?: string;
-  regionName?: string;
-  total?: number;
-  jobs?: number;
-  toDo?: number;
-  incomplete?: number;
-  sortScan?: number;
-  runScan?: number;
-  pickedUp?: number;
+  region: string | null;
+  total: number;
+  sortScan: number;
+  runScan: number;
+  pickedUp: number;
+  toDo: number;
+  percent: number;
+  class: string | null;
+  active: boolean;
 }
 
 interface Props {
@@ -53,22 +55,38 @@ export function RvOverviewBox({ runDate, onRegionPick }: Props) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.regionId}
-              className={`border-b border-border/50 ${
-                onRegionPick ? 'cursor-pointer hover:bg-surface-cream/60' : ''
-              }`}
-              onClick={onRegionPick ? () => onRegionPick(r.regionId) : undefined}
-            >
-              <td className="px-2 py-1 font-medium">{r.region ?? r.regionName ?? '-'}</td>
-              <td className="px-2 py-1">{r.total ?? r.jobs ?? 0}</td>
-              <td className="px-2 py-1">{r.sortScan ?? 0}</td>
-              <td className="px-2 py-1">{r.runScan ?? 0}</td>
-              <td className="px-2 py-1">{r.pickedUp ?? 0}</td>
-              <td className="px-2 py-1 text-brand-orange font-medium">{r.toDo ?? r.incomplete ?? 0}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            // Legacy tints the row background with the .class colour
+            // (green / orange / red) at Percent% width, giving each
+            // region a mini progress bar. Match that by absolute-
+            // positioning a coloured strip behind the cells.
+            const barColour = r.class === 'green' ? 'bg-emerald-200'
+              : r.class === 'orange' ? 'bg-amber-200'
+              : r.class === 'red' ? 'bg-red-200'
+              : 'bg-transparent';
+            return (
+              <tr
+                key={r.regionId}
+                className={`relative border-b border-border/50 ${
+                  onRegionPick ? 'cursor-pointer hover:bg-surface-cream/60' : ''
+                }`}
+                onClick={onRegionPick ? () => onRegionPick(r.regionId) : undefined}
+              >
+                <td className="px-2 py-1 font-medium relative">
+                  <div
+                    className={`absolute inset-y-0 left-0 ${barColour} opacity-60 -z-10 pointer-events-none`}
+                    style={{ width: `${Math.max(0, Math.min(100, Number(r.percent) || 0))}%` }}
+                  />
+                  {r.region ?? '-'}
+                </td>
+                <td className="px-2 py-1">{r.total}</td>
+                <td className="px-2 py-1">{r.sortScan}</td>
+                <td className="px-2 py-1">{r.runScan}</td>
+                <td className="px-2 py-1">{r.pickedUp}</td>
+                <td className="px-2 py-1 text-brand-orange font-medium">{r.toDo}</td>
+              </tr>
+            );
+          })}
           {rows.length === 0 && !query.isLoading && (
             <tr>
               <td className="px-3 py-4 text-center text-text-muted" colSpan={6}>

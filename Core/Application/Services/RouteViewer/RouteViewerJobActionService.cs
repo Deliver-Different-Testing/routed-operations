@@ -124,6 +124,21 @@ public class RouteViewerJobActionService(
             SpParam.Of("@Message", message ?? string.Empty));
     }
 
+    /// <summary>POST /api/runviewer/jobs/send-sms-run - send an SMS to
+    /// every driver on the run. Wraps legacy RVW_stpMessageRun. Admin
+    /// only; the SP takes the operator's UserName for audit.</summary>
+    public async Task SendSmsToRunAsync(int runId, string message)
+    {
+        var userName = ResolveUserName();
+        logger.LogInformation("RVW_stpMessageRun runId={RunId} msgLen={MsgLen} user={User}",
+            runId, message?.Length ?? 0, userName);
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpMessageRun @RunID = @RunID, @Message = @Message, @UserName = @UserName",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@Message", message ?? string.Empty),
+            SpParam.Of("@UserName", userName));
+    }
+
     // -----------------------------------------------------------------
     // Bulk mutations (BulkJobID list)
     // -----------------------------------------------------------------

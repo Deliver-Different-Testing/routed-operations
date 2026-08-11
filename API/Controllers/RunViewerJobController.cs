@@ -157,6 +157,76 @@ public class RunViewerJobController(
         }
     }
 
+    /// <summary>POST /api/runviewer/jobs/{jobId}/pod-photo - upload a
+    /// POD photo or delivery signature. Multipart form-data with the
+    /// file field named `file`; optional `isSignature=true` query
+    /// param routes to the DS/ prefix. Returns the S3 key on success.</summary>
+    [HttpPost("{jobId:int}/pod-photo")]
+    [RequestSizeLimit(20 * 1024 * 1024)]
+    public async Task<IActionResult> UploadPodPhoto(
+        int jobId,
+        [FromForm] IFormFile file,
+        [FromQuery] bool isSignature = false,
+        [FromForm] string? description = null,
+        [FromServices] S3PhotoReader s3 = null!)
+    {
+        if (file == null || file.Length == 0)
+            return BadRequest(new { message = "file is required." });
+        try
+        {
+            using var stream = file.OpenReadStream();
+            var key = await s3.UploadPodPhotoAsync(jobId, stream, file.ContentType ?? "image/jpeg", isSignature, description);
+            return Ok(new { response = new { key } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(501, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>DELETE /api/runviewer/jobs/pod-photo?key= - delete a
+    /// POD photo by S3 key.</summary>
+    [HttpDelete("pod-photo")]
+    public async Task<IActionResult> DeletePodPhoto(
+        [FromQuery] string key,
+        [FromServices] S3PhotoReader s3)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return BadRequest(new { message = "key is required." });
+        try
+        {
+            await s3.DeleteObjectAsync(key);
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(501, new { message = ex.Message });
+        }
+    }
+
+    /// <summary>POST /api/runviewer/jobs/{bulkJobId}/send-pod?toEmail=
+    /// - email a POD photo. Proxies to the legacy /Home/SendPOD
+    /// endpoint which owns the SES/SMTP transport.</summary>
+    [HttpPost("{bulkJobId:int}/send-pod")]
+    public async Task<IActionResult> SendPod(
+        int bulkJobId,
+        [FromQuery] string toEmail,
+        [FromServices] RouteViewerLabelService labels)
+    {
+        if (string.IsNullOrWhiteSpace(toEmail))
+            return BadRequest(new { message = "toEmail is required." });
+        try
+        {
+            var ok = await labels.SendPodEmailAsync(bulkJobId, toEmail);
+            if (!ok) return StatusCode(502, new { message = "SendPOD proxy returned non-200; check server logs." });
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(501, new { message = ex.Message });
+        }
+    }
+
     /// <summary>GET /api/runviewer/jobs/linehaul?depotId&name&... -
     /// linehaul jobs for a given depot + run name.</summary>
     [HttpGet("linehaul")]

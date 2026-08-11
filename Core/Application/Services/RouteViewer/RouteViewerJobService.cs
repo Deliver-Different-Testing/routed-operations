@@ -282,7 +282,16 @@ public class RouteViewerJobService(
     public async Task<List<ClientIntelImageDto>> GetClientIntelImagesAsync(string mobile)
     {
         if (string.IsNullOrWhiteSpace(mobile)) return new List<ClientIntelImageDto>();
-        return await s3PhotoReader.GetClientIntelPhotosAsync(mobile);
+        try
+        {
+            return await s3PhotoReader.GetClientIntelPhotosAsync(mobile);
+        }
+        catch (InvalidOperationException)
+        {
+            // S3Bucket env var not configured - return empty rather
+            // than 500. Client Intel box renders "no photos" state.
+            return new List<ClientIntelImageDto>();
+        }
     }
 
     /// <summary>GET /api/runviewer/jobs/pod-photos?bulkJobId= - POD
@@ -311,10 +320,20 @@ public class RouteViewerJobService(
         if (podInfo == null || podInfo.JobId == null || podInfo.PodTime == null)
             return new List<byte[]>();
 
-        return await s3PhotoReader.GetJobDeliveryPhotosAsync(
-            podInfo.JobId.Value,
-            podInfo.PodTime.Value.Year,
-            podInfo.PodTime.Value.Month);
+        try
+        {
+            return await s3PhotoReader.GetJobDeliveryPhotosAsync(
+                podInfo.JobId.Value,
+                podInfo.PodTime.Value.Year,
+                podInfo.PodTime.Value.Month);
+        }
+        catch (InvalidOperationException)
+        {
+            // S3Bucket env var not set on this tenant / this dev box -
+            // fail soft with an empty carousel rather than a 500 that
+            // pollutes the console every time the JobDetail renders.
+            return new List<byte[]>();
+        }
     }
 
     private class PodLookupRow

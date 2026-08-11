@@ -74,6 +74,104 @@ public class S3PhotoReader(
         return results;
     }
 
+    /// <summary>Uploads a POD photo / delivery signature to S3.
+    /// Key convention mirrors legacy BookController.SavePodPhoto:
+    /// `DeliveryPhotos/{yyyy}/{MM}/{jobId}-DeliveryPhoto-{timestamp}`
+    /// (or `-DS-` for a signature). Returns the S3 key so the caller
+    /// can round-trip it to delete/preview.</summary>
+    public async Task<string> UploadPodPhotoAsync(
+        int jobId,
+        Stream content,
+        string contentType,
+        bool isSignature = false,
+        string? description = null)
+    {
+        var now = DateTime.UtcNow;
+        var kind = isSignature ? "DS" : "DeliveryPhoto";
+        var folder = isSignature ? "DeliverySignatures" : "DeliveryPhotos";
+        var timestamp = now.ToString("yyyyMMddHHmmssfff");
+        var key = $"{folder}/{now.Year:0000}/{now.Month:00}/{jobId}-{kind}-{timestamp}";
+
+        var put = new PutObjectRequest
+        {
+            BucketName = Bucket,
+            Key = key,
+            ContentType = contentType,
+            InputStream = content,
+        };
+        if (!string.IsNullOrEmpty(description)) put.Metadata.Add("Description", description);
+        try
+        {
+            await s3Client.PutObjectAsync(put);
+            logger.LogInformation("POD photo uploaded key={Key} jobId={JobId}", key, jobId);
+            return key;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            logger.LogError(ex, "POD photo upload failed jobId={JobId}", jobId);
+            throw;
+        }
+    }
+
+    /// <summary>Uploads a Client Intel photo to S3. Key convention
+    /// mirrors legacy BookController.SaveIntelFile:
+    /// `{mobile}-ClientIntel-{yyyyMMddHHmmss}` with the description
+    /// stored in S3 object metadata under "Description".</summary>
+    public async Task<string> UploadClientIntelPhotoAsync(
+        string mobile,
+        Stream content,
+        string contentType,
+        string? description = null)
+    {
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+        var key = $"{mobile}-ClientIntel-{timestamp}";
+
+        var put = new PutObjectRequest
+        {
+            BucketName = Bucket,
+            Key = key,
+            ContentType = contentType,
+            InputStream = content,
+        };
+        if (!string.IsNullOrEmpty(description)) put.Metadata.Add("Description", description);
+        try
+        {
+            await s3Client.PutObjectAsync(put);
+            logger.LogInformation("Client Intel photo uploaded key={Key} mobile={Mobile}", key, mobile);
+            return key;
+        }
+        catch (AmazonS3Exception ex)
+        {
+            logger.LogError(ex, "Client Intel photo upload failed mobile={Mobile}", mobile);
+            throw;
+        }
+    }
+
+    /// <summary>Deletes an S3 object by full key. Used by the CS
+    /// module's delete-intel and POD-photo remove flows. Silent
+    /// on 404 (already gone).</summary>
+    public async Task DeleteObjectAsync(string key)
+    {
+        try
+        {
+            await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = Bucket,
+                Key = key,
+            });
+            logger.LogInformation("S3 object deleted key={Key}", key);
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // Already gone; not an error.
+        }
+        catch (AmazonS3Exception ex)
+        {
+            logger.LogError(ex, "S3 delete failed key={Key}", key);
+            throw;
+        }
+    }
+
     /// <summary>Fetches all Client Intel photos for a mobile number.
     /// Reads S3 metadata Description key for each.</summary>
     public async Task<List<ClientIntelImageDto>> GetClientIntelPhotosAsync(string mobile)

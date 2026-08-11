@@ -289,4 +289,54 @@ public class RouteViewerAssignmentService(
 
         return result;
     }
+
+    /// <summary>POST /api/runviewer/jobs/preassign-run - pre-assign an
+    /// entire run to a courier (or re-assign from one courier to
+    /// another). Wraps legacy RVW_stpPreAssignRun so the drag-drop
+    /// flow can hit a single SP instead of iterating jobIds through
+    /// the courier-per-job path.</summary>
+    public async Task PreAssignRunAsync(int runId, string? fromCourierCode, string toCourierCode)
+    {
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpPreAssignRun @RunID, @FromCourierCode, @ToCourierCode",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@FromCourierCode",
+                string.IsNullOrEmpty(fromCourierCode) ? (object?)null : fromCourierCode),
+            SpParam.Of("@ToCourierCode", toCourierCode));
+    }
+
+    /// <summary>POST /api/runviewer/jobs/unassign-run - release a whole
+    /// run from a courier. Wraps legacy RVW_stpUnAssignRun.</summary>
+    public async Task UnAssignRunAsync(int runId, string courierCode)
+    {
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpUnAssignRun @RunID, @CourierCode",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@CourierCode", courierCode));
+    }
+
+    /// <summary>POST /api/runviewer/jobs/transfer-run - bulk-transfer
+    /// every job on a run from one courier to another. Wraps legacy
+    /// RVW_stpTransferRun. Different from `PreAssignRunAsync` in that
+    /// the latter is a soft pre-assign while this actually moves the
+    /// jobs off the source courier.</summary>
+    public async Task TransferRunAsync(int runId, string fromCourierCode, string toCourierCode)
+    {
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpTransferRun @RunID, @FromCourierCode, @ToCourierCode",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@FromCourierCode", fromCourierCode ?? string.Empty),
+            SpParam.Of("@ToCourierCode", toCourierCode ?? string.Empty));
+    }
+
+    /// <summary>POST /api/runviewer/jobs/release-run - release a
+    /// courier from a run without unassigning the run (soft release,
+    /// operator's discretion). Wraps legacy RVW_stpReleaseRun.</summary>
+    public async Task ReleaseRunAsync(int runId, string courierCode)
+    {
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpReleaseRun @RunID, @CourierCode",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@CourierCode", courierCode));
+    }
 }

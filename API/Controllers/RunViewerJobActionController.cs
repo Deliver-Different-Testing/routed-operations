@@ -54,6 +54,10 @@ public class RunViewerJobActionController(
     public Task<IActionResult> SendSms([FromBody] SendSmsRequest r) =>
         Run(() => actions.SendSmsAsync(r.JobId, r.Mobile, r.Message));
 
+    [HttpPost("send-sms-run")]
+    public Task<IActionResult> SendSmsRun([FromBody] SendSmsRunRequest r) =>
+        Run(() => actions.SendSmsToRunAsync(r.RunId, r.Message));
+
     [HttpPost("cancel")]
     public Task<IActionResult> Cancel([FromBody] BulkJobActionRequest r) =>
         Run(() => actions.CancelJobsAsync(r.BulkJobIds));

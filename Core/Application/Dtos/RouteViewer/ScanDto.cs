@@ -31,7 +31,10 @@ public class BulkScanJobDto
     public int? BulkParentId { get; set; }
     public string? JobNumber { get; set; }
     public string? ClientCode { get; set; }
-    public DateOnly? DeliveryDate { get; set; }
+    /// <summary>Pre-formatted "dd/MM/yyyy" string from SP CONVERT(103).
+    /// Not DateOnly - the SP emits varchar so we pass through as string
+    /// and let `tenantDateFromSpString` on the frontend swap for US.</summary>
+    public string? DeliveryDate { get; set; }
     public string? ReadyTime { get; set; }
     public string? ToAddress { get; set; }
     public int Items { get; set; }

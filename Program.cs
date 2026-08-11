@@ -360,9 +360,24 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewe
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerEventService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerAssignmentService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerRouteTransferService>();
-builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>();
+// RouteViewerLabelService is an HTTP proxy to the legacy RunViewer
+// label endpoints. Typed HttpClient so per-service timeout stays out
+// of the shared IHttpClientFactory default. Env var
+// RunViewerLabelProxyUrl activates the proxy; missing = 501 error
+// with a specific "set this env var" message.
+builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerReportService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerJobActionService>();
+// NWShip / GoSweetSpot booking transport (Redelivery + One-off + Top-up).
+// Typed HttpClient so the base URL / timeout is per-service isolated;
+// bearer token is read at call time from env NWSHIP_API_TOKEN.
+builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteViewer.NwShipBookingService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 // BulkImportHyper direct-insert service quartet (Phase 1 Task 6).
 // BulkImportServiceV2 is a partial class split across three files
 // (BulkImportServiceV2.cs + BulkImportJobFactory.cs + BulkImportRatingService.cs)

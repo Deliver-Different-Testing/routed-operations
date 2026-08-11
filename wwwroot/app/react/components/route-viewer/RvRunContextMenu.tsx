@@ -55,9 +55,13 @@ export function RvRunContextMenu({ x, y, runId, runDate: _runDate, onClose, onDo
       title: 'Pre-assign run',
       message: 'Lock this run to its currently allocated courier?',
     }))) return;
-    // Endpoint not wired in P1 - stub with a toast so the wire-up is
-    // obvious when the endpoint lands.
-    toast.show('Pre-assign endpoint pending (P4b).');
+    const courierCode = window.prompt('Courier code to pre-assign to:');
+    if (!courierCode) return;
+    try {
+      await routeViewerService.preAssignRun(runId, courierCode.trim());
+      toast.show(`Pre-assigned ${courierCode} to run.`, 'success');
+      onDone();
+    } catch (e) { toast.show(`Pre-assign failed: ${(e as Error).message}`, 'error'); }
   };
 
   const doUnassign = async (kind: 'courier' | 'agent' | 'np') => {
@@ -68,14 +72,54 @@ export function RvRunContextMenu({ x, y, runId, runDate: _runDate, onClose, onDo
       message: `Remove the current ${label} from run #${runId}?`,
       danger: true,
     }))) return;
-    toast.show(`Unassign ${label} endpoint pending (P4b).`);
+    // Only courier unassign has a run-level SP. Agent/NP unassign is
+    // per-job via the bulk /jobs/unassign endpoint; those cases prompt
+    // for the courier code anyway.
+    if (kind === 'courier') {
+      const courierCode = window.prompt('Courier code to unassign from this run:');
+      if (!courierCode) return;
+      try {
+        await routeViewerService.unassignRun(runId, courierCode.trim());
+        toast.show(`Unassigned ${courierCode} from run.`, 'success');
+        onDone();
+      } catch (e) { toast.show(`Unassign failed: ${(e as Error).message}`, 'error'); }
+      return;
+    }
+    toast.show(`${label} unassign is per-job - use the job menu.`);
+  };
+
+  const doRelease = async () => {
+    onClose();
+    const courierCode = window.prompt('Courier code to release from run:');
+    if (!courierCode) return;
+    if (!(await confirm({
+      title: 'Release run',
+      message: `Soft-release ${courierCode} from run #${runId}? The courier is dropped without hard-unassigning.`,
+    }))) return;
+    try {
+      await routeViewerService.releaseRun(runId, courierCode.trim());
+      toast.show(`Released ${courierCode} from run.`, 'success');
+      onDone();
+    } catch (e) { toast.show(`Release failed: ${(e as Error).message}`, 'error'); }
+  };
+
+  const doSendSms = async () => {
+    onClose();
+    const msg = window.prompt('SMS body to send to every driver on this run:');
+    if (!msg) return;
+    try {
+      await routeViewerService.sendSmsToRun(runId, msg);
+      toast.show(`SMS sent to run.`, 'success');
+    } catch (e) { toast.show(`SMS failed: ${(e as Error).message}`, 'error'); }
   };
 
   return (
     <>
       <div
         ref={menuRef}
-        className="fixed z-50 bg-surface-white border border-border rounded-md shadow-lg py-1 text-sm min-w-[14rem]"
+        className={`fixed z-50 bg-surface-white border border-border rounded-md shadow-lg py-1 text-sm min-w-[14rem] ${
+          assignOpen || transferOpen ? 'hidden' : ''
+        }`}
         style={{ left: x, top: y }}
       >
         <MenuItem onClick={() => { setAssignOpen(true); }}>
@@ -84,11 +128,14 @@ export function RvRunContextMenu({ x, y, runId, runDate: _runDate, onClose, onDo
         {!user.isNetworkPartner && (
           <MenuItem onClick={() => setTransferOpen(true)}>Transfer Route</MenuItem>
         )}
-        <MenuItem onClick={() => { onClose(); toast.show('Send SMS pending (P4b).'); }}>
-          Send SMS to run's customers
+        <MenuItem onClick={doSendSms}>
+          Send SMS to run's drivers
         </MenuItem>
         <MenuItem onClick={doPreAssign} disabled={!preAssignable}>
           Pre-assign Run
+        </MenuItem>
+        <MenuItem onClick={doRelease}>
+          Release Run
         </MenuItem>
         <MenuItem onClick={() => { onClose(); toast.show('Validate Route pending (P4b).'); }}>
           Validate Route

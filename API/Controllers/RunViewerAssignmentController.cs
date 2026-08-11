@@ -108,4 +108,55 @@ public class RunViewerAssignmentController(
             return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
         }
     }
+
+    /// <summary>POST /api/runviewer/jobs/preassign-run - drag-drop
+    /// entry point. Pre-assigns a whole run to a courier via
+    /// RVW_stpPreAssignRun. Optional FromCourierCode carries the
+    /// previous assignee so the SP can release + reassign atomically.</summary>
+    [HttpPost("preassign-run")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> PreAssignRun([FromBody] PreAssignRunRequest request)
+    {
+        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode);
+        return Ok(new { response = "ok" });
+    }
+
+    /// <summary>POST /api/runviewer/jobs/transfer-run - bulk-transfer
+    /// every job on a run from one courier to another. Wraps
+    /// RVW_stpTransferRun.</summary>
+    [HttpPost("transfer-run")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> TransferRun([FromBody] TransferRunRequest request)
+    {
+        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        await assignmentService.TransferRunAsync(request.RunId, request.FromCourierCode ?? string.Empty, request.ToCourierCode);
+        return Ok(new { response = "ok" });
+    }
+
+    /// <summary>POST /api/runviewer/jobs/release-run - soft release a
+    /// courier from a run. Wraps RVW_stpReleaseRun.</summary>
+    [HttpPost("release-run")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> ReleaseRun([FromBody] ReleaseRunRequest request)
+    {
+        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
+            return BadRequest(new { message = "RunId + CourierCode required." });
+        await assignmentService.ReleaseRunAsync(request.RunId, request.CourierCode);
+        return Ok(new { response = "ok" });
+    }
+
+    /// <summary>POST /api/runviewer/jobs/unassign-run - hard unassign
+    /// a courier from a run. Wraps RVW_stpUnAssignRun.</summary>
+    [HttpPost("unassign-run")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> UnAssignRun([FromBody] UnAssignRunRequest request)
+    {
+        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
+            return BadRequest(new { message = "RunId + CourierCode required." });
+        await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
+        return Ok(new { response = "ok" });
+    }
 }
