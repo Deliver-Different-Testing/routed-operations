@@ -34,7 +34,7 @@ function buildModules(isUs: boolean): ModuleCard[] {
     {
       to: '/route-viewer',
       title: 'Route Viewer',
-      blurb: 'Operator cockpit that replaces the legacy RunViewer suite. Six sub-modules: Run Viewer (primary dispatch), Scan Manager (Bulk + Routed), Print Manager, Customer Services, Linehaul, Mobile. Backend endpoints under /api/runviewer/* are live and returning real tenant data; frontend UI builds out P3+.',
+      blurb: 'Operator cockpit that replaces the legacy RunViewer suite. Five sub-modules: Run Viewer (primary dispatch), Scan Manager (Bulk + Routed), Print Manager, Customer Services, Linehaul. Backend endpoints under /api/runviewer/* are live and returning real tenant data; frontend UI builds out P3+.',
       cta: 'Open Route Viewer',
     },
     {
