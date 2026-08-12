@@ -32,7 +32,7 @@ export interface BulkPolygon {
   /** Active routes this polygon is attached to (empty if unattached).
    *  Polygon Builder sidebar renders these as clickable links that
    *  jump into the route editor via `?edit=<routeId>` on the
-   *  Scheduled Routes page. */
+   *  Recurring Routes page. */
   attachedRoutes: BulkPolygonAttachedRoute[];
   /** Comma-delimited zip list with leading + trailing commas, derived at
    *  save/reshape time by spatial overlay against ZipPolygon. Null when the

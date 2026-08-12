@@ -2886,13 +2886,13 @@ export default function PolygonBuilder() {
                             {p.attachedRoutes.map((r, i) => (
                               <span key={r.routeId}>
                                 {i > 0 && <span>, </span>}
-                                {/* Click jumps to the Scheduled Routes page
+                                {/* Click jumps to the Recurring Routes page
                                     with the route's edit modal auto-opened
                                     via the ?edit=<id> URL param. */}
                                 <a
-                                  href={`/scheduled-routes?edit=${r.routeId}`}
+                                  href={`/recurring-routes?edit=${r.routeId}`}
                                   className="text-brand-purple hover:underline font-semibold"
-                                  title={`Open route "${r.routeName}" in the Scheduled Routes editor`}
+                                  title={`Open route "${r.routeName}" in the Recurring Routes editor`}
                                 >
                                   {r.routeName || `Route #${r.routeId}`}
                                 </a>
@@ -3019,7 +3019,7 @@ export default function PolygonBuilder() {
           onClose={() => setZipSaveOpen(false)}
           onSaved={() => {
             setZipSaveOpen(false);
-            toast.show('Route saved. Manage it under Scheduled Routes.', 'success');
+            toast.show('Route saved. Manage it under Recurring Routes.', 'success');
             clearAll();
           }}
         />
@@ -3031,7 +3031,7 @@ export default function PolygonBuilder() {
           onClose={() => setPolygonSaveOpen(false)}
           onSaved={() => {
             setPolygonSaveOpen(false);
-            toast.show('Route saved. Manage it under Scheduled Routes.', 'success');
+            toast.show('Route saved. Manage it under Recurring Routes.', 'success');
             setSelectedPolygons(new Set());
           }}
         />

@@ -30,4 +30,17 @@ public class AppSettings
     /// diagnostic placeholder instead of the map.
     /// </summary>
     public string GoogleMapsKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Base URL of the tenant's DespatchWeb (Dispatch software) app
+    /// (`https://despatch.{tenant}.{env}.deliverdifferent.com`), no trailing
+    /// slash. Set per-tenant deployment via env var DespatchWebBaseUrl.
+    /// Surfaced to the SPA in the bootstrap blob so the Recurring Routes page
+    /// can deep-link to DespatchWeb's Recurring Jobs view + so the "Open ↗"
+    /// links inside the Linehaul edit modal's Used-by-Schedules list resolve.
+    /// Empty value hides the "Recurring Jobs" tab + those Open ↗ links.
+    /// Mirrors Configurator's AppSettings.DespatchWebBaseUrl for stack
+    /// consistency.
+    /// </summary>
+    public string DespatchWebBaseUrl { get; set; } = string.Empty;
 }

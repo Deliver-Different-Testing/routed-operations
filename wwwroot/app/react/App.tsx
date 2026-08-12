@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
 import ScheduledRoutes from './pages/ScheduledRoutes';
+import RecurringRoutes from './pages/RecurringRoutes';
 import PolygonBuilder from './pages/PolygonBuilder';
 import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
@@ -31,7 +32,10 @@ export default function App() {
         <Route path="/routes" element={<RoutesPage />} />
         <Route path="/bulk-import" element={<BulkImport />} />
         <Route path="/quoting" element={<Quoting />} />
-        <Route path="/scheduled-routes" element={<ScheduledRoutes />} />
+        {/* Recurring Routes: merged 4-tab Configurator page (2026-08-12).
+             The Routes tab body is delegated to ScheduledRoutes.tsx (kept
+             imported above until that file is folded into RoutesTab.tsx). */}
+        <Route path="/recurring-routes" element={<RecurringRoutes />} />
         <Route path="/polygon-builder" element={<PolygonBuilder />} />
         <Route path="/auto-assign-log" element={<AutoAssignLog />} />
         {/* Route Viewer module (2026-08-07). 6 sub-pages under /route-viewer/*.

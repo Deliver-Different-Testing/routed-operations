@@ -35,8 +35,19 @@ public record RouteDto(
     List<RouteZipcodeDto> Zipcodes,
     List<RouteBulkPolygonDto> BulkPolygons,
     int RosterEntryCount,
+    int BookingCount,
+    int MappedStopsCount,
     DateTime CreatedAt,
     DateTime? UpdatedAt);
+
+/// <summary>One live recurring booking bound to a route. Populated by the
+/// read-only "Bookings on this route" list in the Route editor modal.</summary>
+public record RouteBookingDto(
+    int Id,
+    string ClientName,
+    string PickupWindow,
+    string Days,
+    DateTime? NextDue);
 
 /// <summary>Create or replace-in-full payload. Empty BulkPolygonIds clears
 /// all attached bulk polygons; omit the field entirely to keep them untouched.

@@ -24,7 +24,7 @@ const PAGE_NAMES: Array<[string, string]> = [
   ['/bulk-import', 'Bulk Import'],
   ['/routes', 'Routes'],
   ['/quoting', 'Quoting'],
-  ['/scheduled-routes', 'Scheduled Routes'],
+  ['/recurring-routes', 'Recurring Routes'],
   ['/polygon-builder', 'Polygon Builder'],
   ['/auto-assign-log', 'Auto-Assign Log'],
   ['/route-viewer/scans', 'Scan Manager'],

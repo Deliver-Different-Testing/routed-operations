@@ -24,6 +24,10 @@ export interface AppUser {
   clientId: number | null;
   clientCount: number | null;
   clientString: string | null;
+  // Recurring Routes port (2026-08-12). Powers the Recurring Jobs external
+  // link on the Recurring Routes page + the "Open ↗" deep-link inside the
+  // Linehaul edit modal's Used-by-Schedules list. Null hides both.
+  despatchWebBaseUrl?: string | null;
 }
 
 declare global {

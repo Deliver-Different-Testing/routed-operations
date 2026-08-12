@@ -67,6 +67,31 @@ public class RecurringRouteService(
             .Distinct().ToList();
         var scheduleMap = await BuildScheduleLookupAsync(scheduleIds);
 
+        // Booking count per route (live recurring bookings) — the number
+        // shown on the "Bookings on this route (N)" section header in the
+        // edit modal. Filter matches the Configurator's GetBookingsAsync so
+        // the count + the drill-down agree.
+        var routeIds = rows.Select(r => r.RouteId).ToList();
+        var bookingCounts = routeIds.Count == 0
+            ? new Dictionary<int, int>()
+            : await Context.TucJobBookings.AsNoTracking()
+                .Where(b => b.RouteId != null && routeIds.Contains(b.RouteId.Value)
+                            && b.UcbkActive == true && b.UcbkDone != true)
+                .GroupBy(b => b.RouteId!.Value)
+                .Select(g => new { RouteId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.RouteId, x => x.Count);
+
+        // Live Mapped Stops per route — materialised jobs currently bound
+        // to the route (same not-void rule the Linehaul tab uses). Powers
+        // the "Mapped Stops" column count + drill-down cell.
+        var mappedStopsCounts = routeIds.Count == 0
+            ? new Dictionary<int, int>()
+            : await Context.TblBulkJobs.AsNoTracking()
+                .Where(j => j.RouteId != null && routeIds.Contains(j.RouteId.Value) && !j.Void)
+                .GroupBy(j => j.RouteId!.Value)
+                .Select(g => new { RouteId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.RouteId, x => x.Count);
+
         return rows.Select(r =>
         {
             var (targetId, targetName) = ResolveTarget(r, couriers, agents);
@@ -101,9 +126,63 @@ public class RecurringRouteService(
                         p.CentroidLatitude, p.CentroidLongitude))
                     .ToList(),
                 r.DispatchRouteRosters.Count(rr => rr.IsActive),
+                bookingCounts.GetValueOrDefault(r.RouteId),
+                mappedStopsCounts.GetValueOrDefault(r.RouteId),
                 r.CreatedAt,
                 r.UpdatedAt);
         }).ToList();
+    }
+
+    /// <summary>Live jobs materialised on this route (Mapped Stops drill-down
+    /// list). Same not-void rule as the Linehaul equivalent so the count
+    /// + drill-down agree. Reuses the existing BulkJobListItemDto shape so
+    /// the frontend can share the drill-down component with Linehaul.</summary>
+    public async Task<List<Dtos.RecurringLinehaul.BulkJobListItemDto>> GetMappedStopsAsync(int routeId)
+    {
+        var q =
+            from j in Context.TblBulkJobs.AsNoTracking()
+            where j.RouteId == routeId && !j.Void
+            join t in Context.TucJobTypes.AsNoTracking() on j.Speed equals t.UcjtId into ts
+            from t in ts.DefaultIfEmpty()
+            join g in Context.TucJobTypeGroupings.AsNoTracking() on t.GroupingId equals g.GroupingId into gs
+            from g in gs.DefaultIfEmpty()
+            join s in Context.Set<Domain.Despatch.TucJobStatus>().AsNoTracking() on j.JobStatus equals s.UcjsId into ss
+            from s in ss.DefaultIfEmpty()
+            orderby j.BookDate descending, j.BookTime descending
+            select new Dtos.RecurringLinehaul.BulkJobListItemDto
+            {
+                Id = j.BulkJobId,
+                JobNumber = j.JobNumber ?? string.Empty,
+                Pickup = j.FromAddress,
+                Drop = j.ToAddress,
+                SpeedId = j.Speed,
+                SpeedShortName = t == null ? string.Empty : (t.ShortName ?? string.Empty),
+                SpeedName = t == null ? string.Empty : (t.UcjtName ?? string.Empty),
+                SpeedGroupingId = t == null ? null : (int?)t.GroupingId,
+                SpeedGroupingName = g == null ? null : g.GroupingName,
+                BookDate = j.BookDate.ToString("yyyy-MM-dd"),
+                BookTime = j.BookTime.ToString("HH:mm"),
+                StatusName = s == null ? null : s.UcjsName
+            };
+        return await q.ToListAsync();
+    }
+
+    /// <summary>Live recurring bookings bound to this route (read-only).
+    /// Powers the collapsible "Bookings on this route" section in the Route
+    /// editor modal. Mirrors Configurator's TenantRouteService.GetBookingsAsync.</summary>
+    public async Task<List<RouteBookingDto>> GetBookingsAsync(int routeId)
+    {
+        return await Context.TucJobBookings.AsNoTracking()
+            .Where(b => b.RouteId == routeId && b.UcbkActive == true && b.UcbkDone != true)
+            .OrderBy(b => b.UcbkNextDue ?? b.UcbkFirstDue ?? b.UcbkTime)
+            .Take(200)
+            .Select(b => new RouteBookingDto(
+                b.UcbkId,
+                b.UcbkClient != null ? (b.UcbkClient.UcclName ?? string.Empty) : string.Empty,
+                string.Empty,   // pickup window: no start-of-window column on tucJobBooking; fill from Days/UcbkTime downstream if needed
+                b.UcbkDays ?? string.Empty,
+                b.UcbkNextDue ?? b.UcbkFirstDue))
+            .ToListAsync();
     }
 
     /// <summary>Groups tblBulkRunSchedule rows (one per DoW) into a

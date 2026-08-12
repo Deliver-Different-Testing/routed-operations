@@ -166,8 +166,21 @@ var appSettings = new AppSettings
     RouteSavvyAppId = builder.Configuration["RouteSavyID"] ?? string.Empty,
     HereMapsApiKey = builder.Configuration["HeremapApiKey"] ?? string.Empty,
     GoogleMapsKey = builder.Configuration["GoogleMapsKey"] ?? string.Empty,
+    // Mirrors Configurator's Program.cs pattern - trim trailing slash so the
+    // SPA can safely concatenate paths like `/#!/recurringJobs` without
+    // getting a "//".
+    DespatchWebBaseUrl = (builder.Configuration["DespatchWebBaseUrl"] ?? string.Empty).TrimEnd('/'),
 };
 builder.Services.AddSingleton(appSettings);
+
+if (string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl))
+{
+    Log.Warning("DespatchWebBaseUrl not set - the Recurring Jobs tab (deep-link to DespatchWeb) and the Used-by-Schedules 'Open' links will be hidden.");
+}
+else
+{
+    Log.Information("DespatchWebBaseUrl: {Url}", appSettings.DespatchWebBaseUrl);
+}
 
 builder.Services.AddSingleton<IConnectionStringManager, ConnectionStringManager>();
 
@@ -318,6 +331,8 @@ builder.Services.AddHttpClient<HereGeocodeService>(client =>
 // Stage 2 - sibling modules.
 builder.Services.AddScoped<QuoteService>();
 builder.Services.AddScoped<RecurringRouteService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RecurringLinehaul.RecurringLinehaulService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RecurringLinehaul.RecurringLinehaulJobsService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygon.BulkPolygonService>();
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
