@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RosterPickerModal } from '@/components/tenant/RosterPickerModal';
 import { TargetTypeChip } from '@/components/tenant/TargetTypeChip';
 import { AssignTargetValue } from '@/components/common/AssignTargetPicker';
-import { recurringRouteService, AssignableTargets } from '@/services/recurringRouteService';
 import {
   linehaulService,
   extractLinehaulError,
   LinehaulRosterGrid,
   LinehaulRosterRow,
 } from '@/services/linehaulService';
+import { useSharedTargets } from './SharedTargetsContext';
 
 // Linehaul Roster tab (Recurring Routes spec 4 + Fixes 6). Run x Day target grid
 // backed by Dispatch_LinehaulRunRoster. Each cell can be a Courier, Agent, or
@@ -27,7 +27,8 @@ const DAYS: { dow: number; label: string }[] = [
 
 export function LinehaulRosterTab() {
   const [grid, setGrid] = useState<LinehaulRosterGrid | null>(null);
-  const [targets, setTargets] = useState<AssignableTargets | null>(null);
+  // Shared with the other tabs - one fetch per page load.
+  const { targets } = useSharedTargets();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ runId: number; dow: number } | null>(null);
@@ -40,12 +41,7 @@ export function LinehaulRosterTab() {
     setLoading(true);
     setError(null);
     try {
-      const [g, t] = await Promise.all([
-        linehaulService.rosterGrid(),
-        recurringRouteService.getAssignableTargets().then((x) => x.response),
-      ]);
-      setGrid(g);
-      setTargets(t);
+      setGrid(await linehaulService.rosterGrid());
     } catch (e: unknown) {
       setError(extractLinehaulError(e, 'Failed to load roster'));
     } finally {

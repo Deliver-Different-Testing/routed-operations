@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import ScheduledRoutes from './ScheduledRoutes';
 import { LinehaulTab } from './recurring-routes/LinehaulTab';
 import { RouteRosterTab } from './recurring-routes/RouteRosterTab';
 import { LinehaulRosterTab } from './recurring-routes/LinehaulRosterTab';
+import { SharedTargetsProvider } from './recurring-routes/SharedTargetsContext';
 
 // Recurring Routes page. Merges the Configurator's four tabs (Routes,
 // Linehaul, Route Roster, Linehaul Roster) plus the Recurring Jobs external
@@ -29,9 +30,20 @@ export default function RecurringRoutes() {
     ? `${user.despatchWebBaseUrl}/#!/recurringJobs`
     : null;
   const [activeTab, setActiveTab] = useState<Tab>('routes');
+  // Once a tab has been visited, keep it mounted (rendered but hidden)
+  // so switching back is instant instead of re-fetching from scratch.
+  // Initial page load only mounts the default tab (Routes).
+  const [mounted, setMounted] = useState<Set<Tab>>(() => new Set(['routes']));
+  const activate = (t: Tab) => {
+    setActiveTab(t);
+    setMounted((prev) => (prev.has(t) ? prev : new Set(prev).add(t)));
+  };
+  const tabHidden = (t: Tab) => (activeTab === t ? '' : 'hidden');
+  const shouldRender = useMemo(() => mounted, [mounted]);
 
   return (
-    <div className="space-y-3 p-4">
+    <SharedTargetsProvider>
+    <div className="h-full overflow-y-auto p-4 space-y-3">
       <div>
         <h1 className="text-lg font-semibold text-[#0d0c2c] leading-tight">Recurring Routes</h1>
         <p className="text-text-secondary text-xs mt-0.5">
@@ -44,7 +56,7 @@ export default function RecurringRoutes() {
         {TABS.map(({ key, label }) => (
           <button
             key={key}
-            onClick={() => setActiveTab(key)}
+            onClick={() => activate(key)}
             className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
               activeTab === key
                 ? 'bg-[#0d0c2c] text-white shadow-sm'
@@ -71,10 +83,23 @@ export default function RecurringRoutes() {
         )}
       </div>
 
-      {activeTab === 'routes' && <ScheduledRoutes />}
-      {activeTab === 'linehaul' && <LinehaulTab />}
-      {activeTab === 'roster' && <RouteRosterTab />}
-      {activeTab === 'linehaul-roster' && <LinehaulRosterTab />}
+      {/* Every visited tab stays mounted (CSS hidden when inactive) so
+          switching back doesn't re-fetch. Un-visited tabs stay un-mounted
+          on first page load so the initial paint isn't blocked on
+          four parallel fetches. */}
+      {shouldRender.has('routes') && (
+        <div className={tabHidden('routes')}><ScheduledRoutes /></div>
+      )}
+      {shouldRender.has('linehaul') && (
+        <div className={tabHidden('linehaul')}><LinehaulTab /></div>
+      )}
+      {shouldRender.has('roster') && (
+        <div className={tabHidden('roster')}><RouteRosterTab /></div>
+      )}
+      {shouldRender.has('linehaul-roster') && (
+        <div className={tabHidden('linehaul-roster')}><LinehaulRosterTab /></div>
+      )}
     </div>
+    </SharedTargetsProvider>
   );
 }
