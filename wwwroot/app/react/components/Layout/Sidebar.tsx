@@ -12,8 +12,8 @@ interface NavItem {
 const items: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/bulk-import', label: 'Bulk Import' },
-  { to: '/routes', label: 'Routes' },
-  // Route Viewer sits directly below Routes since the two cockpits are
+  { to: '/routes', label: 'Route Builder' },
+  // Route Viewer sits directly below Route Builder since the two cockpits are
   // the operator's most-used surfaces and share the same run+job data.
   {
     to: '/route-viewer',
@@ -24,7 +24,6 @@ const items: NavItem[] = [
       { to: '/route-viewer/print',     label: 'Print Manager' },
       { to: '/route-viewer/cs',        label: 'Customer Services' },
       { to: '/route-viewer/linehaul',  label: 'Linehaul' },
-      { to: '/route-viewer/mobile',    label: 'Mobile' },
     ],
   },
   { to: '/quoting', label: 'Quoting' },

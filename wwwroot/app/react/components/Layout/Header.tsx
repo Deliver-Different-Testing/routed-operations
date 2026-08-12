@@ -22,7 +22,7 @@ import { routeViewerService } from '../../services/routeViewerService';
 const PAGE_NAMES: Array<[string, string]> = [
   ['/dashboard', 'Dashboard'],
   ['/bulk-import', 'Bulk Import'],
-  ['/routes', 'Routes'],
+  ['/routes', 'Route Builder'],
   ['/quoting', 'Quoting'],
   ['/recurring-routes', 'Recurring Routes'],
   ['/polygon-builder', 'Polygon Builder'],
@@ -31,7 +31,6 @@ const PAGE_NAMES: Array<[string, string]> = [
   ['/route-viewer/print', 'Print Manager'],
   ['/route-viewer/cs', 'Customer Services'],
   ['/route-viewer/linehaul', 'Linehaul'],
-  ['/route-viewer/mobile', 'Mobile'],
   ['/route-viewer', 'Route Viewer'], // must come AFTER the /route-viewer/* children
 ];
 
