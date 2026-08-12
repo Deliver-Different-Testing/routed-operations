@@ -39,58 +39,65 @@ public class RecurringRouteService(
             .ThenBy(r => r.Name)
             .ToListAsync();
 
-        // Resolve default-target names + schedule names in follow-up queries
-        // rather than pushing nav-property projections into the initial SELECT
-        // (keeps the SQL shape simple + avoids multi-tenant courier schema noise).
+        // Resolve default-target names + schedule names + counts in parallel
+        // via multiple DbContexts. Sequential the 5 enrichment queries were
+        // 5x the round-trip latency of the slowest one; parallel we pay
+        // roughly the slowest single query. Each Task uses its own context
+        // because a single DbContext isn't thread-safe.
         var courierIds = rows.Where(r => r.DefaultTargetType == 1 && r.DefaultCourierId.HasValue)
             .Select(r => r.DefaultCourierId!.Value).Distinct().ToList();
-        var couriers = courierIds.Count == 0
-            ? new Dictionary<int, string>()
-            : await Context.TucCouriers.AsNoTracking()
-                .Where(c => courierIds.Contains(c.UccrId))
-                .ToDictionaryAsync(c => c.UccrId, c => $"{c.Code} {c.UccrName}".Trim());
-
         var agentIds = rows.Where(r => r.DefaultTargetType is 2 or 3 && r.DefaultAgentId.HasValue)
             .Select(r => r.DefaultAgentId!.Value).Distinct().ToList();
-        var agents = agentIds.Count == 0
-            ? new Dictionary<int, string>()
-            : await Context.TucAgents.AsNoTracking()
-                .Where(a => agentIds.Contains(a.UcagId))
-                .ToDictionaryAsync(a => a.UcagId, a => a.UcagName ?? string.Empty);
-
-        // Fetch every day-of-week row for every bound schedule id (schedules
-        // are 1-row-per-DoW in tblBulkRunSchedule; the id on the junction is
-        // the representative id, so we look up siblings by representative
-        // fields to build the days list per schedule group).
         var scheduleIds = rows
             .SelectMany(r => r.Schedules.Select(s => s.BulkRunScheduleId))
             .Distinct().ToList();
-        var scheduleMap = await BuildScheduleLookupAsync(scheduleIds);
-
-        // Booking count per route (live recurring bookings) — the number
-        // shown on the "Bookings on this route (N)" section header in the
-        // edit modal. Filter matches the Configurator's GetBookingsAsync so
-        // the count + the drill-down agree.
         var routeIds = rows.Select(r => r.RouteId).ToList();
-        var bookingCounts = routeIds.Count == 0
-            ? new Dictionary<int, int>()
-            : await Context.TucJobBookings.AsNoTracking()
+
+        var couriersTask = Task.Run(async () =>
+        {
+            if (courierIds.Count == 0) return new Dictionary<int, string>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucCouriers.AsNoTracking()
+                .Where(c => courierIds.Contains(c.UccrId))
+                .ToDictionaryAsync(c => c.UccrId, c => $"{c.Code} {c.UccrName}".Trim());
+        });
+        var agentsTask = Task.Run(async () =>
+        {
+            if (agentIds.Count == 0) return new Dictionary<int, string>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucAgents.AsNoTracking()
+                .Where(a => agentIds.Contains(a.UcagId))
+                .ToDictionaryAsync(a => a.UcagId, a => a.UcagName ?? string.Empty);
+        });
+        var scheduleMapTask = BuildScheduleLookupAsync(scheduleIds);
+        var bookingCountsTask = Task.Run(async () =>
+        {
+            if (routeIds.Count == 0) return new Dictionary<int, int>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucJobBookings.AsNoTracking()
                 .Where(b => b.RouteId != null && routeIds.Contains(b.RouteId.Value)
                             && b.UcbkActive == true && b.UcbkDone != true)
                 .GroupBy(b => b.RouteId!.Value)
                 .Select(g => new { RouteId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
-
-        // Live Mapped Stops per route — materialised jobs currently bound
-        // to the route (same not-void rule the Linehaul tab uses). Powers
-        // the "Mapped Stops" column count + drill-down cell.
-        var mappedStopsCounts = routeIds.Count == 0
-            ? new Dictionary<int, int>()
-            : await Context.TblBulkJobs.AsNoTracking()
+        });
+        var mappedStopsTask = Task.Run(async () =>
+        {
+            if (routeIds.Count == 0) return new Dictionary<int, int>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkJobs.AsNoTracking()
                 .Where(j => j.RouteId != null && routeIds.Contains(j.RouteId.Value) && !j.Void)
                 .GroupBy(j => j.RouteId!.Value)
                 .Select(g => new { RouteId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
+        });
+
+        await Task.WhenAll(couriersTask, agentsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask);
+        var couriers = couriersTask.Result;
+        var agents = agentsTask.Result;
+        var scheduleMap = scheduleMapTask.Result;
+        var bookingCounts = bookingCountsTask.Result;
+        var mappedStopsCounts = mappedStopsTask.Result;
 
         return rows.Select(r =>
         {

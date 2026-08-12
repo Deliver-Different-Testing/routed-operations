@@ -6,9 +6,10 @@ import { AssignTargetPicker, AssignTargetValue } from '@/components/common/Assig
 import { ModalCloseButton } from '@/components/common/ModalCloseButton';
 import { TimeField } from '@/components/common/TimeField';
 import { MappedStopsDrilldown } from './MappedStopsDrilldown';
-import { recurringRouteService, AssignableTargets } from '@/services/recurringRouteService';
+import { AssignableTargets } from '@/services/recurringRouteService';
 import { useAuth } from '@/context/AuthContext';
 import { rateScheduleService, ReportingSpeed } from '@/services/rateScheduleService';
+import { useSharedTargets } from './SharedTargetsContext';
 import {
   linehaulService,
   extractLinehaulError,
@@ -27,7 +28,9 @@ import {
 export function LinehaulTab() {
   const [runs, setRuns] = useState<TenantLinehaulRun[]>([]);
   const [lookups, setLookups] = useState<LinehaulLookups | null>(null);
-  const [targets, setTargets] = useState<AssignableTargets | null>(null);
+  // Shared across tabs - avoids 3 duplicate assignable-target fetches on
+  // first Route Roster / Linehaul / Linehaul Roster mount.
+  const { targets } = useSharedTargets();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<TenantLinehaulRun | 'new' | null>(null);
@@ -45,14 +48,12 @@ export function LinehaulTab() {
     setLoading(true);
     setError(null);
     try {
-      const [r, l, t] = await Promise.all([
+      const [r, l] = await Promise.all([
         linehaulService.list(),
         linehaulService.lookups(),
-        recurringRouteService.getAssignableTargets().then((x) => x.response),
       ]);
       setRuns(r);
       setLookups(l);
-      setTargets(t);
     } catch (e: unknown) {
       setError(extractLinehaulError(e, 'Failed to load linehaul runs'));
     } finally {
@@ -62,10 +63,23 @@ export function LinehaulTab() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Optimistic in-place update: patch the row (or prepend for new / copy)
+  // rather than re-fetching the whole list. Cuts perceived latency after a
+  // mutation from ~1s (list + enrichment round trips) to instant.
+  const applyUpdated = (updated: TenantLinehaulRun) => {
+    setRuns((prev) => {
+      const idx = prev.findIndex((r) => r.id === updated.id);
+      if (idx === -1) return [updated, ...prev];   // new run
+      const next = prev.slice();
+      next[idx] = updated;
+      return next;
+    });
+  };
+
   const handleCopy = async (run: TenantLinehaulRun) => {
     try {
       const copy = await linehaulService.copy(run.id);
-      await refresh();
+      applyUpdated(copy);
       setEditing(copy);
     } catch (e: unknown) {
       setError(extractLinehaulError(e, 'Copy failed'));
@@ -79,7 +93,7 @@ export function LinehaulTab() {
     if (!confirm(`Delete linehaul run "${run.runName}"? This cannot be undone.`)) return;
     try {
       await linehaulService.remove(run.id);
-      await refresh();
+      setRuns((prev) => prev.filter((r) => r.id !== run.id));
     } catch (e: unknown) {
       setError(extractLinehaulError(e, 'Delete failed'));
     }
@@ -215,7 +229,14 @@ export function LinehaulTab() {
           lookups={lookups}
           targets={targets}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); refresh(); }}
+          onSaved={(saved) => {
+            setEditing(null);
+            if ('deletedId' in saved) {
+              setRuns((prev) => prev.filter((r) => r.id !== saved.deletedId));
+            } else {
+              applyUpdated(saved);
+            }
+          }}
         />
       )}
 
@@ -310,7 +331,7 @@ function LinehaulEditModal({
   lookups: LinehaulLookups;
   targets: AssignableTargets | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (saved: TenantLinehaulRun | { deletedId: number }) => void;
 }) {
   const [runName, setRunName] = useState(run?.runName ?? '');
   const [fromDepotId, setFromDepotId] = useState<number>(run?.fromDepotId ?? 0);
@@ -412,12 +433,10 @@ function LinehaulEditModal({
         mode,
         masterBookingId,
       };
-      if (run) {
-        await linehaulService.update(run.id, payload);
-      } else {
-        await linehaulService.create(payload);
-      }
-      onSaved();
+      const saved = run
+        ? await linehaulService.update(run.id, payload)
+        : await linehaulService.create(payload);
+      onSaved(saved);
     } catch (e: unknown) {
       setErr(extractLinehaulError(e, 'Save failed'));
     } finally {
@@ -436,7 +455,7 @@ function LinehaulEditModal({
     setErr(null);
     try {
       await linehaulService.remove(run.id);
-      onSaved();
+      onSaved({ deletedId: run.id });
     } catch (e: unknown) {
       setErr(extractLinehaulError(e, 'Delete failed'));
     } finally {

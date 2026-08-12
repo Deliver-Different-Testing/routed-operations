@@ -436,40 +436,69 @@ public class RecurringLinehaulService(
 
         var runIds = runs.Select(r => r.Id).ToList();
         var depotIds = runs.SelectMany(r => new[] { r.FromDepotId, r.ToDepotId }).Distinct().ToList();
+        var courierIds = runs.Where(r => r.CourierId > 0).Select(r => r.CourierId!.Value).Distinct().ToList();
+        var agentIds = runs.Where(r => r.DefaultAgentId.HasValue).Select(r => r.DefaultAgentId!.Value).Distinct().ToList();
 
-        var depotNames = await Context.TblBulkRegions.AsNoTracking()
-            .Where(d => depotIds.Contains(d.BulkRegionId))
-            .ToDictionaryAsync(d => d.BulkRegionId, d => d.Name ?? string.Empty);
-
-        var courierNames = await ResolveCourierNamesAsync(
-            runs.Where(r => r.CourierId > 0).Select(r => r.CourierId!.Value));
-        var agents = await ResolveAgentsAsync(
-            runs.Where(r => r.DefaultAgentId.HasValue).Select(r => r.DefaultAgentId!.Value));
-
-        var stopCounts = await Context.TblBulkJobs.AsNoTracking()
-            .Where(j => j.LinehaulRunId != null && runIds.Contains(j.LinehaulRunId.Value) && !j.Void)
-            .GroupBy(j => j.LinehaulRunId!.Value)
-            .Select(g => new { RunId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.RunId, x => x.Count);
-
-        var bindingRows = await Context.TblBulkScheduleLinehauls.AsNoTracking()
-            .Where(s => s.LinehaulRunId != null && runIds.Contains(s.LinehaulRunId.Value) && s.Active == true)
-            .Select(s => new
-            {
-                RunId = s.LinehaulRunId!.Value,
-                SchedName = s.BulkRunSchedule != null ? s.BulkRunSchedule.Name : null,
-                ClientId = s.BulkRunSchedule != null ? s.BulkRunSchedule.ClientId : null,
-                BindingName = s.Name
-            })
-            .ToListAsync();
-        var activeBindingCounts = bindingRows
-            .GroupBy(r => r.RunId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Select(r => r.SchedName != null ? $"s|{r.SchedName}|{r.ClientId}" : $"b|{r.BindingName}")
-                    .Distinct().Count());
-
-        var masters = (await Context.TucJobBookings.AsNoTracking()
+        // Parallelize 6 independent enrichment reads. Each task uses its own
+        // DbContext because a single DbContext isn't thread-safe. Cuts the
+        // 6 sequential round trips (~50ms each on a busy network) down to
+        // roughly the slowest single query. Biggest win when N runs is large.
+        var depotTask = Task.Run(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkRegions.AsNoTracking()
+                .Where(d => depotIds.Contains(d.BulkRegionId))
+                .ToDictionaryAsync(d => d.BulkRegionId, d => d.Name ?? string.Empty);
+        });
+        var courierTask = Task.Run<Dictionary<int, (string Name, string Code)>>(async () =>
+        {
+            if (courierIds.Count == 0) return new Dictionary<int, (string Name, string Code)>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return (await ctx.TucCouriers.AsNoTracking()
+                    .Where(c => courierIds.Contains(c.UccrId))
+                    .Select(c => new { c.UccrId, c.UccrName, c.UccrSurname, c.Code })
+                    .ToListAsync())
+                .ToDictionary(c => c.UccrId,
+                    c => (Name: (c.UccrName + " " + c.UccrSurname).Trim(), Code: c.Code ?? string.Empty));
+        });
+        var agentTask = Task.Run<Dictionary<int, (string Name, string Hint)>>(async () =>
+        {
+            if (agentIds.Count == 0) return new Dictionary<int, (string Name, string Hint)>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return (await ctx.TucAgents.AsNoTracking()
+                    .Where(a => agentIds.Contains(a.UcagId))
+                    .Select(a => new { a.UcagId, a.UcagName, a.Association })
+                    .ToListAsync())
+                .ToDictionary(a => a.UcagId,
+                    a => (Name: a.UcagName ?? string.Empty, Hint: a.Association ?? string.Empty));
+        });
+        var stopCountsTask = Task.Run(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkJobs.AsNoTracking()
+                .Where(j => j.LinehaulRunId != null && runIds.Contains(j.LinehaulRunId.Value) && !j.Void)
+                .GroupBy(j => j.LinehaulRunId!.Value)
+                .Select(g => new { RunId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.RunId, x => x.Count);
+        });
+        var bindingRowsTask = Task.Run(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkScheduleLinehauls.AsNoTracking()
+                .Where(s => s.LinehaulRunId != null && runIds.Contains(s.LinehaulRunId.Value) && s.Active == true)
+                .Select(s => new
+                {
+                    RunId = s.LinehaulRunId!.Value,
+                    SchedName = s.BulkRunSchedule != null ? s.BulkRunSchedule.Name : null,
+                    ClientId = s.BulkRunSchedule != null ? s.BulkRunSchedule.ClientId : null,
+                    BindingName = s.Name
+                })
+                .ToListAsync();
+        });
+        var mastersTask = Task.Run(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucJobBookings.AsNoTracking()
                 .Where(b => b.LinehaulRunId != null && runIds.Contains(b.LinehaulRunId.Value) && b.IsLinehaulMaster)
                 .Select(b => new
                 {
@@ -479,7 +508,22 @@ public class RecurringLinehaulService(
                     b.CustomJobName,
                     ClientName = b.UcbkClient != null ? b.UcbkClient.UcclName : null
                 })
-                .ToListAsync())
+                .ToListAsync();
+        });
+
+        await Task.WhenAll(depotTask, courierTask, agentTask, stopCountsTask, bindingRowsTask, mastersTask);
+        var depotNames = depotTask.Result;
+        var courierNames = courierTask.Result;
+        var agents = agentTask.Result;
+        var stopCounts = stopCountsTask.Result;
+        var bindingRows = bindingRowsTask.Result;
+        var activeBindingCounts = bindingRows
+            .GroupBy(r => r.RunId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(r => r.SchedName != null ? $"s|{r.SchedName}|{r.ClientId}" : $"b|{r.BindingName}")
+                    .Distinct().Count());
+        var masters = mastersTask.Result
             .GroupBy(m => m.RunId)
             .ToDictionary(g => g.Key, g => g.First());
 

@@ -9,6 +9,7 @@ import {
   type RecurringRoute,
   type RouteRosterEntry,
 } from '@/services/recurringRouteService';
+import { useSharedTargets } from './SharedTargetsContext';
 
 // Route Roster tab (Recurring Routes spec 4). Per-route weekly DOW pattern +
 // date overrides + 14-day preview. Ported from Configurator's inline RosterTab.
@@ -25,20 +26,17 @@ function typeCode(t: AssignTargetType): number {
 
 export function RouteRosterTab() {
   const [routes, setRoutes] = useState<RecurringRoute[]>([]);
-  const [targets, setTargets] = useState<AssignableTargets | null>(null);
+  // Shared with the other tabs - one fetch per page load.
+  const { targets } = useSharedTargets();
   const [bootLoading, setBootLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const [r, t] = await Promise.all([
-          recurringRouteService.list(),
-          recurringRouteService.getAssignableTargets(),
-        ]);
+        const r = await recurringRouteService.list();
         if (!alive) return;
         setRoutes(r.response ?? []);
-        setTargets(t.response ?? null);
       } finally {
         if (alive) setBootLoading(false);
       }
