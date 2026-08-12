@@ -17,7 +17,11 @@ public partial class TblbulkLinehaulRun
 
     public TimeOnly? StartTime { get; set; }
 
-    public int CourierId { get; set; }
+    // Nullable to match the on-disk schema (verified 2026-08-12 via MCP on both
+    // DFRNT_SEED_CR and Despatch_Urgent_Staging: CourierID is IS_NULLABLE=YES).
+    // The base auto-scaffold generated `int` from a stale snapshot; a Power Tools
+    // regen against the current DB would produce this same `int?` shape.
+    public int? CourierId { get; set; }
 
     public TimeOnly? DespatchTime { get; set; }
 

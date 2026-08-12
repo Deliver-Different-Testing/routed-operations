@@ -28,7 +28,7 @@ const items: NavItem[] = [
     ],
   },
   { to: '/quoting', label: 'Quoting' },
-  { to: '/scheduled-routes', label: 'Scheduled Routes' },
+  { to: '/recurring-routes', label: 'Recurring Routes' },
   { to: '/polygon-builder', label: 'Polygon Builder' },
   { to: '/auto-assign-log', label: 'Auto-Assign Log' },
 ];

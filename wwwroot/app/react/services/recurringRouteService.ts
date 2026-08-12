@@ -32,8 +32,23 @@ export interface RecurringRoute {
   zipcodes: RouteZipcode[];
   bulkPolygons: RouteBulkPolygonRef[];
   rosterEntryCount: number;
+  /** Live recurring bookings currently bound to this route. */
+  bookingCount: number;
+  /** Materialised jobs currently bound to this route (Mapped Stops count). */
+  mappedStopsCount: number;
   createdAt: string;
   updatedAt: string | null;
+}
+
+/** One live recurring booking bound to a route. Populated by
+ *  `recurringRouteService.getBookings(routeId)` — lazy-loaded on
+ *  expand of the "Bookings on this route" section in the edit modal. */
+export interface RouteBooking {
+  id: number;
+  clientName: string;
+  pickupWindow: string;
+  days: string;
+  nextDue: string | null;
 }
 
 export interface UpsertRouteBody {
@@ -80,6 +95,8 @@ export interface ZipPolygonShape {
   longitude: number | null;
   wkt: string;
 }
+
+export type AssignTargetType = 'Courier' | 'Agent' | 'NetworkPartner';
 
 export interface AssignableTarget {
   id: number;
@@ -137,6 +154,9 @@ export const recurringRouteService = {
     }),
   remove: (id: number) =>
     request<{ response: string }>(`/recurring-routes/${id}`, { method: 'DELETE' }),
+
+  getBookings: (routeId: number) =>
+    request<{ response: RouteBooking[] }>(`/recurring-routes/${routeId}/bookings`),
 
   getRoster: (routeId: number) =>
     request<{ response: RouteRosterEntry[] }>(`/recurring-routes/${routeId}/roster`),

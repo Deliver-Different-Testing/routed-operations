@@ -25,4 +25,16 @@ public partial class DespatchContext
     public virtual DbSet<AlertTemplatePageSize> AlertTemplatePageSizes { get; set; }
     public virtual DbSet<TblSetting> TblSettings { get; set; }
     public virtual DbSet<TblBulkEvent> TblBulkEvents { get; set; }
+
+    // Recurring Routes port (2026-08-12). Backs the Linehaul Roster tab's
+    // Run x Day driver grid. Table + all indexes pre-existing in Despatch
+    // (verified via MCP on both DFRNT_SEED_CR + Despatch_Urgent_Staging).
+    // FK + filtered-unique-index config lives in
+    // DynamicDespatchDbContext.OnModelCreating.
+    public virtual DbSet<DispatchLinehaulRunRoster> DispatchLinehaulRunRosters { get; set; }
+
+    // tucJobTypeGrouping: parent group each speed rolls up under. Read-only
+    // reference data; used by the Recurring Routes Linehaul port to detect
+    // "flight-grouped" speeds without hard-coding numeric GroupingId values.
+    public virtual DbSet<TucJobTypeGrouping> TucJobTypeGroupings { get; set; }
 }

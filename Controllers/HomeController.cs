@@ -27,7 +27,12 @@ public record AppUserBootstrap(
     int? ContactId,
     int? ClientId,
     int? ClientCount,
-    string? ClientString);
+    string? ClientString,
+    // Per-tenant DespatchWeb base URL (from the DespatchWebBaseUrl env var).
+    // Powers the Recurring Routes page's "Recurring Jobs" external link + the
+    // "Open ↗" schedule deep-links inside the Linehaul edit modal.
+    // Empty/null hides both. Mirrors the Configurator AppUserBootstrap shape.
+    string? DespatchWebBaseUrl);
 
 /// <summary>
 /// SPA fallback + tenant claim enrichment. Also seeds the tenant Despatch
@@ -151,7 +156,8 @@ public class HomeController(
             ContactId: contactId,
             ClientId: clientId,
             ClientCount: clientCount,
-            ClientString: clientString);
+            ClientString: clientString,
+            DespatchWebBaseUrl: string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl) ? null : appSettings.DespatchWebBaseUrl);
 
         return View(bootstrap);
     }

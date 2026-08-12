@@ -8,6 +8,8 @@ import { parseWktPolygon } from '../lib/wktPolygon';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
+import { RowActionsMenu } from '../components/tenant/RowActionsMenu';
+import { MappedStopsDrilldown } from './recurring-routes/MappedStopsDrilldown';
 import {
   recurringRouteService,
   type RecurringRoute,
@@ -19,6 +21,7 @@ import {
   type ScheduleLookup,
   type RouteRosterEntry,
   type UpsertRosterBody,
+  type RouteBooking,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
@@ -49,6 +52,7 @@ export default function ScheduledRoutes() {
   const [showInactive, setShowInactive] = useState(false);
   const [editing, setEditing] = useState<RecurringRoute | 'new' | null>(null);
   const [rosterOpen, setRosterOpen] = useState<RecurringRoute | null>(null);
+  const [drillRoute, setDrillRoute] = useState<RecurringRoute | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -105,6 +109,25 @@ export default function ScheduledRoutes() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
+  // Deep-copy the route (name auto-suffixed with "(copy)") + copy zip
+  // codes. Mirrors the Configurator "Copy" row action - the copy inherits
+  // the source route's geometry + default target; roster + bookings start
+  // empty so the operator can wire them fresh.
+  const doCopy = async (r: RecurringRoute) => {
+    try {
+      const res = await recurringRouteService.copy(r.routeId, {
+        name: `${r.name} (copy)`,
+        defaultTargetType: r.defaultTargetType,
+        defaultTargetId: r.defaultTargetId,
+        scheduleIds: r.schedules.map((s) => s.scheduleId),
+        copyZipcodes: true,
+      });
+      toast.show('Route copied', 'success');
+      await load();
+      if (res.response) setEditing(res.response);   // open the clone in edit mode
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
   const doToggleActive = async (r: RecurringRoute) => {
     try {
       await recurringRouteService.update(r.routeId, {
@@ -122,39 +145,42 @@ export default function ScheduledRoutes() {
   };
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-white border-b border-border text-xs">
-        <h1 className="text-base font-semibold text-text-primary">Recurring Routes</h1>
-        <span className="text-text-muted">
-          - {visible.length} route{visible.length === 1 ? '' : 's'}
-        </span>
-        <label className="ml-3 inline-flex items-center gap-1 text-text-muted">
-          <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          Show inactive
-        </label>
-        <div className="flex-1" />
-        <Button variant="neutral" size="sm" onClick={load} disabled={loading}>
-          {loading ? 'Loading...' : 'Refresh'}
-        </Button>
-        <Button variant="primary" size="sm" onClick={() => setEditing('new')}>
-          + Add Route
-        </Button>
+    <div>
+      {/* Configurator-style header row: route count left, cyan Add Route
+          button right. The outer RecurringRoutes shell already renders the
+          page title + tab bar, so no separate app-header stripe here. */}
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs text-text-secondary">
+          {visible.length} route{visible.length === 1 ? '' : 's'} configured
+        </p>
+        <div className="flex items-center gap-2">
+          <label className="inline-flex items-center gap-1 text-[11px] text-text-secondary">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} className="w-3.5 h-3.5" />
+            Show inactive
+          </label>
+          <button
+            onClick={() => setEditing('new')}
+            className="bg-brand-cyan text-[#0d0c2c] font-medium px-3 py-1.5 rounded-full text-xs hover:shadow-cyan-glow transition-shadow"
+          >
+            + Add Route
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-3">
-        <Panel title="Routes">
-          <table className="w-full text-xs">
-            <thead className="bg-surface-cream sticky top-0">
-              <tr className="text-left text-text-muted">
-                <th className="px-2 py-1">Name</th>
-                <th className="px-2 py-1 w-32">Type</th>
-                <th className="px-2 py-1">Area</th>
-                <th className="px-2 py-1 w-40">Schedule</th>
-                <th className="px-2 py-1 w-48">Default</th>
-                <th className="px-2 py-1 w-20 text-right">{zipLongLabel}s</th>
-                <th className="px-2 py-1 w-20 text-right">Roster</th>
-                <th className="px-2 py-1 w-20">Status</th>
-                <th className="px-2 py-1 w-48"></th>
+      <div className="bg-white rounded-xl border border-border overflow-x-auto">
+          <table className="w-full text-xs min-w-[900px]">
+            <thead className="bg-surface-cream border-b border-border">
+              <tr className="text-left text-[11px] font-semibold text-text-muted">
+                <th className="px-2 py-1.5">Name</th>
+                <th className="px-2 py-1.5">Type</th>
+                <th className="px-2 py-1.5">Area</th>
+                <th className="px-2 py-1.5">Schedule</th>
+                <th className="px-2 py-1.5">Default</th>
+                <th className="px-2 py-1.5">{zipLongLabel}s</th>
+                <th className="px-2 py-1.5">Roster</th>
+                <th className="px-2 py-1.5">Mapped Stops</th>
+                <th className="px-2 py-1.5">Status</th>
+                <th className="px-2 py-1.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -176,25 +202,22 @@ export default function ScheduledRoutes() {
                   <tr
                     key={r.routeId}
                     onClick={openEdit}
-                    className="border-t border-border-light hover:bg-surface-cream cursor-pointer"
+                    className="border-b border-border-light last:border-b-0 hover:bg-surface-cream cursor-pointer"
                   >
-                    <td className="px-2 py-1 font-medium">{r.name}</td>
-                    <td className="px-2 py-1">
-                      <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-brand-cyan/15 text-brand-dark whitespace-nowrap">
+                    <td className="px-2 py-1.5 font-medium text-text-primary">{r.name}</td>
+                    <td className="px-2 py-1.5">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap">
                         First/Final Mile
                       </span>
                     </td>
-                    <td className="px-2 py-1 text-text-secondary">{r.area || '-'}</td>
-                    <td className="px-2 py-1">
+                    <td className="px-2 py-1.5 text-text-secondary">{r.area || '-'}</td>
+                    <td className="px-2 py-1.5">
                       {r.schedules.length > 0 ? (
-                        // Pills wrap onto new lines when the row has many
-                        // schedules. Each individual pill stays on one line
-                        // via whitespace-nowrap so name + window never split.
                         <div className="flex flex-wrap gap-1" title={scheduleTitle}>
                           {r.schedules.map((s) => (
                             <span
                               key={s.scheduleId}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-cyan/15 text-brand-dark text-[10px] whitespace-nowrap"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap"
                             >
                               <span className="font-medium">{s.name}</span>
                               {s.window && <span className="text-text-muted">{s.window}</span>}
@@ -203,65 +226,74 @@ export default function ScheduledRoutes() {
                         </div>
                       ) : <span className="text-text-muted">-</span>}
                     </td>
-                    <td className="px-2 py-1">
+                    <td className="px-2 py-1.5">
                       {r.defaultTargetName ? (
-                        <div
-                          className="text-text-primary truncate whitespace-nowrap"
-                          title={r.defaultTargetType != null
-                            ? `${r.defaultTargetName} (${TARGET_TYPES[r.defaultTargetType] ?? ''})`
-                            : r.defaultTargetName}
-                        >
+                        <div className="text-text-primary flex items-center gap-1">
                           {r.defaultTargetName}
                           {r.defaultTargetType != null && (
-                            <span className="text-[10px] text-text-muted ml-1">
+                            <span className="text-[10px] text-text-muted">
                               ({TARGET_TYPES[r.defaultTargetType] ?? ''})
                             </span>
                           )}
                         </div>
                       ) : <span className="text-text-muted">-</span>}
                     </td>
-                    <td className="px-2 py-1 text-right" title={r.zipcodes.map((z) => z.zip).join(', ')}>
-                      {r.zipcodes.length}
+                    <td className="px-2 py-1.5 text-text-secondary" title={r.zipcodes.map((z) => z.zip).join(', ')}>
+                      <span className="text-text-primary font-semibold">{r.zipcodes.length}</span>
+                      <span className="text-[10px] ml-1">codes</span>
                     </td>
-                    <td className="px-2 py-1 text-right">
+                    <td className="px-2 py-1.5">
                       <button
                         type="button"
                         onClick={stop(() => setRosterOpen(r))}
-                        className="text-brand-purple hover:underline"
+                        className="text-text-secondary hover:text-brand-cyan"
                         title="Manage roster"
                       >
-                        {r.rosterEntryCount}
+                        <span className="text-text-primary font-semibold">{r.rosterEntryCount}</span>
+                        <span className="text-[10px] ml-1">entries</span>
                       </button>
                     </td>
-                    <td className="px-2 py-1">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                        r.active ? 'bg-success-bg text-success' : 'bg-surface-light text-text-muted'
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={stop(() => setDrillRoute(r))}
+                        disabled={r.mappedStopsCount === 0}
+                        className="text-text-secondary enabled:hover:text-brand-cyan disabled:cursor-default"
+                        title={r.mappedStopsCount === 0 ? 'No mapped stops on this route yet' : 'View mapped stops'}
+                      >
+                        <span className="text-text-primary font-semibold">{r.mappedStopsCount}</span>
+                        <span className="text-[10px] ml-1">stop{r.mappedStopsCount === 1 ? '' : 's'}</span>
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
+                        r.active ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-700'
                       }`}>
                         {r.active ? 'Active' : 'Inactive'}
                       </span>
                     </td>
-                    <td className="px-2 py-1">
-                      <div className="flex gap-1 justify-end">
-                        <Button variant="neutral" size="sm" onClick={stop(() => setEditing(r))}>Edit</Button>
-                        <Button variant="ghost" size="sm" onClick={stop(() => doToggleActive(r))}>
-                          {r.active ? 'Pause' : 'Resume'}
-                        </Button>
-                        <Button variant="danger" size="sm" onClick={stop(() => doDelete(r))}>Delete</Button>
-                      </div>
+                    <td className="px-2 py-1.5 text-right">
+                      <RowActionsMenu
+                        actions={[
+                          { label: 'Edit', onClick: () => setEditing(r) },
+                          { label: 'Copy', onClick: () => doCopy(r) },
+                          { label: r.active ? 'Pause' : 'Resume', onClick: () => doToggleActive(r) },
+                          { label: 'Delete', onClick: () => doDelete(r), danger: true },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );
               })}
               {visible.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-2 py-6 text-center text-text-muted italic">
+                  <td colSpan={10} className="p-6 text-center text-xs text-text-muted italic">
                     {loading ? 'Loading...' : 'No routes yet. Click "+ Add Route" to create one.'}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
-        </Panel>
       </div>
 
       {editing && (
@@ -277,6 +309,14 @@ export default function ScheduledRoutes() {
           route={rosterOpen}
           onClose={() => setRosterOpen(null)}
           onChanged={async () => { await load(); }}
+        />
+      )}
+
+      {drillRoute && (
+        <MappedStopsDrilldown
+          source="route"
+          run={{ id: drillRoute.routeId, runName: drillRoute.name, fromDepotName: drillRoute.area || '-', toDepotName: '' }}
+          onClose={() => setDrillRoute(null)}
         />
       )}
     </div>
@@ -740,6 +780,8 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               )}
             </div>
           </Field>
+          {!isNew && initial && <RouteBookingsSection routeId={initial.routeId} count={initial.bookingCount} />}
+
           <label className="inline-flex items-center gap-2 text-xs">
             <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
             Active
@@ -1541,5 +1583,81 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="block text-text-secondary text-xs mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+// Collapsible read-only summary of live recurring bookings on a route. Lazy-
+// loads the detail on first expand (the count is already on the route).
+// Re-assignment is operator-driven in the Dispatch app / Route Viewer — this
+// is view-only. Mirrors the Configurator RouteBookingsSection component.
+function RouteBookingsSection({ routeId, count }: { routeId: number; count: number }) {
+  const [open, setOpen] = useState(false);
+  const [bookings, setBookings] = useState<RouteBooking[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && bookings === null && !loading) {
+      setLoading(true); setErr(null);
+      try {
+        const res = await recurringRouteService.getBookings(routeId);
+        setBookings(res.response ?? []);
+      } catch (e: unknown) {
+        setErr((e as Error).message ?? 'Failed to load bookings');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const fmtNextDue = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : '-';
+
+  return (
+    <div className="border border-border rounded-lg">
+      <button type="button" onClick={toggle}
+        className="w-full flex items-center justify-between px-3 py-2.5 text-left">
+        <span className="text-xs font-medium text-text-primary">
+          Bookings on this route <span className="text-text-muted">({count})</span>
+        </span>
+        <span className="text-text-muted text-xs">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 border-t border-border">
+          {loading && <div className="text-xs text-text-muted py-3">Loading bookings...</div>}
+          {err && <div className="text-xs text-error py-3">{err}</div>}
+          {!loading && !err && bookings && bookings.length === 0 && (
+            <div className="text-xs text-text-muted py-3">No live recurring bookings on this route.</div>
+          )}
+          {!loading && !err && bookings && bookings.length > 0 && (
+            <table className="w-full text-xs mt-2">
+              <thead>
+                <tr className="text-left text-[11px] font-semibold text-text-secondary border-b border-border">
+                  <th className="py-1.5 pr-2">Client</th>
+                  <th className="py-1.5 pr-2">Pickup</th>
+                  <th className="py-1.5 pr-2">Days</th>
+                  <th className="py-1.5">Next due</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.map((b) => (
+                  <tr key={b.id} className="border-b border-border last:border-b-0">
+                    <td className="py-1.5 pr-2 text-text-primary">{b.clientName || '-'}</td>
+                    <td className="py-1.5 pr-2 tabular-nums">{b.pickupWindow || '-'}</td>
+                    <td className="py-1.5 pr-2">{b.days || '-'}</td>
+                    <td className="py-1.5 tabular-nums">{fmtNextDue(b.nextDue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <p className="text-[11px] text-text-muted mt-2">
+            Read-only. Re-assign bookings to a different route from the Dispatch app's Recurring list / Route Viewer.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }

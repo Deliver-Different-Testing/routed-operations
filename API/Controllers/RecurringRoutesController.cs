@@ -80,6 +80,25 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
         return ok ? Ok(new { response = "Deactivated" }) : NotFound();
     }
 
+    // Live recurring bookings bound to this route. Read-only drill-down for
+    // the "Bookings on this route (N)" collapsible section in the edit modal.
+    [HttpGet("{routeId:int}/bookings")]
+    public async Task<IActionResult> GetBookings(int routeId)
+    {
+        var list = await routes.GetBookingsAsync(routeId);
+        return Ok(new { response = list });
+    }
+
+    // Live materialised jobs on this route (Mapped Stops drill-down list).
+    // Same shape as /api/recurring-linehaul-runs/{id}/jobs so the frontend
+    // reuses the MappedStopsDrilldown component.
+    [HttpGet("{routeId:int}/jobs")]
+    public async Task<IActionResult> GetMappedStops(int routeId)
+    {
+        var list = await routes.GetMappedStopsAsync(routeId);
+        return Ok(new { response = list });
+    }
+
     // ─── ROSTER ────────────────────────────────────────────────────────────
 
     [HttpGet("{routeId:int}/roster")]

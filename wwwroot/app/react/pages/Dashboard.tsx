@@ -14,7 +14,7 @@ function buildModules(isUs: boolean): ModuleCard[] {
   const shortLower = postcodeLabel(isUs, true).toLowerCase();
   // Order matches the Sidebar so the Dashboard cards read top-to-bottom
   // in the same sequence as the left nav: Bulk Import → Routes →
-  // Route Viewer → Quoting → Scheduled Routes → Polygon Builder.
+  // Route Viewer → Quoting → Recurring Routes → Polygon Builder.
   // (Dashboard + Auto-Assign Log have no card - Dashboard is this page,
   // Auto-Assign Log is a diagnostics tool that operators rarely open
   // from a card.)
@@ -44,7 +44,7 @@ function buildModules(isUs: boolean): ModuleCard[] {
       cta: 'Open Quoting',
     },
     {
-      to: '/scheduled-routes',
+      to: '/recurring-routes',
       title: 'Recurring Routes',
       blurb: `Manage the Configurator Route table: name, area, schedule, default courier / agent / NP, ${shortLower} codes and roster. Same rows visible in DF Admin > Operations > Recurring Routes.`,
       cta: 'Open Recurring Routes',
