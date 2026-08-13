@@ -66,12 +66,14 @@ public class ClientsControllerTests
         Assert.IsType<OkObjectResult>(await ctl.Search(null!));
     }
 
-    [Fact(Skip = "Actual controller returns OkObjectResult with .Value=null for unknown clients; envelope assertion needs relaxing OR the controller needs a NotFound branch. Deferred pending contract clarification.")]
-    public async Task GetClientSettings_UnknownClient_ReturnsOkWithNullBody()
+    [Fact]
+    public async Task GetClientSettings_UnknownClient_ReturnsBadRequestWithErrorEnvelope()
     {
         var ctl = NewCtl();
-        var ok = Assert.IsType<OkObjectResult>(await ctl.GetClientSettings(999));
-        Assert.NotNull(ok.Value);
+        var bad = Assert.IsType<BadRequestObjectResult>(await ctl.GetClientSettings(999));
+        var resp = Assert.IsType<ClientSettingsResponse>(bad.Value!);
+        Assert.False(resp.Success);
+        Assert.Contains(resp.Messages, m => m.Message == "Invalid client or contact.");
     }
 
     [Fact]

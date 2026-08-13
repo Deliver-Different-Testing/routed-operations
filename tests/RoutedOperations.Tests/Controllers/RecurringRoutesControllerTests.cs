@@ -125,7 +125,7 @@ public class RecurringRoutesControllerTests
         Assert.IsType<BadRequestObjectResult>(await ctl.AddRoster(1, req));
     }
 
-    [Fact(Skip = "Controller does not validate route existence upfront; returns Ok with error envelope. Investigate whether that is the intended contract or a missing guard.")]
+    [Fact]
     public async Task AddRoster_UnknownRoute_ReturnsNotFound()
     {
         var (ctl, _) = NewCtl();

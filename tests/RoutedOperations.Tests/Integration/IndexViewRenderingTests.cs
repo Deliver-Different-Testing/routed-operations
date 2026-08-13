@@ -14,7 +14,7 @@ public class IndexViewRenderingTests
 
     public IndexViewRenderingTests(SharedFactory factory) => _factory = factory;
 
-    [Fact(Skip = "WebApplicationFactory auth stub does not fully impersonate a claims principal in HomeController; deferred until the test factory ships a working cookie/claims-transformer stub. HomeControllerBootstrapTests covers the same code paths via direct-instantiation.")]
+    [Fact]
     public async Task Root_Authenticated_RendersIndexViewWithBootstrapPayload()
     {
         using var client = _factory.CreateClient();
@@ -30,7 +30,7 @@ public class IndexViewRenderingTests
         Assert.Contains("\"fullName\":\"Test User\"", body);
     }
 
-    [Fact(Skip = "See Root_Authenticated_RendersIndexViewWithBootstrapPayload skip note.")]
+    [Fact]
     public async Task Root_Authenticated_IncludesModulePreloadAndDistLinks()
     {
         using var client = _factory.CreateClient();
@@ -43,7 +43,7 @@ public class IndexViewRenderingTests
         Assert.Contains("/dist/app.css?v=", body);
     }
 
-    [Fact(Skip = "See Root_Authenticated_RendersIndexViewWithBootstrapPayload skip note.")]
+    [Fact]
     public async Task Root_Authenticated_EmbedsGoogleMapsScriptWhenKeyPresent()
     {
         // TestFactory sets GoogleMapsKey = "test-google" via config, and

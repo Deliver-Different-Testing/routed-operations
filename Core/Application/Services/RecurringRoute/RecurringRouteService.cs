@@ -434,6 +434,10 @@ public class RecurringRouteService(
                 "Exactly one of RosterDate or DayOfWeek must be set.");
         }
 
+        // Guard: the controller returns NotFound when this method returns null,
+        // so surface unknown-route as null rather than orphaning a roster row.
+        if (!await Context.Routes.AnyAsync(r => r.RouteId == routeId)) return null;
+
         // Deactivate any existing active row that would collide with the new
         // (route, date-or-dow) slot. Matches the unique filtered indexes on
         // the table (UX_DispatchRouteRoster_RouteDate_Active / _RouteDow_Active).
