@@ -43,3 +43,10 @@ Reference implementation for the stack + conventions: `C:\Gitlab\Configurator_Ro
 4. Every new service must inherit `BaseService` (lazy `DynamicDespatchDbContext`).
 5. No em-dashes anywhere. Plain ASCII hyphens only.
 6. Do NOT touch `changes.log` in this repo (per user's global preference).
+7. **Testing.** Every new controller / service / component / hook / pure utility / DTO ships with at least one test.
+   - **Backend** tests live at `tests/RoutedOperations.Tests/<mirror>` (xUnit.v3 + NSubstitute + EF InMemory or SQLite). Run: `cd tests/RoutedOperations.Tests && dotnet run --configuration Release`.
+   - **Frontend** tests live next to the code (`Foo.test.tsx` beside `Foo.tsx`) using Vitest + @testing-library/react + jsdom + MSW. Run: `npm run test`.
+   - **Local pre-push gate** (Husky, auto-installed on `npm install`) runs lint + type-check + `npm run test` + backend tests. Bypass with `--no-verify` is forbidden.
+   - **CI** blocks merges on any red test (`test:frontend:lint`, `test:frontend:unit`, `test:backend:unit`).
+   - **Coverage target**: 100% raw (Kevin's 2026-08-13 call). Baseline after Wave 5 (1,676 frontend + 1,009 backend = 2,685 tests): frontend statements 86.8% / lines 86.8% / branches 80.8% / functions 74.6%; backend cobertura reported per MR. Vitest thresholds set at baseline-margin (lines/statements 82 / branches 76 / functions 70) so accidental regressions fail the pipeline but small dips do not. Reviewers bump the floor upward in every MR that meaningfully raises coverage until 100% is reached.
+   - See `tests/RoutedOperations.Tests/README.md` for the full setup walkthrough.

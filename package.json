@@ -9,7 +9,11 @@
     "build:watch": "vite build --watch",
     "type-check": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "echo \"No tests configured yet\" && exit 0"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ci": "vitest run --coverage --reporter=default --reporter=junit --outputFile=junit-frontend.xml",
+    "test:precommit": "npm run type-check && npm run test && cd tests/RoutedOperations.Tests && dotnet run --configuration Release",
+    "prepare": "husky"
   },
   "dependencies": {
     "@googlemaps/markerclusterer": "^2.6.2",
@@ -27,13 +31,22 @@
   },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.9",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^3.2.4",
     "autoprefixer": "^10.4.20",
+    "husky": "^9.1.7",
+    "jsdom": "^25.0.1",
+    "msw": "^2.7.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.7.3",
-    "vite": "^6.0.1"
+    "vite": "^6.0.1",
+    "vitest": "^3.2.4"
   }
 }
