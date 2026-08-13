@@ -20,6 +20,16 @@ RUN dotnet publish -c Release -o /publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
+
+# Route Viewer P0: NTLM auth libs for SSRS proxy (P11 Report module).
+# libgssapi-krb5-2 provides the GSSAPI implementation; gss-ntlmssp is
+# the NTLM security provider. Without both, .NET's HttpClient falls
+# back to Kerberos-only and every SSRS request 401s against on-prem
+# Reporting Services.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 gss-ntlmssp \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build-env /publish ./
 
 EXPOSE 8080

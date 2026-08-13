@@ -32,6 +32,15 @@ public class AppSettings
     public string GoogleMapsKey { get; set; } = string.Empty;
 
     /// <summary>
+    /// Development-only Google Maps JS API key, bound from env var
+    /// `GoogleMapsDevKey`. Used by developer machines that cannot use the
+    /// billed production key (referrer restriction or unbilled localhost).
+    /// Program.cs prefers this when set AND ASPNETCORE_ENVIRONMENT is
+    /// Development; falls back to GoogleMapsKey otherwise.
+    /// </summary>
+    public string GoogleMapsDevKey { get; set; } = string.Empty;
+
+    /// <summary>
     /// Base URL of the tenant's DespatchWeb (Dispatch software) app
     /// (`https://despatch.{tenant}.{env}.deliverdifferent.com`), no trailing
     /// slash. Set per-tenant deployment via env var DespatchWebBaseUrl.
@@ -43,4 +52,29 @@ public class AppSettings
     /// consistency.
     /// </summary>
     public string DespatchWebBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// SSRS (SQL Server Reporting Services) base URL, e.g.
+    /// `https://reporting.deliverdifferent.com/ReportServer`. Bound from env
+    /// var `ReportBase`. Consumed by the Route Viewer P11 Report module
+    /// (RunAllocation / MissingScan / WoopRunNumber). Empty value returns 501
+    /// with a "set ReportBase" diagnostic.
+    /// </summary>
+    public string ReportBase { get; set; } = string.Empty;
+
+    /// <summary>NTLM username for SSRS. Bound from env var `ReportUsername`.</summary>
+    public string ReportUsername { get; set; } = string.Empty;
+
+    /// <summary>NTLM password for SSRS. Bound from env var `ReportPassword`.</summary>
+    public string ReportPassword { get; set; } = string.Empty;
+
+    /// <summary>NTLM Windows domain for SSRS. Bound from env var `ReportDomain`.</summary>
+    public string ReportDomain { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Path to the SSL certificate file used to validate the SSRS TLS chain
+    /// when SSRS is hosted on a private CA. Bound from env var
+    /// `SSL_CERTIFICATE`. Empty value uses the default system trust store.
+    /// </summary>
+    public string SslCertificate { get; set; } = string.Empty;
 }
