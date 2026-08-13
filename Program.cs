@@ -161,15 +161,35 @@ else
 }
 
 // Strongly-typed AppSettings singleton.
+// GoogleMapsDevKey resolution: in Development, prefer DevKey when set so
+// the local browser hits an unbilled / referrer-free key instead of the
+// prod-scoped one. The SPA still reads a single `googleMapsKey` field
+// via the bootstrap blob; the pick happens here so no frontend branch is
+// needed. In non-Development environments the prod key wins.
+var googleMapsDevKey = builder.Configuration["GoogleMapsDevKey"] ?? string.Empty;
+var googleMapsProdKey = builder.Configuration["GoogleMapsKey"] ?? string.Empty;
+var effectiveGoogleMapsKey =
+    builder.Environment.IsDevelopment() && !string.IsNullOrEmpty(googleMapsDevKey)
+        ? googleMapsDevKey
+        : googleMapsProdKey;
 var appSettings = new AppSettings
 {
     RouteSavvyAppId = builder.Configuration["RouteSavyID"] ?? string.Empty,
     HereMapsApiKey = builder.Configuration["HeremapApiKey"] ?? string.Empty,
-    GoogleMapsKey = builder.Configuration["GoogleMapsKey"] ?? string.Empty,
+    GoogleMapsKey = effectiveGoogleMapsKey,
+    GoogleMapsDevKey = googleMapsDevKey,
     // Mirrors Configurator's Program.cs pattern - trim trailing slash so the
     // SPA can safely concatenate paths like `/#!/recurringJobs` without
     // getting a "//".
     DespatchWebBaseUrl = (builder.Configuration["DespatchWebBaseUrl"] ?? string.Empty).TrimEnd('/'),
+    // Route Viewer P0 - SSRS env-var contract. Populated at startup so P11
+    // Report module bodies read from a strongly-typed source instead of
+    // Environment.GetEnvironmentVariable at request time.
+    ReportBase = (builder.Configuration["ReportBase"] ?? string.Empty).TrimEnd('/'),
+    ReportUsername = builder.Configuration["ReportUsername"] ?? string.Empty,
+    ReportPassword = builder.Configuration["ReportPassword"] ?? string.Empty,
+    ReportDomain = builder.Configuration["ReportDomain"] ?? string.Empty,
+    SslCertificate = builder.Configuration["SSL_CERTIFICATE"] ?? string.Empty,
 };
 builder.Services.AddSingleton(appSettings);
 
@@ -362,15 +382,17 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewe
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerScanService>();
 
 // Route Viewer P0 close-out (2026-08-07) - AWS S3 for POD photo +
-// Client Intel image reads. Region defaults to APSoutheast2 to match
-// legacy RunViewer (Program.cs used same). Credentials resolve via the
-// standard AWSSDK chain (env vars in prod, SSO / FallbackFactory in
-// dev). SES adds in P7 once the SendPOD email path lands.
+// Client Intel image reads; AWS SES for the P7 SendPOD email path
+// (SDK + DI wired at P0 close so P7 only writes the service body).
+// Region defaults to APSoutheast2 to match legacy RunViewer
+// (Program.cs used same). Credentials resolve via the standard AWSSDK
+// chain (env vars in prod, SSO / FallbackFactory in dev).
 builder.Services.AddDefaultAWSOptions(new Amazon.Extensions.NETCore.Setup.AWSOptions
 {
     Region = Amazon.RegionEndpoint.APSoutheast2,
 });
 builder.Services.AddAWSService<Amazon.S3.IAmazonS3>();
+builder.Services.AddAWSService<Amazon.SimpleEmail.IAmazonSimpleEmailService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.S3PhotoReader>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerEventService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerAssignmentService>();

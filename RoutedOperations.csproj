@@ -38,15 +38,20 @@
     <!-- Security pin: DataProtection.SSM 4.0.1 transitively pulls AWSSDK.Core 4.0.3,
          which is flagged by GHSA-9cvc-h2w8-phrp / CVE-2026-22611 (region input
          validation, low severity; first fixed in 4.0.139.0). Direct-pin the patched
-         Core so the transitive resolve is lifted above the advisory. 4.0.100.5 is
-         the latest AWSSDK.Core (the 4.0.139.0 in the advisory is the SDK
-         release-train number, not this package's version). -->
-    <PackageReference Include="AWSSDK.Core" Version="4.0.100.5" />
+         Core so the transitive resolve is lifted above the advisory. Bumped to
+         4.0.101 (current latest at 2026-08-13) to satisfy AWSSDK.SimpleEmail
+         4.0.100.8's `>= 4.0.101` transitive requirement; 4.0.100.5 was the
+         earlier latest and no longer satisfies SES post-P0. The 4.0.139.0 in
+         the advisory is the SDK release-train number, not this package's
+         version. -->
+    <PackageReference Include="AWSSDK.Core" Version="4.0.101" />
     <!-- Route Viewer P0: S3 for POD photo + Client Intel image read
-         (Detail carousel + intel dialog). SES adds later in P7 for the
-         SendPOD email path. Extensions.NETCore.Setup pinned to the
-         version DataProtection.SSM transitively requires. -->
+         (Detail carousel + intel dialog); SES SDK for the P7 SendPOD
+         email path (wired in DI now so P7 only needs the service body).
+         Extensions.NETCore.Setup pinned to the version
+         DataProtection.SSM transitively requires. -->
     <PackageReference Include="AWSSDK.S3" Version="4.0.10" />
+    <PackageReference Include="AWSSDK.SimpleEmail" Version="4.0.100.8" />
     <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.3.11" />
 
     <!-- Logging -->
