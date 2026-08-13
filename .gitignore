@@ -20,3 +20,10 @@ wwwroot/dist/
 .vscode/
 Thumbs.db
 .DS_Store
+
+## test coverage + report artifacts (regenerated on every run)
+coverage/
+coverage-backend/
+junit-frontend.xml
+*.trx
+TestResults/
