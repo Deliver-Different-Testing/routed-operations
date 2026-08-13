@@ -85,15 +85,11 @@ describe('FiltersBar', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument();
   });
 
-  it.skip('narrows the option list by search input', () => {
-    // Skipped: MSW reports an unhandled request from an inner fetch (client
-    // lookup) that this test does not stub. Investigate whether FiltersBar
-    // is fetching from within the panel and either stub the endpoint or
-    // pass the client list via props to eliminate the network dependency.
+  it('narrows the option list by search input', () => {
     renderBar();
     fireEvent.click(screen.getByRole('button', { name: /Clients/ }));
     const searchInput = screen.getByPlaceholderText(/Search clients/);
-    fireEvent.change(searchInput, { target: { value: 'ace' } });
+    fireEvent.change(searchInput, { target: { value: 'acm' } });
     expect(screen.getByText('Acme')).toBeInTheDocument();
     expect(screen.queryByText('Beta')).not.toBeInTheDocument();
   });

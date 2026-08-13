@@ -44,17 +44,15 @@ public class TestFactory : WebApplicationFactory<HomeController>
         Environment.SetEnvironmentVariable("RedisConfig", "localhost:6379,abortConnect=false");
         Environment.SetEnvironmentVariable("SQLCredentials", ";User Id=x;Password=x");
         Environment.SetEnvironmentVariable("PublicPath", "https://public.test/login");
-
-        builder.ConfigureAppConfiguration((_, cfg) =>
-        {
-            cfg.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["HeremapApiKey"] = "test-here",
-                ["GoogleMapsKey"] = "test-google",
-                ["RouteSavyID"] = "test-rs",
-                ["DespatchWebBaseUrl"] = "https://despatch.test/",
-            });
-        });
+        // AppSettings is materialized during WebApplication.CreateBuilder in
+        // Program.cs (reads builder.Configuration["GoogleMapsKey"] etc), which
+        // runs BEFORE the framework invokes any ConfigureAppConfiguration on
+        // the host builder. Env vars are the only injection point that lands
+        // in time: WebApplication.CreateBuilder adds an env-var source eagerly.
+        Environment.SetEnvironmentVariable("HeremapApiKey", "test-here");
+        Environment.SetEnvironmentVariable("GoogleMapsKey", "test-google");
+        Environment.SetEnvironmentVariable("RouteSavyID", "test-rs");
+        Environment.SetEnvironmentVariable("DespatchWebBaseUrl", "https://despatch.test/");
 
         return base.CreateHost(builder);
     }
@@ -112,30 +110,25 @@ public class AuthenticatedTestFactory : TestFactory
 
         builder.ConfigureTestServices(services =>
         {
-            // Program.cs already registered a cookie handler on the
-            // "Identity.Application" scheme. AddScheme refuses duplicates,
-            // so we drop the existing scheme metadata via a post-configure
-            // hook + then re-register under the same name pointing at the
-            // stub. Same trick every ASP.NET Core test factory ends up
-            // needing when the SUT wires cookie auth in Program.cs.
-            services.Configure<AuthenticationOptions>(o =>
-            {
-                // Removing from SchemeMap is authoritative - `o.Schemes` is
-                // derived (SchemeMap.Values in ASP.NET Core source), so a
-                // second cleanup pass on it is redundant AND breaks compile
-                // in .NET 10 where Schemes is IEnumerable<T> (no .Count / .RemoveAt).
-                o.SchemeMap.Remove("Identity.Application", out _);
-            });
-
+            // Program.cs already registered the "Identity.Application" cookie
+            // scheme. Removing it from AuthenticationOptions.SchemeMap does NOT
+            // remove it from the private _schemes list that the provider ctor
+            // iterates, so re-adding under the same name double-registers and
+            // throws "Scheme already exists". Register the stub under a fresh
+            // name instead and repoint the defaults at it - the cookie scheme
+            // stays registered but is never the challenge target.
             services.AddAuthentication(o =>
                 {
-                    o.DefaultAuthenticateScheme = "Identity.Application";
-                    o.DefaultChallengeScheme = "Identity.Application";
+                    o.DefaultAuthenticateScheme = TestAuthScheme;
+                    o.DefaultChallengeScheme = TestAuthScheme;
+                    o.DefaultScheme = TestAuthScheme;
                 })
                 .AddScheme<AuthenticationSchemeOptions, StubAuthHandler>(
-                    "Identity.Application", _ => { });
+                    TestAuthScheme, _ => { });
         });
     }
+
+    public const string TestAuthScheme = "TestStub";
 }
 
 // Minimal always-succeeds auth handler. Stamps DefaultClaims onto every
@@ -154,7 +147,7 @@ public sealed class StubAuthHandler : AuthenticationHandler<AuthenticationScheme
     {
         var identity = new ClaimsIdentity(AuthenticatedTestFactory.DefaultClaims, "Test");
         var principal = new ClaimsPrincipal(identity);
-        var ticket = new AuthenticationTicket(principal, "Identity.Application");
+        var ticket = new AuthenticationTicket(principal, AuthenticatedTestFactory.TestAuthScheme);
         return Task.FromResult(AuthenticateResult.Success(ticket));
     }
 }

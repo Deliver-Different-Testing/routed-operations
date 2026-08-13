@@ -158,15 +158,7 @@ describe('NewImportWizard - US coverage-only + rateByDistance branch', () => {
     vi.useRealTimers();
   });
 
-  it.skip('advances through RateByDistanceModal when the current bucket is US coverage-only', async () => {
-    // Skipped: flaky under CI's 5000ms testTimeout because the walkthrough
-    // hits fireImportForCurrentDepot's dayOfWeek gate and the underlying
-    // schedule.dayOfWeek matching to `new Date(bookDate).getDay()` is
-    // non-deterministic on the CI runner's system date. Wave 5C's
-    // NewImportWizard.walkthrough.test.tsx covers the equivalent code
-    // path with vi.useFakeTimers + vi.setSystemTime(); this test needs
-    // the same treatment. Deferred to a follow-up MR; NewImportWizard.tsx
-    // is already at 87.85% line coverage without this branch.
+  it('advances through RateByDistanceModal when the current bucket is US coverage-only', async () => {
     seedUsCoverageOnlyHandlers();
     renderWithProviders(
       <NewImportWizard open onClose={vi.fn()} onImported={vi.fn()} />
