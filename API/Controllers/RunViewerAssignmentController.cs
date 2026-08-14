@@ -159,4 +159,17 @@ public class RunViewerAssignmentController(
         await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
         return Ok(new { response = "ok" });
     }
+
+    /// <summary>POST /api/runviewer/jobs/transfer-original-run-order -
+    /// reassign the run's ORIGINAL owner (drives reporting +
+    /// courier-percentage rollups). Wraps RVW_stpTransferOriginalRunOrder.</summary>
+    [HttpPost("transfer-original-run-order")]
+    [Authorize(Policy = "RouteViewer.Admin")]
+    public async Task<IActionResult> TransferOriginalRunOrder([FromBody] TransferOriginalRunOrderRequest request)
+    {
+        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        await assignmentService.TransferOriginalRunOrderAsync(request.RunId, request.ToCourierCode);
+        return Ok(new { response = "ok" });
+    }
 }

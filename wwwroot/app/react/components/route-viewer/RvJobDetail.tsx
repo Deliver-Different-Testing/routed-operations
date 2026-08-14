@@ -6,6 +6,7 @@ import { useToast } from '../../context/ToastContext';
 import { tenantDate, tenantDateFromSpString, tenantDateTime, tenantTime, tenantTimeFromSpString } from '../../lib/tenantDate';
 import { PodPhotoCarousel } from './PodPhotoCarousel';
 import { RvGpsEditModal } from './RvGpsEditModal';
+import { EditableInfoRow, InfoRow } from './EditableInfoRow';
 
 // Route Viewer Detail pane. Matches the legacy RunViewer Detail layout
 // exactly (2026-08-08 standardisation vs the compact P5 stub):
@@ -586,70 +587,6 @@ function InfoCard({ title, children }: { title: string; children: React.ReactNod
         {title}
       </div>
       <div className="divide-y divide-border/50">{children}</div>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string | null | undefined }) {
-  return (
-    <div className="flex items-center justify-between px-3 py-1.5 text-sm">
-      <span className="text-[11px] uppercase tracking-wide text-text-muted">{label}</span>
-      <span className="text-text-primary">
-        {value || <span className="text-text-muted">-</span>}
-      </span>
-    </div>
-  );
-}
-
-/** Click-to-edit variant of InfoRow. Click the value to swap to input;
- *  Enter to save, Escape to cancel. Empty-string save clears the field.
- *  When `readOnly` (LH-leg or non-internal client) renders as a plain
- *  InfoRow with no click-to-edit affordance. */
-function EditableInfoRow({
-  label,
-  value,
-  onSave,
-  readOnly,
-}: {
-  label: string;
-  value: string | null | undefined;
-  onSave: (v: string) => void | Promise<void>;
-  readOnly?: boolean;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string>(value ?? '');
-
-  const commit = () => {
-    setEditing(false);
-    if (draft !== (value ?? '')) onSave(draft);
-  };
-
-  if (readOnly) return <InfoRow label={label} value={value} />;
-
-  return (
-    <div className="flex items-center justify-between px-3 py-1.5 text-sm">
-      <span className="text-[11px] uppercase tracking-wide text-text-muted">{label}</span>
-      {editing ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit();
-            if (e.key === 'Escape') { setEditing(false); setDraft(value ?? ''); }
-          }}
-          className="border border-brand-cyan rounded px-1 py-0 text-xs text-right w-32"
-        />
-      ) : (
-        <span
-          className="text-text-primary cursor-pointer border-b border-dashed border-transparent hover:border-brand-cyan"
-          title="Click to edit"
-          onClick={() => { setDraft(value ?? ''); setEditing(true); }}
-        >
-          {value || <span className="text-text-muted">-</span>}
-        </span>
-      )}
     </div>
   );
 }

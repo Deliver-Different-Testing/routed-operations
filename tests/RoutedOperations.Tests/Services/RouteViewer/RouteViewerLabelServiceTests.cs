@@ -10,6 +10,7 @@ using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.Tests.Services.RouteViewer;
 
+[Collection("EnvVarMutating")]
 public class RouteViewerLabelServiceTests : IDisposable
 {
     public RouteViewerLabelServiceTests()

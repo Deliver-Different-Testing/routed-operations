@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
+import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { routeViewerService } from '../../services/routeViewerService';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { Button } from '../../components/common/Button';
+import { MultiSelect } from '../../components/common/MultiSelect';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 
@@ -21,8 +23,104 @@ import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 //   - Routed mode: expandable rows via FragmentRow with parsed Legs
 //     chip strip + lazy item-progress panel grouped by item barcode
 //   - Scan-detail side panel loads on row click; 25s auto-poll
+//   - Client / Region / Speed multi-select filters + 200ms-debounced
+//     free-text search across the loaded rows (client-side)
+//   - 100-per-page pager on Bulk mode (matches legacy pageSize=100 in
+//     RunViewer/wwwroot/app/components/scans/tpls/jobList.tpl)
 
 type Mode = 'Bulk' | 'Routed';
+
+// Legs JSON payload shape (per DTO note: SP emits Legs as a JSON string
+// that clients must parse per-row).
+interface LegChip {
+  Leg: string;
+  LinehaulRunId?: number | null;
+  LinehaulRunName?: string | null;
+  ToDepot?: string | null;
+  State?: string | null;
+  PackedRole?: string | null;
+}
+
+// State -> Tailwind background. Palette mirrors legacy .leg-state.<code>.
+function legTint(state: string | null | undefined): string {
+  const s = (state ?? '').toUpperCase();
+  if (s === 'DONE' || s === 'COMPLETE') return 'bg-emerald-100 text-emerald-800';
+  if (s === 'PARTIAL' || s === 'IN_TRANSIT' || s === 'INTRANSIT') return 'bg-amber-100 text-amber-800';
+  if (s === 'SHORT' || s === 'FAIL' || s === 'FAILED') return 'bg-red-100 text-red-800';
+  if (s === 'PENDING' || s === 'WAITING') return 'bg-slate-100 text-slate-700';
+  return 'bg-slate-100 text-slate-700';
+}
+
+function parseLegs(json: string | null): LegChip[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+// Tri-state cell: 0 = pending (empty), 1 = complete (green tick),
+// 2 = exception (red x). Sort + Run only per T.4 correction.
+function TriStateCell({ v }: { v: number }) {
+  if (v === 1) {
+    return (
+      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500 text-white text-[10px]">
+        ✓
+      </span>
+    );
+  }
+  if (v === 2) {
+    return (
+      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px]">
+        ✗
+      </span>
+    );
+  }
+  return <span className="inline-block w-4 h-4 rounded-full border border-slate-300" />;
+}
+
+// Binary cell: 0 = pending, 1 = complete. Pick / InvalidPick /
+// Transfer / Transit only per T.4.
+function BinaryCell({ v, tone = 'ok' }: { v: number; tone?: 'ok' | 'warn' }) {
+  if (v === 1) {
+    return (
+      <span
+        className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[10px] ${
+          tone === 'warn' ? 'bg-amber-500' : 'bg-emerald-500'
+        }`}
+      >
+        ✓
+      </span>
+    );
+  }
+  return <span className="inline-block w-4 h-4 rounded-full border border-slate-300" />;
+}
+
+// Sortable header cell. Click toggles asc -> desc -> asc for the same
+// column, or resets to asc when a different column is clicked. Matches
+// the RvRunList sort-indicator style so the two grids feel identical.
+function SortableTh({
+  label, active, dir, onClick, align = 'left', title,
+}: {
+  label: string;
+  active: boolean;
+  dir: 'asc' | 'desc';
+  onClick: () => void;
+  align?: 'left' | 'center' | 'right';
+  title?: string;
+}) {
+  const alignCls = align === 'center' ? 'text-center' : align === 'right' ? 'text-right' : 'text-left';
+  return (
+    <th
+      className={`px-2 py-1 font-medium cursor-pointer select-none hover:text-text-primary ${alignCls}`}
+      onClick={onClick}
+      title={title}
+    >
+      {label}
+      {active && <span className="ml-0.5 text-[10px]">{dir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
+  );
+}
 
 // Expandable routed-shipment row + lazy item-progress panel. Extracted
 // to its own component so the useQuery hook count stays stable across
@@ -148,71 +246,348 @@ function FragmentRow({
   );
 }
 
-// Legs JSON payload shape (per DTO note: SP emits Legs as a JSON string
-// that clients must parse per-row).
-interface LegChip {
-  Leg: string;
-  LinehaulRunId?: number | null;
-  LinehaulRunName?: string | null;
-  ToDepot?: string | null;
-  State?: string | null;
-  PackedRole?: string | null;
+// Per-item barcode row shape returned by getBulkJobItems (mirrors
+// JobItemDto exactly). Local alias so the tree component doesn't have
+// to import the service type just to spell out the shape.
+type BulkItemRow = {
+  bulkJobItemId: number;
+  bulkJobId: number;
+  barcode: string | null;
+  itemName: string | null;
+  weight: number | null;
+  length: number | null;
+  height: number | null;
+  depth: number | null;
+  sortScanned: boolean;
+  runScanned: boolean;
+  pickScanned: boolean;
+  invalidPickScanned: boolean;
+  transferScanned: boolean;
+  transitScanned: boolean;
+};
+
+// Chevron affordance used on every expandable Bulk row (parent / child).
+// Extracted so parent-row and child-row markup stays skinny + the icon
+// direction stays consistent across levels.
+function ExpandChevron({ expanded, onClick, hidden = false }: {
+  expanded: boolean;
+  onClick: () => void;
+  hidden?: boolean;
+}) {
+  if (hidden) return <span className="inline-block w-3" aria-hidden />;
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="w-3 h-3 inline-flex items-center justify-center text-red-500 hover:text-red-700 align-middle"
+      aria-label={expanded ? 'Collapse' : 'Expand'}
+    >
+      <svg
+        width="9"
+        height="9"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+      >
+        <polyline points="9 6 15 12 9 18" />
+      </svg>
+    </button>
+  );
 }
 
-// State -> Tailwind background. Palette mirrors legacy .leg-state.<code>.
-function legTint(state: string | null | undefined): string {
-  const s = (state ?? '').toUpperCase();
-  if (s === 'DONE' || s === 'COMPLETE') return 'bg-emerald-100 text-emerald-800';
-  if (s === 'PARTIAL' || s === 'IN_TRANSIT' || s === 'INTRANSIT') return 'bg-amber-100 text-amber-800';
-  if (s === 'SHORT' || s === 'FAIL' || s === 'FAILED') return 'bg-red-100 text-red-800';
-  if (s === 'PENDING' || s === 'WAITING') return 'bg-slate-100 text-slate-700';
-  return 'bg-slate-100 text-slate-700';
-}
+// Bulk-mode parent row with lazy-loaded child + item sub-rows.
+// Level 1 = parent, Level 2 = child jobs (already in the parent's payload
+// courtesy of RVW_stpScanJobs which returns both parent + child rows via
+// BulkParentID linkage), Level 3 = per-item barcodes (lazy fetch through
+// /api/runviewer/jobs/items, wraps RVW_stpJobItems).
+//
+// Matches legacy scans/tpls/jobList.tpl parent/child/item structure
+// (lines 43-203) and scanControl.js toggleExpand/getChildItems flow
+// (lines 770-790). Item lazy-fetch pattern mirrors the Routed FragmentRow
+// item-progress lazy-load already established above.
+function BulkFragmentRow({
+  parent, childRows, active, expanded, expandedItemsFor, selectedRootJobId,
+  runDate, onSelect, onToggle, onToggleItems, dateFormatter, timeFormatter,
+}: {
+  parent: any;
+  childRows: any[];
+  active: boolean;
+  expanded: boolean;
+  expandedItemsFor: number[];
+  selectedRootJobId: number | null;
+  runDate: string;
+  onSelect: (id: number) => void;
+  onToggle: () => void;
+  onToggleItems: (bulkJobId: number) => void;
+  dateFormatter: (s: string | null) => string;
+  timeFormatter: (s: string | null) => string;
+}) {
+  // Legacy chevron rule: show when the row has real child jobs OR the
+  // items count is > 1 (single-item jobs can't be drilled). Same rule at
+  // parent + child level.
+  const parentHasDrill = childRows.length > 0 || parent.items > 1;
 
-function parseLegs(json: string | null): LegChip[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
-}
+  // Parent-level items expansion. Legacy `toggleExpand` (scanControl.js:770)
+  // routes a single chevron click: if the parent has children, expand the
+  // child sub-tree; if it has no children BUT items > 1, load per-item
+  // barcodes directly. Mirror that: for a childless parent, `expanded`
+  // gates the item fetch by itself; for a parent-with-children, item
+  // fetching happens at the child level instead.
+  const parentItemsQ = useQuery({
+    queryKey: ['sm-bulk-items', parent.bulkJobId, runDate],
+    queryFn: () => routeViewerService.getBulkJobItems(parent.bulkJobId, runDate),
+    enabled: expanded && childRows.length === 0 && parent.items > 1,
+    staleTime: 15_000,
+  });
 
-// Tri-state cell: 0 = pending (empty), 1 = complete (green tick),
-// 2 = exception (red x). Sort + Run only per T.4 correction.
-function TriStateCell({ v }: { v: number }) {
-  if (v === 1) {
-    return (
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500 text-white text-[10px]">
-        ✓
-      </span>
-    );
-  }
-  if (v === 2) {
-    return (
-      <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-500 text-white text-[10px]">
-        ✗
-      </span>
-    );
-  }
-  return <span className="inline-block w-4 h-4 rounded-full border border-slate-300" />;
-}
-
-// Binary cell: 0 = pending, 1 = complete. Pick / InvalidPick /
-// Transfer / Transit only per T.4.
-function BinaryCell({ v, tone = 'ok' }: { v: number; tone?: 'ok' | 'warn' }) {
-  if (v === 1) {
-    return (
-      <span
-        className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-white text-[10px] ${
-          tone === 'warn' ? 'bg-amber-500' : 'bg-emerald-500'
+  return (
+    <>
+      {/* PARENT ROW */}
+      <tr
+        onClick={() => onSelect(parent.bulkJobId)}
+        className={`cursor-pointer border-b border-border/50 ${
+          active ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
         }`}
       >
-        ✓
-      </span>
+        <td className="px-2 py-1">{parent.clientCode ?? '-'}</td>
+        <td className="px-2 py-1 font-mono">{parent.jobNumber ?? '-'}</td>
+        <td className="px-2 py-1">{dateFormatter(parent.deliveryDate) || '-'}</td>
+        <td className="px-2 py-1">{timeFormatter(parent.readyTime) || '-'}</td>
+        <td className="px-2 py-1 truncate max-w-[14rem]" title={parent.toAddress ?? undefined}>
+          {parent.toAddress ?? '-'}
+        </td>
+        <td className="px-2 py-1 text-center whitespace-nowrap">
+          {parent.items}
+          {parentHasDrill && (
+            <span className="ml-1"><ExpandChevron expanded={expanded} onClick={onToggle} /></span>
+          )}
+        </td>
+        <td className="px-2 py-1 text-center"><TriStateCell v={parent.sortScanned} /></td>
+        <td className="px-2 py-1 text-center"><TriStateCell v={parent.runScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={parent.pickScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={parent.invalidPickScanned} tone="warn" /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={parent.transferScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={parent.transitScanned} /></td>
+      </tr>
+
+      {/* CHILD ROWS (Level 2) */}
+      {expanded && childRows.map((child) => (
+        <BulkChildRow
+          key={child.bulkJobId}
+          child={child}
+          active={selectedRootJobId === child.bulkJobId}
+          itemsExpanded={expandedItemsFor.includes(child.bulkJobId)}
+          runDate={runDate}
+          onSelect={() => onSelect(child.bulkJobId)}
+          onToggleItems={() => onToggleItems(child.bulkJobId)}
+          dateFormatter={dateFormatter}
+          timeFormatter={timeFormatter}
+        />
+      ))}
+
+      {/* ITEM ROWS for parent directly (Level 3, no children path) */}
+      {expanded && childRows.length === 0 && parent.items > 1 && (
+        <BulkItemRows
+          isLoading={parentItemsQ.isLoading}
+          items={parentItemsQ.data ?? []}
+          indentPx={16}
+          jobNumber={parent.jobNumber ?? ''}
+        />
+      )}
+    </>
+  );
+}
+
+// Level-2 child row + optional Level-3 item sub-rows. Kept as its own
+// component so the useQuery hook count stays stable when the operator
+// expands/collapses siblings.
+function BulkChildRow({
+  child, active, itemsExpanded, runDate, onSelect, onToggleItems,
+  dateFormatter, timeFormatter,
+}: {
+  child: any;
+  active: boolean;
+  itemsExpanded: boolean;
+  runDate: string;
+  onSelect: () => void;
+  onToggleItems: () => void;
+  dateFormatter: (s: string | null) => string;
+  timeFormatter: (s: string | null) => string;
+}) {
+  const childHasDrill = child.items > 1;
+  const itemsQ = useQuery({
+    queryKey: ['sm-bulk-items', child.bulkJobId, runDate],
+    queryFn: () => routeViewerService.getBulkJobItems(child.bulkJobId, runDate),
+    enabled: itemsExpanded,
+    staleTime: 15_000,
+  });
+
+  return (
+    <>
+      <tr
+        onClick={onSelect}
+        className={`cursor-pointer border-b border-border/50 ${
+          active ? 'bg-brand-cyan/20' : 'hover:bg-slate-100/70'
+        } bg-slate-50/60`}
+      >
+        <td className="px-2 py-1"></td>
+        <td className="px-2 py-1 font-mono" style={{ paddingLeft: '20px' }}>
+          {child.jobNumber ?? '-'}
+        </td>
+        <td className="px-2 py-1">{dateFormatter(child.deliveryDate) || '-'}</td>
+        <td className="px-2 py-1">{timeFormatter(child.readyTime) || '-'}</td>
+        <td className="px-2 py-1 truncate max-w-[14rem]" title={child.toAddress ?? undefined}>
+          {child.toAddress ?? '-'}
+        </td>
+        <td className="px-2 py-1 text-center whitespace-nowrap">
+          {child.items}
+          {childHasDrill && (
+            <span className="ml-1"><ExpandChevron expanded={itemsExpanded} onClick={onToggleItems} /></span>
+          )}
+        </td>
+        <td className="px-2 py-1 text-center"><TriStateCell v={child.sortScanned} /></td>
+        <td className="px-2 py-1 text-center"><TriStateCell v={child.runScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={child.pickScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={child.invalidPickScanned} tone="warn" /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={child.transferScanned} /></td>
+        <td className="px-2 py-1 text-center"><BinaryCell v={child.transitScanned} /></td>
+      </tr>
+      {itemsExpanded && (
+        <BulkItemRows
+          isLoading={itemsQ.isLoading}
+          items={itemsQ.data ?? []}
+          indentPx={36}
+          jobNumber={child.jobNumber ?? ''}
+        />
+      )}
+    </>
+  );
+}
+
+// Level-3 per-item barcode rows. Rendered as one <tr> per item barcode
+// with binary tick/cross cells (per-item flags are bool on JobItemDto,
+// not tri-state - T.4 correction). Loading + empty states surface a
+// single spanned cell.
+function BulkItemRows({
+  isLoading, items, indentPx, jobNumber,
+}: {
+  isLoading: boolean;
+  items: BulkItemRow[];
+  indentPx: number;
+  jobNumber: string;
+}) {
+  if (isLoading) {
+    return (
+      <tr>
+        <td colSpan={12} className="px-3 py-2 text-center text-text-muted text-[11px] bg-emerald-50/60">
+          Loading items...
+        </td>
+      </tr>
     );
   }
-  return <span className="inline-block w-4 h-4 rounded-full border border-slate-300" />;
+  if (items.length === 0) {
+    return (
+      <tr>
+        <td colSpan={12} className="px-3 py-2 text-center text-text-muted text-[11px] bg-emerald-50/60">
+          No items on file.
+        </td>
+      </tr>
+    );
+  }
+  return (
+    <>
+      {items.map((it) => {
+        // Legacy label pattern: for child rows the barcode is displayed
+        // as "{jobNumber}-{lastSegmentOfBarcode}" (jobList.tpl:141).
+        const displayLabel = jobNumber && it.barcode?.includes('-')
+          ? `${jobNumber}-${it.barcode.split('-').pop()}`
+          : (it.barcode ?? '-');
+        return (
+          <tr key={it.bulkJobItemId} className="border-b border-border/40 bg-emerald-50/60">
+            <td className="px-2 py-1"></td>
+            <td className="px-2 py-1 font-mono text-[11px]" style={{ paddingLeft: `${indentPx}px` }}>
+              {displayLabel}
+            </td>
+            <td colSpan={3} className="px-2 py-1 text-[11px] text-text-muted">
+              W:{it.weight ?? '-'} L:{it.length ?? '-'} H:{it.height ?? '-'} D:{it.depth ?? '-'}
+            </td>
+            <td className="px-2 py-1"></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.sortScanned ? 1 : 0} /></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.runScanned ? 1 : 0} /></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.pickScanned ? 1 : 0} /></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.invalidPickScanned ? 1 : 0} tone="warn" /></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.transferScanned ? 1 : 0} /></td>
+            <td className="px-2 py-1 text-center"><BinaryCell v={it.transitScanned ? 1 : 0} /></td>
+          </tr>
+        );
+      })}
+    </>
+  );
 }
+
+// Column keys we sort by. Kept as a union so a typo becomes a compile
+// error instead of a silent null sort.
+type BulkSortKey =
+  | 'clientCode' | 'jobNumber' | 'deliveryDate' | 'readyTime' | 'toAddress'
+  | 'items' | 'sortScanned' | 'runScanned' | 'pickScanned' | 'invalidPickScanned'
+  | 'transferScanned' | 'transitScanned';
+
+type RoutedSortKey =
+  | 'clientCode' | 'jobNumber' | 'toAddress' | 'suburb' | 'stage'
+  | 'legs' | 'items' | 'flags';
+
+// 200ms text-input debounce, inlined so we don't add a global hook for
+// a single caller. Debounce fires from a leading-edge clear so an
+// operator typing "abc" only triggers the filter after they pause.
+function useDebounced<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Simple numbered pager. Kept local since neither Route Builder nor
+// Route Viewer have a shared paginator component (the only paged surface
+// is AutoAssignLog which paginates server-side via a different shape).
+function Pager({ page, pageCount, onChange }: { page: number; pageCount: number; onChange: (p: number) => void }) {
+  if (pageCount <= 1) return null;
+  // Elide long page runs into: 1 ... p-1 p p+1 ... last. Matches the
+  // legacy AngularJS $scope.pages window used by scans/tpls/jobList.tpl.
+  const pages: (number | 'gap')[] = [];
+  const push = (v: number | 'gap') => { pages.push(v); };
+  const win = 1;
+  push(1);
+  if (page - win > 2) push('gap');
+  for (let p = Math.max(2, page - win); p <= Math.min(pageCount - 1, page + win); p++) push(p);
+  if (page + win < pageCount - 1) push('gap');
+  if (pageCount > 1 && pages[pages.length - 1] !== pageCount) push(pageCount);
+  return (
+    <div className="flex items-center justify-center gap-1 px-2 py-1.5 border-t border-border bg-surface-white text-xs">
+      <Button variant="neutral" size="sm" onClick={() => onChange(page - 1)} disabled={page <= 1}>Prev</Button>
+      {pages.map((p, i) => p === 'gap' ? (
+        <span key={`gap-${i}`} className="px-1 text-text-muted">...</span>
+      ) : (
+        <Button
+          key={p}
+          variant="neutral"
+          size="sm"
+          active={p === page}
+          onClick={() => onChange(p)}
+          aria-label={`Page ${p}`}
+        >
+          {p}
+        </Button>
+      ))}
+      <Button variant="neutral" size="sm" onClick={() => onChange(page + 1)} disabled={page >= pageCount}>Next</Button>
+    </div>
+  );
+}
+
+const BULK_PAGE_SIZE = 100;
 
 export default function ScanManager() {
   const user = useAuth();
@@ -232,16 +607,72 @@ export default function ScanManager() {
     prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
   );
 
+  // Bulk mode: separate expand state trees.
+  // - expandedBulkParents: parent bulkJobIds where the child-jobs sub-tree
+  //   is currently open. Mirrors legacy `job.expanded`.
+  // - expandedBulkItemsFor: bulkJobIds (parent or child) whose per-item
+  //   barcode sub-rows are open. Mirrors legacy `job.expanded`/`child.expanded`
+  //   as it applies to the item-fetch layer.
+  const [expandedBulkParents, setExpandedBulkParents] = useState<number[]>([]);
+  const [expandedBulkItemsFor, setExpandedBulkItemsFor] = useState<number[]>([]);
+  const toggleBulkParent = (id: number) => setExpandedBulkParents((prev) =>
+    prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
+  );
+  const toggleBulkItems = (id: number) => setExpandedBulkItemsFor((prev) =>
+    prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
+  );
+
+  // Sort / filter / search / pagination state. Each grid keeps its own
+  // sort state so a user toggling modes does not lose the other grid's
+  // arrangement. Search + filters are shared across both modes since the
+  // task is filtering the same operational job set.
+  const [bulkSort, setBulkSort] = useState<{ key: BulkSortKey; dir: 'asc' | 'desc' }>({ key: 'jobNumber', dir: 'asc' });
+  const [routedSort, setRoutedSort] = useState<{ key: RoutedSortKey; dir: 'asc' | 'desc' }>({ key: 'jobNumber', dir: 'asc' });
+  // Filter state now stores IDs (matches MultiSelect's default) so we can
+  // forward directly to the SP via ClientIds / RegionIds / SpeedIds
+  // query-string filters. Server-side narrows the rowset at source rather
+  // than the client dropping rows post-fetch.
+  const [clientIds, setClientIds] = useState<string[]>([]);
+  const [regionIds, setRegionIds] = useState<string[]>([]);
+  const [speedIds, setSpeedIds] = useState<string[]>([]);
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebounced(searchInput, 200);
+  const [bulkPage, setBulkPage] = useState(1);
+
+  // Reset the pager when the operative row set changes (mode / filters
+  // / search / date all reshuffle the pool, so page 4 of the old view
+  // rarely maps to a useful page 4 of the new view).
+  useEffect(() => { setBulkPage(1); }, [mode, runDate, clientIds, regionIds, speedIds, search, clientInternal]);
+
+  const lookups = useRouteViewerLookups(runDate);
+
+  const clientIdsNum = useMemo(
+    () => (clientIds.length ? clientIds.map(Number) : undefined),
+    [clientIds],
+  );
+  const regionIdsNum = useMemo(
+    () => (regionIds.length ? regionIds.map(Number) : undefined),
+    [regionIds],
+  );
+  const speedIdsNum = useMemo(
+    () => (speedIds.length ? speedIds.map(Number) : undefined),
+    [speedIds],
+  );
+
   const bulkQ = useQuery({
-    queryKey: ['sm-bulk', runDate, clientInternal],
-    queryFn: () => routeViewerService.getBulkScanJobs(runDate, clientInternal),
+    queryKey: ['sm-bulk', runDate, clientInternal, clientIds, regionIds, speedIds],
+    queryFn: () => routeViewerService.getBulkScanJobs(
+      runDate, clientInternal, clientIdsNum, regionIdsNum, speedIdsNum,
+    ),
     enabled: mode === 'Bulk' && !!runDate,
     staleTime: 5_000,
   });
 
   const routedQ = useQuery({
-    queryKey: ['sm-routed', runDate],
-    queryFn: () => routeViewerService.getRoutedScanJobs(runDate),
+    queryKey: ['sm-routed', runDate, clientIds, regionIds, speedIds],
+    queryFn: () => routeViewerService.getRoutedScanJobs(
+      runDate, clientIdsNum, regionIdsNum, speedIdsNum,
+    ),
     enabled: mode === 'Routed' && !!runDate,
     staleTime: 5_000,
   });
@@ -262,15 +693,123 @@ export default function ScanManager() {
   const routedRows = routedQ.data ?? [];
   const detailRows = detailQ.data ?? [];
 
+  // Client-side narrowing. Region + Speed filters currently no-op on the
+  // scan rows because RVW_stpScanJobs / RVW_stpScanJobs_Routed don't
+  // expose RegionId / SpeedId per row. The dropdowns still render (per
+  // spec) so the UI is complete; wiring the filter body is a one-line
+  // change once the backend surfaces those fields.
+  const searchLower = search.trim().toLowerCase();
+  const searchNeedle = (fields: Array<string | null | undefined>) => {
+    if (!searchLower) return true;
+    return fields.some((f) => (f ?? '').toString().toLowerCase().includes(searchLower));
+  };
+
+  // Legacy `processJobData` (scanControl.js:751) split the flat SP rowset
+  // into parents (bulkParentId == null) + a child map keyed by
+  // bulkJobId -> child rows. Same split here so pagination + sort +
+  // search operate on parents only, with children looked up on demand
+  // by the tree component.
+  const bulkChildMap = useMemo(() => {
+    const map = new Map<number, typeof bulkRows>();
+    for (const r of bulkRows) {
+      if (r.bulkParentId != null) {
+        const arr = map.get(r.bulkParentId) ?? [];
+        arr.push(r);
+        map.set(r.bulkParentId, arr);
+      }
+    }
+    return map;
+  }, [bulkRows]);
+
+  const filteredBulk = useMemo(() => {
+    // Client-side layer: search only. Client/Region/Speed already
+    // narrowed at the SP layer via the queryKey above; children ride
+    // along with their parent in the tree render regardless of match.
+    return bulkRows.filter((r) =>
+      r.bulkParentId == null
+      && searchNeedle([r.clientCode, r.jobNumber, r.toAddress, r.readyTime, r.deliveryDate])
+    );
+  }, [bulkRows, searchLower]);
+
+  const filteredRouted = useMemo(() => {
+    return routedRows.filter((r) =>
+      searchNeedle([r.clientCode, r.jobNumber, r.toAddress, r.suburb, r.stage, r.companyName])
+    );
+  }, [routedRows, searchLower]);
+
+  const sortedBulk = useMemo(() => {
+    const mult = bulkSort.dir === 'asc' ? 1 : -1;
+    const copy = filteredBulk.slice();
+    copy.sort((a, b) => {
+      const av = (a as any)[bulkSort.key];
+      const bv = (b as any)[bulkSort.key];
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mult;
+      return String(av ?? '').localeCompare(String(bv ?? '')) * mult;
+    });
+    return copy;
+  }, [filteredBulk, bulkSort]);
+
+  const sortedRouted = useMemo(() => {
+    const mult = routedSort.dir === 'asc' ? 1 : -1;
+    const copy = filteredRouted.slice();
+    copy.sort((a, b) => {
+      let av: any = '';
+      let bv: any = '';
+      switch (routedSort.key) {
+        case 'legs': av = parseLegs(a.legs).length; bv = parseLegs(b.legs).length; break;
+        case 'items': av = a.scannedItems; bv = b.scannedItems; break;
+        case 'flags':
+          av = (a.hasShort ? 2 : 0) + (a.isDivergent ? 1 : 0);
+          bv = (b.hasShort ? 2 : 0) + (b.isDivergent ? 1 : 0);
+          break;
+        default:
+          av = (a as any)[routedSort.key];
+          bv = (b as any)[routedSort.key];
+      }
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mult;
+      return String(av ?? '').localeCompare(String(bv ?? '')) * mult;
+    });
+    return copy;
+  }, [filteredRouted, routedSort]);
+
+  const pageCount = Math.max(1, Math.ceil(sortedBulk.length / BULK_PAGE_SIZE));
+  const currentPage = Math.min(bulkPage, pageCount);
+  const pagedBulk = useMemo(
+    () => sortedBulk.slice((currentPage - 1) * BULK_PAGE_SIZE, currentPage * BULK_PAGE_SIZE),
+    [sortedBulk, currentPage],
+  );
+
+  const toggleBulkSort = (key: BulkSortKey) => setBulkSort((prev) =>
+    prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+  );
+  const toggleRoutedSort = (key: RoutedSortKey) => setRoutedSort((prev) =>
+    prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+  );
+
   const totals = useMemo(() => {
     if (mode === 'Bulk') {
-      const total = bulkRows.length;
-      const sortDone = bulkRows.filter((r) => r.sortScanned === 1).length;
-      const runDone = bulkRows.filter((r) => r.runScanned === 1).length;
+      const total = sortedBulk.length;
+      const sortDone = sortedBulk.filter((r) => r.sortScanned === 1).length;
+      const runDone = sortedBulk.filter((r) => r.runScanned === 1).length;
       return { total, sortDone, runDone };
     }
-    return { total: routedRows.length, sortDone: 0, runDone: 0 };
-  }, [mode, bulkRows, routedRows]);
+    return { total: sortedRouted.length, sortDone: 0, runDone: 0 };
+  }, [mode, sortedBulk, sortedRouted]);
+
+  // Option values are IDs so the MultiSelect selection maps 1:1 to the
+  // SP query-string filter without a label-to-ID lookup step.
+  const clientOptions = useMemo(
+    () => lookups.clients.map((c) => ({ value: String(c.id), label: c.label ?? '(unnamed)' })),
+    [lookups.clients],
+  );
+  const regionOptions = useMemo(
+    () => lookups.regions.map((r) => ({ value: String(r.id), label: r.label })),
+    [lookups.regions],
+  );
+  const speedOptions = useMemo(
+    () => lookups.speeds.map((s) => ({ value: String(s.id), label: s.label })),
+    [lookups.speeds],
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -333,6 +872,40 @@ export default function ScanManager() {
             Remove missing boxes
           </Button>
         )}
+
+        {/* Client / Region / Speed multi-selects. Reuses the shared
+            MultiSelect from RvFilterBar. Selections forward to the SP
+            via ClientIds / RegionIds / SpeedIds query-string filters
+            so the WHERE clause tightens at source rather than dropping
+            rows post-fetch. */}
+        <MultiSelect
+          label="Clients"
+          options={clientOptions}
+          selected={clientIds}
+          onChange={setClientIds}
+        />
+        <MultiSelect
+          label="Regions"
+          options={regionOptions}
+          selected={regionIds}
+          onChange={setRegionIds}
+        />
+        <MultiSelect
+          label="Speeds"
+          options={speedOptions}
+          selected={speedIds}
+          onChange={setSpeedIds}
+        />
+
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search jobs..."
+          className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white min-w-[10rem]"
+          aria-label="Search jobs"
+        />
+
         <div className="ml-auto text-xs text-text-muted">
           {mode === 'Bulk'
             ? `${totals.total} jobs, ${totals.sortDone} sort scanned, ${totals.runDone} run scanned`
@@ -348,53 +921,50 @@ export default function ScanManager() {
       </div>
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto flex flex-col">
           <RvBox title={mode === 'Bulk' ? 'Bulk Scans' : 'Routed Scans'}>
             {mode === 'Bulk' && (
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-surface-white border-b border-border">
                   <tr className="text-left text-text-muted">
-                    <th className="px-2 py-1">Client</th>
-                    <th className="px-2 py-1">Job #</th>
-                    <th className="px-2 py-1">D Date</th>
-                    <th className="px-2 py-1">R Time</th>
-                    <th className="px-2 py-1">Address</th>
-                    <th className="px-2 py-1 text-center">Items</th>
-                    <th className="px-2 py-1 text-center" title="Sort">S</th>
-                    <th className="px-2 py-1 text-center" title="Run">R</th>
-                    <th className="px-2 py-1 text-center" title="Pickup">P</th>
-                    <th className="px-2 py-1 text-center" title="Invalid Pickup">iP</th>
-                    <th className="px-2 py-1 text-center" title="Transfer">T</th>
-                    <th className="px-2 py-1 text-center" title="In Transit">iT</th>
+                    <SortableTh label="Client" active={bulkSort.key === 'clientCode'} dir={bulkSort.dir} onClick={() => toggleBulkSort('clientCode')} />
+                    <SortableTh label="Job #" active={bulkSort.key === 'jobNumber'} dir={bulkSort.dir} onClick={() => toggleBulkSort('jobNumber')} />
+                    <SortableTh label="D Date" active={bulkSort.key === 'deliveryDate'} dir={bulkSort.dir} onClick={() => toggleBulkSort('deliveryDate')} />
+                    <SortableTh label="R Time" active={bulkSort.key === 'readyTime'} dir={bulkSort.dir} onClick={() => toggleBulkSort('readyTime')} />
+                    <SortableTh label="Address" active={bulkSort.key === 'toAddress'} dir={bulkSort.dir} onClick={() => toggleBulkSort('toAddress')} />
+                    <SortableTh label="Items" align="center" active={bulkSort.key === 'items'} dir={bulkSort.dir} onClick={() => toggleBulkSort('items')} />
+                    <SortableTh label="S" align="center" title="Sort" active={bulkSort.key === 'sortScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('sortScanned')} />
+                    <SortableTh label="R" align="center" title="Run" active={bulkSort.key === 'runScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('runScanned')} />
+                    <SortableTh label="P" align="center" title="Pickup" active={bulkSort.key === 'pickScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('pickScanned')} />
+                    <SortableTh label="iP" align="center" title="Invalid Pickup" active={bulkSort.key === 'invalidPickScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('invalidPickScanned')} />
+                    <SortableTh label="T" align="center" title="Transfer" active={bulkSort.key === 'transferScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('transferScanned')} />
+                    <SortableTh label="iT" align="center" title="In Transit" active={bulkSort.key === 'transitScanned'} dir={bulkSort.dir} onClick={() => toggleBulkSort('transitScanned')} />
                   </tr>
                 </thead>
                 <tbody>
-                  {bulkRows.map((r) => {
+                  {pagedBulk.map((r) => {
                     const active = selectedRootJobId === r.bulkJobId;
+                    const children = bulkChildMap.get(r.bulkJobId) ?? [];
+                    const expanded = expandedBulkParents.includes(r.bulkJobId);
                     return (
-                      <tr
+                      <BulkFragmentRow
                         key={r.bulkJobId}
-                        onClick={() => setSelectedRootJobId(r.bulkJobId)}
-                        className={`cursor-pointer border-b border-border/50 ${
-                          active ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
-                        }`}
-                      >
-                        <td className="px-2 py-1">{r.clientCode ?? '-'}</td>
-                        <td className="px-2 py-1 font-mono">{r.jobNumber ?? '-'}</td>
-                        <td className="px-2 py-1">{tenantDateFromSpString(r.deliveryDate, user.isUsTenant) || '-'}</td>
-                        <td className="px-2 py-1">{tenantTimeFromSpString(r.readyTime, user.isUsTenant) || '-'}</td>
-                        <td className="px-2 py-1 truncate max-w-[14rem]" title={r.toAddress ?? undefined}>{r.toAddress ?? '-'}</td>
-                        <td className="px-2 py-1 text-center">{r.items}</td>
-                        <td className="px-2 py-1 text-center"><TriStateCell v={r.sortScanned} /></td>
-                        <td className="px-2 py-1 text-center"><TriStateCell v={r.runScanned} /></td>
-                        <td className="px-2 py-1 text-center"><BinaryCell v={r.pickScanned} /></td>
-                        <td className="px-2 py-1 text-center"><BinaryCell v={r.invalidPickScanned} tone="warn" /></td>
-                        <td className="px-2 py-1 text-center"><BinaryCell v={r.transferScanned} /></td>
-                        <td className="px-2 py-1 text-center"><BinaryCell v={r.transitScanned} /></td>
-                      </tr>
+                        parent={r}
+                        childRows={children}
+                        active={active}
+                        expanded={expanded}
+                        expandedItemsFor={expandedBulkItemsFor}
+                        selectedRootJobId={selectedRootJobId}
+                        runDate={runDate}
+                        onSelect={setSelectedRootJobId}
+                        onToggle={() => toggleBulkParent(r.bulkJobId)}
+                        onToggleItems={toggleBulkItems}
+                        dateFormatter={(s) => tenantDateFromSpString(s, user.isUsTenant)}
+                        timeFormatter={(s) => tenantTimeFromSpString(s, user.isUsTenant)}
+                      />
                     );
                   })}
-                  {bulkRows.length === 0 && !bulkQ.isLoading && (
+                  {sortedBulk.length === 0 && !bulkQ.isLoading && (
                     <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={12}>No scan rows for this date.</td></tr>
                   )}
                   {bulkQ.isLoading && (
@@ -408,18 +978,18 @@ export default function ScanManager() {
                 <thead className="sticky top-0 bg-surface-white border-b border-border">
                   <tr className="text-left text-text-muted">
                     <th className="px-2 py-1 w-6"></th>
-                    <th className="px-2 py-1">Client</th>
-                    <th className="px-2 py-1">Job #</th>
-                    <th className="px-2 py-1">Address</th>
-                    <th className="px-2 py-1">Suburb</th>
-                    <th className="px-2 py-1">Stage</th>
-                    <th className="px-2 py-1 text-center">Legs</th>
-                    <th className="px-2 py-1 text-center">Items</th>
-                    <th className="px-2 py-1 text-center">Flags</th>
+                    <SortableTh label="Client" active={routedSort.key === 'clientCode'} dir={routedSort.dir} onClick={() => toggleRoutedSort('clientCode')} />
+                    <SortableTh label="Job #" active={routedSort.key === 'jobNumber'} dir={routedSort.dir} onClick={() => toggleRoutedSort('jobNumber')} />
+                    <SortableTh label="Address" active={routedSort.key === 'toAddress'} dir={routedSort.dir} onClick={() => toggleRoutedSort('toAddress')} />
+                    <SortableTh label="Suburb" active={routedSort.key === 'suburb'} dir={routedSort.dir} onClick={() => toggleRoutedSort('suburb')} />
+                    <SortableTh label="Stage" active={routedSort.key === 'stage'} dir={routedSort.dir} onClick={() => toggleRoutedSort('stage')} />
+                    <SortableTh label="Legs" align="center" active={routedSort.key === 'legs'} dir={routedSort.dir} onClick={() => toggleRoutedSort('legs')} />
+                    <SortableTh label="Items" align="center" active={routedSort.key === 'items'} dir={routedSort.dir} onClick={() => toggleRoutedSort('items')} />
+                    <SortableTh label="Flags" align="center" active={routedSort.key === 'flags'} dir={routedSort.dir} onClick={() => toggleRoutedSort('flags')} />
                   </tr>
                 </thead>
                 <tbody>
-                  {routedRows.map((r) => {
+                  {sortedRouted.map((r) => {
                     const active = selectedRootJobId === r.jobId;
                     const expanded = expandedIds.includes(r.jobId);
                     const legs = parseLegs(r.legs);
@@ -435,7 +1005,7 @@ export default function ScanManager() {
                       />
                     );
                   })}
-                  {routedRows.length === 0 && !routedQ.isLoading && (
+                  {sortedRouted.length === 0 && !routedQ.isLoading && (
                     <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={9}>No routed shipments for this date.</td></tr>
                   )}
                   {routedQ.isLoading && (
@@ -445,6 +1015,9 @@ export default function ScanManager() {
               </table>
             )}
           </RvBox>
+          {mode === 'Bulk' && (
+            <Pager page={currentPage} pageCount={pageCount} onChange={setBulkPage} />
+          )}
         </div>
 
         <div className="w-96 border-l border-border overflow-auto">

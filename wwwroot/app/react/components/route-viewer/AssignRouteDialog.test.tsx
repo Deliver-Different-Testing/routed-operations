@@ -11,6 +11,20 @@ const stubCouriers = (rows: Array<{ courierId: number; code: string; name: strin
     HttpResponse.json({ response: rows }),
   );
 
+// Agent + NP share one endpoint; capture the URL so tests can assert
+// which slice (isNetworkPartner) was requested + which jobId was scoped.
+const stubAgents = (
+  rows: Array<{ id: number; name: string | null; hint: string | null }>,
+  capture?: (url: URL) => void,
+) =>
+  http.get(
+    '/api/runviewer/jobs/:jobId/assignable-targets/agents',
+    ({ request }) => {
+      if (capture) capture(new URL(request.url));
+      return HttpResponse.json({ response: rows });
+    },
+  );
+
 function renderDlg(props: Partial<Parameters<typeof AssignRouteDialog>[0]> = {}) {
   const defaults = {
     runId: 5,
@@ -29,6 +43,7 @@ describe('AssignRouteDialog', () => {
       isNetworkPartner: false,
     };
     server.use(stubCouriers([]));
+    server.use(stubAgents([]));
   });
 
   it('renders "Assign route" title for admin', () => {
@@ -48,14 +63,6 @@ describe('AssignRouteDialog', () => {
     renderDlg();
     // Radio labels rendered as capitalize / Network Partner
     expect(screen.getAllByRole('radio')).toHaveLength(3);
-  });
-
-  it('shows "search wires up in P6b" note when agent bucket picked', async () => {
-    renderDlg();
-    const user = userEvent.setup();
-    const radios = screen.getAllByRole('radio');
-    await user.click(radios[1]); // agent
-    expect(await screen.findByText(/agent search wires up in P6b/)).toBeInTheDocument();
   });
 
   it('runs courier search after debounce + lists rows', async () => {
@@ -126,5 +133,134 @@ describe('AssignRouteDialog', () => {
     await waitFor(() =>
       expect(screen.getByText(/No matches - type to search/)).toBeInTheDocument(),
     );
+  });
+
+  // ---------------------------------------------------------------------
+  // Agent + NP bucket wiring (both hit
+  // /runviewer/jobs/{jobId}/assignable-targets/agents distinguished by
+  // isNetworkPartner). Assertions cover:
+  //   1. The correct endpoint is called (URL captured via MSW).
+  //   2. The isNetworkPartner query param matches the picked bucket.
+  //   3. anchorJobId (Props) surfaces as the {jobId} path segment; if
+  //      omitted, the dialog passes 0.
+  //   4. limit=200 (the initial pre-fetch page size per master spec).
+  //   5. Result rows render (label from name, subtitle from hint).
+  // ---------------------------------------------------------------------
+
+  it('agent tab hits /assignable-targets/agents with isNetworkPartner=false + limit=200', async () => {
+    let seen!: URL;
+    server.use(
+      stubAgents(
+        [{ id: 7, name: 'Northern Freight', hint: 'AKL' }],
+        (u) => (seen = u),
+      ),
+    );
+    renderDlg({ anchorJobId: 123 });
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[1]); // agent
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Northern Freight/ })).toBeInTheDocument(),
+    );
+    expect(seen.pathname).toBe('/api/runviewer/jobs/123/assignable-targets/agents');
+    expect(seen.searchParams.get('isNetworkPartner')).toBe('false');
+    expect(seen.searchParams.get('limit')).toBe('200');
+    // Subtitle comes from hint field.
+    expect(screen.getByText('AKL')).toBeInTheDocument();
+  });
+
+  it('np tab hits /assignable-targets/agents with isNetworkPartner=true + limit=200', async () => {
+    let seen!: URL;
+    server.use(
+      stubAgents(
+        [{ id: 42, name: 'Bluebird NP', hint: null }],
+        (u) => (seen = u),
+      ),
+    );
+    renderDlg({ anchorJobId: 456 });
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[2]); // np
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Bluebird NP/ })).toBeInTheDocument(),
+    );
+    expect(seen.pathname).toBe('/api/runviewer/jobs/456/assignable-targets/agents');
+    expect(seen.searchParams.get('isNetworkPartner')).toBe('true');
+    expect(seen.searchParams.get('limit')).toBe('200');
+  });
+
+  it('agent search defaults jobId to 0 when anchorJobId not passed', async () => {
+    let seen!: URL;
+    server.use(stubAgents([], (u) => (seen = u)));
+    renderDlg(); // no anchorJobId
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[1]); // agent
+    await waitFor(() => expect(seen).toBeDefined());
+    expect(seen.pathname).toBe('/api/runviewer/jobs/0/assignable-targets/agents');
+  });
+
+  it('agent typeahead forwards the q param after 250ms debounce', async () => {
+    let seen!: URL;
+    server.use(
+      stubAgents(
+        [{ id: 1, name: 'North Freight', hint: null }],
+        (u) => (seen = u),
+      ),
+    );
+    renderDlg({ anchorJobId: 10 });
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[1]);
+    await user.type(screen.getByPlaceholderText(/Search agents/), 'nor');
+    await waitFor(() => expect(seen.searchParams.get('q')).toBe('nor'));
+  });
+
+  it('placeholder text is "Search network partners..." on np tab', async () => {
+    renderDlg();
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[2]);
+    expect(
+      screen.getByPlaceholderText(/Search network partners/),
+    ).toBeInTheDocument();
+  });
+
+  it('picking an agent + assigning sends agentId in the payload', async () => {
+    let assignPayload: any = null;
+    server.use(
+      stubAgents([{ id: 77, name: 'Northshore', hint: null }]),
+      http.post('/api/runviewer/jobs/assign', async ({ request }) => {
+        assignPayload = await request.json();
+        return HttpResponse.json({ response: { assigned: 2 } });
+      }),
+    );
+    const props = renderDlg({ anchorJobId: 1 });
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[1]); // agent
+    await user.click(await screen.findByRole('button', { name: /Northshore/ }));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(assignPayload).toMatchObject({ agentId: 77 });
+  });
+
+  it('picking an NP + assigning sends npAgentId in the payload', async () => {
+    let assignPayload: any = null;
+    server.use(
+      stubAgents([{ id: 88, name: 'Regional NP', hint: null }]),
+      http.post('/api/runviewer/jobs/assign', async ({ request }) => {
+        assignPayload = await request.json();
+        return HttpResponse.json({ response: { assigned: 1 } });
+      }),
+    );
+    const props = renderDlg({ anchorJobId: 1 });
+    const user = userEvent.setup();
+    const radios = screen.getAllByRole('radio');
+    await user.click(radios[2]); // np
+    await user.click(await screen.findByRole('button', { name: /Regional NP/ }));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(assignPayload).toMatchObject({ npAgentId: 88 });
   });
 });

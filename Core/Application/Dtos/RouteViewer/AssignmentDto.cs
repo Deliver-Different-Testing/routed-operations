@@ -67,6 +67,14 @@ public class UnAssignRunRequest
     public string CourierCode { get; set; } = string.Empty;
 }
 
+/// <summary>Payload for POST /api/runviewer/jobs/transfer-original-run-order.
+/// Reassigns a run's original owner. Wraps RVW_stpTransferOriginalRunOrder.</summary>
+public class TransferOriginalRunOrderRequest
+{
+    public int RunId { get; set; }
+    public string ToCourierCode { get; set; } = string.Empty;
+}
+
 public class BulkAssignmentResult
 {
     public int Succeeded { get; set; }

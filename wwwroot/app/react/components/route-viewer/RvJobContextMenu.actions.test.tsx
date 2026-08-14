@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { RvJobContextMenu } from './RvJobContextMenu';
@@ -36,11 +37,19 @@ function renderMenu(over: Partial<Parameters<typeof RvJobContextMenu>[0]> = {}) 
     x: 10,
     y: 10,
     jobs: [mkJob()],
+    runDate: '2026-08-14',
     onClose: vi.fn(),
     onDone: vi.fn(),
   };
   const props = { ...defaults, ...over };
-  renderWithProviders(<RvJobContextMenu {...props} />);
+  // Move-back dialog uses useRouteViewerLookups (React Query) so tests
+  // that click through it need a QueryClientProvider.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderWithProviders(
+    <QueryClientProvider client={client}>
+      <RvJobContextMenu {...props} />
+    </QueryClientProvider>,
+  );
   return props;
 }
 
@@ -170,18 +179,33 @@ describe('RvJobContextMenu (actions)', () => {
     await waitFor(() => expect(hit).toBe(1));
   });
 
-  it('move back to RunBuilder: confirms + POSTs', async () => {
+  it('move back to RunBuilder: opens the dialog (no confirm) and submits with default keep=false', async () => {
     let hit = 0;
+    let seen: any = null;
     server.use(
-      http.post('/api/runviewer/jobs/move-back-to-runbuilder', () => {
+      http.get('/api/runviewer/filters/speeds', () =>
+        HttpResponse.json({ response: [{ id: 1, label: 'Standard' }, { id: 5, label: 'Express' }] }),
+      ),
+      http.get('/api/runviewer/filters/clients', () => HttpResponse.json({ response: [] })),
+      http.get('/api/runviewer/filters/regions', () => HttpResponse.json({ response: [] })),
+      http.post('/api/runviewer/jobs/move-back-to-runbuilder', async (info) => {
         hit++;
+        seen = await info.request.json();
         return HttpResponse.json({ response: 'ok' });
       }),
     );
-    renderMenu();
+    const props = renderMenu();
     const user = userEvent.setup();
     await user.click(screen.getByText('Move back to RunBuilder'));
-    await user.click(await screen.findByRole('button', { name: 'OK' }));
+    // The dialog should open (title in the header of the Modal).
+    await screen.findByRole('heading', { name: 'Move back to RunBuilder' });
+    // Confirm the primary Submit button is the new dialog button, not
+    // the ConfirmContext OK / Cancel prompt.
+    await user.click(screen.getByRole('button', { name: /Move to RunBuilder/ }));
     await waitFor(() => expect(hit).toBe(1));
+    expect(seen.bulkJobIds).toEqual([1]);
+    // Default keep=false => voidOriginal=true on the wire.
+    expect(seen.void).toBe(true);
+    expect(props.onDone).toHaveBeenCalled();
   });
 });

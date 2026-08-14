@@ -34,16 +34,16 @@ export default defineConfig({
       // is 100% raw; the floor rises as coverage backfills. Reviewer bumps
       // these numbers when a follow-up MR pushes coverage higher.
       thresholds: {
-        // Baseline measured 2026-08-13 after Wave 5 ceiling-file push
-        // landed 1,676 tests: statements/lines 86.79% / branches 80.81% /
-        // functions 74.58%. Floors set below the baseline with a small
-        // safety margin so accidental regressions fail CI but small dips
-        // do not. Kevin's Option A target is 100% raw; bump floor upward
-        // every MR that meaningfully raises coverage.
-        lines: 82,
-        statements: 82,
-        branches: 76,
-        functions: 70,
+        // Ratcheted 2026-08-14 after the ToastContext CI fix settled the
+        // run at statements/lines 88.35% / branches 81.14% / functions
+        // 75.14%. Floors sit ~2pt below the measured baseline so
+        // accidental regressions fail CI but small dips do not. Kevin's
+        // Option A target is 100% raw; bump floor upward every MR that
+        // meaningfully raises coverage.
+        lines: 86,
+        statements: 86,
+        branches: 79,
+        functions: 73,
       },
     },
   },

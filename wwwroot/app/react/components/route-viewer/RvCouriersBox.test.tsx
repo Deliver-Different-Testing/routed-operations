@@ -36,28 +36,115 @@ const mkCourier = (over: Record<string, any> = {}) => ({
   ...over,
 });
 
-describe('RvCouriersBox', () => {
+async function drillInto(fleetName: string) {
+  const cell = await screen.findByText(fleetName);
+  fireEvent.click(cell);
+}
+
+describe('RvCouriersBox - Fleets view', () => {
   beforeEach(() => {
     server.use(stubCouriers([]));
   });
 
-  it('renders header and empty-state row when SP returns no rows', async () => {
+  it('renders the Fleets header and empty-state row when SP returns no rows', async () => {
     server.use(stubCouriers([]));
     renderBox();
-    expect(screen.getByText('Couriers')).toBeInTheDocument();
+    expect(screen.getByText('Fleets')).toBeInTheDocument();
     expect(
       await screen.findByText(/No active couriers for this date\./),
     ).toBeInTheDocument();
   });
 
-  it('renders a row per courier with the expected cells', async () => {
+  it('groups couriers by fleet with a per-fleet courier count', async () => {
     server.use(
       stubCouriers([
-        mkCourier({ courierId: 1, code: 'KEV', name: 'Kev T', vehicleType: 'Van', activeJobs: 2 }),
-        mkCourier({ courierId: 2, code: 'ACE', name: 'Ace X', vehicleType: 'Ute', activeJobs: 5 }),
+        mkCourier({ courierId: 1, code: 'KEV', fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'ACE', fleet: 'FleetA' }),
+        mkCourier({ courierId: 3, code: 'ZED', fleet: 'FleetB' }),
       ]),
     );
     renderBox();
+    expect(await screen.findByText('FleetA')).toBeInTheDocument();
+    expect(screen.getByText('FleetB')).toBeInTheDocument();
+    const rows = document.querySelectorAll('tbody tr');
+    // 2 fleets => 2 rows.
+    expect(rows.length).toBe(2);
+    // FleetA row shows count 2, FleetB row shows count 1.
+    const aRow = Array.from(rows).find((r) => r.textContent?.includes('FleetA'))!;
+    const bRow = Array.from(rows).find((r) => r.textContent?.includes('FleetB'))!;
+    expect(aRow.textContent).toContain('2');
+    expect(bRow.textContent).toContain('1');
+  });
+
+  it('buckets couriers with no fleet under an Unassigned group', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'ORP', fleet: undefined }),
+        mkCourier({ courierId: 2, code: 'BLK', fleet: '' }),
+      ]),
+    );
+    renderBox();
+    expect(await screen.findByText('Unassigned')).toBeInTheDocument();
+  });
+});
+
+describe('RvCouriersBox - drill-down transition', () => {
+  beforeEach(() => {
+    server.use(stubCouriers([]));
+  });
+
+  it('clicking a fleet shows its couriers, and the back arrow returns to fleets', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'KEV', name: 'Kev T', fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'ACE', name: 'Ace X', fleet: 'FleetA' }),
+        mkCourier({ courierId: 3, code: 'ZED', name: 'Zed Z', fleet: 'FleetB' }),
+      ]),
+    );
+    renderBox();
+
+    // Start on Fleets view.
+    expect(await screen.findByText('FleetA')).toBeInTheDocument();
+    expect(screen.getByText('Fleets')).toBeInTheDocument();
+    expect(screen.queryByText('KEV')).not.toBeInTheDocument();
+
+    // Drill into FleetA.
+    await drillInto('FleetA');
+
+    // Subtitle switches to "Couriers for FleetA".
+    expect(await screen.findByText('Couriers for FleetA')).toBeInTheDocument();
+    // Both FleetA couriers are visible.
+    expect(screen.getByText('KEV')).toBeInTheDocument();
+    expect(screen.getByText('ACE')).toBeInTheDocument();
+    // FleetB's courier is NOT.
+    expect(screen.queryByText('ZED')).not.toBeInTheDocument();
+
+    // Back to Fleets via the affordance in the header actions.
+    const back = screen.getByTitle('Back to Fleets');
+    fireEvent.click(back);
+
+    // Fleets header is back and the couriers no longer render.
+    expect(await screen.findByText('Fleets')).toBeInTheDocument();
+    expect(screen.queryByText('KEV')).not.toBeInTheDocument();
+    expect(screen.getByText('FleetA')).toBeInTheDocument();
+    expect(screen.getByText('FleetB')).toBeInTheDocument();
+  });
+});
+
+describe('RvCouriersBox - Couriers view (after drill-down)', () => {
+  beforeEach(() => {
+    server.use(stubCouriers([]));
+  });
+
+  it('renders a row per courier with the expected cells', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'KEV', name: 'Kev T', vehicleType: 'Van', activeJobs: 2, fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'ACE', name: 'Ace X', vehicleType: 'Ute', activeJobs: 5, fleet: 'FleetA' }),
+      ]),
+    );
+    renderBox();
+    await drillInto('FleetA');
     expect(await screen.findByText('KEV')).toBeInTheDocument();
     expect(screen.getByText('Kev T')).toBeInTheDocument();
     expect(screen.getByText('ACE')).toBeInTheDocument();
@@ -71,10 +158,11 @@ describe('RvCouriersBox', () => {
   it('renders a dash for missing vehicleType and zero for missing activeJobs', async () => {
     server.use(
       stubCouriers([
-        mkCourier({ courierId: 1, code: 'ABC', name: 'Alpha Beta', vehicleType: undefined, activeJobs: undefined }),
+        mkCourier({ courierId: 1, code: 'ABC', name: 'Alpha Beta', vehicleType: undefined, activeJobs: undefined, fleet: 'FleetA' }),
       ]),
     );
     renderBox();
+    await drillInto('FleetA');
     expect(await screen.findByText('ABC')).toBeInTheDocument();
     expect(screen.getByText('-')).toBeInTheDocument();
     expect(screen.getByText('0')).toBeInTheDocument();
@@ -83,10 +171,11 @@ describe('RvCouriersBox', () => {
   it('applies light-load background when activeJobs <=3', async () => {
     server.use(
       stubCouriers([
-        mkCourier({ courierId: 7, code: 'LIT', name: 'Lite', activeJobs: 1 }),
+        mkCourier({ courierId: 7, code: 'LIT', name: 'Lite', activeJobs: 1, fleet: 'FleetA' }),
       ]),
     );
-    const { container } = renderBox() as any;
+    renderBox();
+    await drillInto('FleetA');
     await screen.findByText('LIT');
     expect(document.querySelector('.bg-brand-cyan\\/5')).toBeInTheDocument();
   });
@@ -94,11 +183,12 @@ describe('RvCouriersBox', () => {
   it('shows green dot when isAvailable and slate when offline', async () => {
     server.use(
       stubCouriers([
-        mkCourier({ courierId: 1, code: 'ON', name: 'On', isAvailable: true }),
-        mkCourier({ courierId: 2, code: 'OFF', name: 'Off', isAvailable: false }),
+        mkCourier({ courierId: 1, code: 'ON', name: 'On', isAvailable: true, fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'OFF', name: 'Off', isAvailable: false, fleet: 'FleetA' }),
       ]),
     );
     renderBox();
+    await drillInto('FleetA');
     await screen.findByText('ON');
     expect(document.querySelector('.bg-emerald-500')).toBeInTheDocument();
     expect(document.querySelector('.bg-slate-300')).toBeInTheDocument();
@@ -106,22 +196,26 @@ describe('RvCouriersBox', () => {
 
   it('fires onPick with courierId when row clicked', async () => {
     server.use(
-      stubCouriers([mkCourier({ courierId: 42, code: 'CLK', name: 'Click Me' })]),
+      stubCouriers([mkCourier({ courierId: 42, code: 'CLK', name: 'Click Me', fleet: 'FleetA' })]),
     );
     const onPick = vi.fn();
     renderBox({ onPick });
+    await drillInto('FleetA');
     const codeCell = await screen.findByText('CLK');
     fireEvent.click(codeCell);
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(42));
   });
 
-  it('does NOT wire click cursor when onPick is not passed', async () => {
+  it('does NOT wire click cursor on courier rows when onPick is not passed', async () => {
     server.use(
-      stubCouriers([mkCourier({ courierId: 1, code: 'NO', name: 'No' })]),
+      stubCouriers([mkCourier({ courierId: 1, code: 'NO', name: 'No', fleet: 'FleetA' })]),
     );
     renderBox();
+    await drillInto('FleetA');
     await screen.findByText('NO');
-    // Without onPick, no `cursor-pointer` on the row wrapper style.
+    // Fleet row + courier row both live in the tbody at different times;
+    // after drill-down, only the courier row is present. Assert THAT row
+    // has no cursor-pointer.
     const rows = document.querySelectorAll('tbody tr');
     const withCursor = Array.from(rows).some((r) =>
       r.className.includes('cursor-pointer'),
@@ -132,10 +226,11 @@ describe('RvCouriersBox', () => {
   it('drag start sets the courier-code + courier-id on dataTransfer', async () => {
     server.use(
       stubCouriers([
-        mkCourier({ courierId: 9, code: 'DRG', name: 'Drag' }),
+        mkCourier({ courierId: 9, code: 'DRG', name: 'Drag', fleet: 'FleetA' }),
       ]),
     );
     renderBox();
+    await drillInto('FleetA');
     await screen.findByText('DRG');
     const row = document.querySelector('tr[draggable="true"]') as HTMLElement;
     expect(row).not.toBeNull();

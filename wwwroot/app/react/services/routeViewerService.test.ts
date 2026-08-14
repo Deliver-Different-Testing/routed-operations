@@ -151,6 +151,39 @@ describe('routeViewerService - couriers', () => {
     expect(seen.searchParams.get('q')).toBe('foo');
   });
 
+  it('searchAgents GETs /runviewer/jobs/{jobId}/assignable-targets/agents with isNetworkPartner=false', async () => {
+    let seen!: URL;
+    server.use(
+      http.get(
+        '/api/runviewer/jobs/:jobId/assignable-targets/agents',
+        ({ request }) => {
+          seen = new URL(request.url);
+          return HttpResponse.json({ response: [] });
+        },
+      ),
+    );
+    await routeViewerService.searchAgents(42, 'north', false, 200);
+    expect(seen.pathname).toBe('/api/runviewer/jobs/42/assignable-targets/agents');
+    expect(seen.searchParams.get('q')).toBe('north');
+    expect(seen.searchParams.get('isNetworkPartner')).toBe('false');
+    expect(seen.searchParams.get('limit')).toBe('200');
+  });
+
+  it('searchAgents forwards isNetworkPartner=true for the NP bucket', async () => {
+    let seen!: URL;
+    server.use(
+      http.get(
+        '/api/runviewer/jobs/:jobId/assignable-targets/agents',
+        ({ request }) => {
+          seen = new URL(request.url);
+          return HttpResponse.json({ response: [] });
+        },
+      ),
+    );
+    await routeViewerService.searchAgents(7, '', true, 200);
+    expect(seen.searchParams.get('isNetworkPartner')).toBe('true');
+  });
+
   it('getCourierPosition GETs /runviewer/couriers/position', async () => {
     server.use(wrapGet('/api/runviewer/couriers/position', null));
     const r = await routeViewerService.getCourierPosition(1);
@@ -170,6 +203,20 @@ describe('routeViewerService - scans / events', () => {
     await routeViewerService.getBulkScanJobs('2026-08-13', true);
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
     expect(seen.searchParams.get('clientInternal')).toBe('true');
+  });
+
+  it('getPrintJobList GETs /runviewer/jobs/print-list with filters', async () => {
+    let seen!: URL;
+    server.use(wrapGet('/api/runviewer/jobs/print-list', [], (u) => (seen = u)));
+    await routeViewerService.getPrintJobList('2026-08-14', {
+      clientInternal: true,
+      clientIds: [1, 2],
+      regionIds: [7],
+    });
+    expect(seen.searchParams.get('runDate')).toBe('2026-08-14');
+    expect(seen.searchParams.get('clientInternal')).toBe('true');
+    expect(seen.searchParams.get('clientIds')).toBe('1,2');
+    expect(seen.searchParams.get('regionIds')).toBe('7');
   });
 
   it('getRoutedScanJobs GETs /runviewer/scans/routed', async () => {
