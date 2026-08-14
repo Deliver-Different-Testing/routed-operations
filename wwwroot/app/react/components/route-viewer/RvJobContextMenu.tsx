@@ -10,6 +10,7 @@ import { BookRedeliveryDialog } from './BookRedeliveryDialog';
 import { CreateEventDialog } from './CreateEventDialog';
 import { TopUpDialog } from './TopUpDialog';
 import { CreateIntelDialog } from './CreateIntelDialog';
+import { MoveBackToRunBuilderDialog } from './MoveBackToRunBuilderDialog';
 
 // Route Viewer job-list right-click menu (master Section 7.10
 // jobListMenu). Fires against the CURRENTLY SELECTED set (one or many
@@ -23,11 +24,16 @@ interface Props {
   x: number;
   y: number;
   jobs: BulkJob[];               // selection - length >= 1
+  /** Current filters.runDate from RunViewer. Piped into the Move-back
+   *  dialog so the speed dropdown queries the correct date-scoped
+   *  useRouteViewerLookups snapshot. Optional (falls back to today) so
+   *  callers not yet updated do not crash. */
+  runDate?: string;
   onClose: () => void;
   onDone: () => void;             // fires after successful mutation - parent refetches
 }
 
-export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
+export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props) {
   const user = useAuth();
   const confirm = useConfirm();
   const alert = useAlert();
@@ -50,10 +56,11 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
   // this false so operators don't see a stale success banner.
   const [eventChainedFromBooking, setEventChainedFromBooking] = useState(false);
   const [intelOpen, setIntelOpen] = useState(false);
+  const [moveBackOpen, setMoveBackOpen] = useState(false);
 
   const primary = jobs[0];
   const isBulk = jobs.length > 1;
-  const anyDialogOpen = assignOpen || transferRouteOpen || bookRedeliveryOpen || topUpOpen || eventOpen || intelOpen;
+  const anyDialogOpen = assignOpen || transferRouteOpen || bookRedeliveryOpen || topUpOpen || eventOpen || intelOpen || moveBackOpen;
 
   useEffect(() => {
     if (anyDialogOpen) return;
@@ -143,24 +150,12 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
     reportResult('Send SMS', result);
     onDone();
   };
-  const doMoveBackToRunBuilder = async () => {
-    onClose();
-    // Minimal flow: reuses the current job's speed + book time. Full
-    // dialog (with editable speed / new-date / keep-original) lands in
-    // Tier 2 (roadmap item #10).
-    if (!(await confirm({
-      title: 'Move back to RunBuilder',
-      message: `Return ${pluralJob()} to RunBuilder using existing book time + speed?`,
-    }))) return;
-    try {
-      const newDateTime = new Date().toISOString();
-      const newSpeed = primary.speedId ?? 0;
-      await routeViewerService.moveJobsBackToRunBuilder(bulkIds(), newDateTime, newSpeed, false);
-      toast.show(`Moved ${jobs.length} ${jobs.length === 1 ? 'job' : 'jobs'} back to RunBuilder`, 'success');
-      onDone();
-    } catch (e) {
-      await alert({ title: 'Move failed', message: (e as Error).message });
-    }
+  // Tier 2 flow: opens the full MoveBackToRunBuilderDialog (Speed +
+  // Book Time + Keep checkbox) instead of the Tier 1 window.confirm().
+  // The dialog owns the submit + backend call; success/error hooks
+  // relay to toast + onDone here.
+  const doMoveBackToRunBuilder = () => {
+    setMoveBackOpen(true);
   };
 
   const bulkRunSimple = async (label: string, fn: (job: BulkJob) => Promise<unknown>) => {
@@ -249,6 +244,7 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
       {assignOpen && (
         <AssignRouteDialog
           runId={primary.bulkRunId ?? 0}
+          anchorJobId={primary.jobId}
           onClose={() => { setAssignOpen(false); onClose(); }}
           onSuccess={(msg) => { setAssignOpen(false); onClose(); toast.show(msg, 'success'); onDone(); }}
         />
@@ -256,6 +252,12 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
       {transferRouteOpen && (
         <TransferRouteDialog
           runId={primary.bulkRunId ?? 0}
+          jobs={jobs.map((j) => ({
+            jobId: j.jobId,
+            jobNumber: j.jobNumber,
+            fromAddress: j.fromAddress,
+            currentRouteName: j.runName,
+          }))}
           onClose={() => { setTransferRouteOpen(false); onClose(); }}
           onSuccess={(msg) => { setTransferRouteOpen(false); onClose(); toast.show(msg, 'success'); onDone(); }}
         />
@@ -305,6 +307,20 @@ export function RvJobContextMenu({ x, y, jobs, onClose, onDone }: Props) {
           mobile={primary.proofOfDeliveryMobile}
           onClose={() => { setIntelOpen(false); onClose(); }}
           onCreated={() => { setIntelOpen(false); onClose(); toast.show('Client intel saved.', 'success'); onDone(); }}
+        />
+      )}
+      {moveBackOpen && (
+        <MoveBackToRunBuilderDialog
+          jobs={jobs}
+          runDate={runDate ?? new Date().toISOString().slice(0, 10)}
+          onClose={() => { setMoveBackOpen(false); onClose(); }}
+          onSuccess={(msg) => {
+            setMoveBackOpen(false);
+            onClose();
+            toast.show(msg, 'success');
+            onDone();
+          }}
+          onError={(msg) => { toast.show(msg, 'error'); }}
         />
       )}
     </>

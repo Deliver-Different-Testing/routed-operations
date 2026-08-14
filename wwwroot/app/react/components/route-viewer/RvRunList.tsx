@@ -32,6 +32,12 @@ interface Props {
    *  flow. Called when the operator drags a row out of the Couriers
    *  box and drops it on a run row here. */
   onDropCourier?: (runId: number, courierCode: string) => void;
+  /** Audit item 20: drop handler for the drag-drop jobs-onto-run flow.
+   *  Called when the operator drags one or more selected rows out of
+   *  the middle-pane Run Jobs table and drops them on a run row here.
+   *  `fromRunId` is the source run so the caller can no-op when the
+   *  drop lands on the same run the jobs already belong to. */
+  onDropRunJobs?: (toRunId: number, fromRunId: number, jobIds: number[]) => void;
 }
 
 type SortKey = 'Name' | 'area' | 'Jobs' | 'Status' | 'Velocity' | 'AgentName' | 'CourierName';
@@ -117,6 +123,7 @@ export function RvRunList({
   isLoading,
   runColorMap,
   onDropCourier,
+  onDropRunJobs,
 }: Props) {
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('Name');
@@ -209,24 +216,46 @@ export function RvRunList({
                   key={run.id}
                   onClick={(e) => onSelect(run.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                   onContextMenu={onContextMenu ? (e) => onContextMenu(e, run.id) : undefined}
-                  onDragOver={onDropCourier ? (e) => {
-                    // Only accept the drag when the payload is a courier row
-                    // (from RvCouriersBox). Prevents unrelated drags (files,
-                    // browser images etc.) from firing our onDrop.
-                    if (e.dataTransfer.types.includes('application/rv-courier-code')) {
+                  onDragOver={(onDropCourier || onDropRunJobs) ? (e) => {
+                    // Only accept a drag when the payload is one we
+                    // recognise (courier row from RvCouriersBox, or a
+                    // batch of job rows from the middle-pane Run Jobs
+                    // table). Prevents unrelated drags (files, browser
+                    // images etc.) from firing our onDrop.
+                    const types = e.dataTransfer.types;
+                    const wantsCourier = onDropCourier && types.includes('application/rv-courier-code');
+                    const wantsJobs = onDropRunJobs && types.includes('application/rv-run-jobs');
+                    if (wantsCourier || wantsJobs) {
                       e.preventDefault();
                       e.dataTransfer.dropEffect = 'move';
                       if (dropTargetId !== run.id) setDropTargetId(run.id);
                     }
                   } : undefined}
-                  onDragLeave={onDropCourier ? () => {
+                  onDragLeave={(onDropCourier || onDropRunJobs) ? () => {
                     if (dropTargetId === run.id) setDropTargetId(null);
                   } : undefined}
-                  onDrop={onDropCourier ? (e) => {
+                  onDrop={(onDropCourier || onDropRunJobs) ? (e) => {
                     e.preventDefault();
                     setDropTargetId(null);
-                    const code = e.dataTransfer.getData('application/rv-courier-code');
-                    if (code) onDropCourier(run.id, code);
+                    // Jobs payload takes precedence if both are present
+                    // (shouldn't happen in normal flow but guarding
+                    // keeps behaviour predictable).
+                    if (onDropRunJobs) {
+                      const raw = e.dataTransfer.getData('application/rv-run-jobs');
+                      if (raw) {
+                        try {
+                          const parsed = JSON.parse(raw) as { fromRunId: number; jobIds: number[] };
+                          if (parsed && Array.isArray(parsed.jobIds) && parsed.jobIds.length > 0) {
+                            onDropRunJobs(run.id, parsed.fromRunId, parsed.jobIds);
+                            return;
+                          }
+                        } catch { /* malformed payload - fall through */ }
+                      }
+                    }
+                    if (onDropCourier) {
+                      const code = e.dataTransfer.getData('application/rv-courier-code');
+                      if (code) onDropCourier(run.id, code);
+                    }
                   } : undefined}
                   style={tint ? { backgroundColor: tint + '33' /* 20% alpha */, borderLeft: `4px solid ${tint}` } : undefined}
                   className={`cursor-pointer border-b border-border/50 ${

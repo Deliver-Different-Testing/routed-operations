@@ -22,7 +22,7 @@ interface Props {
   onDone: () => void;
 }
 
-export function RvRunContextMenu({ x, y, runId, runDate: _runDate, onClose, onDone }: Props) {
+export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Props) {
   const user = useAuth();
   const confirm = useConfirm();
   const toast = useToast();
@@ -169,6 +169,7 @@ export function RvRunContextMenu({ x, y, runId, runDate: _runDate, onClose, onDo
       {transferOpen && (
         <TransferRouteDialog
           runId={runId}
+          runDate={runDate}
           onClose={() => { setTransferOpen(false); onClose(); }}
           onSuccess={(summary) => {
             setTransferOpen(false);

@@ -204,8 +204,18 @@ public class RouteViewerJobService(
 
     /// <summary>
     /// GET /api/runviewer/jobs/print-list - the Print Manager grid.
-    /// Wraps RVW_stpPrintJobsV2 with tblBulkJob lat/lng patch applied
-    /// by the SP (not needed here on the service side).
+    /// Wraps RVW_stpPrintJobsV2. SP signature (verified 2026-08-14 via
+    /// sys.parameters on both NZ + DFRNT tenants) is 4 params only:
+    /// @ClientID, @RunDate, @Regions, @ClientIDs. NP short-circuit
+    /// mirrors the other grid services.
+    /// SP output columns (verified via OBJECT_DEFINITION):
+    /// ClientID, ClientCode, JobNumber, DeliveryDate (varchar), ReadyTime,
+    /// CompanyName, ContactName, ToAddress, ToSuburb, JobID, BulkJobID,
+    /// Items, BookTime, ClientRefa, ClientRefb, Multibox, Email, Mobile,
+    /// Notes, Speed, SpeedID, OurRef, PickUpLatitude, PickUpLongitude,
+    /// DeliveryLatitude, DeliveryLongitude. Map into BulkJobDto via a
+    /// raw-row buffer so the DTO can carry richer downstream fields
+    /// without breaking EF's strict column-match.
     /// </summary>
     public async Task<List<BulkJobDto>> GetPrintJobListAsync(BulkRunListRequest request)
     {
@@ -215,23 +225,82 @@ public class RouteViewerJobService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        return await Context.Database.SqlQueryRaw<BulkJobDto>(
+        var rows = await Context.Database.SqlQueryRaw<RawPrintJobRow>(
             @"EXEC dbo.RVW_stpPrintJobsV2
-                @RunDate,
-                @ClientID,
-                @ClientInternal,
-                @MultipleClients,
-                @ClientIds,
-                @RegionIds,
-                @NpAgentId",
-            SpParam.Of("@RunDate", request.RunDate),
+                @ClientID = @ClientID,
+                @RunDate = @RunDate,
+                @Regions = @Regions,
+                @ClientIDs = @ClientIDs",
             SpParam.Of("@ClientID", effectiveClientId),
-            SpParam.Of("@ClientInternal", request.ClientInternal),
-            SpParam.Of("@MultipleClients", request.MultipleClients),
-            SpParam.Of("@ClientIds", effectiveClientIds),
-            SpParam.Of("@RegionIds", request.RegionIds),
-            SpParam.Of("@NpAgentId", scope.NpAgentId))
+            SpParam.Of("@RunDate", request.RunDate),
+            SpParam.Of("@Regions", request.RegionIds),
+            SpParam.Of("@ClientIDs", effectiveClientIds))
             .ToListAsync();
+
+        return rows.Select(r => new BulkJobDto
+        {
+            JobId = r.JobID ?? 0,
+            BulkJobId = r.BulkJobID,
+            ClientId = r.ClientID,
+            ClientCode = r.ClientCode,
+            JobNumber = r.JobNumber,
+            BookDate = r.DeliveryDate,
+            BookTime = r.ReadyTime,
+            ReadyTime = r.ReadyTime,
+            ToCompany = r.CompanyName,
+            DeliverToContact = r.ContactName,
+            ToAddress = r.ToAddress,
+            ToSuburb = r.ToSuburb,
+            Qty = r.Items == null ? (short?)null : (short)r.Items.Value,
+            RefA = r.ClientRefa,
+            RefB = r.ClientRefb,
+            MultiBox = r.Multibox ?? false,
+            TrackingEmail = r.Email,
+            ProofOfDeliveryEmail = r.Email,
+            ProofOfDeliveryMobile = r.Mobile,
+            DeliverToPhone = r.Mobile,
+            Notes = r.Notes,
+            Speed = r.Speed,
+            SpeedID = r.SpeedID,
+            OurRef = r.OurRef,
+            PickUpLatitude = (decimal?)r.PickUpLatitude,
+            PickUpLongitude = (decimal?)r.PickUpLongitude,
+            ToLat = (decimal?)r.DeliveryLatitude,
+            ToLng = (decimal?)r.DeliveryLongitude,
+        }).ToList();
+    }
+
+    /// <summary>Exact column shape of RVW_stpPrintJobsV2 output. Kept
+    /// separate from BulkJobDto so EF's strict FromSql column-match
+    /// stays happy and the DTO can grow additional aliased fields.</summary>
+    private class RawPrintJobRow
+    {
+        public int? ClientID { get; set; }
+        public string? ClientCode { get; set; }
+        public string? JobNumber { get; set; }
+        public string? DeliveryDate { get; set; }
+        public string? ReadyTime { get; set; }
+        public string? CompanyName { get; set; }
+        public string? ContactName { get; set; }
+        public string? ToAddress { get; set; }
+        public string? ToSuburb { get; set; }
+        public int? JobID { get; set; }
+        public int BulkJobID { get; set; }
+        public int? Items { get; set; }
+        public DateTime? BookTime { get; set; }
+        public string? ClientRefa { get; set; }
+        public string? ClientRefb { get; set; }
+        public bool? Multibox { get; set; }
+        public string? Email { get; set; }
+        public string? Mobile { get; set; }
+        public string? Notes { get; set; }
+        public string? Speed { get; set; }
+        public int? SpeedID { get; set; }
+        public string? OurRef { get; set; }
+        public double? PickUpLatitude { get; set; }
+        public double? PickUpLongitude { get; set; }
+        public double? DeliveryLatitude { get; set; }
+        public double? DeliveryLongitude { get; set; }
     }
 
     /// <summary>

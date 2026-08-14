@@ -427,6 +427,28 @@ export default function RunViewer() {
                         })
                         .catch((err) => toast.show(`Assign failed: ${err.message}`));
                     }}
+                    onDropRunJobs={(toRunId, fromRunId, jobIds) => {
+                      // No-op when the drop lands on the source run;
+                      // the transfer-route SP would just churn otherwise.
+                      if (toRunId === fromRunId) return;
+                      const toRun = visibleRuns.find((r) => r.id === toRunId);
+                      routeViewerService.transferRoute({
+                        jobIds,
+                        toRouteId: toRunId,
+                        transferBooking: false,
+                        transferZipcodes: false,
+                      })
+                        .then((res) => {
+                          toast.show(
+                            `Moved ${res.transferred} job${res.transferred === 1 ? '' : 's'} to run ${toRun?.name ?? toRunId}.`,
+                          );
+                          runsQuery.refetch();
+                          if (singleRunId != null) {
+                            queryClient.invalidateQueries({ queryKey: ['rv-run-jobs', singleRunId] });
+                          }
+                        })
+                        .catch((err) => toast.show(`Move failed: ${err.message}`));
+                    }}
                   />
                 </RvBox>
               </Panel>
@@ -555,6 +577,47 @@ export default function RunViewer() {
                           return (
                             <tr
                               key={j.bulkJobId}
+                              draggable={singleRunId != null && j.bulkJobId > 0}
+                              onDragStart={(e) => {
+                                // Audit item 20: batch payload = "drop
+                                // this whole selection", so include every
+                                // multi-selected id when the dragged row
+                                // is part of it; otherwise just this row.
+                                const inSel = selectedJobIds.includes(j.bulkJobId);
+                                const jobIds = inSel && selectedJobIds.length > 1
+                                  ? selectedJobIds.slice()
+                                  : [j.bulkJobId];
+                                e.dataTransfer.setData(
+                                  'application/rv-run-jobs',
+                                  JSON.stringify({ fromRunId: singleRunId ?? 0, jobIds }),
+                                );
+                                e.dataTransfer.effectAllowed = 'move';
+                                // Legacy homeView.html #draggingItems
+                                // floating pill: build a small "N Jobs"
+                                // element off-screen and use it as the
+                                // drag image so the operator sees what
+                                // they're moving instead of a row ghost.
+                                try {
+                                  const pill = document.createElement('div');
+                                  pill.textContent = `${jobIds.length} Job${jobIds.length === 1 ? '' : 's'}`;
+                                  pill.style.position = 'absolute';
+                                  pill.style.top = '-1000px';
+                                  pill.style.left = '-1000px';
+                                  pill.style.padding = '4px 8px';
+                                  pill.style.background = '#0891b2';
+                                  pill.style.color = '#fff';
+                                  pill.style.borderRadius = '4px';
+                                  pill.style.fontSize = '12px';
+                                  pill.style.fontWeight = '600';
+                                  document.body.appendChild(pill);
+                                  e.dataTransfer.setDragImage(pill, 0, 0);
+                                  // Clean the transient element after
+                                  // the browser has snapshotted it.
+                                  window.setTimeout(() => {
+                                    if (pill.parentNode) pill.parentNode.removeChild(pill);
+                                  }, 0);
+                                } catch { /* setDragImage unsupported - ignore */ }
+                              }}
                               onClick={(e) => onSelectJob(j.bulkJobId, { ctrl: e.ctrlKey || e.metaKey })}
                               onContextMenu={(e) => onJobContextMenu(e, j.bulkJobId)}
                               className={`cursor-pointer border-b border-border/50 ${
@@ -664,6 +727,7 @@ export default function RunViewer() {
                       selectedIds={selectedRunIds}
                       onSelect={onSelectRun}
                       onContextMenu={onContextMenu}
+                      runColorMap={runColorMap}
                     />
                   </Panel>
                   <PanelResizeHandle className="h-1" />
@@ -674,6 +738,7 @@ export default function RunViewer() {
                       selectedIds={selectedRunIds}
                       onSelect={onSelectRun}
                       onContextMenu={onContextMenu}
+                      runColorMap={runColorMap}
                     />
                   </Panel>
                   <PanelResizeHandle className="h-1" />
@@ -684,6 +749,7 @@ export default function RunViewer() {
                       selectedIds={selectedRunIds}
                       onSelect={onSelectRun}
                       onContextMenu={onContextMenu}
+                      runColorMap={runColorMap}
                     />
                   </Panel>
                 </PanelGroup>
@@ -742,6 +808,7 @@ export default function RunViewer() {
           x={jobCtxMenu.x}
           y={jobCtxMenu.y}
           jobs={runJobs.filter((j) => selectedJobIds.includes(j.bulkJobId))}
+          runDate={filters.runDate}
           onClose={() => setJobCtxMenu(null)}
           onDone={() => {
             runJobsQuery.refetch();

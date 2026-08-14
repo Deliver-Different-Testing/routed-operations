@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { useConfirm } from '../../context/ConfirmContext';
-import { routeViewerService } from '../../services/routeViewerService';
+import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { Button } from '../../components/common/Button';
 import { RvBox } from '../../components/route-viewer/RvBox';
@@ -10,12 +10,15 @@ import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvScanDetailBox } from '../../components/route-viewer/RvScanDetailBox';
 import { useToast } from '../../context/ToastContext';
+import type { ListSort } from '../../components/cockpit/CockpitState';
+import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
 
-// Print Manager page (master Section 11). Reuses the Bulk Scan Jobs
-// endpoint as a print-list source (same shape: bulkJobId + jobNumber +
-// clientCode + deliveryDate + readyTime + items) since the print-
-// dedicated endpoint isn't wired yet. Multi-select rows and hit Print
-// Labels to POST them at /api/runviewer/labels/bulk-jobs.
+// Print Manager page (master Section 11). Wires to the dedicated
+// Print list endpoint (`GET /runviewer/jobs/print-list` -> wraps
+// `RVW_stpPrintJobsV2`) so the 13-column legacy grid parity fields
+// (Speed / RefA / RefB / OurRef / Mobile / Email / Notes) land in
+// the row shape without a separate DTO. Multi-select rows and hit
+// Print Labels to POST them at `/api/runviewer/labels/bulk-jobs`.
 //
 // Backend label endpoints are still 501 pending the P14 AlertLabel +
 // SSRS wiring. The UI is complete so the flow lights up immediately
@@ -23,13 +26,56 @@ import { useToast } from '../../context/ToastContext';
 
 type SortMode = 1 | 2 | 3 | 4;
 
+// Legacy printControl.js jobList.headings order, mapped to BulkJob fields.
+type PrintColumn = {
+  label: string;
+  field: string;                             // used as ListSort field id + search matching
+  get: (j: BulkJob) => string | number | null;
+  className?: string;                        // per-<td> tailwind width / truncation
+  align?: 'left' | 'center' | 'right';
+};
+
+const COLUMNS: PrintColumn[] = [
+  { label: 'Client',  field: 'clientCode', get: (j) => j.clientCode },
+  { label: 'Job #',   field: 'jobNumber',  get: (j) => j.jobNumber, className: 'font-mono' },
+  { label: 'D Date',  field: 'bookDate',   get: (j) => j.bookDate },
+  { label: 'R Time',  field: 'bookTime',   get: (j) => j.bookTime },
+  { label: 'Speed',   field: 'speed',      get: (j) => j.speed ?? j.speedName },
+  { label: 'Qty',     field: 'qty',        get: (j) => j.qty, align: 'center' },
+  { label: 'RefA',    field: 'refA',       get: (j) => j.refA, className: 'max-w-[16ch] truncate' },
+  { label: 'RefB',    field: 'refB',       get: (j) => j.refB, className: 'max-w-[16ch] truncate' },
+  { label: 'OurRef',  field: 'ourRef',     get: (j) => j.ourRef, className: 'max-w-[16ch] truncate' },
+  { label: 'Mobile',  field: 'mobile',     get: (j) => j.proofOfDeliveryMobile ?? j.deliverToPhone, className: 'max-w-[14ch] truncate' },
+  { label: 'Email',   field: 'email',      get: (j) => j.trackingEmail ?? j.proofOfDeliveryEmail, className: 'max-w-[24ch] truncate' },
+  { label: 'To',      field: 'toAddress',  get: (j) => j.toAddress, className: 'max-w-[16rem] truncate' },
+  { label: 'Notes',   field: 'notes',      get: (j) => j.notes, className: 'max-w-[24ch] truncate' },
+];
+
+// Substring-match every visible column's stringified value against the
+// search query (case-insensitive). Runs on the sorted rows list, not
+// the full result set, so it doesn't shuffle order.
+function matchesSearch(row: BulkJob, needle: string): boolean {
+  if (!needle) return true;
+  const q = needle.toLowerCase();
+  for (const col of COLUMNS) {
+    const v = col.get(row);
+    if (v == null) continue;
+    if (String(v).toLowerCase().includes(q)) return true;
+  }
+  return false;
+}
+
 export default function PrintManager() {
   const user = useAuth();
   const toast = useToast();
   const confirm = useConfirm();
   const initialDate = tenantTodayYmd({ isUsTenant: user.isUsTenant, timeZone: user.timeZone });
   const [runDate, setRunDate] = useState(initialDate);
+  // Legacy 4-choice sort dropdown; kept alongside the column-header
+  // sort per audit request. Both feed the same visible sort state so
+  // the arrow indicator + list order stay consistent.
   const [sortMode, setSortMode] = useState<SortMode>(1);
+  const [columnSort, setColumnSort] = useState<ListSort | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [editItemsFor, setEditItemsFor] = useState<{ bulkJobId: number; qty: number } | null>(null);
@@ -37,36 +83,111 @@ export default function PrintManager() {
   // Print Manager surfaces these to the right of the list; operators
   // drill into a print row and see the job's full record + scan history.
   const [focusedJobId, setFocusedJobId] = useState<number | null>(null);
+  // Multibox inline expand: which parent bulkJobIds are currently open,
+  // and a lazy client-side cache of their child rows. First chevron click
+  // fetches + caches; second click flips visibility only (no refetch).
+  // Kept as two separate pieces of state so a collapse retains the cache
+  // for the next expand without a network round-trip. Matches the legacy
+  // jobList.tpl `getChildren(job)` + `job.expanded` toggle at lines 27+38.
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+  const [childrenCache, setChildrenCache] = useState<Map<number, BulkJob[]>>(() => new Map());
+  const [childrenLoading, setChildrenLoading] = useState<Set<number>>(() => new Set());
+  // Top-bar substring search over any-column value. 200ms debounce so
+  // typing does not thrash the memoised filter on every keystroke.
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  useEffect(() => {
+    const t = window.setTimeout(() => setSearchQuery(searchInput.trim()), 200);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
 
   const q = useQuery({
     queryKey: ['pm-list', runDate],
-    queryFn: () => routeViewerService.getBulkScanJobs(runDate, false),
+    queryFn: () => routeViewerService.getPrintJobList(runDate),
     enabled: !!runDate,
     staleTime: 10_000,
   });
 
   const rows = q.data ?? [];
 
-  // Client-side sort per legacy labelsSortMode 1-4:
+  // Client-side sort. Column-header sort wins when set (mirrors the
+  // Home cockpit's ListSort semantics via sortLists.ts helpers).
+  // Otherwise fall back to the legacy labelsSortMode 1-4 dropdown:
   //   1 = Job # (default), 2 = Client, 3 = Delivery Date, 4 = Ready Time.
   const sorted = useMemo(() => {
     const copy = rows.slice();
+    if (columnSort) {
+      const col = COLUMNS.find((c) => c.field === columnSort.field);
+      if (col) {
+        const mult = columnSort.direction === 'asc' ? 1 : -1;
+        copy.sort((a, b) => {
+          const av = col.get(a);
+          const bv = col.get(b);
+          if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mult;
+          return String(av ?? '').localeCompare(String(bv ?? '')) * mult;
+        });
+        return copy;
+      }
+    }
     copy.sort((a, b) => {
       switch (sortMode) {
         case 1: return (a.jobNumber ?? '').localeCompare(b.jobNumber ?? '');
         case 2: return (a.clientCode ?? '').localeCompare(b.clientCode ?? '');
-        case 3: return (a.deliveryDate ?? '').localeCompare(b.deliveryDate ?? '');
-        case 4: return (a.readyTime ?? '').localeCompare(b.readyTime ?? '');
+        case 3: return (a.bookDate ?? '').localeCompare(b.bookDate ?? '');
+        case 4: return (a.bookTime ?? '').localeCompare(b.bookTime ?? '');
       }
     });
     return copy;
-  }, [rows, sortMode]);
+  }, [rows, sortMode, columnSort]);
+
+  const visible = useMemo(
+    () => (searchQuery ? sorted.filter((r) => matchesSearch(r, searchQuery)) : sorted),
+    [sorted, searchQuery],
+  );
 
   const toggle = (id: number) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]));
   };
-  const selectAll = () => setSelectedIds(sorted.map((r) => r.bulkJobId));
+  const selectAll = () => setSelectedIds(visible.map((r) => r.bulkJobId));
   const clearAll = () => setSelectedIds([]);
+
+  // Chevron click on a multibox parent row. Toggle-only when the row is
+  // already open (cache-preserving collapse). First open fires the child
+  // fetch, caches under the parent bulkJobId, and marks the row expanded
+  // when the request lands. Failure surfaces via useToast and leaves the
+  // row unexpanded so the operator can retry.
+  const toggleExpand = async (bulkJobId: number) => {
+    if (expandedIds.has(bulkJobId)) {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(bulkJobId);
+        return next;
+      });
+      return;
+    }
+    if (childrenCache.has(bulkJobId)) {
+      setExpandedIds((prev) => new Set(prev).add(bulkJobId));
+      return;
+    }
+    setChildrenLoading((prev) => new Set(prev).add(bulkJobId));
+    try {
+      const children = await routeViewerService.getPrintJobChildren(bulkJobId, runDate);
+      setChildrenCache((prev) => {
+        const next = new Map(prev);
+        next.set(bulkJobId, children);
+        return next;
+      });
+      setExpandedIds((prev) => new Set(prev).add(bulkJobId));
+    } catch (e) {
+      toast.show(`Load children failed: ${(e as Error).message}`, 'error');
+    } finally {
+      setChildrenLoading((prev) => {
+        const next = new Set(prev);
+        next.delete(bulkJobId);
+        return next;
+      });
+    }
+  };
 
   const printSelected = async () => {
     if (selectedIds.length === 0) return;
@@ -145,7 +266,7 @@ export default function PrintManager() {
           <span>Sort</span>
           <select
             value={String(sortMode)}
-            onChange={(e) => setSortMode(Number(e.target.value) as SortMode)}
+            onChange={(e) => { setSortMode(Number(e.target.value) as SortMode); setColumnSort(null); }}
             className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white"
           >
             <option value="1">Job #</option>
@@ -154,6 +275,14 @@ export default function PrintManager() {
             <option value="4">Ready Time</option>
           </select>
         </label>
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search jobs..."
+          aria-label="Search jobs"
+          className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white"
+        />
         <Button variant="neutral" size="sm" onClick={selectAll}>Select all</Button>
         <Button variant="neutral" size="sm" onClick={clearAll} disabled={selectedIds.length === 0}>Clear</Button>
         <Button variant="primary" size="sm" onClick={printSelected} disabled={selectedIds.length === 0 || submitting}>
@@ -163,7 +292,7 @@ export default function PrintManager() {
           Cancel ({selectedIds.length})
         </Button>
         <div className="ml-auto text-xs text-text-muted">
-          {q.isLoading ? 'Loading...' : `${sorted.length} jobs`}
+          {q.isLoading ? 'Loading...' : `${visible.length} jobs`}
         </div>
       </div>
 
@@ -182,67 +311,144 @@ export default function PrintManager() {
                 <th className="px-2 py-1 w-6">
                   <input
                     type="checkbox"
-                    checked={selectedIds.length > 0 && selectedIds.length === sorted.length}
+                    checked={selectedIds.length > 0 && selectedIds.length === visible.length}
                     onChange={(e) => (e.target.checked ? selectAll() : clearAll())}
                     className="accent-brand-cyan"
                   />
                 </th>
-                <th className="px-2 py-1">Client</th>
-                <th className="px-2 py-1">Job #</th>
-                <th className="px-2 py-1">D Date</th>
-                <th className="px-2 py-1">R Time</th>
-                <th className="px-2 py-1">Address</th>
-                <th className="px-2 py-1 text-center">Items</th>
+                {/* Chevron column - only meaningful for multibox parent
+                    rows, kept empty in the header to match the legacy
+                    layout which put the expand icon inline in the Items
+                    cell. Given the current 13-column shape it's cleaner
+                    as a dedicated leading column so widths don't shift
+                    when a chevron appears mid-row. */}
+                <th className="px-1 py-1 w-6"></th>
+                {COLUMNS.map((c) => (
+                  <th
+                    key={c.field}
+                    onClick={() => { setColumnSort(nextSortDirection(columnSort, c.field)); }}
+                    className={`px-2 py-1 cursor-pointer select-none hover:bg-surface-cream/60 ${c.align === 'center' ? 'text-center' : ''}`}
+                    title="Click to sort. Click again to reverse."
+                  >
+                    {c.label}{sortIndicator(columnSort, c.field)}
+                  </th>
+                ))}
                 <th className="px-2 py-1 w-16"></th>
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r) => {
+              {visible.map((r) => {
                 const selected = selectedIds.includes(r.bulkJobId);
                 const focused = focusedJobId === r.bulkJobId;
+                const isMultiBox = r.multiBox === true;
+                const isExpanded = expandedIds.has(r.bulkJobId);
+                const isLoadingChildren = childrenLoading.has(r.bulkJobId);
+                const children = childrenCache.get(r.bulkJobId) ?? [];
                 return (
-                  <tr
-                    key={r.bulkJobId}
-                    onClick={() => { toggle(r.bulkJobId); setFocusedJobId(r.bulkJobId); }}
-                    className={`cursor-pointer border-b border-border/50 ${
-                      focused ? 'bg-brand-cyan/30' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
-                    }`}
-                  >
-                    <td className="px-2 py-1">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggle(r.bulkJobId)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="accent-brand-cyan"
-                      />
-                    </td>
-                    <td className="px-2 py-1">{r.clientCode ?? '-'}</td>
-                    <td className="px-2 py-1 font-mono">{r.jobNumber ?? '-'}</td>
-                    <td className="px-2 py-1">{tenantDateFromSpString(r.deliveryDate, user.isUsTenant) || '-'}</td>
-                    <td className="px-2 py-1">{tenantTimeFromSpString(r.readyTime, user.isUsTenant) || '-'}</td>
-                    <td className="px-2 py-1 truncate max-w-[16rem]" title={r.toAddress ?? undefined}>
-                      {r.toAddress ?? '-'}
-                    </td>
-                    <td className="px-2 py-1 text-center">{r.items}</td>
-                    <td className="px-2 py-1">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditItemsFor({ bulkJobId: r.bulkJobId, qty: r.items });
-                        }}
-                        className="text-[10px] px-2 py-0.5 rounded border border-border hover:bg-brand-cyan/10"
+                  <Fragment key={r.bulkJobId}>
+                    <tr
+                      onClick={() => { toggle(r.bulkJobId); setFocusedJobId(r.bulkJobId); }}
+                      className={`cursor-pointer border-b border-border/50 ${
+                        focused ? 'bg-brand-cyan/30' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
+                      }`}
+                    >
+                      <td className="px-2 py-1">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggle(r.bulkJobId)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="accent-brand-cyan"
+                        />
+                      </td>
+                      <td className="px-1 py-1 text-center">
+                        {isMultiBox && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void toggleExpand(r.bulkJobId); }}
+                            className="w-4 h-4 inline-flex items-center justify-center text-text-muted hover:text-text-primary"
+                            aria-label={isExpanded ? 'Collapse multi-box' : 'Expand multi-box'}
+                            aria-expanded={isExpanded}
+                            title={isExpanded ? 'Collapse children' : 'Expand children'}
+                            disabled={isLoadingChildren}
+                          >
+                            <svg
+                              width="10" height="10" viewBox="0 0 24 24" fill="none"
+                              stroke="currentColor" strokeWidth="3"
+                              className={`transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`}
+                            >
+                              <polyline points="9 6 15 12 9 18" />
+                            </svg>
+                          </button>
+                        )}
+                      </td>
+                      {COLUMNS.map((c) => {
+                        const raw = c.get(r);
+                        const display =
+                          c.field === 'bookDate'
+                            ? tenantDateFromSpString(r.bookDate, user.isUsTenant) || '-'
+                            : c.field === 'bookTime'
+                              ? tenantTimeFromSpString(r.bookTime, user.isUsTenant) || '-'
+                              : (raw == null || raw === '' ? '-' : String(raw));
+                        return (
+                          <td
+                            key={c.field}
+                            className={`px-2 py-1 ${c.className ?? ''} ${c.align === 'center' ? 'text-center' : ''}`}
+                            title={raw != null && raw !== '' ? String(raw) : undefined}
+                          >
+                            {display}
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditItemsFor({ bulkJobId: r.bulkJobId, qty: r.qty ?? 1 });
+                          }}
+                          className="text-[10px] px-2 py-0.5 rounded border border-border hover:bg-brand-cyan/10"
+                        >
+                          Edit qty
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && children.map((child) => (
+                      <tr
+                        key={`c-${r.bulkJobId}-${child.bulkJobId}`}
+                        data-child-of={r.bulkJobId}
+                        onClick={() => setFocusedJobId(child.bulkJobId)}
+                        className="cursor-pointer border-b border-border/40 bg-surface-cream/40 hover:bg-surface-cream/70 text-text-secondary"
                       >
-                        Edit qty
-                      </button>
-                    </td>
-                  </tr>
+                        <td className="px-2 py-1"></td>
+                        <td className="px-1 py-1"></td>
+                        {COLUMNS.map((c, idx) => {
+                          const raw = c.get(child);
+                          const display =
+                            c.field === 'bookDate'
+                              ? tenantDateFromSpString(child.bookDate, user.isUsTenant) || '-'
+                              : c.field === 'bookTime'
+                                ? tenantTimeFromSpString(child.bookTime, user.isUsTenant) || '-'
+                                : (raw == null || raw === '' ? '-' : String(raw));
+                          return (
+                            <td
+                              key={c.field}
+                              className={`px-2 py-1 ${c.className ?? ''} ${c.align === 'center' ? 'text-center' : ''} ${idx === 0 ? 'pl-6' : ''}`}
+                              title={raw != null && raw !== '' ? String(raw) : undefined}
+                            >
+                              {display}
+                            </td>
+                          );
+                        })}
+                        <td className="px-2 py-1"></td>
+                      </tr>
+                    ))}
+                  </Fragment>
                 );
               })}
-              {sorted.length === 0 && !q.isLoading && (
+              {visible.length === 0 && !q.isLoading && (
                 <tr>
-                  <td className="px-3 py-6 text-center text-text-muted" colSpan={8}>
+                  <td className="px-3 py-6 text-center text-text-muted" colSpan={COLUMNS.length + 3}>
                     No print-eligible jobs for this date.
                   </td>
                 </tr>

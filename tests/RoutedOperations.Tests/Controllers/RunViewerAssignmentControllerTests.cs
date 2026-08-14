@@ -243,4 +243,32 @@ public class RunViewerAssignmentControllerTests
 
         Assert.IsType<BadRequestObjectResult>(result);
     }
+
+    // ── TransferOriginalRunOrder ─────────────────────────────────────────
+
+    [Fact]
+    public async Task TransferOriginalRunOrder_ZeroRunId_ReturnsBadRequest()
+    {
+        var (ctl, _, _) = NewCtl();
+
+        var result = await ctl.TransferOriginalRunOrder(new TransferOriginalRunOrderRequest
+        {
+            RunId = 0, ToCourierCode = "CX",
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task TransferOriginalRunOrder_BlankToCourier_ReturnsBadRequest()
+    {
+        var (ctl, _, _) = NewCtl();
+
+        var result = await ctl.TransferOriginalRunOrder(new TransferOriginalRunOrderRequest
+        {
+            RunId = 1, ToCourierCode = "",
+        });
+
+        Assert.IsType<BadRequestObjectResult>(result);
+    }
 }

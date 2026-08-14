@@ -18,6 +18,10 @@ const baseline = () => [
   http.get('/api/runviewer/scans/routed', () => HttpResponse.json({ response: [] })),
   http.get('/api/runviewer/scans/detail', () => HttpResponse.json({ response: [] })),
   http.get('/api/runviewer/scans/item-progress', () => HttpResponse.json({ response: [] })),
+  http.get('/api/runviewer/jobs/items', () => HttpResponse.json({ response: [] })),
+  http.get('/api/runviewer/filters/clients', () => HttpResponse.json({ response: [] })),
+  http.get('/api/runviewer/filters/regions', () => HttpResponse.json({ response: [] })),
+  http.get('/api/runviewer/filters/speeds', () => HttpResponse.json({ response: [] })),
 ];
 
 function renderPage() {
@@ -185,5 +189,299 @@ describe('ScanManager', () => {
     renderPage();
     // Routed button should be active - can check by class or aria-pressed
     expect(await screen.findByText(/No routed shipments/)).toBeInTheDocument();
+  });
+
+  // ------------------------------------------------------------------
+  // Sort / filter / search / pagination (Kevin 2026-08-14 task)
+  // ------------------------------------------------------------------
+
+  const bulkFixture = (n: number) => Array.from({ length: n }, (_, i) => ({
+    bulkJobId: i + 1,
+    bulkParentId: null,
+    jobNumber: `JOB-${String(i + 1).padStart(4, '0')}`,
+    clientCode: i % 2 === 0 ? 'ACME' : 'ZONE',
+    deliveryDate: null,
+    readyTime: null,
+    toAddress: `Addr ${i + 1}`,
+    items: (i % 5) + 1,
+    sortScanned: 0,
+    runScanned: 0,
+    pickScanned: 0,
+    invalidPickScanned: 0,
+    transferScanned: 0,
+    transitScanned: 0,
+  }));
+
+  it('sorts Bulk rows when a column header is clicked, then flips on second click', async () => {
+    server.use(
+      http.get('/api/runviewer/scans', () => HttpResponse.json({
+        response: [
+          bulkFixture(1)[0],
+          { ...bulkFixture(1)[0], bulkJobId: 2, jobNumber: 'AAAA-0001', clientCode: 'ZONE' },
+          { ...bulkFixture(1)[0], bulkJobId: 3, jobNumber: 'MMMM-0001', clientCode: 'MID' },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    // Default asc-by-jobNumber puts AAAA first
+    const cells1 = await screen.findAllByText(/AAAA|MMMM|JOB-0001/);
+    expect(cells1[0]).toHaveTextContent('AAAA-0001');
+    // Click again to flip Job # desc
+    await user.click(screen.getByText('Job #'));
+    await waitFor(() => {
+      const cells2 = screen.getAllByText(/AAAA|MMMM|JOB-0001/);
+      expect(cells2[0]).toHaveTextContent('MMMM-0001');
+    });
+  });
+
+  it('narrows Bulk rows via the client-side search (debounced)', async () => {
+    server.use(
+      http.get('/api/runviewer/scans', () => HttpResponse.json({
+        response: [
+          { ...bulkFixture(1)[0], bulkJobId: 1, jobNumber: 'ALPHA-1', clientCode: 'ACME' },
+          { ...bulkFixture(1)[0], bulkJobId: 2, jobNumber: 'BRAVO-2', clientCode: 'BETA' },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    expect(await screen.findByText('ALPHA-1')).toBeInTheDocument();
+    expect(screen.getByText('BRAVO-2')).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText('Search jobs...'), 'alpha');
+    // 200ms debounce - poll for the row to disappear
+    await waitFor(() => {
+      expect(screen.queryByText('BRAVO-2')).not.toBeInTheDocument();
+      expect(screen.getByText('ALPHA-1')).toBeInTheDocument();
+    }, { timeout: 1500 });
+  });
+
+  it('paginates Bulk rows in 100-row chunks and steps via the pager', async () => {
+    // 150 rows -> two pages. Page 1 shows JOB-0001..JOB-0100, page 2 the rest.
+    server.use(
+      http.get('/api/runviewer/scans', () => HttpResponse.json({ response: bulkFixture(150) })),
+      ...baseline(),
+    );
+    renderPage();
+    // First page contains JOB-0001 but not JOB-0150.
+    expect(await screen.findByText('JOB-0001')).toBeInTheDocument();
+    expect(screen.queryByText('JOB-0150')).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => {
+      expect(screen.getByText('JOB-0150')).toBeInTheDocument();
+      expect(screen.queryByText('JOB-0001')).not.toBeInTheDocument();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Bulk parent -> child -> item tree expansion (Kevin 2026-08-14 task)
+  // Mirrors legacy scans/tpls/jobList.tpl 3-level structure.
+  // ------------------------------------------------------------------
+
+  it('renders an expand chevron on Bulk parent rows with items > 1', async () => {
+    server.use(
+      http.get('/api/runviewer/scans', () =>
+        HttpResponse.json({
+          response: [
+            {
+              bulkJobId: 1, bulkParentId: null, jobNumber: 'PARENT-1', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 3, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+            // Single-item job - should NOT get a chevron
+            {
+              bulkJobId: 2, bulkParentId: null, jobNumber: 'PARENT-2', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 1, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+          ],
+        })),
+      ...baseline(),
+    );
+    renderPage();
+    // Wait for both parents to render
+    expect(await screen.findByText('PARENT-1')).toBeInTheDocument();
+    expect(screen.getByText('PARENT-2')).toBeInTheDocument();
+    // Only PARENT-1 (items > 1) should have an Expand chevron
+    const expandButtons = screen.getAllByRole('button', { name: 'Expand' });
+    expect(expandButtons).toHaveLength(1);
+  });
+
+  it('expands a Bulk parent to reveal child rows (no lazy fetch)', async () => {
+    server.use(
+      http.get('/api/runviewer/scans', () =>
+        HttpResponse.json({
+          response: [
+            {
+              bulkJobId: 10, bulkParentId: null, jobNumber: 'PARENT-A', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 2, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+            {
+              bulkJobId: 11, bulkParentId: 10, jobNumber: 'CHILD-1', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 1, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+            {
+              bulkJobId: 12, bulkParentId: 10, jobNumber: 'CHILD-2', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 1, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+          ],
+        })),
+      ...baseline(),
+    );
+    renderPage();
+    expect(await screen.findByText('PARENT-A')).toBeInTheDocument();
+    // Children not visible until parent is expanded
+    expect(screen.queryByText('CHILD-1')).not.toBeInTheDocument();
+    expect(screen.queryByText('CHILD-2')).not.toBeInTheDocument();
+    // Child rows should NOT render as top-level parents either
+    // (they're bulkParentId != null so they're filtered out)
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    expect(await screen.findByText('CHILD-1')).toBeInTheDocument();
+    expect(screen.getByText('CHILD-2')).toBeInTheDocument();
+  });
+
+  it('lazy-loads per-item barcodes when a childless Bulk parent is expanded', async () => {
+    let itemsHit = 0;
+    server.use(
+      http.get('/api/runviewer/scans', () =>
+        HttpResponse.json({
+          response: [
+            {
+              bulkJobId: 50, bulkParentId: null, jobNumber: 'PARENT-M', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 3, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+          ],
+        })),
+      http.get('/api/runviewer/jobs/items', () => {
+        itemsHit++;
+        return HttpResponse.json({
+          response: [
+            {
+              bulkJobItemId: 501, bulkJobId: 50, barcode: 'BC-A', itemName: null,
+              weight: 1, length: 1, height: 1, depth: 1,
+              sortScanned: false, runScanned: false, pickScanned: false,
+              invalidPickScanned: false, transferScanned: false, transitScanned: false,
+            },
+          ],
+        });
+      }),
+      ...baseline(),
+    );
+    renderPage();
+    expect(await screen.findByText('PARENT-M')).toBeInTheDocument();
+    const user = userEvent.setup();
+    // Legacy toggleExpand behavior: with no children and items > 1, the
+    // parent chevron fires the item-fetch directly (one click, not two).
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    await waitFor(() => expect(itemsHit).toBe(1));
+    expect(await screen.findByText(/PARENT-M-A/)).toBeInTheDocument();
+  });
+
+  it('lazy-loads per-item barcodes under an expanded child row', async () => {
+    let itemsHit = 0;
+    const seenBulkJobIds: string[] = [];
+    server.use(
+      http.get('/api/runviewer/scans', () =>
+        HttpResponse.json({
+          response: [
+            {
+              bulkJobId: 70, bulkParentId: null, jobNumber: 'PARENT-K', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 2, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+            {
+              bulkJobId: 71, bulkParentId: 70, jobNumber: 'CHILD-K1', clientCode: 'ACME',
+              deliveryDate: null, readyTime: null, toAddress: null,
+              items: 4, sortScanned: 0, runScanned: 0, pickScanned: 0,
+              invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+            },
+          ],
+        })),
+      http.get('/api/runviewer/jobs/items', ({ request }) => {
+        itemsHit++;
+        seenBulkJobIds.push(new URL(request.url).searchParams.get('bulkJobId') ?? '');
+        return HttpResponse.json({
+          response: [
+            {
+              bulkJobItemId: 711, bulkJobId: 71, barcode: 'BC-KC1', itemName: null,
+              weight: null, length: null, height: null, depth: null,
+              sortScanned: true, runScanned: false, pickScanned: false,
+              invalidPickScanned: false, transferScanned: false, transitScanned: false,
+            },
+          ],
+        });
+      }),
+      ...baseline(),
+    );
+    renderPage();
+    expect(await screen.findByText('PARENT-K')).toBeInTheDocument();
+    const user = userEvent.setup();
+    // Expand parent first
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    expect(await screen.findByText('CHILD-K1')).toBeInTheDocument();
+    // Now a second Expand chevron appears next to CHILD-K1's items count
+    const expands = screen.getAllByRole('button', { name: 'Expand' });
+    // The last Expand is the child's items chevron (parent's chevron is now Collapse)
+    await user.click(expands[expands.length - 1]);
+    await waitFor(() => expect(itemsHit).toBe(1));
+    // Confirm the item-fetch was scoped to the child bulkJobId (71),
+    // not the parent (70)
+    expect(seenBulkJobIds).toEqual(['71']);
+  });
+
+  it('forwards Client selection to the SP as clientIds query param and re-renders on the refetched row set', async () => {
+    const scanCalls: string[] = [];
+    server.use(
+      http.get('/api/runviewer/scans', ({ request }) => {
+        const url = new URL(request.url);
+        const ids = url.searchParams.get('clientIds') ?? '';
+        scanCalls.push(ids);
+        // Backend narrows via ClientIds. Simulate: no filter -> both
+        // rows, filter=1 -> ACME only.
+        const rows = ids === '1'
+          ? [{ ...bulkFixture(1)[0], bulkJobId: 1, jobNumber: 'J-1', clientCode: 'ACME' }]
+          : [
+            { ...bulkFixture(1)[0], bulkJobId: 1, jobNumber: 'J-1', clientCode: 'ACME' },
+            { ...bulkFixture(1)[0], bulkJobId: 2, jobNumber: 'J-2', clientCode: 'ZONE' },
+          ];
+        return HttpResponse.json({ response: rows });
+      }),
+      http.get('/api/runviewer/filters/clients', () => HttpResponse.json({
+        response: [
+          { id: 1, label: 'ACME Freight Ltd' },
+          { id: 2, label: 'ZONE Logistics' },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    // Initial unfiltered fetch returns both rows.
+    expect(await screen.findByText('J-1')).toBeInTheDocument();
+    expect(screen.getByText('J-2')).toBeInTheDocument();
+    // Open the Clients dropdown and pick ACME.
+    await user.click(screen.getByRole('button', { name: /^Clients/ }));
+    await user.click(await screen.findByText('ACME Freight Ltd'));
+    // Second fetch fires with clientIds=1 and only J-1 renders.
+    await waitFor(() => {
+      expect(scanCalls).toContain('1');
+      expect(screen.queryByText('J-2')).not.toBeInTheDocument();
+      expect(screen.getByText('J-1')).toBeInTheDocument();
+    });
   });
 });

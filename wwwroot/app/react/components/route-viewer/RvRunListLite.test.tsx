@@ -212,4 +212,43 @@ describe('RvRunListLite', () => {
     fireEvent.contextMenu(screen.getByText('NO-CTX'));
     expect(screen.getByText('NO-CTX')).toBeInTheDocument();
   });
+
+  it('applies runColorMap tint on the selected row (backgroundColor + borderLeft)', () => {
+    renderLite({
+      variant: 'returns',
+      runs: [mkRun({ id: 11, name: 'TINT-ME', hasReturns: true })],
+      selectedIds: [11],
+      runColorMap: { 11: '#7c3aed' },
+    });
+    const row = screen.getByText('TINT-ME').closest('tr');
+    expect(row).not.toBeNull();
+    // Inline style carries the tint at 20% alpha + a 4px left border.
+    // jsdom normalises the hex we set (#7c3aed) into rgb(124, 58, 237)
+    // so match on the rgb form.
+    expect(row!.getAttribute('style')).toContain('background-color');
+    expect(row!.getAttribute('style')).toMatch(/124,\s*58,\s*237/);
+    expect(row!.getAttribute('style')).toContain('border-left');
+    // And the default brand-cyan/20 class must NOT be applied when a
+    // tint takes over, otherwise the two colours would blend.
+    expect(row!.className).not.toContain('bg-brand-cyan/20');
+  });
+
+  it('does NOT tint a row that is not in selectedIds even when runColorMap has an entry', () => {
+    renderLite({
+      variant: 'returns',
+      runs: [
+        mkRun({ id: 21, name: 'SEL', hasReturns: true }),
+        mkRun({ id: 22, name: 'UNSEL', hasReturns: true }),
+      ],
+      selectedIds: [21],
+      runColorMap: { 21: '#0891b2', 22: '#f59e0b' },
+    });
+    const selRow = screen.getByText('SEL').closest('tr');
+    const unselRow = screen.getByText('UNSEL').closest('tr');
+    expect(selRow!.getAttribute('style') ?? '').toContain('background-color');
+    // Unselected row must fall through to the default hover class and
+    // NOT carry an inline background even though its id has a colour.
+    const unselStyle = unselRow!.getAttribute('style') ?? '';
+    expect(unselStyle).not.toContain('background-color');
+  });
 });

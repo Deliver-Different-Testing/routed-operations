@@ -339,4 +339,18 @@ public class RouteViewerAssignmentService(
             SpParam.Of("@RunID", runId),
             SpParam.Of("@CourierCode", courierCode));
     }
+
+    /// <summary>POST /api/runviewer/jobs/transfer-original-run-order -
+    /// reassign the run's ORIGINAL owner (the courier who first held it
+    /// before any subsequent TransferRun / ReleaseRun / UnAssignRun
+    /// swaps). Separate from TransferRunAsync because that moves the
+    /// current jobs; this rewrites who "owns" the run for reporting +
+    /// courier-percentage rollups. Wraps legacy RVW_stpTransferOriginalRunOrder.</summary>
+    public async Task TransferOriginalRunOrderAsync(int runId, string toCourierCode)
+    {
+        await Context.Database.ExecuteSqlRawAsync(
+            "EXEC dbo.RVW_stpTransferOriginalRunOrder @RunID, @ToCourierCode",
+            SpParam.Of("@RunID", runId),
+            SpParam.Of("@ToCourierCode", toCourierCode ?? string.Empty));
+    }
 }

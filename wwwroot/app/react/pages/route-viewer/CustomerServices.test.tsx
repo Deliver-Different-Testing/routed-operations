@@ -198,4 +198,61 @@ describe('CustomerServices', () => {
       expect(screen.getAllByText(/Loading/).length).toBeGreaterThan(0),
     );
   });
+
+  it('Copy Link button: fires generate-direct-link + writes URL to clipboard', async () => {
+    // jsdom provides a Clipboard instance on navigator that no-ops
+    // writeText. Spy on it so we can assert the call + capture the URL.
+    const writeText = vi
+      .spyOn(window.navigator.clipboard, 'writeText')
+      .mockResolvedValue(undefined);
+    let calledWith: URL | null = null;
+    try {
+      server.use(
+        http.get('/api/runviewer/events', () =>
+          HttpResponse.json({
+            response: [
+              mkRow({
+                bulkEventId: 7,
+                clientId: 42,
+                internal: false,
+                jobNumber: 'SHARE-7',
+              }),
+            ],
+          })),
+        http.get('/api/runviewer/events/direct-link', ({ request: req }) => {
+          calledWith = new URL(req.url);
+          return HttpResponse.json({
+            response: { url: 'https://runviewer.example/#/CS?eid=7' },
+          });
+        }),
+      );
+      renderPage();
+      const user = userEvent.setup();
+      await screen.findByText('SHARE-7');
+      const btn = screen.getByRole('button', { name: /Copy event link/i });
+      await user.click(btn);
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText).toHaveBeenCalledWith('https://runviewer.example/#/CS?eid=7');
+      // Confirm the endpoint was hit with the expected query string.
+      expect(calledWith).not.toBeNull();
+      expect(calledWith!.searchParams.get('eventId')).toBe('7');
+      expect(calledWith!.searchParams.get('clientId')).toBe('42');
+    } finally {
+      writeText.mockRestore();
+    }
+  });
+
+  it('Copy Link button: hidden on internal-only events', async () => {
+    server.use(
+      http.get('/api/runviewer/events', () =>
+        HttpResponse.json({
+          response: [
+            mkRow({ bulkEventId: 8, clientId: 42, internal: true, jobNumber: 'INT-ONLY' }),
+          ],
+        })),
+    );
+    renderPage();
+    await screen.findByText('INT-ONLY');
+    expect(screen.queryByRole('button', { name: /Copy event link/i })).toBeNull();
+  });
 });

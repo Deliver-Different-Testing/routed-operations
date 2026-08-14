@@ -22,6 +22,11 @@ interface Props {
   selectedIds: number[];
   onSelect: (id: number, mods: { ctrl: boolean; shift: boolean }) => void;
   onContextMenu?: (e: React.MouseEvent, id: number) => void;
+  /** Audit item 19: per-run tint keyed by run id, populated only when
+   *  the operator has 2+ runs selected. Matches the primary Run List
+   *  tint behaviour (RvRunList) so rows across Pre Assigned / Returns /
+   *  Exceptions line up with the same-coloured map pins. */
+  runColorMap?: Record<number, string>;
 }
 
 const TITLES: Record<Variant, string> = {
@@ -45,7 +50,7 @@ function filterRuns(runs: BulkRun[], variant: Variant): BulkRun[] {
   }
 }
 
-export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextMenu }: Props) {
+export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextMenu, runColorMap }: Props) {
   const filtered = filterRuns(runs, variant);
   return (
     <RvBox title={TITLES[variant]}>
@@ -63,13 +68,18 @@ export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextM
         <tbody>
           {filtered.map((r) => {
             const selected = selectedIds.includes(r.id);
+            // Only tint when the row is one of the currently-selected
+            // runs; unselected rows keep the default hover behaviour so
+            // the operator can still tell which extra rows exist.
+            const tint = selected ? runColorMap?.[r.id] : undefined;
             return (
               <tr
                 key={r.id}
                 onClick={(e) => onSelect(r.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
                 onContextMenu={onContextMenu ? (e) => onContextMenu(e, r.id) : undefined}
+                style={tint ? { backgroundColor: tint + '33' /* 20% alpha */, borderLeft: `4px solid ${tint}` } : undefined}
                 className={`cursor-pointer border-b border-border/50 ${
-                  selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
+                  tint ? '' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
                 }`}
               >
                 <td className="px-2 py-1 font-medium">{r.name ?? '-'}</td>

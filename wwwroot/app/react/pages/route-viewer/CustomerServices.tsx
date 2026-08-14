@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
 import { routeViewerService } from '../../services/routeViewerService';
 import { request } from '../../services/api';
@@ -46,6 +47,7 @@ interface EventRow {
 
 export default function CustomerServices() {
   const user = useAuth();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialDate = tenantTodayYmd({ isUsTenant: user.isUsTenant, timeZone: user.timeZone });
   const [runDate, setRunDate] = useState(initialDate);
@@ -54,6 +56,10 @@ export default function CustomerServices() {
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  // Fallback modal payload when navigator.clipboard is unavailable
+  // (older browsers / non-secure contexts). Operator select-copies
+  // the URL from the modal instead of a silent failure.
+  const [clipboardFallback, setClipboardFallback] = useState<string | null>(null);
 
   const q = useQuery({
     queryKey: ['cs-events', runDate, includeClosed],
@@ -92,6 +98,34 @@ export default function CustomerServices() {
     next.delete('eid');
     setSearchParams(next, { replace: true });
   }, [searchParams, rows, q.isLoading, setSearchParams]);
+
+  // Copy a shareable direct link to the operator's clipboard. Legacy
+  // csControl.generateDirectLink hid this for internal events + relied
+  // on document.execCommand('copy'); we gate on !internal here and use
+  // navigator.clipboard with a select-copy modal fallback for
+  // non-secure contexts (older browsers / http dev).
+  const copyDirectLink = async (row: EventRow) => {
+    if (row.internal || row.clientId == null) return;
+    try {
+      const { url } = await routeViewerService.generateDirectLink(row.bulkEventId, row.clientId);
+      if (!url || url === 'Link Declined') {
+        toast.show('Direct link not available for this client.', 'warning');
+        return;
+      }
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(url);
+          toast.show('Event link copied', 'success');
+          return;
+        } catch {
+          // fall through to select-copy modal
+        }
+      }
+      setClipboardFallback(url);
+    } catch (e) {
+      toast.show(`Copy link failed: ${(e as Error).message}`, 'error');
+    }
+  };
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -162,11 +196,16 @@ export default function CustomerServices() {
                   <th className="px-2 py-1">By</th>
                   <th className="px-2 py-1">Notes</th>
                   <th className="px-2 py-1">Closed</th>
+                  <th className="px-2 py-1 w-8" aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((r) => {
                   const active = selectedEventId === r.bulkEventId;
+                  // Legacy csControl.generateDirectLink returns early
+                  // when event.internal is true; also need a clientId
+                  // to build the URL server-side.
+                  const canCopyLink = !r.internal && r.clientId != null;
                   return (
                     <tr
                       key={r.bulkEventId}
@@ -192,19 +231,51 @@ export default function CustomerServices() {
                       <td className="px-2 py-1 text-text-muted">
                         {r.closedDate ? `${tenantDateTime(r.closedDate, tzOpts)} (${r.closedByName ?? '?'})` : '-'}
                       </td>
+                      <td className="px-2 py-1 text-center">
+                        {canCopyLink && (
+                          <button
+                            type="button"
+                            aria-label="Copy event link"
+                            title="Copy event link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              copyDirectLink(r);
+                            }}
+                            className="text-text-muted hover:text-brand-cyan p-0.5 rounded focus:outline-none focus:ring-1 focus:ring-brand-cyan"
+                          >
+                            {/* clipboard-copy SVG (16x16) - inline to
+                                avoid an icon-pack dependency for one glyph. */}
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                            >
+                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {filtered.length === 0 && !q.isLoading && (
                   <tr>
-                    <td className="px-3 py-6 text-center text-text-muted" colSpan={7}>
+                    <td className="px-3 py-6 text-center text-text-muted" colSpan={8}>
                       No events for this date / filter.
                     </td>
                   </tr>
                 )}
                 {q.isLoading && (
                   <tr>
-                    <td className="px-3 py-6 text-center text-text-muted" colSpan={7}>Loading...</td>
+                    <td className="px-3 py-6 text-center text-text-muted" colSpan={8}>Loading...</td>
                   </tr>
                 )}
               </tbody>
@@ -229,6 +300,35 @@ export default function CustomerServices() {
           </div>
         </div>
       </div>
+
+      {clipboardFallback && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setClipboardFallback(null)}
+        >
+          <div
+            className="bg-surface-white rounded shadow-lg p-4 max-w-lg w-[90%]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-sm font-medium mb-2">Copy this link</div>
+            <div className="text-xs text-text-muted mb-2">
+              Clipboard access is unavailable. Select the URL below and copy it manually.
+            </div>
+            <input
+              type="text"
+              readOnly
+              value={clipboardFallback}
+              onFocus={(e) => e.currentTarget.select()}
+              className="w-full border border-border rounded px-2 py-1 text-xs bg-surface-white font-mono"
+            />
+            <div className="flex justify-end mt-2">
+              <Button variant="neutral" size="sm" onClick={() => setClipboardFallback(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

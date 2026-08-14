@@ -1,9 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { RvRunList, type ViewMode } from './RvRunList';
 import type { BulkRun } from '../../services/routeViewerService';
+
+// Minimal DataTransfer stub - jsdom doesn't ship one. We store
+// mime->value pairs in a plain map, expose `types` via a getter,
+// and mimic the setData / getData API RvRunList's handlers use.
+function makeDT(initial: Record<string, string> = {}) {
+  const bag = new Map<string, string>(Object.entries(initial));
+  return {
+    getData: (type: string) => bag.get(type) ?? '',
+    setData: (type: string, value: string) => { bag.set(type, value); },
+    get types() { return Array.from(bag.keys()); },
+    dropEffect: 'none',
+    effectAllowed: 'none',
+  } as unknown as DataTransfer;
+}
 
 const mkRun = (over: Partial<BulkRun> = {}): BulkRun => ({
   id: 1,
@@ -164,5 +178,64 @@ describe('RvRunList', () => {
       />,
     );
     expect(container.querySelector('.bg-brand-cyan\\/20')).toBeInTheDocument();
+  });
+
+  it('calls onDropRunJobs with parsed jobIds + fromRunId when a rv-run-jobs payload is dropped', () => {
+    const onDropRunJobs = vi.fn();
+    renderList({
+      runs: [mkRun({ id: 42, name: 'TARGET' })],
+      onDropRunJobs,
+    });
+    const row = screen.getByText('TARGET').closest('tr')!;
+    const dt = makeDT({
+      'application/rv-run-jobs': JSON.stringify({ fromRunId: 11, jobIds: [1001, 1002] }),
+    });
+    fireEvent.dragOver(row, { dataTransfer: dt });
+    fireEvent.drop(row, { dataTransfer: dt });
+    expect(onDropRunJobs).toHaveBeenCalledWith(42, 11, [1001, 1002]);
+  });
+
+  it('does NOT call onDropRunJobs when the payload JSON is malformed', () => {
+    const onDropRunJobs = vi.fn();
+    const onDropCourier = vi.fn();
+    renderList({
+      runs: [mkRun({ id: 42, name: 'TARGET' })],
+      onDropRunJobs,
+      onDropCourier,
+    });
+    const row = screen.getByText('TARGET').closest('tr')!;
+    const dt = makeDT({ 'application/rv-run-jobs': '{not json' });
+    fireEvent.drop(row, { dataTransfer: dt });
+    expect(onDropRunJobs).not.toHaveBeenCalled();
+    expect(onDropCourier).not.toHaveBeenCalled();
+  });
+
+  it('still routes courier payload to onDropCourier when both drop handlers are wired', () => {
+    const onDropRunJobs = vi.fn();
+    const onDropCourier = vi.fn();
+    renderList({
+      runs: [mkRun({ id: 42, name: 'TARGET' })],
+      onDropRunJobs,
+      onDropCourier,
+    });
+    const row = screen.getByText('TARGET').closest('tr')!;
+    const dt = makeDT({ 'application/rv-courier-code': 'KEV' });
+    fireEvent.drop(row, { dataTransfer: dt });
+    expect(onDropCourier).toHaveBeenCalledWith(42, 'KEV');
+    expect(onDropRunJobs).not.toHaveBeenCalled();
+  });
+
+  it('ignores an rv-run-jobs payload with empty jobIds', () => {
+    const onDropRunJobs = vi.fn();
+    renderList({
+      runs: [mkRun({ id: 42, name: 'TARGET' })],
+      onDropRunJobs,
+    });
+    const row = screen.getByText('TARGET').closest('tr')!;
+    const dt = makeDT({
+      'application/rv-run-jobs': JSON.stringify({ fromRunId: 11, jobIds: [] }),
+    });
+    fireEvent.drop(row, { dataTransfer: dt });
+    expect(onDropRunJobs).not.toHaveBeenCalled();
   });
 });

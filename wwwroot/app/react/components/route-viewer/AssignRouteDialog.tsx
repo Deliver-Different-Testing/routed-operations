@@ -14,9 +14,26 @@ import { routeViewerService } from '../../services/routeViewerService';
 // there is no ambiguity server-side. Success callback receives the
 // human-readable rollup ("Assigned Kerran Tetley to 12 jobs on run
 // #204") which the caller toasts.
+//
+// Bucket search endpoints:
+//   Courier  -> GET /runviewer/couriers/search?q=            (legacy,
+//               NP-scoped server-side; returns { courierId, code, name })
+//   Agent/NP -> GET /runviewer/jobs/{jobId}/assignable-targets/agents
+//               ?q=&isNetworkPartner=&limit=  (returns { id, name, hint })
+//
+// The agent endpoint needs an anchor jobId for its NP scope guard.
+// Callers that open the dialog from a job context (RvJobContextMenu)
+// pass `anchorJobId`; callers with only a run in hand (RvRunContextMenu)
+// leave it undefined, and we pass 0 - the scope guard no-ops for admin
+// scope, and admin is the only scope that ever sees the Agent + NP tabs
+// (NP users are locked to the courier-only variant just below).
 
 interface Props {
   runId: number;
+  /** Optional anchor job id used by the Agent + NP search endpoint's
+   *  NP scope guard. Callers with a selected job (job context menu)
+   *  should pass it; run-scoped callers can omit and we default to 0. */
+  anchorJobId?: number;
   onClose: () => void;
   onSuccess: (summary: string) => void;
 }
@@ -29,7 +46,7 @@ interface PickerRow {
   subtitle?: string;
 }
 
-export function AssignRouteDialog({ runId, onClose, onSuccess }: Props) {
+export function AssignRouteDialog({ runId, anchorJobId, onClose, onSuccess }: Props) {
   const user = useAuth();
   const [bucket, setBucket] = useState<Bucket>('courier');
   const [query, setQuery] = useState('');
@@ -58,23 +75,34 @@ export function AssignRouteDialog({ runId, onClose, onSuccess }: Props) {
     setLoading(true);
     setError(null);
     try {
-      // Only courier search is wired end-to-end today (P1 delivered
-      // /couriers/search). Agent + NP would consume matching search
-      // endpoints when they land in P6b - fall back to a helpful message
-      // rather than a silent empty list.
-      if (bucket !== 'courier') {
-        if (tokenRef.current === token) {
-          setRows([]);
-          setLoading(false);
-        }
-        return;
+      let nextRows: PickerRow[];
+      if (bucket === 'courier') {
+        const results = await routeViewerService.searchCouriers(q);
+        if (tokenRef.current !== token) return;
+        nextRows = results.map((c) => ({
+          id: c.courierId,
+          label: `${c.name} (${c.code})`,
+        }));
+      } else {
+        // Agent + NP share one endpoint distinguished by the
+        // isNetworkPartner flag. Backend requires an anchor jobId for
+        // its NP scope guard; run-only callers pass 0 which is a no-op
+        // for admin scope (see Props.anchorJobId).
+        const isNp = bucket === 'np';
+        const results = await routeViewerService.searchAgents(
+          anchorJobId ?? 0,
+          q,
+          isNp,
+          200,
+        );
+        if (tokenRef.current !== token) return;
+        nextRows = results.map((a) => ({
+          id: a.id,
+          label: a.name ?? `#${a.id}`,
+          subtitle: a.hint ?? undefined,
+        }));
       }
-      const results = await routeViewerService.searchCouriers(q);
-      if (tokenRef.current !== token) return;
-      setRows(results.map((c) => ({
-        id: c.courierId,
-        label: `${c.name} (${c.code})`,
-      })));
+      setRows(nextRows);
     } catch (e) {
       if (tokenRef.current === token) setError((e as Error).message);
     } finally {
@@ -141,7 +169,7 @@ export function AssignRouteDialog({ runId, onClose, onSuccess }: Props) {
 
       <input
         type="text"
-        placeholder={`Search ${bucket}s...`}
+        placeholder={`Search ${bucket === 'np' ? 'network partners' : bucket + 's'}...`}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         className="w-full border border-border rounded px-2 py-1 text-sm mb-2"
@@ -152,9 +180,7 @@ export function AssignRouteDialog({ runId, onClose, onSuccess }: Props) {
         {loading && <div className="p-2 text-xs text-text-muted">Searching...</div>}
         {!loading && rows.length === 0 && (
           <div className="p-2 text-xs text-text-muted">
-            {bucket === 'courier'
-              ? 'No matches - type to search.'
-              : `${bucket} search wires up in P6b.`}
+            No matches - type to search.
           </div>
         )}
         {rows.map((r) => (

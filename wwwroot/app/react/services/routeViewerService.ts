@@ -116,6 +116,11 @@ export interface BulkJob {
   runOrder: number | null;
   bulkRunId: number | null;
   multiboxParentId: number | null;
+  /** True when the row is a multibox parent (BulkJobDto.MultiBox). Set
+   *  by RVW_stpPrintJobsV2 for parent rows so the Print Manager grid can
+   *  render the expand chevron. Children are fetched lazily via the
+   *  `/runviewer/jobs/print-children` endpoint. */
+  multiBox?: boolean;
   parentJobId: number | null;
   regionId: number | null;
   regionName: string | null;
@@ -250,6 +255,29 @@ export const routeViewerService = {
       `/runviewer/jobs/items${buildQuery({ bulkJobId })}`,
     ),
 
+  /** Full per-item barcode rows for Bulk-mode Scan Manager grandchild
+   *  expansion. Wraps GET /runviewer/jobs/items which fires
+   *  RVW_stpJobItems. Shape mirrors JobItemDto exactly - the older
+   *  getJobItems above is a lossy view kept for a caller that only
+   *  cares about barcode/scanned. */
+  getBulkJobItems: (bulkJobId: number, runDate?: string) =>
+    unwrap<Array<{
+      bulkJobItemId: number;
+      bulkJobId: number;
+      barcode: string | null;
+      itemName: string | null;
+      weight: number | null;
+      length: number | null;
+      height: number | null;
+      depth: number | null;
+      sortScanned: boolean;
+      runScanned: boolean;
+      pickScanned: boolean;
+      invalidPickScanned: boolean;
+      transferScanned: boolean;
+      transitScanned: boolean;
+    }>>(`/runviewer/jobs/items${buildQuery({ bulkJobId, runDate })}`),
+
   /** Returns an array of base64-encoded JPEG bytes (System.Text.Json
    *  serialises `List<byte[]>` as array-of-base64-strings). Frontend
    *  wraps each entry in a `data:image/jpeg;base64,` src to render. */
@@ -269,6 +297,24 @@ export const routeViewerService = {
       `/runviewer/couriers/search${buildQuery({ q })}`,
     ),
 
+  /** LIKE-typeahead over agents / network-partners for the Assign Route
+   *  dialog Agent + NP buckets. Wraps
+   *  GET /runviewer/jobs/{jobId}/assignable-targets/agents.
+   *  `isNetworkPartner` toggles which slice of tucAgents is returned
+   *  (false = Agent bucket, true = NP bucket) - same DTO shape either
+   *  way. `jobId` is required by the backend NP scope guard; callers
+   *  without a specific anchor job pass 0 (guard no-ops for admin scope,
+   *  which is the only scope that ever hits agent/NP - NP-scoped users
+   *  see the courier-only variant of the dialog). */
+  searchAgents: (jobId: number, q: string, isNetworkPartner: boolean, limit = 200) =>
+    unwrap<Array<{ id: number; name: string | null; hint: string | null }>>(
+      `/runviewer/jobs/${jobId}/assignable-targets/agents${buildQuery({
+        q,
+        isNetworkPartner: String(isNetworkPartner),
+        limit,
+      })}`,
+    ),
+
   /** Single-courier GPS position for the current job (25s poll on
    *  Mobile Job Detail). Returns null when no fix on file. */
   getCourierPosition: (jobId: number) =>
@@ -284,9 +330,45 @@ export const routeViewerService = {
       `/runviewer/scans/detail${buildQuery({ jobId })}`,
     ),
 
+  /** Print Manager grid. Wraps RVW_stpPrintJobsV2 via
+   *  GET /runviewer/jobs/print-list. Emits full BulkJob shape so the
+   *  Print Manager UI has access to Speed / RefA / RefB / OurRef /
+   *  Mobile / Email / Notes for column display and free-text search.
+   *  clientInternal / regionIds / clientIds filters are optional. */
+  getPrintJobList: (
+    runDate: string,
+    opts?: { clientInternal?: boolean; clientId?: number | null; clientIds?: number[]; regionIds?: number[] },
+  ) =>
+    unwrap<BulkJob[]>(
+      `/runviewer/jobs/print-list${buildQuery({
+        runDate,
+        clientInternal: String(opts?.clientInternal ?? false),
+        clientId: opts?.clientId ?? undefined,
+        clientIds: toCsv(opts?.clientIds),
+        regionIds: toCsv(opts?.regionIds),
+      })}`,
+    ),
+
+  /** Multibox child rows for a Print Manager parent. Wraps
+   *  RVW_stpPrintJobChildren via GET /runviewer/jobs/print-children.
+   *  Fetched lazily on chevron click and cached client-side so a
+   *  second toggle is UI-only. */
+  getPrintJobChildren: (bulkJobId: number, runDate?: string) =>
+    unwrap<BulkJob[]>(
+      `/runviewer/jobs/print-children${buildQuery({ bulkJobId, runDate })}`,
+    ),
+
   /** Bulk-mode Scan Manager grid. Wraps RVW_stpScanJobs.
-   *  Tri-state Sort/Run flags plus binary Pick/InvalidPick/Transfer/Transit. */
-  getBulkScanJobs: (runDate: string, clientInternal = false) =>
+   *  Tri-state Sort/Run flags plus binary Pick/InvalidPick/Transfer/Transit.
+   *  Filter arrays forward to backend so the SP applies the filter at
+   *  source rather than the client dropping rows post-fetch. */
+  getBulkScanJobs: (
+    runDate: string,
+    clientInternal = false,
+    clientIds?: number[],
+    regionIds?: number[],
+    speedIds?: number[],
+  ) =>
     unwrap<Array<{
       bulkJobId: number;
       bulkParentId: number | null;
@@ -302,10 +384,21 @@ export const routeViewerService = {
       invalidPickScanned: number;
       transferScanned: number;
       transitScanned: number;
-    }>>(`/runviewer/scans${buildQuery({ runDate, clientInternal: String(clientInternal) })}`),
+    }>>(`/runviewer/scans${buildQuery({
+      runDate,
+      clientInternal: String(clientInternal),
+      clientIds: (clientIds ?? []).join(',') || undefined,
+      regionIds: (regionIds ?? []).join(',') || undefined,
+      speedIds: (speedIds ?? []).join(',') || undefined,
+    })}`),
 
   /** Routed-mode Scan Manager grid. Legs is a JSON string per-row. */
-  getRoutedScanJobs: (runDate: string) =>
+  getRoutedScanJobs: (
+    runDate: string,
+    clientIds?: number[],
+    regionIds?: number[],
+    speedIds?: number[],
+  ) =>
     unwrap<Array<{
       jobId: number;
       bulkJobId: number;
@@ -322,7 +415,12 @@ export const routeViewerService = {
       legs: string | null;
       hasShort: boolean;
       isDivergent: boolean;
-    }>>(`/runviewer/scans/routed${buildQuery({ runDate })}`),
+    }>>(`/runviewer/scans/routed${buildQuery({
+      runDate,
+      clientIds: (clientIds ?? []).join(',') || undefined,
+      regionIds: (regionIds ?? []).join(',') || undefined,
+      speedIds: (speedIds ?? []).join(',') || undefined,
+    })}`),
 
   /** Close a CS event. */
   closeEvent: (eventId: number, closedBy: string) =>
@@ -331,6 +429,15 @@ export const routeViewerService = {
   /** Prepend a threaded reply to a CS event's Notes field. */
   addEventReply: (eventId: number, note: string, userName: string) =>
     unwrapPost<string>(`/runviewer/events/${eventId}/reply`, { note, userName }),
+
+  /** Generate a shareable direct link for a CS event. Server returns
+   *  "Link Declined" when the target client has notifications marked
+   *  Internal (legacy behaviour); callers should gate the UI on the
+   *  event's internal flag before invoking. */
+  generateDirectLink: (eventId: number, clientId: number) =>
+    unwrap<{ url: string | null }>(
+      `/runviewer/events/direct-link${buildQuery({ eventId, clientId })}`,
+    ),
 
   /** Admin bulk-purge of missing-scan LHP / DEL child rows for a
    *  run-date + filter slice. Wraps POST /runviewer/scans/remove-missing
@@ -422,8 +529,16 @@ export const routeViewerService = {
       pickedUp: string | null;
     }>>(`/runviewer/jobs/linehaul${buildQuery({ depotId, name, runDate })}`),
 
-  /** Linehaul run list. Wraps RVW_stpLineHaulRuns. */
-  getLinehaulRuns: (runDate: string, clientIds?: number[], fromRegionIds?: number[], regionIds?: number[]) =>
+  /** Linehaul run list. Wraps RVW_stpLineHaulRuns. speedIds is passed
+   *  through when set - backend already accepts it on LinehaulRunListRequest
+   *  so this is a service-only wiring, no controller change. */
+  getLinehaulRuns: (
+    runDate: string,
+    clientIds?: number[],
+    fromRegionIds?: number[],
+    regionIds?: number[],
+    speedIds?: number[],
+  ) =>
     unwrap<Array<{
       id: number;
       name: string | null;
@@ -448,6 +563,7 @@ export const routeViewerService = {
       clientIds: (clientIds ?? []).join(',') || undefined,
       fromRegionIds: (fromRegionIds ?? []).join(',') || undefined,
       regionIds: (regionIds ?? []).join(',') || undefined,
+      speedIds: (speedIds ?? []).join(',') || undefined,
     })}`),
 
   /** Pre-assign an entire run to a courier via RVW_stpPreAssignRun.

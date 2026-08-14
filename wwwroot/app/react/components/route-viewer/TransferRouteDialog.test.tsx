@@ -120,4 +120,89 @@ describe('TransferRouteDialog', () => {
     await user.click(await screen.findByRole('button', { name: 'Transfer' }));
     expect(await screen.findByText(/transfer boom/)).toBeInTheDocument();
   });
+
+  it('confirm-step preview table renders one row per supplied job with red from-route + green to-route', async () => {
+    server.use(stubRoutes([{ routeId: 200, label: 'North' }]));
+    const jobs = [
+      { jobId: 11, jobNumber: 'JB-11', fromAddress: '1 Alpha St',  currentRouteName: 'Old East' },
+      { jobId: 12, jobNumber: 'JB-12', fromAddress: '2 Bravo Rd',  currentRouteName: 'Old East' },
+      { jobId: 13, jobNumber: null,    fromAddress: null,          currentRouteName: null       },
+    ];
+    renderDlg({ runId: 100, jobs });
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole('combobox'), '200');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const table = await screen.findByTestId('transfer-preview-table');
+    const bodyRows = table.querySelectorAll('tbody tr');
+    expect(bodyRows.length).toBe(3);
+
+    // Row 1 - fully populated: Job # + from-address, from-route red, to-route green.
+    const r1 = bodyRows[0].querySelectorAll('td');
+    expect(r1[0].textContent).toBe('JB-11');
+    expect(r1[1].textContent).toBe('1 Alpha St');
+    expect(r1[2].textContent).toBe('Old East');
+    expect(r1[2].className).toContain('text-error');
+    expect(r1[3].textContent).toBe('North');
+    expect(r1[3].className).toContain('text-success');
+
+    // Row 3 - fallbacks: '#<jobId>' for missing job number, 'unassigned' for null route.
+    const r3 = bodyRows[2].querySelectorAll('td');
+    expect(r3[0].textContent).toBe('#13');
+    expect(r3[1].textContent).toBe('-');
+    expect(r3[2].textContent).toBe('unassigned');
+    expect(r3[2].className).toContain('text-error');
+    expect(r3[3].textContent).toBe('North');
+    expect(r3[3].className).toContain('text-success');
+  });
+
+  it('run-scoped path (no jobs prop) fetches run jobs via runDate and renders them', async () => {
+    server.use(
+      stubRoutes([{ routeId: 200, label: 'North' }]),
+      http.get('/api/runviewer/runs/100/jobs', () =>
+        HttpResponse.json({
+          response: [
+            {
+              // Only fields the preview table touches need real values;
+              // the rest match the BulkJob shape defaults so unwrap<T[]>
+              // stays happy.
+              jobId: 21,
+              jobNumber: 'RN-21',
+              fromAddress: '9 Cascade Ave',
+              runName: 'Run 100',
+            },
+          ],
+        }),
+      ),
+    );
+    renderDlg({ runId: 100, runDate: '2026-08-14' });
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole('combobox'), '200');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const table = await screen.findByTestId('transfer-preview-table');
+    // Wait for the fetched row (initially "Loading jobs..." then row).
+    await waitFor(() => {
+      const cells = table.querySelectorAll('tbody tr td');
+      expect(cells.length).toBeGreaterThanOrEqual(4);
+      expect(cells[0].textContent).toBe('RN-21');
+    });
+    const cells = table.querySelectorAll('tbody tr td');
+    expect(cells[1].textContent).toBe('9 Cascade Ave');
+    expect(cells[2].textContent).toBe('Run 100');
+    expect(cells[2].className).toContain('text-error');
+    expect(cells[3].textContent).toBe('North');
+    expect(cells[3].className).toContain('text-success');
+  });
+
+  it('run-scoped path with no runDate + no jobs shows empty-state message', async () => {
+    server.use(stubRoutes([{ routeId: 200, label: 'North' }]));
+    renderDlg({ runId: 100 });
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole('combobox'), '200');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    const table = await screen.findByTestId('transfer-preview-table');
+    expect(table.textContent).toContain('No jobs to display');
+  });
 });

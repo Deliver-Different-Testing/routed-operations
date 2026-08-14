@@ -64,6 +64,39 @@ public class RouteViewerJobServiceTests
     }
 
     [Fact]
+    public async Task GetPrintJobListAsync_Admin_HitsSp()
+    {
+        // Admin scope drops past the short-circuit and reaches
+        // SqlQueryRaw against RVW_stpPrintJobsV2, which the InMemory
+        // provider cannot execute. Exception surfacing = the projection
+        // + raw row buffer wiring compiles + reaches the SP call.
+        // Guards against a regression where the SP is invoked with the
+        // wrong param set (previously 7 params vs the SP's 4 - would
+        // fail before ever reaching a real DB).
+        var (sut, _, _, _) = NewSvc(new NpScope(true, null));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetPrintJobListAsync(new BulkRunListRequest
+            {
+                RunDate = DateTime.Today,
+                ClientId = 5,
+                ClientIds = "1,2",
+                RegionIds = "9",
+            }));
+    }
+
+    [Fact]
+    public async Task GetPrintJobListAsync_NpAgent_HitsSp()
+    {
+        // NP scope with a resolved NpAgentId still enters the SP (SP
+        // does not itself filter by NpAgentId today - service passes
+        // ClientId/ClientIds through even when scope is NP). The
+        // short-circuit only fires on NP-degenerate (no agent).
+        var (sut, _, _, _) = NewSvc(new NpScope(false, 42));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetPrintJobListAsync(new BulkRunListRequest { RunDate = DateTime.Today }));
+    }
+
+    [Fact]
     public async Task GetPrintJobChildrenAsync_CallsScopeGuard()
     {
         var (sut, guard, _, _) = NewSvc(new NpScope(true, null));

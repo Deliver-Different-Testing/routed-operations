@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { useRouteViewerRuns } from '../../hooks/queries/useRouteViewerRuns';
@@ -7,6 +8,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { routeViewerService } from '../../services/routeViewerService';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { RvBox } from '../../components/route-viewer/RvBox';
+import { RvGpsEditModal } from '../../components/route-viewer/RvGpsEditModal';
+import { EditableRow } from '../../components/route-viewer/EditableInfoRow';
 
 // Mobile RunViewer surface (master Section 13). Single-column layout
 // tuned for handheld / tablet operators. Nav flow:
@@ -41,6 +44,9 @@ export default function Mobile() {
   const [regionIds, setRegionIds] = useState<number[]>([]);
   const [speedIds, setSpeedIds] = useState<number[]>([]);
   const [groupRuns, setGroupRuns] = useState(false);
+  // Fix GPS modal state for the Detail view. Mobile is touch-first so
+  // each address row gets a visible Fix GPS button (no right-click).
+  const [gpsLeg, setGpsLeg] = useState<'pickup' | 'delivery' | null>(null);
 
   const { clientInternal, multipleClients, regions, speeds } = useRouteViewerLookups(runDate, false);
   const runsQuery = useRouteViewerRuns({
@@ -80,11 +86,46 @@ export default function Mobile() {
   });
 
   const qc = useQueryClient();
+  const toast = useToast();
   useAutoPoll(() => {
     runsQuery.refetch();
     if (selectedRunId != null) qc.invalidateQueries({ queryKey: ['mob-run-jobs', selectedRunId] });
     if (drill === 'detail' && selectedJobId != null) qc.invalidateQueries({ queryKey: ['mob-courier-gps', selectedJobId] });
   }, 25, true);
+
+  // Detail tap-to-edit save helper. Fires the text-fields patch endpoint,
+  // invalidates the mobile job-detail + run-jobs caches so the row
+  // re-renders with the new value. Legacy Home used a modal dialog for
+  // this; Mobile ports the same behavior as inline tap-to-edit so
+  // drivers keep scroll position (see EditableRow docstring for the
+  // touch-first rationale).
+  //
+  // Only 5 of the 12 legacy inline-edit fields are covered by the
+  // existing `WS_stpBulkJob_Update` SP: ToAddress, Notes, Items
+  // (Quantity), RefA, RefB. The other 7 (Phone, Email, Size, RunOrder,
+  // Date, DeliveryLocation, Charge) render as readOnly rows with a
+  // tooltip until SP support lands (see report at handoff).
+  const saveJobField = async (
+    bulkJobId: number,
+    patch: Parameters<typeof routeViewerService.updateJobTextFields>[1],
+  ) => {
+    try {
+      await routeViewerService.updateJobTextFields(bulkJobId, patch);
+      qc.invalidateQueries({ queryKey: ['mob-job-detail', bulkJobId] });
+      if (selectedRunId != null) qc.invalidateQueries({ queryKey: ['mob-run-jobs', selectedRunId] });
+      toast.show('Saved', 'success');
+    } catch (e) {
+      toast.show(`Save failed: ${(e as Error).message}`, 'error');
+    }
+  };
+
+  // Edit-affordance gate. Mirrors the desktop Detail pane
+  // (RvJobDetail.readOnlyEdit): LH legs (bulkJobId=0) have no
+  // tblBulkJob row so WS_stpBulkJob_Update has nothing to target, and
+  // non-internal clients are disallowed from editing per legacy
+  // Home policy.
+  const readOnlyEdit = (currentBulkJobId: number) =>
+    currentBulkJobId === 0 || user.clientTypeId !== 'Internal';
 
   const runs = runsQuery.data ?? [];
   const jobs = runJobsQuery.data ?? [];
@@ -275,14 +316,173 @@ export default function Mobile() {
         {tab === 'runs' && drill === 'detail' && job && (
           <RvBox title={`Job ${job.jobNumber ?? job.bulkJobId}`}>
             <div className="p-3 space-y-3 text-sm">
+              {/* Static context rows - client / ready / contact / courier / speed.
+                  These are display-only across every RunViewer surface. */}
               <MobileRow k="Client" v={job.clientCode ?? '-'} />
               <MobileRow k="Ready" v={`${tenantDateFromSpString(job.bookDate, user.isUsTenant)} ${tenantTimeFromSpString(job.bookTime, user.isUsTenant)}`} />
-              <MobileRow k="From" v={job.fromAddress ?? '-'} />
-              <MobileRow k="To" v={job.toAddress ?? '-'} />
+              <MobileAddressRow
+                k="From"
+                v={job.fromAddress ?? '-'}
+                onFixGps={() => setGpsLeg('pickup')}
+              />
               <MobileRow k="Contact" v={job.contact ?? '-'} />
-              <MobileRow k="Phone" v={job.phone ?? '-'} />
               <MobileRow k="Courier" v={job.courierName ?? 'unassigned'} />
+
+              {/* 12 tap-to-edit fields ported from legacy mobile/jobDetail.tpl.
+                  Order matches the legacy tap flow (Recipient block first,
+                  then item / order details, then delivery / charge). Each
+                  editable row is a large tap target for one-handed operators. */}
+              <div className="border-t border-border pt-2 mt-2 space-y-2">
+                {/* 1. To Address - free-text, backed by WS_stpBulkJob_Update.@ToAddress */}
+                <EditableRow
+                  label="To"
+                  displayValue={job.toAddress ?? ''}
+                  editValue={job.toAddress ?? ''}
+                  kind="textarea"
+                  readOnly={readOnlyEdit(job.bulkJobId)}
+                  onSave={(v) => saveJobField(job.bulkJobId, { toAddress: v })}
+                />
+                {/* Fix GPS lives beside the To row for touch-first access
+                    (Mobile has no right-click). Kept in a separate button
+                    row so tapping the address value never accidentally
+                    triggers the GPS modal. */}
+                <div className="pl-20">
+                  <button
+                    type="button"
+                    onClick={() => setGpsLeg('delivery')}
+                    aria-label="Fix GPS To"
+                    className="px-2 py-1 text-xs font-medium text-brand-cyan border border-brand-cyan rounded hover:bg-brand-cyan/10 active:bg-brand-cyan/20"
+                  >
+                    Fix GPS
+                  </button>
+                </div>
+
+                {/* 2. Notes - free-text, backed by WS_stpBulkJob_Update.@Notes.
+                    Textarea variant so drivers can add multi-line notes. */}
+                <EditableRow
+                  label="Notes"
+                  displayValue={job.notes ?? ''}
+                  editValue={job.notes ?? ''}
+                  kind="textarea"
+                  readOnly={readOnlyEdit(job.bulkJobId)}
+                  onSave={(v) => saveJobField(job.bulkJobId, { notes: v })}
+                />
+
+                {/* 3. Phone (deliverToPhone). Legacy targeted tblBulkJob.ProofOfDeliveryMobile.
+                    NO SP path: WS_stpBulkJob_Update does not carry a phone
+                    parameter. Rendered readOnly pending SP support. */}
+                <EditableRow
+                  label="Phone"
+                  displayValue={job.deliverToPhone ?? ''}
+                  editValue={job.deliverToPhone ?? ''}
+                  kind="text"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Phone parameter)"
+                />
+
+                {/* 4. Email (trackingEmail). NO SP path - see Phone. */}
+                <EditableRow
+                  label="Email"
+                  displayValue={job.trackingEmail ?? ''}
+                  editValue={job.trackingEmail ?? ''}
+                  kind="text"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Email parameter)"
+                />
+
+                {/* 5. Size - legacy select over options.detail.size; NO SP path. */}
+                <EditableRow
+                  label="Size"
+                  displayValue={job.size ?? ''}
+                  editValue={job.size ?? ''}
+                  kind="text"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Size parameter)"
+                />
+
+                {/* 6. Items (quantity) - short, backed by WS_stpBulkJob_Update.@Quantity.
+                    Numeric input; parse to int before dispatch. Empty
+                    string defaults to 1 to match legacy fallback. */}
+                <EditableRow
+                  label="Items"
+                  displayValue={job.qty != null ? String(job.qty) : ''}
+                  editValue={job.qty != null ? String(job.qty) : ''}
+                  kind="number"
+                  readOnly={readOnlyEdit(job.bulkJobId)}
+                  onSave={(v) => {
+                    const n = parseInt(v, 10);
+                    saveJobField(job.bulkJobId, { quantity: Number.isFinite(n) && n > 0 ? n : 1 });
+                  }}
+                />
+
+                {/* 7. Run Order - int. NO SP path. */}
+                <EditableRow
+                  label="Run Order"
+                  displayValue={job.runOrder != null ? String(job.runOrder) : ''}
+                  editValue={job.runOrder != null ? String(job.runOrder) : ''}
+                  kind="number"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs RunOrder parameter)"
+                />
+
+                {/* 8. Date (BookDate) - datetime. NO SP path. The Date
+                    input surfaces a native date picker so the driver
+                    is not typing the format. */}
+                <EditableRow
+                  label="Date"
+                  displayValue={tenantDateFromSpString(job.bookDate, user.isUsTenant) || ''}
+                  editValue={spDateToIso(job.bookDate)}
+                  kind="date"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs BookDate parameter)"
+                />
+
+                {/* 9. Ref A - string, backed by WS_stpBulkJob_Update.@ClientRefA */}
+                <EditableRow
+                  label="Ref A"
+                  displayValue={job.refA ?? ''}
+                  editValue={job.refA ?? ''}
+                  kind="text"
+                  readOnly={readOnlyEdit(job.bulkJobId)}
+                  onSave={(v) => saveJobField(job.bulkJobId, { refA: v })}
+                />
+
+                {/* 10. Ref B - string, backed by WS_stpBulkJob_Update.@ClientRefB */}
+                <EditableRow
+                  label="Ref B"
+                  displayValue={job.refB ?? ''}
+                  editValue={job.refB ?? ''}
+                  kind="text"
+                  readOnly={readOnlyEdit(job.bulkJobId)}
+                  onSave={(v) => saveJobField(job.bulkJobId, { refB: v })}
+                />
+
+                {/* 11. Delivery Location - legacy targeted a column that
+                    does not exist on tblBulkJob (DropOffLocationID is an
+                    FK, not free-text). NO SP path AND no matching
+                    column. Rendered readOnly with a static hyphen. */}
+                <EditableRow
+                  label="Del Loc"
+                  displayValue={''}
+                  editValue={''}
+                  kind="text"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (no matching tblBulkJob column - legacy was broken)"
+                />
+
+                {/* 12. Charge (amount) - decimal. NO SP path. */}
+                <EditableRow
+                  label="Charge"
+                  displayValue={job.amount != null ? job.amount.toFixed(2) : ''}
+                  editValue={job.amount != null ? job.amount.toFixed(2) : ''}
+                  kind="number"
+                  readOnly
+                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Amount parameter)"
+                />
+              </div>
+
               <MobileRow k="Speed" v={job.speedName ?? '-'} />
+
               {job.deliveryNotes && (
                 <div>
                   <div className="text-xs text-text-muted mb-0.5">Delivery notes</div>
@@ -324,6 +524,21 @@ export default function Mobile() {
           <div className="p-6 text-center text-text-muted">Loading job...</div>
         )}
       </div>
+
+      {gpsLeg != null && job && (
+        <RvGpsEditModal
+          job={job}
+          leg={gpsLeg}
+          onClose={() => setGpsLeg(null)}
+          onSaved={() => {
+            setGpsLeg(null);
+            qc.invalidateQueries({ queryKey: ['mob-job-detail', job.bulkJobId] });
+            if (selectedRunId != null) {
+              qc.invalidateQueries({ queryKey: ['mob-run-jobs', selectedRunId] });
+            }
+          }}
+        />
+      )}
 
       {/* Bottom nav. Visible only at the top of a drill so back
           navigation stays predictable (don't tab-switch mid-drill). */}
@@ -419,6 +634,53 @@ function MobileRow({ k, v }: { k: string; v: string }) {
       <div className="flex-1">{v}</div>
     </div>
   );
+}
+
+/** Address row variant with a touch-friendly Fix GPS action button on
+ *  the right. Mirrors the Home right-click flow in RvJobDetail but
+ *  surfaces the affordance visibly for handheld operators. */
+function MobileAddressRow({ k, v, onFixGps }: { k: string; v: string; onFixGps: () => void }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <div className="w-20 text-xs text-text-muted flex-shrink-0">{k}</div>
+      <div className="flex-1">{v}</div>
+      <button
+        type="button"
+        onClick={onFixGps}
+        aria-label={`Fix GPS ${k}`}
+        className="flex-shrink-0 px-2 py-1 text-xs font-medium text-brand-cyan border border-brand-cyan rounded hover:bg-brand-cyan/10 active:bg-brand-cyan/20"
+      >
+        Fix GPS
+      </button>
+    </div>
+  );
+}
+
+/** Convert an SP-emitted date string ("dd/MM/yyyy" for NZ,
+ *  "MM/dd/yyyy" for US) to an ISO yyyy-MM-dd for a native date input.
+ *  Legacy Home passes the raw SP string through the framework's date
+ *  parser; that parser accepts both regional shapes. HTML date inputs
+ *  need ISO, so we normalise here. Empty / unparseable input returns
+ *  '' so the picker stays blank rather than defaulting to today. */
+function spDateToIso(sp: string | null | undefined): string {
+  if (!sp) return '';
+  // Try dd/MM/yyyy AND MM/dd/yyyy - both legit SP shapes. Pick the
+  // interpretation where day <= 12 is ambiguous; default to dd/MM/yyyy
+  // (NZ) because the SP layer already regionalises the string.
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(sp.trim());
+  if (m) {
+    const [, a, b, y] = m;
+    // dd/MM/yyyy: a=day, b=month
+    const day = a.padStart(2, '0');
+    const month = b.padStart(2, '0');
+    return `${y}-${month}-${day}`;
+  }
+  // ISO or already-parseable? Fall through - Date.parse handles it.
+  const t = Date.parse(sp);
+  if (Number.isNaN(t)) return '';
+  const d = new Date(t);
+  const iso = d.toISOString().slice(0, 10);
+  return iso;
 }
 
 function BottomTab({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
