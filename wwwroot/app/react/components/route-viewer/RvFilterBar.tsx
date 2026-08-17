@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { routeViewerService } from '../../services/routeViewerService';
 import { MultiSelect } from '../common/MultiSelect';
+import { SingleSelect } from '../common/SingleSelect';
 import { Button } from '../common/Button';
 
 // Route Viewer Home pickDate filter row. Matches the Routes cockpit
@@ -21,6 +22,12 @@ interface FilterState {
   speedIds: number[];
   courierId: number | null;
   activeRegionsOnly: boolean;
+  /** Legacy pickDate.tpl `onlyAvailableCouriers`. When true, the
+   *  Couriers box narrows its list to drivers whose isAvailable flag
+   *  is set for the day. Client-side filter over the loaded feed - no
+   *  backend round-trip. Admin-only affordance (NP doesn't see the
+   *  Couriers box). */
+  availableCouriersOnly: boolean;
 }
 
 interface Props {
@@ -66,26 +73,20 @@ export function RvFilterBar({ value, onChange, onRefresh, isRefreshing, extraAct
             selected={value.clientIds.map(String)}
             onChange={(vs) => onChange({ ...value, clientIds: vs.map(Number) })}
           />
-          {/* Tier-3 item 17: Region is single-select per master spec.
-              Native <select> instead of MultiSelect so operators can't
-              stack multiple regions (breaks the "one region view at a
-              time" invariant that downstream metrics assume). */}
-          <label className="flex items-center gap-1 text-xs text-text-muted">
-            <span>Region</span>
-            <select
-              value={value.regionIds[0] != null ? String(value.regionIds[0]) : ''}
-              onChange={(e) => onChange({
-                ...value,
-                regionIds: e.target.value ? [Number(e.target.value)] : [],
-              })}
-              className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white"
-            >
-              <option value="">All regions</option>
-              {regions.map((r) => (
-                <option key={r.id} value={String(r.id)}>{r.label}</option>
-              ))}
-            </select>
-          </label>
+          {/* Region is single-select per master spec (downstream metrics
+              assume the "one region view at a time" invariant).
+              SingleSelect matches the MultiSelect trigger styling so the
+              whole filter row reads as a set. */}
+          <SingleSelect
+            label="Region"
+            options={regions.map((r) => ({ value: String(r.id), label: r.label }))}
+            selected={value.regionIds[0] != null ? String(value.regionIds[0]) : null}
+            onChange={(v) => onChange({
+              ...value,
+              regionIds: v ? [Number(v)] : [],
+            })}
+            clearLabel="All regions"
+          />
           <label className="flex items-center gap-1 text-xs text-text-muted">
             <input
               type="checkbox"
@@ -106,23 +107,30 @@ export function RvFilterBar({ value, onChange, onRefresh, isRefreshing, extraAct
       />
 
       {!user.isNetworkPartner && (
+        <SingleSelect
+          label="Courier"
+          options={(courierList.data ?? []).map((c) => ({
+            value: String(c.courierId),
+            label: `${c.name} (${c.code})`,
+          }))}
+          selected={value.courierId != null ? String(value.courierId) : null}
+          onChange={(v) => onChange({
+            ...value,
+            courierId: v ? Number(v) : null,
+          })}
+          clearLabel="All couriers"
+        />
+      )}
+
+      {!user.isNetworkPartner && (
         <label className="flex items-center gap-1 text-xs text-text-muted">
-          <span>Courier</span>
-          <select
-            value={value.courierId != null ? String(value.courierId) : ''}
-            onChange={(e) => onChange({
-              ...value,
-              courierId: e.target.value ? Number(e.target.value) : null,
-            })}
-            className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white"
-          >
-            <option value="">All couriers</option>
-            {(courierList.data ?? []).map((c) => (
-              <option key={c.courierId} value={String(c.courierId)}>
-                {c.name} ({c.code})
-              </option>
-            ))}
-          </select>
+          <input
+            type="checkbox"
+            checked={value.availableCouriersOnly}
+            onChange={(e) => onChange({ ...value, availableCouriersOnly: e.target.checked })}
+            className="accent-brand-cyan"
+          />
+          Available Couriers Only
         </label>
       )}
 

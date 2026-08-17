@@ -14,7 +14,7 @@ import { RvBox } from './RvBox';
 // derived fleets client-side by grouping on the `fleet` field).
 // Auto-poll cadence matches the Run List (25 s).
 
-interface CourierListRow {
+export interface CourierListRow {
   courierId: number;
   code: string;
   name: string;
@@ -31,12 +31,20 @@ interface FleetGroup {
 
 interface Props {
   runDate: string;
-  onPick?: (courierId: number) => void;
+  /** Fires when a courier row is clicked. Passes the full row so the
+   *  parent can (a) narrow the Run List by courierId and (b) render
+   *  the courier-location map overlay in the JobDetail pane. */
+  onPick?: (courier: CourierListRow) => void;
+  /** When true, hide couriers whose isAvailable flag is false. Sourced
+   *  from the "Available Couriers Only" checkbox on RvFilterBar
+   *  (legacy pickDate.tpl `onlyAvailableCouriers`). Filter is
+   *  client-side against the loaded courier feed. */
+  availableOnly?: boolean;
 }
 
 const UNASSIGNED_FLEET_LABEL = 'Unassigned';
 
-export function RvCouriersBox({ runDate, onPick }: Props) {
+export function RvCouriersBox({ runDate, onPick, availableOnly }: Props) {
   const q = useQuery({
     queryKey: ['rv-couriers-box', runDate],
     queryFn: () => routeViewerService.getActiveCouriers(runDate),
@@ -44,7 +52,8 @@ export function RvCouriersBox({ runDate, onPick }: Props) {
     staleTime: 25_000,
   });
 
-  const rows = (q.data ?? []) as CourierListRow[];
+  const allRows = (q.data ?? []) as CourierListRow[];
+  const rows = availableOnly ? allRows.filter((c) => c.isAvailable === true) : allRows;
 
   // Group couriers by fleet name (legacy: Object.keys(groups).map).
   // Couriers with no fleet get bucketed under a stable Unassigned
@@ -150,7 +159,7 @@ export function RvCouriersBox({ runDate, onPick }: Props) {
                     e.dataTransfer.setData('application/rv-courier-id', String(c.courierId));
                     e.dataTransfer.effectAllowed = 'move';
                   }}
-                  onClick={onPick ? () => onPick(c.courierId) : undefined}
+                  onClick={onPick ? () => onPick(c) : undefined}
                   className={`border-b border-border/50 ${
                     onPick ? 'cursor-pointer hover:bg-surface-cream/60' : ''
                   } ${lightLoad ? 'bg-brand-cyan/5' : ''}`}

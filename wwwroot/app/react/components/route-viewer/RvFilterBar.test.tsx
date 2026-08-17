@@ -22,6 +22,7 @@ function renderBar(overrides: Partial<Parameters<typeof RvFilterBar>[0]> = {}) {
     speedIds: [],
     courierId: null,
     activeRegionsOnly: false,
+    availableCouriersOnly: false,
   };
   const defaults = {
     value,
@@ -93,11 +94,27 @@ describe('RvFilterBar', () => {
   it('toggles activeRegionsOnly via checkbox', async () => {
     const props = renderBar();
     const user = userEvent.setup();
-    const cb = screen.getByRole('checkbox');
+    const cb = screen.getByLabelText('Active regions only');
     await user.click(cb);
     expect(props.onChange).toHaveBeenCalledWith(
       expect.objectContaining({ activeRegionsOnly: true }),
     );
+  });
+
+  it('toggles availableCouriersOnly via the Available Couriers Only checkbox', async () => {
+    const props = renderBar();
+    const user = userEvent.setup();
+    const cb = screen.getByLabelText('Available Couriers Only');
+    await user.click(cb);
+    expect(props.onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ availableCouriersOnly: true }),
+    );
+  });
+
+  it('hides the Available Couriers Only checkbox for NP users', () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isNetworkPartner: true };
+    renderBar();
+    expect(screen.queryByLabelText('Available Couriers Only')).toBeNull();
   });
 
   it('renders region options from lookups + updates on select', async () => {
@@ -110,10 +127,12 @@ describe('RvFilterBar', () => {
     );
     const props = renderBar();
     const user = userEvent.setup();
-    const regionOption = await screen.findByRole('option', { name: 'AKL' });
-    expect(regionOption).toBeInTheDocument();
-    const select = regionOption.closest('select')!;
-    await user.selectOptions(select, '5');
+    // SingleSelect trigger reads as "Region" when nothing is selected
+    // (matches the MultiSelect trigger convention).
+    const trigger = await screen.findByRole('button', { name: /^Region/ });
+    await user.click(trigger);
+    const option = await screen.findByRole('button', { name: 'AKL' });
+    await user.click(option);
     expect(props.onChange).toHaveBeenCalledWith(
       expect.objectContaining({ regionIds: [5] }),
     );

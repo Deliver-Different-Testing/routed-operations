@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Button } from '../common/Button';
+import { LabelsSortPickerModal, type LabelsSortMode } from './LabelsSortPickerModal';
+import { WoopReportDatePickerModal } from './WoopReportDatePickerModal';
 import {
   loadLayouts,
   saveLayouts,
@@ -16,9 +18,32 @@ import {
 // Routes cockpit chrome that has Refresh + Sync EH/HD on the same
 // row. Search moved to the shared app Header; nothing here duplicates it.
 
+export type PrintKind =
+  | 'runAllocation'
+  | 'missingScan'
+  | 'missingRunScan'
+  | 'missingTransitScan'
+  | 'labels'
+  | 'woop';
+
+/** Extra payload attached to certain Print kinds:
+ *  - `labels` carries the operator-picked sort mode from the
+ *    Labels modal (Run Name / Product / Client).
+ *  - `woop` carries the From/To date window picked in the Woop
+ *    modal. Both dates are YYYY-MM-DD strings.
+ *  Other kinds pass no payload. */
+export type PrintPayload =
+  | { sortMode: LabelsSortMode }
+  | { fromDate: string; toDate: string }
+  | undefined;
+
 interface Props {
-  onPrint: (kind: 'runAllocation' | 'missingScan' | 'missingRunScan' | 'missingTransitScan' | 'woop') => void;
+  onPrint: (kind: PrintKind, payload?: PrintPayload) => void;
   onTopUp: () => void;
+  /** Current run date (YYYY-MM-DD) surfaced by the parent
+   *  RvFilterBar. Used to seed the Woop modal's From/To inputs so a
+   *  same-day export is one Download click away. */
+  runDate: string;
   /** Callback that returns the current cockpit panel sizes at the
    *  moment Save-current fires. Kept as a callback (not a snapshot
    *  prop) so we always capture the LIVE arrangement rather than a
@@ -27,18 +52,21 @@ interface Props {
   onApplyLayout: (layout: CockpitLayout) => void;
 }
 
-const PRINT_OPTIONS: Array<[Parameters<Props['onPrint']>[0], string]> = [
+const PRINT_OPTIONS: Array<[PrintKind, string]> = [
   ['runAllocation', 'Run Allocation'],
   ['missingScan', 'Missing Scan'],
   ['missingRunScan', 'Missing Run Scan'],
   ['missingTransitScan', 'Missing Transit Scan'],
+  ['labels', 'Labels'],
   ['woop', 'Woop Report'],
 ];
 
-export function RvUtilityActions({ onPrint, onTopUp, snapshotLayout, onApplyLayout }: Props) {
+export function RvUtilityActions({ onPrint, onTopUp, runDate, snapshotLayout, onApplyLayout }: Props) {
   const [layouts, setLayoutsState] = useState<CockpitLayout[]>(() => loadLayouts('home'));
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  const [labelsModalOpen, setLabelsModalOpen] = useState(false);
+  const [woopModalOpen, setWoopModalOpen] = useState(false);
 
   const saveCurrent = () => {
     const name = window.prompt('Layout name');
@@ -56,9 +84,19 @@ export function RvUtilityActions({ onPrint, onTopUp, snapshotLayout, onApplyLayo
     saveLayouts(updated, 'home');
   };
 
+  const pickPrintOption = (kind: PrintKind) => {
+    setPrintOpen(false);
+    // Labels + Woop route through a configuration modal so the
+    // operator picks a sort mode / date range before the fetch fires.
+    // Every other kind fires straight through with no payload.
+    if (kind === 'labels') { setLabelsModalOpen(true); return; }
+    if (kind === 'woop') { setWoopModalOpen(true); return; }
+    onPrint(kind);
+  };
+
   return (
     <>
-      <div className="relative">
+      <div className="relative -mt-1">
         <Button variant="neutral" size="sm" onClick={() => setPrintOpen((v) => !v)}>Print ▾</Button>
         {printOpen && (
           <>
@@ -68,7 +106,7 @@ export function RvUtilityActions({ onPrint, onTopUp, snapshotLayout, onApplyLayo
                 <button
                   key={kind}
                   type="button"
-                  onClick={() => { onPrint(kind); setPrintOpen(false); }}
+                  onClick={() => pickPrintOption(kind)}
                   className="w-full text-left px-3 py-1.5 text-xs hover:bg-brand-cyan/10"
                 >
                   {label}
@@ -79,7 +117,7 @@ export function RvUtilityActions({ onPrint, onTopUp, snapshotLayout, onApplyLayo
         )}
       </div>
       <Button variant="neutral" size="sm" onClick={onTopUp}>Top Up</Button>
-      <div className="relative">
+      <div className="relative -mt-1">
         <Button variant="neutral" size="sm" onClick={() => setLayoutOpen((v) => !v)}>Layout ▾</Button>
         {layoutOpen && (
           <>
@@ -125,6 +163,17 @@ export function RvUtilityActions({ onPrint, onTopUp, snapshotLayout, onApplyLayo
           </>
         )}
       </div>
+      <LabelsSortPickerModal
+        open={labelsModalOpen}
+        onClose={() => setLabelsModalOpen(false)}
+        onPrint={(sortMode) => onPrint('labels', { sortMode })}
+      />
+      <WoopReportDatePickerModal
+        open={woopModalOpen}
+        onClose={() => setWoopModalOpen(false)}
+        onDownload={(fromDate, toDate) => onPrint('woop', { fromDate, toDate })}
+        defaultDate={runDate}
+      />
     </>
   );
 }

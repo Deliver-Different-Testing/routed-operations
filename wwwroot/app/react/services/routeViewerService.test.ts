@@ -189,6 +189,24 @@ describe('routeViewerService - couriers', () => {
     const r = await routeViewerService.getCourierPosition(1);
     expect(r).toBeNull();
   });
+
+  it('getAvailableCouriers GETs /runviewer/couriers/available with bounds', async () => {
+    let seen: URL | null = null;
+    server.use(
+      http.get('/api/runviewer/couriers/available', ({ request }) => {
+        seen = new URL(request.url);
+        return HttpResponse.json({ response: [] });
+      }),
+    );
+    await routeViewerService.getAvailableCouriers({
+      minLng: -180, minLat: -90, maxLng: 180, maxLat: 90,
+    });
+    expect(seen).not.toBeNull();
+    expect(seen!.searchParams.get('minLng')).toBe('-180');
+    expect(seen!.searchParams.get('minLat')).toBe('-90');
+    expect(seen!.searchParams.get('maxLng')).toBe('180');
+    expect(seen!.searchParams.get('maxLat')).toBe('90');
+  });
 });
 
 describe('routeViewerService - scans / events', () => {

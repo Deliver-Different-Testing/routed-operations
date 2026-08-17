@@ -4,6 +4,7 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle } from 'react-resizable-panels';
 import { useAuth } from '../../context/AuthContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
+import { useHotkeys } from '../../hooks/useHotkeys';
 import { useRouteViewerRuns } from '../../hooks/queries/useRouteViewerRuns';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
@@ -75,6 +76,7 @@ export default function RunViewer() {
     speedIds: stored.speedIds ?? [],
     courierId: (stored as any).courierId ?? null,
     activeRegionsOnly: stored.activeRegionsOnly ?? true,
+    availableCouriersOnly: (stored as any).availableCouriersOnly ?? false,
   });
   const [viewMode, setViewMode] = useState<ViewMode>((stored as any).viewMode ?? 'Combined');
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
@@ -87,11 +89,32 @@ export default function RunViewer() {
   // - switching runs clears it.
   const [selectedJobIds, setSelectedJobIds] = useState<number[]>([]);
   const [jobCtxMenu, setJobCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  // Arrow-key navigation follows whichever cockpit table the operator
+  // last interacted with. Mirrors the legacy homeView.html:438-457
+  // `.activeTable` behaviour: Up/Down moves the selection cursor within
+  // that table's currently-visible + sorted row set. Default = Run List
+  // so a fresh page has arrows drive the primary list right away.
+  type FocusedTable = 'runList' | 'runJobs' | 'preAssigned' | 'returns' | 'exceptions';
+  const [focusedTable, setFocusedTable] = useState<FocusedTable>('runList');
+  // Per-table id order the child tables report back after their own
+  // sort / filter passes. Arrow keys index into whichever ref matches
+  // the currently focused table so navigation lines up with what the
+  // operator sees on screen.
+  const runListVisibleRef = useRef<number[]>([]);
+  const preAssignedVisibleRef = useRef<number[]>([]);
+  const returnsVisibleRef = useRef<number[]>([]);
+  const exceptionsVisibleRef = useRef<number[]>([]);
   // Sibling-tab override for LH1..LH4 / LHP legs that don't have a
   // tblBulkJob row. Clicking their tab sets this to the sibling
   // payload (from RVW_stpJobSiblings); JobDetail renders directly
   // from it. Cleared on middle-pane job change / run change.
   const [siblingOverride, setSiblingOverride] = useState<import('../../services/routeViewerService').SiblingJob | null>(null);
+  // Courier iframe overlay (legacy jobDetail.tpl:390-393 currentCourier
+  // block). When set from an RvCouriersBox row click, RvJobDetail
+  // renders a Google Maps embed for the courier INSTEAD of the normal
+  // job detail. Cleared whenever the operator picks a job row so the
+  // detail flow resumes cleanly.
+  const [selectedCourier, setSelectedCourier] = useState<{ code: string; name: string } | null>(null);
 
   // Imperative refs on each PanelGroup so the Layout menu can snapshot
   // current sizes for Save and reset them on Apply.
@@ -100,6 +123,11 @@ export default function RunViewer() {
   const midVRef = useRef<ImperativePanelGroupHandle | null>(null);
   const slimVRef = useRef<ImperativePanelGroupHandle | null>(null);
   const rightVRef = useRef<ImperativePanelGroupHandle | null>(null);
+  // Anchor for the Client Intel jump icon in the JobDetail header.
+  // Wrapper div around <RvClientIntelBox> gets a plain HTMLDivElement
+  // ref so we can scrollIntoView on click, matching legacy
+  // homeView.html:128-138 getClientIntel(mobile) behaviour.
+  const clientIntelRef = useRef<HTMLDivElement | null>(null);
 
   const { clientInternal, multipleClients } = useRouteViewerLookups(filters.runDate, false);
 
@@ -203,7 +231,20 @@ export default function RunViewer() {
       setSelectedJobId(bulkJobId);
     }
     setSiblingOverride(null);   // primary click clears LH-leg override
+    setSelectedCourier(null);   // primary click closes the courier map overlay
+    setFocusedTable('runJobs');
   }, []);
+
+  // Per-run-table select wrapper: identical selection semantics but
+  // also stamps `focusedTable` so Up/Down arrows navigate the table
+  // the operator just clicked on. Legacy `.activeTable` selector was
+  // "whichever table last received a mouse-down" - same idea, typed.
+  const onSelectRunFromTable = useCallback((table: FocusedTable) => {
+    return (id: number, mods: { ctrl: boolean; shift: boolean }) => {
+      setFocusedTable(table);
+      onSelectRun(id, mods);
+    };
+  }, [onSelectRun]);
 
   const onJobContextMenu = useCallback((e: React.MouseEvent, bulkJobId: number) => {
     e.preventDefault();
@@ -233,6 +274,7 @@ export default function RunViewer() {
         speedIds: next.speedIds,
         courierId: next.courierId,
         activeRegionsOnly: next.activeRegionsOnly,
+        availableCouriersOnly: next.availableCouriersOnly,
         viewMode,
       }));
     } catch { /* quota / disabled localStorage - skip */ }
@@ -345,6 +387,56 @@ export default function RunViewer() {
     ?? (selectedJobId != null ? runJobs.find((j) => j.bulkJobId === selectedJobId) : null)
     ?? null;
 
+  // Arrow-key nav resolves the visible id list for the focused table
+  // and moves single-select to the prev/next row. On first press (no
+  // current selection) we jump to the head/tail of the list so the
+  // operator can start driving with the keyboard from a fresh page.
+  // Declared here (not near the other selection callbacks) because
+  // it depends on `runJobs` which is a downstream memo - moving it up
+  // would trip the TDZ warning called out above.
+  const moveArrow = useCallback((dir: 1 | -1) => {
+    const idsFor = (t: FocusedTable): number[] => {
+      switch (t) {
+        case 'runList':      return runListVisibleRef.current;
+        case 'preAssigned':  return preAssignedVisibleRef.current;
+        case 'returns':      return returnsVisibleRef.current;
+        case 'exceptions':   return exceptionsVisibleRef.current;
+        case 'runJobs':      return [];   // handled separately below
+      }
+    };
+    if (focusedTable === 'runJobs') {
+      const ids = runJobs.map((j) => j.bulkJobId);
+      if (ids.length === 0) return;
+      const cur = selectedJobId != null ? ids.indexOf(selectedJobId) : -1;
+      const next = cur < 0 ? (dir === 1 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, cur + dir));
+      const nextId = ids[next];
+      if (nextId != null && nextId !== selectedJobId) {
+        setSelectedJobIds([nextId]);
+        setSelectedJobId(nextId);
+        setSiblingOverride(null);
+      }
+      return;
+    }
+    const ids = idsFor(focusedTable);
+    if (ids.length === 0) return;
+    const curId = selectedRunIds.length === 1 ? selectedRunIds[0] : null;
+    const cur = curId != null ? ids.indexOf(curId) : -1;
+    const next = cur < 0 ? (dir === 1 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, cur + dir));
+    const nextId = ids[next];
+    if (nextId != null && nextId !== curId) {
+      runAnchorRef.current = nextId;
+      setSelectedRunIds([nextId]);
+      setSelectedJobId(null);
+      setSelectedJobIds([]);
+      setSiblingOverride(null);
+    }
+  }, [focusedTable, runJobs, selectedJobId, selectedRunIds]);
+
+  useHotkeys({
+    onArrowUp: () => moveArrow(-1),
+    onArrowDown: () => moveArrow(1),
+  });
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <RvFilterBar
@@ -354,7 +446,24 @@ export default function RunViewer() {
         isRefreshing={runsQuery.isFetching}
         extraActions={
           <RvUtilityActions
-            onPrint={(k) => {
+            runDate={filters.runDate}
+            onPrint={(k, payload) => {
+              // Labels are POST /api/runviewer/labels/bulk-jobs (PDF
+              // via LabelRequest.SortMode) so branch out of the
+              // report-slug flow. Payload carries the operator-picked
+              // sort mode from LabelsSortPickerModal.
+              if (k === 'labels') {
+                const sortMode = (payload as { sortMode?: number } | undefined)?.sortMode ?? 1;
+                routeViewerService.printLabelsWithSort({
+                  bookDate: filters.runDate,
+                  sortMode,
+                  clientIds: filters.clientIds.length > 0 ? filters.clientIds.join(',') : null,
+                  regionIds: filters.regionIds.length > 0 ? filters.regionIds.join(',') : null,
+                  speedIds: filters.speedIds.length > 0 ? filters.speedIds.join(',') : null,
+                }).then(() => toast.show('Print queued for labels.'))
+                  .catch((e) => toast.show(`Print failed: ${(e as Error).message}`, 'error'));
+                return;
+              }
               // Map dropdown-item key → report endpoint slug. Woop
               // stays 501 until the Section Z decision lands.
               const slugs: Record<string, string> = {
@@ -366,8 +475,15 @@ export default function RunViewer() {
               };
               const slug = slugs[k];
               if (!slug) return;
+              // Woop picker carries fromDate + toDate; other slugs use
+              // the cockpit runDate for both bounds.
+              const woopWindow = k === 'woop'
+                ? (payload as { fromDate?: string; toDate?: string } | undefined)
+                : undefined;
               const params = new URLSearchParams({
                 runDate: filters.runDate,
+                ...(woopWindow?.fromDate ? { fromDate: woopWindow.fromDate } : {}),
+                ...(woopWindow?.toDate ? { toDate: woopWindow.toDate } : {}),
                 ...(filters.clientIds.length > 0 ? { clientIds: filters.clientIds.join(',') } : {}),
                 ...(filters.regionIds.length > 0 ? { regions: filters.regionIds.join(',') } : {}),
                 ...(filters.speedIds.length > 0 ? { speeds: filters.speedIds.join(',') } : {}),
@@ -411,12 +527,13 @@ export default function RunViewer() {
                   <RvRunList
                     runs={visibleRuns}
                     selectedIds={selectedRunIds}
-                    onSelect={onSelectRun}
+                    onSelect={onSelectRunFromTable('runList')}
                     onContextMenu={onContextMenu}
                     viewMode={viewMode}
                     onViewModeChange={setViewMode}
                     isLoading={runsQuery.isLoading}
                     runColorMap={runColorMap}
+                    onVisibleRunsChange={(ids) => { runListVisibleRef.current = ids; }}
                     onDropCourier={(runId, courierCode) => {
                       const run = visibleRuns.find((r) => r.id === runId);
                       const from = run?.courierCode ?? null;
@@ -668,6 +785,7 @@ export default function RunViewer() {
               <Panel defaultSize={DEFAULT_LAYOUT.rvMidV![1]} minSize={15}>
                 <RvJobDetail
                   bulkJobId={siblingOverride?.bulkJobId ?? selectedJobId}
+                  selectedCourier={selectedCourier}
                   initialJob={
                     siblingOverride?.job ??
                     (selectedJobId != null ? runJobs.find((j) => j.bulkJobId === selectedJobId) ?? null : null)
@@ -705,6 +823,9 @@ export default function RunViewer() {
                       toast.show('Job is not on a run yet - assign to a run first.');
                     }
                   }}
+                  onJumpToClientIntel={() => {
+                    clientIntelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                  }}
                 />
               </Panel>
             </PanelGroup>
@@ -725,9 +846,10 @@ export default function RunViewer() {
                       variant="preAssigned"
                       runs={runsQuery.data ?? []}
                       selectedIds={selectedRunIds}
-                      onSelect={onSelectRun}
+                      onSelect={onSelectRunFromTable('preAssigned')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
+                      onVisibleRunsChange={(ids) => { preAssignedVisibleRef.current = ids; }}
                     />
                   </Panel>
                   <PanelResizeHandle className="h-1" />
@@ -736,9 +858,10 @@ export default function RunViewer() {
                       variant="returns"
                       runs={runsQuery.data ?? []}
                       selectedIds={selectedRunIds}
-                      onSelect={onSelectRun}
+                      onSelect={onSelectRunFromTable('returns')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
+                      onVisibleRunsChange={(ids) => { returnsVisibleRef.current = ids; }}
                     />
                   </Panel>
                   <PanelResizeHandle className="h-1" />
@@ -747,9 +870,10 @@ export default function RunViewer() {
                       variant="exceptions"
                       runs={runsQuery.data ?? []}
                       selectedIds={selectedRunIds}
-                      onSelect={onSelectRun}
+                      onSelect={onSelectRunFromTable('exceptions')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
+                      onVisibleRunsChange={(ids) => { exceptionsVisibleRef.current = ids; }}
                     />
                   </Panel>
                 </PanelGroup>
@@ -776,12 +900,21 @@ export default function RunViewer() {
               <Panel defaultSize={12} minSize={8}>
                 <RvCouriersBox
                   runDate={filters.runDate}
-                  onPick={(courierId) => onFiltersChange({ ...filters, courierId })}
+                  availableOnly={filters.availableCouriersOnly}
+                  onPick={(c) => {
+                    // Two effects per legacy: narrow Run List by
+                    // courierId AND swap the JobDetail pane for the
+                    // Google Maps embed centred on this courier.
+                    onFiltersChange({ ...filters, courierId: c.courierId });
+                    setSelectedCourier({ code: c.code, name: c.name });
+                  }}
                 />
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={12} minSize={8}>
-                <RvClientIntelBox mobile={selectedJobDetail?.deliverToPhone ?? selectedJobDetail?.phone ?? null} />
+                <div ref={clientIntelRef} className="h-full">
+                  <RvClientIntelBox mobile={selectedJobDetail?.deliverToPhone ?? selectedJobDetail?.phone ?? null} />
+                </div>
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={DEFAULT_LAYOUT.rvRightV![1]} minSize={15}>

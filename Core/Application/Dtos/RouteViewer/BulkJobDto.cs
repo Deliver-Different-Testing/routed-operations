@@ -234,4 +234,13 @@ public class BulkJobDto
     /// grid uses ToCity as the legacy `City` column.</summary>
     public string? FromCity { get; set; }
     public string? ToCity { get; set; }
+
+    /// <summary>Scan history JSON string emitted by RVW_stpLinehaulJobs
+    /// (2026-07-01 SP change). Array of { ScanDateTime, ScanType, Courier }
+    /// with the most recent scan first, capped at 20 entries. Empty JSON
+    /// array (`[]`) when the parent job has no scans in the last 3 days.
+    /// Consumed by the Linehaul jobs table Scanned cell which parses per
+    /// row and renders one chip per entry. Only RVW_stpLinehaulJobs emits
+    /// this today; other SPs feeding BulkJobDto leave it null.</summary>
+    public string? ScanHistory { get; set; }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkRun } from '../../services/routeViewerService';
 import { Button } from '../common/Button';
 
@@ -38,6 +38,11 @@ interface Props {
    *  `fromRunId` is the source run so the caller can no-op when the
    *  drop lands on the same run the jobs already belong to. */
   onDropRunJobs?: (toRunId: number, fromRunId: number, jobIds: number[]) => void;
+  /** Fires with the id list in the currently-rendered (sort-applied)
+   *  order every time that order changes. Parent uses this to drive
+   *  Up/Down arrow-key navigation over the same rows the operator
+   *  sees, so arrows stay in sync with column-sort clicks. */
+  onVisibleRunsChange?: (ids: number[]) => void;
 }
 
 type SortKey = 'Name' | 'area' | 'Jobs' | 'Status' | 'Velocity' | 'AgentName' | 'CourierName';
@@ -124,6 +129,7 @@ export function RvRunList({
   runColorMap,
   onDropCourier,
   onDropRunJobs,
+  onVisibleRunsChange,
 }: Props) {
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('Name');
@@ -161,6 +167,19 @@ export function RvRunList({
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortKey(key); setSortDir('asc'); }
   };
+
+  // Report the currently-visible id order whenever the sort output
+  // changes. Ref-compared join string so we skip callback churn when
+  // the sort is stable but the parent re-renders for other reasons.
+  const lastVisibleKey = useRef<string>('');
+  useEffect(() => {
+    if (!onVisibleRunsChange) return;
+    const ids = sorted.map((r) => r.id);
+    const key = ids.join(',');
+    if (key === lastVisibleKey.current) return;
+    lastVisibleKey.current = key;
+    onVisibleRunsChange(ids);
+  }, [sorted, onVisibleRunsChange]);
 
   const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 

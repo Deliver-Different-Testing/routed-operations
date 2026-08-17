@@ -9,6 +9,7 @@ import { Button } from '../../components/common/Button';
 import { MultiSelect } from '../../components/common/MultiSelect';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
+import { RowContextMenu } from '../../components/cockpit/RowContextMenu';
 
 // Route Viewer Scan Manager page (master Section 10). Two swappable
 // modes: Bulk (parent-child-item tree with tri-state Sort/Run icons
@@ -57,6 +58,53 @@ function parseLegs(json: string | null): LegChip[] {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
+}
+
+// Stage-swatch tone map (task #47.1). The Stage column now wraps its text
+// in a small pill whose colour is derived from keywords in the server-side
+// human-readable stage string (RVW_stpScanJobsRouted emits phrases like
+// "Awaiting LHP pickup" / "LH1 - in transit" / "Item -3 short (LH1)" per
+// ScanDto.cs). We match legacy scanControl.js SM_STAGE_COLOR intent:
+// green = done, orange = in-flight, red = exception, grey = default.
+function stageTint(stage: string | null | undefined): string {
+  const s = (stage ?? '').toLowerCase();
+  if (!s) return 'bg-slate-100 text-slate-700';
+  if (s.includes('short') || s.includes('missing')) return 'bg-red-100 text-red-800';
+  if (s.includes('complete') || s.includes('delivered')) return 'bg-emerald-100 text-emerald-800';
+  if (s.includes('in transit') || s.includes('in-transit') || s.includes('pickup') || s.includes('awaiting')) {
+    return 'bg-amber-100 text-amber-800';
+  }
+  return 'bg-slate-100 text-slate-700';
+}
+
+// Item-progress row shape used for the Tote-column derivation (task #47.2).
+// Mirrors routeViewerService.getItemProgress return shape so the FragmentRow
+// can compute a "current tote" summary without a service-type import.
+type ItemProgressRow = {
+  jobId: number;
+  itemBarcode: string | null;
+  leg: string | null;
+  state: string | null;
+  tote: string | null;
+  isCurrent: boolean;
+  scanTime: string | null;
+};
+
+// Derive the shipment's "current tote" display from loaded item-progress
+// rows (legacy currentToteFor in scanControl.js reads job.totes which the
+// RoutedScanJobDto does NOT surface, so we fall back to the per-item tote
+// column exposed by RVW_stpScanManagerItemProgress). Single unique tote
+// renders verbatim; multiple render as "N totes". Empty / unloaded -> "-".
+function currentToteFor(rows: ItemProgressRow[]): string {
+  if (!rows || rows.length === 0) return '-';
+  const uniq = new Set<string>();
+  for (const r of rows) {
+    const t = (r.tote ?? '').trim();
+    if (t) uniq.add(t);
+  }
+  if (uniq.size === 0) return '-';
+  if (uniq.size === 1) return Array.from(uniq)[0];
+  return `${uniq.size} totes`;
 }
 
 // Tri-state cell: 0 = pending (empty), 1 = complete (green tick),
@@ -127,7 +175,7 @@ function SortableTh({
 // row list mutations. Loads /api/runviewer/scans/item-progress only
 // when the row is expanded (matches legacy lazy-load pattern).
 function FragmentRow({
-  row, legs, active, expanded, onSelect, onToggle,
+  row, legs, active, expanded, onSelect, onToggle, onContextMenu,
 }: {
   row: any;
   legs: any[];
@@ -135,6 +183,7 @@ function FragmentRow({
   expanded: boolean;
   onSelect: () => void;
   onToggle: () => void;
+  onContextMenu: (e: React.MouseEvent, row: any) => void;
 }) {
   const itemsQ = useQuery({
     queryKey: ['sm-item-progress', row.jobId],
@@ -143,6 +192,7 @@ function FragmentRow({
     staleTime: 15_000,
   });
   const items = itemsQ.data ?? [];
+  const toteLabel = currentToteFor(items as ItemProgressRow[]);
   // Group per-item barcode so the leg-track mini display shows one
   // row per package with a state chip per leg.
   const grouped = new Map<string, typeof items>();
@@ -156,6 +206,7 @@ function FragmentRow({
     <>
       <tr
         onClick={onSelect}
+        onContextMenu={(e) => onContextMenu(e, row)}
         className={`cursor-pointer border-b border-border/50 ${
           active ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
         }`}
@@ -177,7 +228,27 @@ function FragmentRow({
         <td className="px-2 py-1 font-mono">{row.jobNumber ?? '-'}</td>
         <td className="px-2 py-1 truncate max-w-[14rem]" title={row.toAddress ?? undefined}>{row.toAddress ?? '-'}</td>
         <td className="px-2 py-1">{row.suburb ?? '-'}</td>
-        <td className="px-2 py-1 text-text-muted">{row.stage ?? '-'}</td>
+        {/* Stage swatch (task #47.1) - pill tinted by keyword parse of the
+            server-side human-readable stage string. */}
+        <td className="px-2 py-1">
+          {row.stage
+            ? (
+              <span
+                data-testid="sm-stage-swatch"
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${stageTint(row.stage)}`}
+              >
+                {row.stage}
+              </span>
+            )
+            : <span className="text-text-muted">-</span>}
+        </td>
+        {/* Tote column (task #47.2) - derived from loaded item-progress
+            (RoutedScanJobDto does not expose totes; we fall back to the
+            per-item tote column). Renders "-" until the row is expanded
+            and the item-progress fetch has resolved. */}
+        <td className="px-2 py-1 text-center text-text-muted" data-testid="sm-tote-cell">
+          {toteLabel}
+        </td>
         <td className="px-2 py-1">
           <div className="flex flex-wrap gap-0.5">
             {legs.map((l: any, i: number) => (
@@ -192,8 +263,24 @@ function FragmentRow({
             {legs.length === 0 && <span className="text-text-muted">-</span>}
           </div>
         </td>
+        {/* Item badge (task #47.3) - count pill with a warning triangle
+            appended when the shipment has any short items. Mirrors legacy
+            sm-itembadge / sm-alert styling from jobList.tpl:238-244. */}
         <td className="px-2 py-1 text-center">
-          {row.scannedItems}/{row.expectedItems}
+          <span
+            data-testid="sm-item-badge"
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
+              row.hasShort ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-700'
+            }`}
+            title={`${row.scannedItems ?? 0}/${row.expectedItems ?? 0} scanned`}
+          >
+            <span>{row.scannedItems}/{row.expectedItems}</span>
+            {row.hasShort && (
+              <span aria-label="Short items warning" title="Short items" data-testid="sm-item-badge-warn">
+                &#9888;
+              </span>
+            )}
+          </span>
         </td>
         <td className="px-2 py-1 text-center">
           {row.hasShort && <span className="inline-block px-1 rounded bg-red-100 text-red-800 mr-1">SHORT</span>}
@@ -202,7 +289,7 @@ function FragmentRow({
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={9} className="px-3 py-2 bg-slate-50/60 border-b border-border">
+          <td colSpan={10} className="px-3 py-2 bg-slate-50/60 border-b border-border">
             {itemsQ.isLoading && <div className="text-text-muted text-[11px]">Loading item progress...</div>}
             {!itemsQ.isLoading && grouped.size === 0 && (
               <div className="text-text-muted text-[11px]">No item-progress rows yet.</div>
@@ -309,7 +396,8 @@ function ExpandChevron({ expanded, onClick, hidden = false }: {
 // item-progress lazy-load already established above.
 function BulkFragmentRow({
   parent, childRows, active, expanded, expandedItemsFor, selectedRootJobId,
-  runDate, onSelect, onToggle, onToggleItems, dateFormatter, timeFormatter,
+  runDate, onSelect, onToggle, onToggleItems, onContextMenu,
+  dateFormatter, timeFormatter,
 }: {
   parent: any;
   childRows: any[];
@@ -321,6 +409,7 @@ function BulkFragmentRow({
   onSelect: (id: number) => void;
   onToggle: () => void;
   onToggleItems: (bulkJobId: number) => void;
+  onContextMenu: (e: React.MouseEvent, row: any) => void;
   dateFormatter: (s: string | null) => string;
   timeFormatter: (s: string | null) => string;
 }) {
@@ -347,6 +436,7 @@ function BulkFragmentRow({
       {/* PARENT ROW */}
       <tr
         onClick={() => onSelect(parent.bulkJobId)}
+        onContextMenu={(e) => onContextMenu(e, parent)}
         className={`cursor-pointer border-b border-border/50 ${
           active ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
         }`}
@@ -382,6 +472,7 @@ function BulkFragmentRow({
           runDate={runDate}
           onSelect={() => onSelect(child.bulkJobId)}
           onToggleItems={() => onToggleItems(child.bulkJobId)}
+          onContextMenu={onContextMenu}
           dateFormatter={dateFormatter}
           timeFormatter={timeFormatter}
         />
@@ -404,7 +495,7 @@ function BulkFragmentRow({
 // component so the useQuery hook count stays stable when the operator
 // expands/collapses siblings.
 function BulkChildRow({
-  child, active, itemsExpanded, runDate, onSelect, onToggleItems,
+  child, active, itemsExpanded, runDate, onSelect, onToggleItems, onContextMenu,
   dateFormatter, timeFormatter,
 }: {
   child: any;
@@ -413,6 +504,7 @@ function BulkChildRow({
   runDate: string;
   onSelect: () => void;
   onToggleItems: () => void;
+  onContextMenu: (e: React.MouseEvent, row: any) => void;
   dateFormatter: (s: string | null) => string;
   timeFormatter: (s: string | null) => string;
 }) {
@@ -428,6 +520,7 @@ function BulkChildRow({
     <>
       <tr
         onClick={onSelect}
+        onContextMenu={(e) => onContextMenu(e, child)}
         className={`cursor-pointer border-b border-border/50 ${
           active ? 'bg-brand-cyan/20' : 'hover:bg-slate-100/70'
         } bg-slate-50/60`}
@@ -643,6 +736,21 @@ export default function ScanManager() {
   // / search / date all reshuffle the pool, so page 4 of the old view
   // rarely maps to a useful page 4 of the new view).
   useEffect(() => { setBulkPage(1); }, [mode, runDate, clientIds, regionIds, speedIds, search, clientInternal]);
+
+  // Row context-menu wiring (task #48). Section Z has not yet confirmed
+  // which actions this menu should carry (legacy jobList.tpl:46 binds
+  // `jobListMenu` but the menu body was left empty in the pre-migration
+  // scan branch too). Wire the handler + mount an empty `RowContextMenu`
+  // shell so the plumbing is in place; actions are added once
+  // stakeholders sign off. Right-clicks on Bulk parent, Bulk child, and
+  // Routed rows all open the same shell.
+  const [rowCtx, setRowCtx] = useState<{ x: number; y: number; title: string } | null>(null);
+  const openContextMenu = (e: React.MouseEvent, r: any) => {
+    e.preventDefault();
+    const title = r?.jobNumber ? `Job ${r.jobNumber}` : 'Job';
+    setRowCtx({ x: e.clientX, y: e.clientY, title });
+  };
+  const closeContextMenu = () => setRowCtx(null);
 
   const lookups = useRouteViewerLookups(runDate);
 
@@ -959,6 +1067,7 @@ export default function ScanManager() {
                         onSelect={setSelectedRootJobId}
                         onToggle={() => toggleBulkParent(r.bulkJobId)}
                         onToggleItems={toggleBulkItems}
+                        onContextMenu={openContextMenu}
                         dateFormatter={(s) => tenantDateFromSpString(s, user.isUsTenant)}
                         timeFormatter={(s) => tenantTimeFromSpString(s, user.isUsTenant)}
                       />
@@ -983,6 +1092,9 @@ export default function ScanManager() {
                     <SortableTh label="Address" active={routedSort.key === 'toAddress'} dir={routedSort.dir} onClick={() => toggleRoutedSort('toAddress')} />
                     <SortableTh label="Suburb" active={routedSort.key === 'suburb'} dir={routedSort.dir} onClick={() => toggleRoutedSort('suburb')} />
                     <SortableTh label="Stage" active={routedSort.key === 'stage'} dir={routedSort.dir} onClick={() => toggleRoutedSort('stage')} />
+                    {/* Tote column header (task #47.2). Not sortable - value
+                        is derived client-side from item-progress on expand. */}
+                    <th className="px-2 py-1 font-medium text-center" title="Current tote (derived from item progress)">Tote</th>
                     <SortableTh label="Legs" align="center" active={routedSort.key === 'legs'} dir={routedSort.dir} onClick={() => toggleRoutedSort('legs')} />
                     <SortableTh label="Items" align="center" active={routedSort.key === 'items'} dir={routedSort.dir} onClick={() => toggleRoutedSort('items')} />
                     <SortableTh label="Flags" align="center" active={routedSort.key === 'flags'} dir={routedSort.dir} onClick={() => toggleRoutedSort('flags')} />
@@ -1002,14 +1114,15 @@ export default function ScanManager() {
                         expanded={expanded}
                         onSelect={() => setSelectedRootJobId(r.jobId)}
                         onToggle={() => toggleExpanded(r.jobId)}
+                        onContextMenu={openContextMenu}
                       />
                     );
                   })}
                   {sortedRouted.length === 0 && !routedQ.isLoading && (
-                    <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={9}>No routed shipments for this date.</td></tr>
+                    <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={10}>No routed shipments for this date.</td></tr>
                   )}
                   {routedQ.isLoading && (
-                    <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={9}>Loading...</td></tr>
+                    <tr><td className="px-3 py-6 text-center text-text-muted" colSpan={10}>Loading...</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1061,6 +1174,17 @@ export default function ScanManager() {
           </RvBox>
         </div>
       </div>
+
+      {/* Empty context-menu placeholder (task #48). Section Z has not yet
+          selected any actions - once confirmed, populate the items array
+          with real handlers (assign courier, mark short, etc.). */}
+      <RowContextMenu
+        clientX={rowCtx?.x ?? null}
+        clientY={rowCtx?.y ?? null}
+        title={rowCtx?.title}
+        items={[]}
+        onClose={closeContextMenu}
+      />
     </div>
   );
 }
