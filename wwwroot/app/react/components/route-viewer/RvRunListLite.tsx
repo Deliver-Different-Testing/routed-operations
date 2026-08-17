@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { BulkRun } from '../../services/routeViewerService';
 import { RvBox } from './RvBox';
 
@@ -27,6 +28,10 @@ interface Props {
    *  tint behaviour (RvRunList) so rows across Pre Assigned / Returns /
    *  Exceptions line up with the same-coloured map pins. */
   runColorMap?: Record<number, string>;
+  /** Reports the filtered id list every time it changes so the parent
+   *  can drive Up/Down arrow-key navigation over the same rows the
+   *  operator sees. */
+  onVisibleRunsChange?: (ids: number[]) => void;
 }
 
 const TITLES: Record<Variant, string> = {
@@ -50,8 +55,19 @@ function filterRuns(runs: BulkRun[], variant: Variant): BulkRun[] {
   }
 }
 
-export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextMenu, runColorMap }: Props) {
+export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextMenu, runColorMap, onVisibleRunsChange }: Props) {
   const filtered = filterRuns(runs, variant);
+  const lastVisibleKey = useRef<string>('');
+  useEffect(() => {
+    if (!onVisibleRunsChange) return;
+    const ids = filtered.map((r) => r.id);
+    const key = ids.join(',');
+    if (key === lastVisibleKey.current) return;
+    lastVisibleKey.current = key;
+    onVisibleRunsChange(ids);
+    // filtered is recomputed each render; the key check above debounces
+    // callback churn to when the id list actually changes.
+  });
   return (
     <RvBox title={TITLES[variant]}>
       <table className="w-full text-xs">

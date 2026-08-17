@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 import { useAutoPoll } from '../../hooks/useAutoPoll';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { routeViewerService } from '../../services/routeViewerService';
@@ -8,7 +9,9 @@ import { tenantTodayYmd } from '../../lib/tenantDate';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvScanDetailBox } from '../../components/route-viewer/RvScanDetailBox';
+import { AssignRouteDialog } from '../../components/route-viewer/AssignRouteDialog';
 import { MultiSelect } from '../../components/common/MultiSelect';
+import { RowContextMenu, type ContextMenuItem } from '../../components/cockpit/RowContextMenu';
 import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
 import type { ListSort } from '../../components/cockpit/CockpitState';
 import type { SiblingJob } from '../../services/routeViewerService';
@@ -74,6 +77,50 @@ interface JobRow {
   pallet: string | null;
   items: number;
   pickedUp: string | null;
+  /** JSON string emitted by RVW_stpLinehaulJobs (2026-07-01). Parsed
+   *  once per row by `parseScanHistory` and rendered as chips in the
+   *  Scanned column. Empty JSON array (`[]`) when no scans exist. */
+  scanHistory: string | null;
+}
+
+/** One entry in the scanHistory JSON array. Emitted by the SP's
+ *  OUTER APPLY (see 20260701120300_RVWRoutedShipmentDetailAndMasterJob.sql).
+ *  `ScanType` is the pre-mapped label ("Sort" / "Run" / "InvalidRun" etc);
+ *  raw ScanType ints from tblBulkScan are already resolved server-side. */
+interface ScanHistoryEntry {
+  ScanDateTime: string;
+  ScanType: string;
+  Courier: string;
+}
+
+// SP-emitted ScanType labels split by outcome. Any label containing
+// "Invalid" or "Exception" / "Override" is treated as short (red);
+// the rest are completed (green). "Transit" chips render neutral
+// (grey) because a transit scan is a mid-flight event rather than a
+// terminal state - matches how the legacy scanned cell distinguished
+// in-flight from finished work.
+const SCAN_SHORT_MARKERS = ['Invalid', 'Exception', 'Override'];
+const SCAN_PENDING_MARKERS = ['Transit'];
+
+export function scanChipTone(scanType: string | null | undefined): 'green' | 'grey' | 'red' {
+  if (!scanType) return 'grey';
+  for (const m of SCAN_SHORT_MARKERS) if (scanType.includes(m)) return 'red';
+  for (const m of SCAN_PENDING_MARKERS) if (scanType.includes(m)) return 'grey';
+  return 'green';
+}
+
+// Parse the SP-emitted JSON blob into a typed array. Returns `[]` for
+// null / empty / malformed values so the render path never sees a
+// thrown parse error. Exported for the test file so the chip renderer
+// can be exercised without an SP round-trip.
+export function parseScanHistory(raw: string | null | undefined): ScanHistoryEntry[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ScanHistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 // Small any-value comparer used by the local generic sorter. Mirrors
@@ -194,14 +241,67 @@ async function printLinehaulLabels(payload: {
   window.open(url, '_blank');
 }
 
+// Discriminated ctx menu target. A run right-click carries the run id
+// only; a job right-click carries the parent run id (so the dialog can
+// scope the assign to the correct run) + the bulkJobId as anchor. The
+// AssignRouteDialog uses `anchorJobId` for its NP scope guard on the
+// agent search endpoint.
+type LinehaulCtxTarget =
+  | { kind: 'run'; runId: number; runName: string | null }
+  | { kind: 'job'; runId: number; bulkJobId: number; jobNumber: string | null };
+
+interface LinehaulCtxState {
+  x: number;
+  y: number;
+  target: LinehaulCtxTarget;
+}
+
+// Ctx menu title + items for both run rows and job rows. NP users see
+// "Assign Courier" only (matches legacy linehaulControl.js runListMenu +
+// jobListMenu). Admins see both "Assign Route" (opens the dialog with
+// default bucket = courier + admin can flip to agent/np tabs) and a
+// dedicated "Assign Courier" shortcut. Both open the same dialog since
+// AssignRouteDialog is the unified 3-way picker; the second entry is
+// kept for label parity with the legacy right-click menu wording.
+// Exported for the test file so the items can be exercised without a
+// full render cycle.
+export function linehaulCtxMenuItems(
+  target: LinehaulCtxTarget,
+  isNetworkPartner: boolean,
+  openAssign: (target: LinehaulCtxTarget) => void,
+): { title: string; items: ContextMenuItem[] } {
+  const title = target.kind === 'run'
+    ? `Run ${target.runName ?? `#${target.runId}`}`
+    : `Job ${target.jobNumber ?? `#${target.bulkJobId}`}`;
+  const items: ContextMenuItem[] = isNetworkPartner
+    ? [
+        { label: 'Assign Courier', onClick: () => openAssign(target) },
+      ]
+    : [
+        { label: 'Assign Route', onClick: () => openAssign(target) },
+        { label: 'Assign Courier', onClick: () => openAssign(target) },
+      ];
+  return { title, items };
+}
+
 export default function Linehaul() {
   const user = useAuth();
+  const toast = useToast();
   const initialDate = tenantTodayYmd({ isUsTenant: user.isUsTenant, timeZone: user.timeZone });
   const [runDate, setRunDate] = useState(initialDate);
   const [expandedIds, setExpandedIds] = useState<number[]>([]);
   const toggleExpanded = (id: number) => setExpandedIds((prev) =>
     prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]
   );
+
+  // Right-click ctx menu state. Lifted to the top-level page (rather
+  // than local to LinehaulRow) so the resulting AssignRouteDialog sits
+  // above the tables and is not clipped by the expanded-row cell.
+  // Mirrors CustomerServices.tsx event menu wiring pattern.
+  const [ctx, setCtx] = useState<LinehaulCtxState | null>(null);
+  const [assignTarget, setAssignTarget] = useState<LinehaulCtxTarget | null>(null);
+  const openContextMenu = (target: LinehaulCtxTarget, x: number, y: number) =>
+    setCtx({ x, y, target });
   // Focused job for the right-side JobDetail + ScanList panes. Legacy
   // `linehaul/tpls/jobDetail.tpl` + `scanList.tpl` show these when the
   // operator clicks a job in the expanded sub-panel of a run.
@@ -552,6 +652,7 @@ export default function Linehaul() {
                   focusedJobId={focusedJobId}
                   clientIds={clientIds}
                   speedIds={speedIds}
+                  onOpenContextMenu={openContextMenu}
                 />
               ))}
               {sortedRuns.length === 0 && !runsQ.isLoading && (
@@ -602,6 +703,40 @@ export default function Linehaul() {
           </div>
         </div>
       </div>
+
+      {/* Right-click ctx menu shared by run rows + expanded job rows.
+          Opens AssignRouteDialog scoped to the picked run (and job when
+          the operator right-clicked a job row). Mirrors the legacy
+          linehaulControl.js runListMenu + jobListMenu wiring - both
+          collapse to "Assign Courier" only for NP users. */}
+      <RowContextMenu
+        clientX={ctx?.x ?? null}
+        clientY={ctx?.y ?? null}
+        title={ctx ? linehaulCtxMenuItems(ctx.target, user.isNetworkPartner, () => undefined).title : undefined}
+        items={ctx ? linehaulCtxMenuItems(
+          ctx.target,
+          user.isNetworkPartner,
+          (t) => setAssignTarget(t),
+        ).items : []}
+        onClose={() => setCtx(null)}
+      />
+
+      {assignTarget && (
+        <AssignRouteDialog
+          runId={assignTarget.runId}
+          anchorJobId={assignTarget.kind === 'job' ? assignTarget.bulkJobId : undefined}
+          onClose={() => setAssignTarget(null)}
+          onSuccess={(summary) => {
+            setAssignTarget(null);
+            toast.show(summary, 'success');
+            // Force the run list + expanded jobs table to pick up the
+            // new assignment on the next tick. React Query auto-poll
+            // (25s) will refresh eventually, but a manual refetch here
+            // makes the operator's assignment visible immediately.
+            void runsQ.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -638,7 +773,7 @@ function SortableTh({
 
 function LinehaulRow({
   row, expanded, runDate, jobSort, onJobHeader, searchNeedle, clientLabelSet,
-  onToggle, onSelectJob, focusedJobId, clientIds, speedIds,
+  onToggle, onSelectJob, focusedJobId, clientIds, speedIds, onOpenContextMenu,
 }: {
   row: RunRow;
   expanded: boolean;
@@ -652,6 +787,7 @@ function LinehaulRow({
   focusedJobId: number | null;
   clientIds: string[];
   speedIds: string[];
+  onOpenContextMenu: (target: LinehaulCtxTarget, x: number, y: number) => void;
 }) {
   const bar = row.class === 'green' ? 'bg-emerald-400'
     : row.class === 'orange' ? 'bg-amber-400'
@@ -693,7 +829,21 @@ function LinehaulRow({
 
   return (
     <>
-      <tr className="border-b border-border/50 hover:bg-surface-cream/60">
+      <tr
+        className="border-b border-border/50 hover:bg-surface-cream/60"
+        onContextMenu={(e) => {
+          // stopPropagation prevents ancestor / body-level listeners
+          // from swallowing the event before React's synthetic dispatch.
+          // Mirrors the JobsList right-click pattern.
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenContextMenu(
+            { kind: 'run', runId: row.id, runName: row.name },
+            e.clientX,
+            e.clientY,
+          );
+        }}
+      >
         <td className="px-2 py-1 text-center">
           <button
             type="button"
@@ -781,6 +931,7 @@ function LinehaulRow({
                     <SortableTh label="Pallet" field="pallet" sort={jobSort} onClick={onJobHeader('pallet')} />
                     <SortableTh label="Items" field="items" sort={jobSort} onClick={onJobHeader('items')} align="center" />
                     <SortableTh label="Picked" field="pickedUp" sort={jobSort} onClick={onJobHeader('pickedUp')} />
+                    <th className="px-1 py-0.5">Scanned</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -788,6 +939,20 @@ function LinehaulRow({
                     <tr
                       key={j.bulkJobId}
                       onClick={() => onSelectJob(j.bulkJobId)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onOpenContextMenu(
+                          {
+                            kind: 'job',
+                            runId: row.id,
+                            bulkJobId: j.bulkJobId,
+                            jobNumber: j.jobNumber,
+                          },
+                          e.clientX,
+                          e.clientY,
+                        );
+                      }}
                       className={`cursor-pointer border-t border-border/40 ${
                         focusedJobId === j.bulkJobId ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
                       }`}
@@ -800,11 +965,14 @@ function LinehaulRow({
                       <td className="px-1 py-0.5">{j.pallet ?? '-'}</td>
                       <td className="px-1 py-0.5 text-center">{j.items}</td>
                       <td className="px-1 py-0.5">{j.pickedUp ?? '-'}</td>
+                      <td className="px-1 py-0.5">
+                        <ScanHistoryChips raw={j.scanHistory} />
+                      </td>
                     </tr>
                   ))}
                   {sortedJobs.length === 0 && (
                     <tr>
-                      <td className="px-1 py-2 text-text-muted italic" colSpan={6}>
+                      <td className="px-1 py-2 text-text-muted italic" colSpan={7}>
                         No jobs match the current filters.
                       </td>
                     </tr>
@@ -816,5 +984,42 @@ function LinehaulRow({
         </tr>
       )}
     </>
+  );
+}
+
+// Inline scan-history chip strip for the expanded jobs table's Scanned
+// cell. Legacy analogue: `parseScanHistory` in linehaulControl.js +
+// `ng-repeat` over the parsed array in linehaulView.html. Chip colour
+// classes reuse the existing status palette (emerald / amber / red /
+// slate) so the strip visually matches the run load bar without a new
+// design token. Renders a compact "-" when the SP produced an empty
+// history so the column never appears blank.
+function ScanHistoryChips({ raw }: { raw: string | null | undefined }) {
+  const entries = useMemo(() => parseScanHistory(raw), [raw]);
+  if (entries.length === 0) return <span className="text-text-muted">-</span>;
+  return (
+    <div className="flex flex-wrap gap-0.5" data-testid="scan-history-chips">
+      {entries.map((e, i) => {
+        const tone = scanChipTone(e.ScanType);
+        const cls = tone === 'green'
+          ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+          : tone === 'red'
+            ? 'bg-red-100 text-red-800 border-red-200'
+            : 'bg-slate-100 text-slate-700 border-slate-200';
+        const title = `${e.ScanType ?? ''}${e.Courier ? ` - ${e.Courier}` : ''}${
+          e.ScanDateTime ? ` (${e.ScanDateTime})` : ''
+        }`;
+        return (
+          <span
+            key={`${e.ScanType}-${i}`}
+            title={title}
+            data-scan-tone={tone}
+            className={`inline-block px-1 py-0 rounded border text-[9px] ${cls}`}
+          >
+            {e.ScanType ?? '?'}
+          </span>
+        );
+      })}
+    </div>
   );
 }

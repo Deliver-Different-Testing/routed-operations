@@ -8,32 +8,55 @@ variables:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_NOLOGO: "true"
 
-# Shared rules: only fire on MRs targeting protected branches + pushes to
-# master. Mirrors Configurator's `.test-rules` shape.
+# Shared rules: only fire test jobs on MRs targeting protected branches
+# + pushes to master. Mirrors Configurator's `.test-rules` shape.
 .test-rules:
   rules:
     - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/
     - if: $CI_COMMIT_BRANCH == "master"
 
+# Cache node_modules keyed on package-lock so `npm ci` restores the
+# whole tree in seconds instead of ~90s per job. Fallback to master so
+# a fresh branch inherits the last-known-good install rather than a
+# cold registry fetch.
+.npm-cache:
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+    policy: pull-push
+    fallback_keys:
+      - npm-master
+
 # Frontend lint + type-check. Blocking - a red run fails the pipeline.
+# `interruptible: true` cancels an in-flight run when a new push arrives
+# so stacked pushes don't queue up wasted runner time.
 test:frontend:lint:
   stage: templating
   image: node:22-alpine
-  extends: .test-rules
+  extends:
+    - .test-rules
+    - .npm-cache
+  interruptible: true
   allow_failure: false
   script:
     - npm ci --prefer-offline --no-audit --no-fund
     - npm run lint
     - npm run type-check
 
-# Frontend unit tests (vitest + jsdom + MSW). Blocking - a red suite fails
-# the pipeline and blocks the merge. Coverage regex reports the "Lines" %
-# to GitLab's MR widget; cobertura + junit artifacts render as inline
-# reports.
+# Frontend unit tests (vitest + jsdom + MSW). Blocking - a red suite
+# fails the pipeline and blocks the merge. Coverage regex reports the
+# "Lines" % to GitLab's MR widget; cobertura + junit artifacts render
+# as inline reports.
 test:frontend:unit:
   stage: templating
   image: node:22-alpine
-  extends: .test-rules
+  extends:
+    - .test-rules
+    - .npm-cache
+  interruptible: true
   allow_failure: false
   script:
     - npm ci --prefer-offline --no-audit --no-fund
@@ -51,12 +74,13 @@ test:frontend:unit:
         path: coverage/cobertura-coverage.xml
 
 # Backend unit tests (xUnit.v3 via Microsoft Testing Platform). Blocking.
-# NuGet cache pulls from the branch key, falling back to master so a fresh
-# branch does not re-download every package.
+# NuGet cache pulls from the branch key, falling back to master so a
+# fresh branch does not re-download every package.
 test:backend:unit:
   stage: templating
   image: mcr.microsoft.com/dotnet/sdk:10.0
   extends: .test-rules
+  interruptible: true
   allow_failure: false
   retry:
     max: 2

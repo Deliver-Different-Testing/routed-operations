@@ -8,6 +8,7 @@ function renderActions(overrides: Partial<Parameters<typeof RvUtilityActions>[0]
   const defaults = {
     onPrint: vi.fn(),
     onTopUp: vi.fn(),
+    runDate: '2026-08-14',
     snapshotLayout: vi.fn(() => ({
       rvHorizontal: [25, 50, 25],
       rvLeftV: [50, 50],
@@ -41,6 +42,51 @@ describe('RvUtilityActions', () => {
     const option = await screen.findByRole('button', { name: 'Run Allocation' });
     await user.click(option);
     expect(props.onPrint).toHaveBeenCalledWith('runAllocation');
+  });
+
+  it('opens Labels sort picker modal on Print > Labels click', async () => {
+    const props = renderActions();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Print/ }));
+    await user.click(await screen.findByRole('button', { name: 'Labels' }));
+    // Modal opened, radio picker visible
+    expect(screen.getByLabelText('Run Name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Product')).toBeInTheDocument();
+    expect(screen.getByLabelText('Client')).toBeInTheDocument();
+    // onPrint not yet fired - waits for Print button in modal
+    expect(props.onPrint).not.toHaveBeenCalled();
+  });
+
+  it('fires onPrint("labels", { sortMode }) when Print inside Labels modal is clicked', async () => {
+    const props = renderActions();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Print/ }));
+    await user.click(await screen.findByRole('button', { name: 'Labels' }));
+    await user.click(screen.getByLabelText('Product'));
+    await user.click(screen.getByRole('button', { name: 'Print' }));
+    expect(props.onPrint).toHaveBeenCalledWith('labels', { sortMode: 2 });
+  });
+
+  it('opens Woop date picker modal on Print > Woop Report click', async () => {
+    const props = renderActions();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Print/ }));
+    await user.click(await screen.findByRole('button', { name: 'Woop Report' }));
+    // Modal opened, both date inputs seeded to runDate default
+    const from = screen.getByLabelText(/From date/) as HTMLInputElement;
+    const to = screen.getByLabelText(/To date/) as HTMLInputElement;
+    expect(from.value).toBe('2026-08-14');
+    expect(to.value).toBe('2026-08-14');
+    expect(props.onPrint).not.toHaveBeenCalled();
+  });
+
+  it('fires onPrint("woop", { fromDate, toDate }) when Download inside Woop modal is clicked', async () => {
+    const props = renderActions();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Print/ }));
+    await user.click(await screen.findByRole('button', { name: 'Woop Report' }));
+    await user.click(screen.getByRole('button', { name: 'Download' }));
+    expect(props.onPrint).toHaveBeenCalledWith('woop', { fromDate: '2026-08-14', toDate: '2026-08-14' });
   });
 
   it('fires onTopUp on Top Up click', async () => {

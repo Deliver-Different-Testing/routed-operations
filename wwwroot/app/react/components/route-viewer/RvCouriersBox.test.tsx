@@ -194,7 +194,7 @@ describe('RvCouriersBox - Couriers view (after drill-down)', () => {
     expect(document.querySelector('.bg-slate-300')).toBeInTheDocument();
   });
 
-  it('fires onPick with courierId when row clicked', async () => {
+  it('fires onPick with the full courier row when a courier is clicked', async () => {
     server.use(
       stubCouriers([mkCourier({ courierId: 42, code: 'CLK', name: 'Click Me', fleet: 'FleetA' })]),
     );
@@ -203,7 +203,11 @@ describe('RvCouriersBox - Couriers view (after drill-down)', () => {
     await drillInto('FleetA');
     const codeCell = await screen.findByText('CLK');
     fireEvent.click(codeCell);
-    await waitFor(() => expect(onPick).toHaveBeenCalledWith(42));
+    await waitFor(() =>
+      expect(onPick).toHaveBeenCalledWith(
+        expect.objectContaining({ courierId: 42, code: 'CLK', name: 'Click Me' }),
+      ),
+    );
   });
 
   it('does NOT wire click cursor on courier rows when onPick is not passed', async () => {
@@ -254,5 +258,49 @@ describe('RvCouriersBox - Couriers view (after drill-down)', () => {
     // Give the effect a tick; query should stay disabled.
     await new Promise((r) => setTimeout(r, 20));
     expect(hit).toBe(0);
+  });
+});
+
+describe('RvCouriersBox - availableOnly filter', () => {
+  beforeEach(() => {
+    server.use(stubCouriers([]));
+  });
+
+  it('hides offline couriers from the fleet list when availableOnly is on', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'ONA', name: 'On A', isAvailable: true, fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'OFF', name: 'Off X', isAvailable: false, fleet: 'FleetB' }),
+      ]),
+    );
+    renderBox({ availableOnly: true });
+    // Only FleetA (which has the available courier) should show.
+    expect(await screen.findByText('FleetA')).toBeInTheDocument();
+    expect(screen.queryByText('FleetB')).toBeNull();
+  });
+
+  it('shows every fleet when availableOnly is off', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'ONA', name: 'On A', isAvailable: true, fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'OFF', name: 'Off X', isAvailable: false, fleet: 'FleetB' }),
+      ]),
+    );
+    renderBox({ availableOnly: false });
+    expect(await screen.findByText('FleetA')).toBeInTheDocument();
+    expect(screen.getByText('FleetB')).toBeInTheDocument();
+  });
+
+  it('drops offline rows from the courier drill-down when availableOnly is on', async () => {
+    server.use(
+      stubCouriers([
+        mkCourier({ courierId: 1, code: 'AVA', name: 'Ava', isAvailable: true, fleet: 'FleetA' }),
+        mkCourier({ courierId: 2, code: 'OFX', name: 'Off X', isAvailable: false, fleet: 'FleetA' }),
+      ]),
+    );
+    renderBox({ availableOnly: true });
+    await drillInto('FleetA');
+    expect(await screen.findByText('AVA')).toBeInTheDocument();
+    expect(screen.queryByText('OFX')).toBeNull();
   });
 });

@@ -142,6 +142,14 @@ export interface BulkJob {
   // Jobs grid shows City as a distinct column).
   fromCity: string | null;
   toCity: string | null;
+  /** Pre-formatted tracking URL for the job's Track-It link.
+   *  Populated by RVW_stpBulkJob / RVW_stpBulkRunJobs via
+   *  BulkJobDto.TrackingLink. Null when the SP row has no link. */
+  trackingLink?: string | null;
+  /** True when the client has an intel record on file for the
+   *  delivery mobile. Drives the Client Intel jump icon on the
+   *  Detail header (only rendered when true). */
+  clientIntel?: boolean;
 }
 
 export interface RunFilters {
@@ -322,11 +330,50 @@ export const routeViewerService = {
       `/runviewer/couriers/position${buildQuery({ jobId })}`,
     ),
 
+  /** Bounding-box query for the "All Couriers" map toggle. Returns every
+   *  active courier with a GPS ping inside the given lat/lng envelope,
+   *  plus their vehicle type + code for the flag label. Wraps
+   *  MAP_stpEnvelope via GET /runviewer/couriers/available. */
+  getAvailableCouriers: (bounds: { minLng: number; minLat: number; maxLng: number; maxLat: number }) =>
+    unwrap<Array<{
+      courierId: number;
+      courierCode: string | null;
+      vehicleType: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      timestamp: string | null;
+    }>>(
+      `/runviewer/couriers/available${buildQuery({
+        minLng: bounds.minLng,
+        minLat: bounds.minLat,
+        maxLng: bounds.maxLng,
+        maxLat: bounds.maxLat,
+      })}`,
+    ),
+
   // -----------------------------------------------------------------
   // Scans / events
   // -----------------------------------------------------------------
   getScanDetail: (jobId: number) =>
-    unwrap<Array<{ time: string; scanType: string; courierName: string; isNpAgent: boolean }>>(
+    unwrap<Array<{
+      scanId?: number;
+      scanDateTime?: string | null;
+      scanDetail?: string | null;
+      courier?: string | null;
+      isNpAgent?: boolean;
+      // 2026-07-02 extended context columns (BulkScanDetailDto).
+      leg?: string | null;
+      location?: string | null;
+      tote?: string | null;
+      run?: string | null;
+      /** JSON string of piece barcodes; parsed per-row in RvScanDetailBox. */
+      itemLabels?: string | null;
+      role?: string | null;
+      // Fallback aliases from earlier SP shapes.
+      time?: string;
+      scanType?: string;
+      courierName?: string;
+    }>>(
       `/runviewer/scans/detail${buildQuery({ jobId })}`,
     ),
 
@@ -517,7 +564,12 @@ export const routeViewerService = {
     }>>(`/runviewer/runs/linehaul/overview${buildQuery({ runDate, clientIds, speedIds })}`),
 
   /** Linehaul jobs for a run (used by the expandable Linehaul sub-panel).
-   *  Wraps RVW_stpLineHaulJobs (depotId + name required). */
+   *  Wraps RVW_stpLineHaulJobs (depotId + name required). `scanHistory`
+   *  is a JSON string (array of { ScanDateTime, ScanType, Courier }, most
+   *  recent first, capped at 20). Empty JSON array (`[]`) when the parent
+   *  job has no scans in the last 3 days. Consumed by the Linehaul jobs
+   *  table Scanned cell which parses per row and renders one chip per
+   *  entry. */
   getLinehaulJobs: (depotId: number, name: string, runDate: string) =>
     unwrap<Array<{
       bulkJobId: number;
@@ -527,6 +579,7 @@ export const routeViewerService = {
       pallet: string | null;
       items: number;
       pickedUp: string | null;
+      scanHistory: string | null;
     }>>(`/runviewer/jobs/linehaul${buildQuery({ depotId, name, runDate })}`),
 
   /** Linehaul run list. Wraps RVW_stpLineHaulRuns. speedIds is passed
@@ -633,6 +686,26 @@ export const routeViewerService = {
    *  but the UI is wired so it lights up as soon as the endpoint lands. */
   printLabels: (bulkJobIds: number[]) =>
     unwrapPost<string>('/runviewer/labels/bulk-jobs', { bulkJobIds }),
+
+  /** Print labels for the current cockpit filter set with an operator-
+   *  picked sort mode (1=Run Name, 2=Product, 3=Client). Fires the
+   *  same POST endpoint as `printLabels` but with a LabelRequest shape
+   *  (BookDate + ClientIds + RegionIds + SpeedIds + SortMode) instead
+   *  of an explicit bulkJobIds list, matching the legacy AngularJS
+   *  getLabels() call that keyed off $parent.labelsSortMode. */
+  printLabelsWithSort: (payload: {
+    bookDate: string;
+    sortMode: number;
+    clientIds?: string | null;
+    regionIds?: string | null;
+    speedIds?: string | null;
+  }) => unwrapPost<string>('/runviewer/labels/bulk-jobs', {
+    bookDate: payload.bookDate,
+    sortMode: payload.sortMode,
+    clientIds: payload.clientIds ?? null,
+    regionIds: payload.regionIds ?? null,
+    speedIds: payload.speedIds ?? null,
+  }),
 
   /** Email a POD photo to an operator-provided address. Proxies to
    *  the legacy /Home/SendPOD endpoint via the same env-var-gated

@@ -159,6 +159,31 @@ describe('RvJobDetail (actions)', () => {
     expect(screen.queryByText('edit')).toBeNull();
   });
 
+  it('fires onJumpToClientIntel with the current job on click', async () => {
+    const onJumpToClientIntel = vi.fn();
+    renderDetail({
+      initialJob: mkJob({ deliverToPhone: '022' }),
+      onJumpToClientIntel,
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle('Jump to Client Intel'));
+    expect(onJumpToClientIntel).toHaveBeenCalledTimes(1);
+    // First arg should be the job passed in.
+    expect(onJumpToClientIntel.mock.calls[0][0]).toMatchObject({ bulkJobId: 1 });
+  });
+
+  it('opens Track-It link in a new tab on click', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      renderDetail({ initialJob: mkJob({ trackingLink: 'https://track.example/JOB-1' }) });
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Open Track-It link'));
+      expect(openSpy).toHaveBeenCalledWith('https://track.example/JOB-1', '_blank');
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   it('sibling tab click fires onPickSibling', async () => {
     const onPickSibling = vi.fn();
     server.use(

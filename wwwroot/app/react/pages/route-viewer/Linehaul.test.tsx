@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
-import { linehaulReportStamp } from './Linehaul';
+import {
+  linehaulReportStamp,
+  linehaulCtxMenuItems,
+  parseScanHistory,
+  scanChipTone,
+} from './Linehaul';
 
 // Silence the polling hook - the page fires refetches on a 25s interval
 // which is not what these tests are exercising. Real hook is covered by
@@ -539,5 +544,200 @@ describe('Linehaul run-scoped label print + full-day report', () => {
     expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('501'));
     // No download attempted on failure.
     expect(capturedFilename).toBeNull();
+  });
+});
+
+describe('Linehaul row context menu (Part A - Assign Route / Assign Courier)', () => {
+  // linehaulCtxMenuItems is a pure builder - unit tests avoid the full
+  // render cycle so the branching (NP vs admin, run vs job target) is
+  // covered without staging every stub.
+  it('admin sees both Assign Route and Assign Courier on a run target', () => {
+    const { title, items } = linehaulCtxMenuItems(
+      { kind: 'run', runId: 42, runName: 'AKL-HAM' },
+      false,
+      () => undefined,
+    );
+    expect(title).toBe('Run AKL-HAM');
+    expect(items.map((i) => i.label)).toEqual(['Assign Route', 'Assign Courier']);
+  });
+
+  it('NP sees only Assign Courier on a run target', () => {
+    const { items } = linehaulCtxMenuItems(
+      { kind: 'run', runId: 42, runName: 'AKL-HAM' },
+      true,
+      () => undefined,
+    );
+    expect(items.map((i) => i.label)).toEqual(['Assign Courier']);
+  });
+
+  it('admin sees both Assign Route and Assign Courier on a job target', () => {
+    const { title, items } = linehaulCtxMenuItems(
+      { kind: 'job', runId: 42, bulkJobId: 99, jobNumber: 'JOB-99' },
+      false,
+      () => undefined,
+    );
+    expect(title).toBe('Job JOB-99');
+    expect(items.map((i) => i.label)).toEqual(['Assign Route', 'Assign Courier']);
+  });
+
+  it('item click forwards the target through to the openAssign callback', () => {
+    const openAssign = vi.fn();
+    const target = { kind: 'job' as const, runId: 42, bulkJobId: 99, jobNumber: 'JOB-99' };
+    const { items } = linehaulCtxMenuItems(target, false, openAssign);
+    items[0].onClick();
+    expect(openAssign).toHaveBeenCalledWith(target);
+  });
+
+  it('right-clicking a run row opens the ctx menu with Assign Route + Assign Courier', async () => {
+    server.use(
+      stubRuns([runRow({ id: 1, name: 'AKL-HAM', toDepotId: 5 })]),
+      stubOverview([]),
+      ...stubLookups(),
+    );
+    renderPage();
+    await screen.findByText('AKL-HAM');
+    // Right-click on the run row cell (font-medium is the Run column
+    // that carries the run name). Fire a native contextmenu event so
+    // the onContextMenu handler on the <tr> promotes it into ctx state.
+    const nameCell = screen.getByText('AKL-HAM');
+    const runRowEl = nameCell.closest('tr')!;
+    act(() => {
+      runRowEl.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 40, clientY: 60,
+      }));
+    });
+    // Menu appears with both admin items + a run-scoped title.
+    expect(await screen.findByText('Run AKL-HAM')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Route' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Courier' })).toBeInTheDocument();
+  });
+
+  it('right-clicking an expanded job row opens the ctx menu with a job-scoped title', async () => {
+    server.use(
+      stubRuns([runRow({ id: 1, name: 'AKL-HAM', toDepotId: 5 })]),
+      stubOverview([]),
+      ...stubLookups(),
+      http.get('/api/runviewer/jobs/linehaul', () =>
+        HttpResponse.json({
+          response: [{
+            bulkJobId: 99, jobNumber: 'JOB-99', clientCode: 'ACME',
+            toAddress: '2 K Rd', pallet: 'P-1', items: 3, pickedUp: null,
+            scanHistory: null,
+          }],
+        })),
+    );
+    renderPage();
+    await screen.findByText('AKL-HAM');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    const jobCell = await screen.findByText('JOB-99');
+    const jobRowEl = jobCell.closest('tr')!;
+    act(() => {
+      jobRowEl.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 40, clientY: 60,
+      }));
+    });
+    expect(await screen.findByText('Job JOB-99')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Route' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Courier' })).toBeInTheDocument();
+  });
+});
+
+describe('Linehaul scanHistory chips (Part B - inline Scanned cell)', () => {
+  // parseScanHistory + scanChipTone are the two seams the chip strip
+  // rides on. Unit tests exercise them directly so the render assertions
+  // below can focus on the DOM mapping.
+  it('parseScanHistory returns [] for null / empty / malformed input', () => {
+    expect(parseScanHistory(null)).toEqual([]);
+    expect(parseScanHistory('')).toEqual([]);
+    expect(parseScanHistory('{"not":"array"}')).toEqual([]);
+    expect(parseScanHistory('!!!not-json')).toEqual([]);
+  });
+
+  it('parseScanHistory returns the parsed array for a valid JSON blob', () => {
+    const raw = JSON.stringify([
+      { ScanDateTime: '2026-08-14 09:00', ScanType: 'Run', Courier: 'KEV Kev' },
+      { ScanDateTime: '2026-08-14 08:45', ScanType: 'Sort', Courier: '' },
+    ]);
+    const parsed = parseScanHistory(raw);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].ScanType).toBe('Run');
+  });
+
+  it('scanChipTone maps completed / short / pending scan labels to green / red / grey', () => {
+    expect(scanChipTone('Run')).toBe('green');
+    expect(scanChipTone('Sort')).toBe('green');
+    expect(scanChipTone('Pickup')).toBe('green');
+    expect(scanChipTone('InvalidRun')).toBe('red');
+    expect(scanChipTone('InvalidPickup')).toBe('red');
+    expect(scanChipTone('Tote Exception')).toBe('red');
+    expect(scanChipTone('Tote Override')).toBe('red');
+    expect(scanChipTone('Transit')).toBe('grey');
+    expect(scanChipTone(null)).toBe('grey');
+  });
+
+  it('renders one chip per scan entry with the correct tone class on the expanded job row', async () => {
+    // SP emits `scanHistory` as a JSON string per row. Fake a row with
+    // one green, one red, one grey entry and assert the chip strip DOM
+    // carries the expected tone markers.
+    const raw = JSON.stringify([
+      { ScanDateTime: '2026-08-14 09:00', ScanType: 'Run', Courier: 'KEV Kev' },
+      { ScanDateTime: '2026-08-14 08:45', ScanType: 'InvalidRun', Courier: 'KEV Kev' },
+      { ScanDateTime: '2026-08-14 08:30', ScanType: 'Transit', Courier: '' },
+    ]);
+    server.use(
+      stubRuns([runRow({ id: 1, name: 'AKL-HAM', toDepotId: 5 })]),
+      stubOverview([]),
+      ...stubLookups(),
+      http.get('/api/runviewer/jobs/linehaul', () =>
+        HttpResponse.json({
+          response: [{
+            bulkJobId: 99, jobNumber: 'JOB-99', clientCode: 'ACME',
+            toAddress: '2 K Rd', pallet: 'P-1', items: 3, pickedUp: null,
+            scanHistory: raw,
+          }],
+        })),
+    );
+    renderPage();
+    await screen.findByText('AKL-HAM');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    await screen.findByText('JOB-99');
+
+    // The chip strip carries the data-testid + one chip per entry. Each
+    // chip has data-scan-tone = green | red | grey.
+    const strip = await screen.findByTestId('scan-history-chips');
+    const chips = strip.querySelectorAll('[data-scan-tone]');
+    expect(chips.length).toBe(3);
+    expect(chips[0].getAttribute('data-scan-tone')).toBe('green');
+    expect(chips[1].getAttribute('data-scan-tone')).toBe('red');
+    expect(chips[2].getAttribute('data-scan-tone')).toBe('grey');
+    // Chip label is the SP-emitted ScanType text.
+    expect(chips[0].textContent).toBe('Run');
+    expect(chips[1].textContent).toBe('InvalidRun');
+    expect(chips[2].textContent).toBe('Transit');
+  });
+
+  it('renders a plain "-" when scanHistory is null / empty (never blank)', async () => {
+    server.use(
+      stubRuns([runRow({ id: 1, name: 'AKL-HAM', toDepotId: 5 })]),
+      stubOverview([]),
+      ...stubLookups(),
+      http.get('/api/runviewer/jobs/linehaul', () =>
+        HttpResponse.json({
+          response: [{
+            bulkJobId: 99, jobNumber: 'JOB-99', clientCode: 'ACME',
+            toAddress: '2 K Rd', pallet: 'P-1', items: 3, pickedUp: null,
+            scanHistory: '[]',
+          }],
+        })),
+    );
+    renderPage();
+    await screen.findByText('AKL-HAM');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    await screen.findByText('JOB-99');
+    // No chip strip when history is empty.
+    expect(screen.queryByTestId('scan-history-chips')).toBeNull();
   });
 });

@@ -108,7 +108,7 @@ vi.mock('../../components/route-viewer/RvScanDetailBox', () => ({
 vi.mock('../../components/route-viewer/RvCouriersBox', () => ({
   RvCouriersBox: ({ onPick }: any) => (
     <div data-testid="rv-couriers">
-      couriers<button onClick={() => onPick(77)}>pick-courier</button>
+      couriers<button onClick={() => onPick({ courierId: 77, code: 'KEV', name: 'Kev Tester' })}>pick-courier</button>
     </div>
   ),
 }));

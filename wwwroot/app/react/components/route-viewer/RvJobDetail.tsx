@@ -40,9 +40,19 @@ interface Props {
   onTransferRoute?: (job: BulkJob) => void;
   onPrint?: (job: BulkJob) => void;
   onSend?: (job: BulkJob) => void;
+  /** Fires when the operator clicks the Client Intel jump icon in
+   *  the header. Parent scrolls / focuses its ClientIntel box. Icon
+   *  is hidden when this callback is not provided. */
+  onJumpToClientIntel?: (job: BulkJob) => void;
+  /** When set, the pane renders a Google Maps iframe overlay for the
+   *  courier (legacy jobDetail.tpl currentCourier block) INSTEAD of
+   *  the normal job detail render. Set by RvCouriersBox click via the
+   *  parent. Cleared when a job row is picked. Search query = code +
+   *  name because the DTO does not carry a base address. */
+  selectedCourier?: { code: string; name: string } | null;
 }
 
-export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRoute, onPrint, onSend }: Props) {
+export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRoute, onPrint, onSend, onJumpToClientIntel, selectedCourier }: Props) {
   const user = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -103,6 +113,28 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
 
   const tzOpts = { isUsTenant: user.isUsTenant, timeZone: user.timeZone };
 
+  // Courier iframe overlay (legacy jobDetail.tpl:390-393 currentCourier
+  // block). Takes over the pane whenever the parent has a courier
+  // selected from the RvCouriersBox. Search query = code + name because
+  // the CourierListDto does not expose a base address; the plain-embed
+  // URL does not need an API key.
+  if (selectedCourier) {
+    const q = `${selectedCourier.code} ${selectedCourier.name}`.trim();
+    const src = `https://maps.google.com/maps?q=${encodeURIComponent(q)}&output=embed`;
+    return (
+      <div data-testid="courier-map-overlay" className="h-full w-full bg-white">
+        <iframe
+          title={`Map for courier ${selectedCourier.code}`}
+          src={src}
+          width="100%"
+          height="100%"
+          style={{ border: 0 }}
+          allowFullScreen
+        />
+      </div>
+    );
+  }
+
   if (bulkJobId == null && initialJob == null) {
     return (
       <div className="p-4 text-xs text-text-muted">
@@ -144,13 +176,31 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
         <div className="text-sm font-medium flex-1 truncate">
           Detail for Job {job.jobNumber ?? job.bulkJobId}
         </div>
-        <IconButton title="Print" onClick={() => onPrint?.(job)}>
+        {onJumpToClientIntel && (job.clientIntel || (job.deliverToPhone ?? job.phone)) && (
+          <IconButton
+            title="Jump to Client Intel"
+            ariaLabel="Jump to Client Intel"
+            onClick={() => onJumpToClientIntel(job)}
+          >
+            <ClientIntelIcon />
+          </IconButton>
+        )}
+        {job.trackingLink && (
+          <IconButton
+            title="Open Track-It link"
+            ariaLabel="Open Track-It link"
+            onClick={() => window.open(job.trackingLink!, '_blank')}
+          >
+            <TrackItIcon />
+          </IconButton>
+        )}
+        <IconButton title="Print" ariaLabel="Print" onClick={() => onPrint?.(job)}>
           <PrinterIcon />
         </IconButton>
-        <IconButton title="Send" onClick={() => onSend?.(job)}>
+        <IconButton title="Send" ariaLabel="Send" onClick={() => onSend?.(job)}>
           <SendIcon />
         </IconButton>
-        <IconButton title="More">
+        <IconButton title="More" ariaLabel="More">
           <KebabIcon />
         </IconButton>
       </div>
@@ -216,6 +266,7 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
               company={job.fromCompany}
               contact={job.contact}
               phone={user.isNetworkPartner ? null : job.phone}
+              missingCoord={job.pickUpLongitude == null || job.pickUpLatitude == null}
             />
           </div>
           <div onContextMenu={(e) => { e.preventDefault(); setGpsLeg('delivery'); }}>
@@ -228,6 +279,10 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
               contact={job.deliverToContact}
               phone={user.isNetworkPartner ? null : job.deliverToPhone}
               email={job.trackingEmail}
+              missingCoord={
+                (job.toLng ?? job.deliveryLongitude) == null
+                || (job.toLat ?? job.deliveryLatitude) == null
+              }
             />
           </div>
         </div>
@@ -326,10 +381,12 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
 
 function IconButton({
   title,
+  ariaLabel,
   onClick,
   children,
 }: {
   title: string;
+  ariaLabel?: string;
   onClick?: () => void;
   children: React.ReactNode;
 }) {
@@ -337,6 +394,7 @@ function IconButton({
     <button
       type="button"
       title={title}
+      aria-label={ariaLabel ?? title}
       onClick={onClick}
       className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-white"
     >
@@ -360,6 +418,28 @@ function SendIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="15 17 20 12 15 7" />
       <path d="M4 18v-2a4 4 0 0 1 4-4h12" />
+    </svg>
+  );
+}
+
+function ClientIntelIcon() {
+  // "Info" bubble - matches the legacy Client Intel jump affordance.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="16" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  );
+}
+
+function TrackItIcon() {
+  // "External link" glyph - opens the tracking URL in a new tab.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
     </svg>
   );
 }
@@ -507,6 +587,7 @@ function AddressCard({
   contact,
   phone,
   email,
+  missingCoord,
 }: {
   side: 'pickup' | 'delivery';
   title: string;
@@ -516,11 +597,20 @@ function AddressCard({
   contact: string | null | undefined;
   phone: string | null | undefined;
   email?: string | null | undefined;
+  /** True when this leg has no lat/lng - render the card with an
+   *  error-red border so the operator knows to right-click and Fix
+   *  GPS. Mirrors legacy jobDetail.tpl `ng-class fromLng ? '' : 'red'`. */
+  missingCoord?: boolean;
 }) {
   const headerBg = side === 'pickup' ? 'bg-blue-500' : 'bg-green-500';
   const Arrow = side === 'pickup' ? ArrowUpIcon : ArrowDownIcon;
+  const borderCls = missingCoord ? 'border-2 border-error' : 'border border-border';
   return (
-    <div className="border border-border rounded overflow-hidden bg-white">
+    <div
+      data-testid={`address-card-${side}`}
+      data-missing-coord={missingCoord ? 'true' : 'false'}
+      className={`${borderCls} rounded overflow-hidden bg-white`}
+    >
       <div className={`${headerBg} text-white flex items-center gap-2 px-3 py-1.5 font-medium uppercase tracking-wide text-xs`}>
         <Arrow /> {title}
       </div>

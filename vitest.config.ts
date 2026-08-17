@@ -18,6 +18,14 @@ export default defineConfig({
     setupFiles: ['./wwwroot/app/react/test/setup.ts'],
     include: ['wwwroot/app/react/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['node_modules/**', 'wwwroot/dist/**'],
+    // CI shared runners are ~10x slower than local dev machines under
+    // load (jsdom + msw + React Query + coverage instrumentation stack
+    // up). Tests that pass in <500ms locally can push past the default
+    // 5s cap in CI, surfacing as false-positive timeouts. Bumped to 15s
+    // so real hangs still surface reasonably fast while giving CI enough
+    // headroom for the slow-path tests (NewImportWizard walkthrough,
+    // ScanManager 150-row pagination, etc). Local runs are unaffected.
+    testTimeout: 15000,
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage',

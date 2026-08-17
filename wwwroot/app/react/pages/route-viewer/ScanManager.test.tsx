@@ -444,6 +444,173 @@ describe('ScanManager', () => {
     expect(seenBulkJobIds).toEqual(['71']);
   });
 
+  // ------------------------------------------------------------------
+  // Routed extras (Kevin 2026-08-14 task #47 + #48):
+  //   - Stage swatch pill tinted by keyword parse of stage text
+  //   - Tote column derived from item-progress on expand
+  //   - Item badge with warning triangle when hasShort is true
+  //   - Right-click opens an empty context-menu shell (task #48)
+  // ------------------------------------------------------------------
+
+  it('renders the Stage swatch pill with a colour class derived from the stage keywords', async () => {
+    server.use(
+      http.get('/api/runviewer/scans/routed', () => HttpResponse.json({
+        response: [
+          {
+            jobId: 1, clientCode: 'A', jobNumber: 'J-DONE', toAddress: 'x',
+            suburb: null, stage: 'Delivered', legs: '[]',
+            scannedItems: 1, expectedItems: 1, hasShort: false, isDivergent: false,
+          },
+          {
+            jobId: 2, clientCode: 'A', jobNumber: 'J-MOVING', toAddress: 'x',
+            suburb: null, stage: 'LH1 - in transit', legs: '[]',
+            scannedItems: 0, expectedItems: 1, hasShort: false, isDivergent: false,
+          },
+          {
+            jobId: 3, clientCode: 'A', jobNumber: 'J-SHORT', toAddress: 'x',
+            suburb: null, stage: 'Item -3 short (LH1)', legs: '[]',
+            scannedItems: 0, expectedItems: 3, hasShort: true, isDivergent: false,
+          },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Routed' }));
+    // Wait for the rows to land.
+    expect(await screen.findByText('J-DONE')).toBeInTheDocument();
+    const swatches = screen.getAllByTestId('sm-stage-swatch');
+    expect(swatches).toHaveLength(3);
+    // First = "Delivered" -> emerald tint (bg-emerald-100)
+    expect(swatches[0].className).toContain('bg-emerald-100');
+    // Second = "in transit" -> amber tint (bg-amber-100)
+    expect(swatches[1].className).toContain('bg-amber-100');
+    // Third = "short" -> red tint (bg-red-100)
+    expect(swatches[2].className).toContain('bg-red-100');
+  });
+
+  it('renders the Tote column ("-" until item-progress loads, then derived value)', async () => {
+    server.use(
+      http.get('/api/runviewer/scans/routed', () => HttpResponse.json({
+        response: [
+          {
+            jobId: 555, clientCode: 'A', jobNumber: 'J-TOTE', toAddress: 'x',
+            suburb: null, stage: 'LH1 - in transit', legs: '[]',
+            scannedItems: 1, expectedItems: 1, hasShort: false, isDivergent: false,
+          },
+        ],
+      })),
+      http.get('/api/runviewer/scans/item-progress', () => HttpResponse.json({
+        response: [
+          {
+            jobId: 555, itemBarcode: 'BC-1', leg: 'LH1', state: 'completed',
+            tote: 'TOTE-999', isCurrent: false, scanTime: null,
+          },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Routed' }));
+    expect(await screen.findByText('J-TOTE')).toBeInTheDocument();
+    // Before expand - Tote column shows "-" (default)
+    const toteBefore = screen.getByTestId('sm-tote-cell');
+    expect(toteBefore).toHaveTextContent('-');
+    // Expand to trigger item-progress fetch
+    await user.click(screen.getByRole('button', { name: 'Expand' }));
+    // After the fetch resolves the derived tote value renders
+    await waitFor(() => {
+      expect(screen.getByTestId('sm-tote-cell')).toHaveTextContent('TOTE-999');
+    });
+  });
+
+  it('renders the item badge with warning triangle when hasShort is true', async () => {
+    server.use(
+      http.get('/api/runviewer/scans/routed', () => HttpResponse.json({
+        response: [
+          {
+            jobId: 1, clientCode: 'A', jobNumber: 'J-OK', toAddress: 'x',
+            suburb: null, stage: 'Delivered', legs: '[]',
+            scannedItems: 3, expectedItems: 3, hasShort: false, isDivergent: false,
+          },
+          {
+            jobId: 2, clientCode: 'A', jobNumber: 'J-BAD', toAddress: 'x',
+            suburb: null, stage: 'Item -3 short (LH1)', legs: '[]',
+            scannedItems: 1, expectedItems: 3, hasShort: true, isDivergent: false,
+          },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Routed' }));
+    expect(await screen.findByText('J-OK')).toBeInTheDocument();
+    // Rows are sorted asc-by-jobNumber, so J-BAD renders before J-OK.
+    const okRow = screen.getByText('J-OK').closest('tr')!;
+    const badRow = screen.getByText('J-BAD').closest('tr')!;
+    const okBadge = okRow.querySelector('[data-testid="sm-item-badge"]')!;
+    const badBadge = badRow.querySelector('[data-testid="sm-item-badge"]')!;
+    // J-OK has no warning icon + no red tint
+    expect(okBadge.className).not.toContain('bg-red-100');
+    expect(okBadge.querySelector('[data-testid="sm-item-badge-warn"]')).toBeNull();
+    // J-BAD shows red tint + warning icon
+    expect(badBadge.className).toContain('bg-red-100');
+    expect(badBadge.querySelector('[data-testid="sm-item-badge-warn"]')).not.toBeNull();
+  });
+
+  it('opens an empty context-menu shell on right-click of a Routed row (task #48 Section Z placeholder)', async () => {
+    server.use(
+      http.get('/api/runviewer/scans/routed', () => HttpResponse.json({
+        response: [
+          {
+            jobId: 42, clientCode: 'A', jobNumber: 'J-MENU', toAddress: 'x',
+            suburb: null, stage: 'Delivered', legs: '[]',
+            scannedItems: 1, expectedItems: 1, hasShort: false, isDivergent: false,
+          },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Routed' }));
+    const row = await screen.findByText('J-MENU');
+    // Menu should not be mounted before the right-click.
+    expect(screen.queryByText('Job J-MENU')).not.toBeInTheDocument();
+    // Fire native contextmenu event (userEvent has no direct helper).
+    row.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 50, clientY: 60, button: 2,
+    }));
+    // The menu title renders even though items[] is empty (hook, not feature).
+    expect(await screen.findByText('Job J-MENU')).toBeInTheDocument();
+  });
+
+  it('opens an empty context-menu shell on right-click of a Bulk parent row', async () => {
+    server.use(
+      http.get('/api/runviewer/scans', () => HttpResponse.json({
+        response: [
+          {
+            bulkJobId: 1, bulkParentId: null, jobNumber: 'BULK-MENU', clientCode: 'A',
+            deliveryDate: null, readyTime: null, toAddress: null,
+            items: 1, sortScanned: 0, runScanned: 0, pickScanned: 0,
+            invalidPickScanned: 0, transferScanned: 0, transitScanned: 0,
+          },
+        ],
+      })),
+      ...baseline(),
+    );
+    renderPage();
+    const cell = await screen.findByText('BULK-MENU');
+    expect(screen.queryByText('Job BULK-MENU')).not.toBeInTheDocument();
+    cell.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 10, clientY: 10, button: 2,
+    }));
+    expect(await screen.findByText('Job BULK-MENU')).toBeInTheDocument();
+  });
+
   it('forwards Client selection to the SP as clientIds query param and re-renders on the refetched row set', async () => {
     const scanCalls: string[] = [];
     server.use(
