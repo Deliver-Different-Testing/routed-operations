@@ -8,6 +8,7 @@ import RecurringRoutes from './pages/RecurringRoutes';
 import PolygonBuilder from './pages/PolygonBuilder';
 import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
+import HistoricArchive from './pages/HistoricArchive';
 import RunViewer from './pages/route-viewer/RunViewer';
 import ScanManager from './pages/route-viewer/ScanManager';
 import PrintManager from './pages/route-viewer/PrintManager';
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/routes" element={<RoutesPage />} />
         <Route path="/bulk-import" element={<BulkImport />} />
+        <Route path="/historic-archive" element={<HistoricArchive />} />
         <Route path="/quoting" element={<Quoting />} />
         {/* Recurring Routes: merged 4-tab Configurator page (2026-08-12).
              The Routes tab body is delegated to ScheduledRoutes.tsx (kept

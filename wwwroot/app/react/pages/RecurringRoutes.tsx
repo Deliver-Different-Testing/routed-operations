@@ -44,13 +44,13 @@ export default function RecurringRoutes() {
   return (
     <SharedTargetsProvider>
     <div className="h-full overflow-y-auto p-4 space-y-3">
-      <div>
-        <h1 className="text-lg font-semibold text-[#0d0c2c] leading-tight">Recurring Routes</h1>
-        <p className="text-text-secondary text-xs mt-0.5">
-          Named routes covering a cluster of zip codes, rostered to a courier, agent, or NP per day.
-          The roster feeds nightly prebook job creation and surfaces in RunViewer.
-        </p>
-      </div>
+      {/* Page title lives in the top-of-app Header (see components/Layout/
+          Header.tsx PAGE_NAMES). Keep the tagline; drop the inline h1 so
+          the title isn't duplicated. */}
+      <p className="text-text-secondary text-xs">
+        Named routes covering a cluster of zip codes, rostered to a courier, agent, or NP per day.
+        The roster feeds nightly prebook job creation and surfaces in RunViewer.
+      </p>
 
       <div className="flex gap-0.5 rounded-xl border border-border bg-white p-0.5 shadow-sm w-fit">
         {TABS.map(({ key, label }) => (

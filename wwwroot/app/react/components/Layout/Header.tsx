@@ -27,6 +27,7 @@ const PAGE_NAMES: Array<[string, string]> = [
   ['/recurring-routes', 'Recurring Routes'],
   ['/polygon-builder', 'Polygon Builder'],
   ['/auto-assign-log', 'Auto-Assign Log'],
+  ['/historic-archive', 'Historic Archive Upload'],
   ['/route-viewer/scans', 'Scan Manager'],
   ['/route-viewer/print', 'Print Manager'],
   ['/route-viewer/cs', 'Customer Services'],
