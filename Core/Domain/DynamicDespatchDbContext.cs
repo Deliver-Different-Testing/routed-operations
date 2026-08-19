@@ -11,9 +11,41 @@ namespace RoutedOperations.Core.Domain;
 /// </summary>
 public class DynamicDespatchDbContext(DbContextOptions options) : DespatchContext(options)
 {
+    // Historic Archive Upload feature (2026-08-19). Reads / writes for
+    // tucJobArchive - slim entity, only the columns we stamp. The write
+    // path is transaction-scoped inside HistoricArchiveService.CommitAsync
+    // and always sets the billing-sentinel recipe so rows are never
+    // picked up by any invoice / BCTI / settlement process. See
+    // 20260819100000_HistoricArchiveImportBatch.sql for the audit table.
+    public virtual DbSet<TucJobArchive> TucJobArchives { get; set; }
+    public virtual DbSet<HistoricArchiveImportBatch> HistoricArchiveImportBatches { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        // tucJobArchive is a legacy table (268 cols, many FKs we don't
+        // model here). Turn off identity generation on ucjbID because the
+        // real table doesn't have IDENTITY - we allocate the id inside the
+        // write transaction. Ignore the batch of triggers on the table so
+        // EF doesn't try to include an OUTPUT clause on insert.
+        modelBuilder.Entity<TucJobArchive>(entity =>
+        {
+            entity.HasKey(e => e.UcjbId);
+            entity.Property(e => e.UcjbId).ValueGeneratedNever();
+            entity.ToTable("tucJobArchive", tb =>
+            {
+                tb.HasTrigger("trg_TucJobArchive_Notes_Update");
+                tb.HasTrigger("tucJobArchive_Update_UpdatedTimeStamp");
+                tb.HasTrigger("tucJobArchive_Update_BlockChanges");
+            });
+        });
+
+        modelBuilder.Entity<HistoricArchiveImportBatch>(entity =>
+        {
+            entity.ToTable("HistoricArchiveImportBatch");
+            entity.Property(e => e.UploadedAt).HasDefaultValueSql("sysutcdatetime()");
+        });
 
         // Recurring Routes Linehaul port (2026-08-12). Backs the Linehaul tab
         // + Linehaul Roster tab. Table + indexes pre-existing in the shared

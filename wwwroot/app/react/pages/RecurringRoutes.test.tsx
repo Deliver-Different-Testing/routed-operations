@@ -27,10 +27,12 @@ const stubTargets = () =>
     HttpResponse.json({ response: { couriers: [], agents: [], nps: [] } }));
 
 describe('RecurringRoutes shell', () => {
-  it('renders the page title + subtitle + all four tab buttons', () => {
+  it('renders the subtitle + all four tab buttons', () => {
+    // Page title lives in the top-of-app Header now (Header.PAGE_NAMES),
+    // so RecurringRoutes only renders the tagline + tab bar.
     server.use(stubTargets());
     renderWithProviders(<RecurringRoutes />);
-    expect(screen.getByRole('heading', { name: 'Recurring Routes' })).toBeInTheDocument();
+    expect(screen.getByText(/Named routes covering a cluster/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Routes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Linehaul' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Route Roster' })).toBeInTheDocument();

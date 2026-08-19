@@ -99,8 +99,10 @@ public class NpScopeGuardTests
     [Fact]
     public async Task EnsureBulkJobInScopeAsync_MatchingAgent_Passes()
     {
+        // NpAgentId now sourced from tucJob (reached via TblBulkJob.JobId).
         await using var ctx = NewContext();
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, NpAgentId = 42 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 42 });
         await ctx.SaveChangesAsync();
 
         var resolver = ResolverReturning(new NpScope(IsAdmin: false, NpAgentId: 42));
@@ -113,7 +115,8 @@ public class NpScopeGuardTests
     public async Task EnsureBulkJobInScopeAsync_MismatchedAgent_Throws()
     {
         await using var ctx = NewContext();
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, NpAgentId = 99 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 99 });
         await ctx.SaveChangesAsync();
 
         var resolver = ResolverReturning(new NpScope(IsAdmin: false, NpAgentId: 42));
@@ -121,6 +124,24 @@ public class NpScopeGuardTests
 
         var ex = await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.EnsureBulkJobInScopeAsync(5));
         Assert.Contains("tblBulkJob 5", ex.Message);
+    }
+
+    [Fact]
+    public async Task EnsureBulkJobInScopeAsync_AdHocAssignment_TucJobStamped_BulkJobNull_Passes()
+    {
+        // Regression: ad-hoc NP assignment via the 3-way Assign Route
+        // picker stamps only tucJob.NpAgentId, not tblBulkJob.NpAgentId.
+        // Guard must reach through to tucJob and let the NP through
+        // even when the bulk-job column is NULL.
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10, NpAgentId = null });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 42 });
+        await ctx.SaveChangesAsync();
+
+        var resolver = ResolverReturning(new NpScope(IsAdmin: false, NpAgentId: 42));
+        var sut = new NpScopeGuard(resolver, FactoryFor(ctx));
+
+        await sut.EnsureBulkJobInScopeAsync(5);
     }
 
     // ---- EnsureTucJobByNumberInScopeAsync ----
@@ -272,9 +293,12 @@ public class NpScopeGuardTests
     [Fact]
     public async Task EnsureRunInScopeAsync_PositiveRunId_AllJobsMatch_Passes()
     {
+        // NpAgentId sourced from tucJob (through TblBulkJob.JobId).
         await using var ctx = NewContext();
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 100, NpAgentId = 42 });
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 101, NpAgentId = 42 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 100, JobId = 200 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 101, JobId = 201 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 200, UcjbNumber = "J-200", NpAgentId = 42 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 201, UcjbNumber = "J-201", NpAgentId = 42 });
         ctx.TblBulkJobRuns.Add(new TblBulkJobRun { Id = 1, RunId = 7, BulkJobId = 100 });
         ctx.TblBulkJobRuns.Add(new TblBulkJobRun { Id = 2, RunId = 7, BulkJobId = 101 });
         await ctx.SaveChangesAsync();
@@ -289,8 +313,10 @@ public class NpScopeGuardTests
     public async Task EnsureRunInScopeAsync_PositiveRunId_MixedTenant_Throws()
     {
         await using var ctx = NewContext();
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 100, NpAgentId = 42 });
-        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 101, NpAgentId = 99 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 100, JobId = 200 });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 101, JobId = 201 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 200, UcjbNumber = "J-200", NpAgentId = 42 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 201, UcjbNumber = "J-201", NpAgentId = 99 });
         ctx.TblBulkJobRuns.Add(new TblBulkJobRun { Id = 1, RunId = 7, BulkJobId = 100 });
         ctx.TblBulkJobRuns.Add(new TblBulkJobRun { Id = 2, RunId = 7, BulkJobId = 101 });
         await ctx.SaveChangesAsync();
@@ -307,6 +333,24 @@ public class NpScopeGuardTests
     {
         // No jobs on the run -> Join is empty -> AnyAsync false -> no throw.
         await using var ctx = NewContext();
+        var resolver = ResolverReturning(new NpScope(IsAdmin: false, NpAgentId: 42));
+        var sut = new NpScopeGuard(resolver, FactoryFor(ctx));
+
+        await sut.EnsureRunInScopeAsync(7);
+    }
+
+    [Fact]
+    public async Task EnsureRunInScopeAsync_PositiveRunId_AdHocAssignment_BulkJobNull_Passes()
+    {
+        // Regression: prebook path leaves tblBulkJob.NpAgentId NULL for
+        // ad-hoc NP assignments; guard must still permit the run for the
+        // right NP by reading NpAgentId from tucJob.
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 100, JobId = 200, NpAgentId = null });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 200, UcjbNumber = "J-200", NpAgentId = 42 });
+        ctx.TblBulkJobRuns.Add(new TblBulkJobRun { Id = 1, RunId = 7, BulkJobId = 100 });
+        await ctx.SaveChangesAsync();
+
         var resolver = ResolverReturning(new NpScope(IsAdmin: false, NpAgentId: 42));
         var sut = new NpScopeGuard(resolver, FactoryFor(ctx));
 

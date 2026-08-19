@@ -3,9 +3,15 @@
 // the row's NpAgentId column against the scope's NpAgentId. Throws
 // NpLabelScopeException on mismatch, no-op on admin scope.
 //
-// Row-shape assumption: tucJob + tblBulkJob both carry a nullable
-// NpAgentId column, projected onto the entities via TucJob (base) +
-// TblBulkJob.RouteViewer.cs partial (extension).
+// Source of truth is tucJob.NpAgentId. tblBulkJob has its own NpAgentId
+// column but it is only populated by the prebook Monitor path
+// (UTL_stpJobBooking_InsertJob / UTL_stpJobBooking_InsertSchedule); ad-hoc
+// NP assignments from RunViewer's 3-way Assign Route picker stamp only
+// tucJob.NpAgentId, so a guard reading tblBulkJob.NpAgentId would
+// silently reject those jobs even for the correct NP. The bulk-job +
+// positive-run paths reach through TblBulkJob.JobId to tucJob.ucjbID and
+// pick up NpAgentId from tucJob for that reason (matches the SP-side
+// fix in dbmigrationsv2 20260818120000_RVW_stpBulkRuns_2_NpAgentFromTucJob).
 //
 // Route guarding is per-tucJob: a route is "in scope" for an NP when
 // every non-void tucJob assigned to that route belongs to the NP.
@@ -14,7 +20,7 @@
 // Run guarding: negative runId is a synthetic Route Run id (delegates
 // to EnsureRouteInScopeAsync(-runId)); positive runId is a real
 // tblBulkRun (checks every job on the run via the tblBulkJobRun
-// junction).
+// junction, joining through to tucJob for NpAgentId).
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Domain;
 
@@ -45,9 +51,14 @@ public class NpScopeGuard(
         if (scope.IsAdmin) return;
 
         await using var context = await contextFactory.CreateDbContextAsync();
+        // Reach through TblBulkJob.JobId to tucJob.ucjbID for NpAgentId.
+        // See header comment on why tblBulkJob.NpAgentId is not authoritative.
         var rowNpAgentId = await context.TblBulkJobs
             .Where(b => b.BulkJobId == bulkJobId)
-            .Select(b => b.NpAgentId)
+            .Select(b => context.TucJobs
+                .Where(j => j.UcjbId == b.JobId)
+                .Select(j => (int?)j.NpAgentId)
+                .FirstOrDefault())
             .FirstOrDefaultAsync();
 
         if (rowNpAgentId != scope.NpAgentId)
@@ -100,16 +111,16 @@ public class NpScopeGuard(
             return;
         }
 
-        // Positive run id -> real tblBulkRun. Any tblBulkJob on the run
-        // (via tblBulkJobRun junction) with a different NpAgentId blocks.
+        // Positive run id -> real tblBulkRun. Any tucJob reached through
+        // the tblBulkJobRun -> tblBulkJob -> tucJob chain with a different
+        // NpAgentId blocks. tucJob is the source of truth (see header).
         await using var context = await contextFactory.CreateDbContextAsync();
-        var mixed = await context.TblBulkJobRuns
-            .Where(r => r.RunId == runId)
-            .Join(context.TblBulkJobs,
-                r => r.BulkJobId,
-                b => b.BulkJobId,
-                (r, b) => b.NpAgentId)
-            .AnyAsync(np => np != scope.NpAgentId);
+        var mixed = await (
+            from r in context.TblBulkJobRuns.Where(r => r.RunId == runId)
+            join b in context.TblBulkJobs on r.BulkJobId equals b.BulkJobId
+            join j in context.TucJobs on b.JobId equals j.UcjbId
+            select (int?)j.NpAgentId
+        ).AnyAsync(np => np != scope.NpAgentId);
 
         if (mixed)
             throw new NpLabelScopeException($"Run {runId} has jobs outside your NP scope.");

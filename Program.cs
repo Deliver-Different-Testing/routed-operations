@@ -357,6 +357,11 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();
+// Historic Archive Upload (2026-08-19). Writes legacy job-history rows
+// into tucJobArchive with the billing-sentinel recipe. Scoped so the
+// per-request DynamicDespatchDbContext + IHttpContextAccessor claim
+// lookups behave.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.HistoricArchive.HistoricArchiveService>();
 
 // Route Viewer P0 (2026-08-07) - NP-scope services. Scoped lifetime so
 // the per-request HttpContext.Items cache on NpScopeResolver behaves.

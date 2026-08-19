@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 
 interface NavItem {
   to: string;
@@ -7,6 +8,8 @@ interface NavItem {
   /** When set, the item renders as a collapsible group header.
    *  Auto-expanded when any child's route matches the current path. */
   children?: NavItem[];
+  /** When true, only render for internal-staff users. */
+  internalOnly?: boolean;
 }
 
 const items: NavItem[] = [
@@ -30,6 +33,10 @@ const items: NavItem[] = [
   { to: '/recurring-routes', label: 'Recurring Routes' },
   { to: '/polygon-builder', label: 'Polygon Builder' },
   { to: '/auto-assign-log', label: 'Auto-Assign Log' },
+  // Internal-only surface. Loads legacy job history into tucJobArchive.
+  // Server enforces the same Internal-claim gate on the controller; this
+  // just hides the nav from operators who can't use it.
+  { to: '/historic-archive', label: 'Historic Archive Upload', internalOnly: true },
 ];
 
 function isGroupActive(pathname: string, group: NavItem): boolean {
@@ -60,17 +67,25 @@ function ChildLink({ item, groupRoot }: { item: NavItem; groupRoot: string }) {
 
 export function Sidebar() {
   const location = useLocation();
+  const auth = useAuth();
+
+  // Filter out internal-only entries for non-internal users. Server also
+  // enforces this on the corresponding controllers; this is UX only.
+  const visibleItems = useMemo(
+    () => items.filter((item) => !item.internalOnly || auth.isInternal),
+    [auth.isInternal],
+  );
 
   // Auto-expand whichever group owns the currently-active route.
   const initiallyExpanded = useMemo(() => {
     const set = new Set<string>();
-    for (const item of items) {
+    for (const item of visibleItems) {
       if (item.children && isGroupActive(location.pathname, item)) {
         set.add(item.to);
       }
     }
     return set;
-  }, [location.pathname]);
+  }, [location.pathname, visibleItems]);
   const [expanded, setExpanded] = useState<Set<string>>(initiallyExpanded);
 
   const toggle = (key: string) => {
@@ -86,7 +101,7 @@ export function Sidebar() {
     <aside className="w-56 bg-brand-dark text-white flex flex-col">
       <div className="px-4 py-4 text-lg font-semibold tracking-wide">Routed Operations</div>
       <nav className="flex-1 flex flex-col gap-1 px-2 overflow-y-auto">
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           if (!item.children) {
             return (
               <NavLink
