@@ -43,7 +43,8 @@ test:frontend:lint:
   allow_failure: false
   script:
     - npm ci --prefer-offline --no-audit --no-fund
-    - npm run lint
+    # `lint` and `type-check` are both `tsc --noEmit` - running both was
+    # a duplicate tsc pass. Keep type-check as the canonical name.
     - npm run type-check
 
 # Frontend unit tests (vitest + jsdom + MSW). Blocking - a red suite
@@ -95,7 +96,10 @@ test:backend:unit:
     fallback_keys:
       - nuget-master
   script:
-    - dotnet test tests/RoutedOperations.Tests/RoutedOperations.Tests.csproj --configuration Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings --results-directory ./coverage-backend
+    # `-v minimal` cuts msbuild noise; `-nologo` drops the startup banner
+    # per invocation. Coverlet's runsettings now emits cobertura only (was
+    # cobertura+json+lcov+opencover) so the write step is ~4x cheaper.
+    - dotnet test tests/RoutedOperations.Tests/RoutedOperations.Tests.csproj --configuration Release --nologo -v minimal --collect:"XPlat Code Coverage" --settings coverlet.runsettings --results-directory ./coverage-backend
     - 'find ./coverage-backend -name "coverage.cobertura.xml" -exec cp {} ./coverage-backend/cobertura.xml \;'
   coverage: '/Total\s*\|\s*(\d+(?:\.\d+)?)\s*%/'
   artifacts:

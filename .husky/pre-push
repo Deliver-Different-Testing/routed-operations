@@ -8,10 +8,10 @@
 # Bypass with `git push --no-verify` is technically possible but forbidden
 # by the global CLAUDE.md rule.
 
-echo "Local test gate: lint..."
-npm run lint || { echo "Lint failed. Push aborted."; exit 1; }
-
 echo "Local test gate: type-check..."
+# `npm run lint` was an alias to the same `tsc --noEmit`; running both
+# doubled local pre-push time for no signal. Type-check is the canonical
+# name.
 npm run type-check || { echo "Type check failed. Push aborted."; exit 1; }
 
 echo "Local test gate: frontend unit tests..."
