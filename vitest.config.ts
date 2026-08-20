@@ -29,7 +29,15 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage',
-      reporter: ['text', 'text-summary', 'html', 'cobertura', 'json-summary'],
+      // CI-lean reporters: `text-summary` feeds the GitLab MR coverage
+      // regex (`^Lines : XX%`), `cobertura` is the uploaded artifact,
+      // `json-summary` is small and consumed by any future dashboard.
+      // Dropped `text` (verbose per-file dump - noise on 1942 tests) and
+      // `html` (writes ~6 MB of per-file pages that CI never renders).
+      // Devs can regenerate the html locally with
+      //   `vitest run --coverage --coverage.reporter=html`
+      // when they want to inspect uncovered lines in a browser.
+      reporter: ['text-summary', 'cobertura', 'json-summary'],
       include: ['wwwroot/app/react/**/*.{ts,tsx}'],
       exclude: [
         'wwwroot/app/react/**/*.{test,spec}.{ts,tsx}',
