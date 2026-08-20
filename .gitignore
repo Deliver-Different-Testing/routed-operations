@@ -27,3 +27,4 @@ coverage-backend/
 junit-frontend.xml
 *.trx
 TestResults/
+.vitest-reports/

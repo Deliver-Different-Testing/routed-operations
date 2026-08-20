@@ -49,18 +49,27 @@ export default defineConfig({
       // measurement so accidental regressions fail CI. Kevin's Option A target
       // is 100% raw; the floor rises as coverage backfills. Reviewer bumps
       // these numbers when a follow-up MR pushes coverage higher.
-      thresholds: {
-        // Ratcheted 2026-08-14 after the ToastContext CI fix settled the
-        // run at statements/lines 88.35% / branches 81.14% / functions
-        // 75.14%. Floors sit ~2pt below the measured baseline so
-        // accidental regressions fail CI but small dips do not. Kevin's
-        // Option A target is 100% raw; bump floor upward every MR that
-        // meaningfully raises coverage.
-        lines: 86,
-        statements: 86,
-        branches: 79,
-        functions: 73,
-      },
+      //
+      // Thresholds are skipped when VITEST_SKIP_THRESHOLDS is set. CI shards
+      // (test:frontend:unit parallel jobs) set it because each shard only
+      // exercises ~half the source, so the per-shard %coverage always sits
+      // below the floor. The follow-on merge job runs without the env var
+      // set so thresholds evaluate against the merged coverage from all
+      // shards - which is the correct picture.
+      thresholds: process.env.VITEST_SKIP_THRESHOLDS
+        ? undefined
+        : {
+            // Ratcheted 2026-08-14 after the ToastContext CI fix settled the
+            // run at statements/lines 88.35% / branches 81.14% / functions
+            // 75.14%. Floors sit ~2pt below the measured baseline so
+            // accidental regressions fail CI but small dips do not. Kevin's
+            // Option A target is 100% raw; bump floor upward every MR that
+            // meaningfully raises coverage.
+            lines: 86,
+            statements: 86,
+            branches: 79,
+            functions: 73,
+          },
     },
   },
 });

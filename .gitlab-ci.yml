@@ -47,10 +47,16 @@ test:frontend:lint:
     # a duplicate tsc pass. Keep type-check as the canonical name.
     - npm run type-check
 
-# Frontend unit tests (vitest + jsdom + MSW). Blocking - a red suite
-# fails the pipeline and blocks the merge. Coverage regex reports the
-# "Lines" % to GitLab's MR widget; cobertura + junit artifacts render
-# as inline reports.
+# Frontend unit tests (vitest + jsdom + MSW). Sharded across N parallel
+# jobs to cut wall clock; a follow-on `test:frontend:unit:merge` job
+# combines the blob reports + coverage into the canonical cobertura +
+# junit that GitLab renders on the MR.
+#
+# Each shard runs ~half the 1942-test suite with coverage collection
+# but skips the coverage-threshold gate (VITEST_SKIP_THRESHOLDS=1) since
+# per-shard coverage always sits below the floor. The merge job runs
+# without the env var so thresholds evaluate against merged coverage
+# from every shard - which is the correct picture.
 test:frontend:unit:
   stage: templating
   image: node:22-alpine
@@ -59,9 +65,42 @@ test:frontend:unit:
     - .npm-cache
   interruptible: true
   allow_failure: false
+  parallel: 2
+  variables:
+    VITEST_SKIP_THRESHOLDS: "1"
   script:
     - npm ci --prefer-offline --no-audit --no-fund
-    - npm run test:ci
+    - mkdir -p .vitest-reports
+    - npx vitest run --coverage --reporter=blob --outputFile=".vitest-reports/blob-${CI_NODE_INDEX}.json" --shard=${CI_NODE_INDEX}/${CI_NODE_TOTAL}
+  artifacts:
+    when: always
+    expire_in: 1 hour
+    paths:
+      - .vitest-reports/
+      - coverage/
+
+# Merges the sharded blob reports into the final coverage + junit
+# artefacts. Runs after every shard finishes; a red shard still fails
+# the pipeline, but the merge only needs to run to surface the coverage
+# gate + MR widget when shards are green.
+test:frontend:unit:merge:
+  stage: templating
+  image: node:22-alpine
+  extends:
+    - .test-rules
+    - .npm-cache
+  interruptible: true
+  allow_failure: false
+  needs:
+    - job: test:frontend:unit
+      artifacts: true
+  script:
+    - npm ci --prefer-offline --no-audit --no-fund
+    # `--coverage` is required on the merge step even though shards already
+    # captured raw coverage - without it, vitest skips the reporter pass +
+    # threshold evaluation on the merged data, so no cobertura + no
+    # text-summary output for the GitLab MR widget regex to match.
+    - npx vitest --merge-reports=./.vitest-reports --coverage --reporter=default --reporter=junit --outputFile=junit-frontend.xml
   coverage: '/^Lines\s*:\s*([\d.]+)%/'
   artifacts:
     when: always
