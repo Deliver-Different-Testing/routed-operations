@@ -45,22 +45,20 @@ export default defineConfig({
         'wwwroot/app/react/test/**',
         'wwwroot/app/react/index.tsx',
       ],
-      // Phase 4 baseline (measured 2026-08-13): set the floor at the current
-      // measurement so accidental regressions fail CI. Kevin's Option A target
-      // is 100% raw; the floor rises as coverage backfills. Reviewer bumps
-      // these numbers when a follow-up MR pushes coverage higher.
-      thresholds: {
-        // Ratcheted 2026-08-14 after the ToastContext CI fix settled the
-        // run at statements/lines 88.35% / branches 81.14% / functions
-        // 75.14%. Floors sit ~2pt below the measured baseline so
-        // accidental regressions fail CI but small dips do not. Kevin's
-        // Option A target is 100% raw; bump floor upward every MR that
-        // meaningfully raises coverage.
-        lines: 86,
-        statements: 86,
-        branches: 79,
-        functions: 73,
-      },
+      // No coverage floor. Kevin's 2026-08-21 call: the 100% coverage
+      // goal produced 1942 tests where 30-40% are integration-shaped
+      // MSW+full-render+multi-step tests that only reliably run on a
+      // developer's local machine (CI slowness turns them into
+      // false-positive-fails, see the 4-iteration debug cycle on
+      // fix/routeviewer-runs-kms-cast). Removing the threshold means
+      // coverage still gets measured + reported to the GitLab MR
+      // widget, but a small dip no longer blocks a merge. Devs write
+      // tests when they add value, not to feed the number.
+      //
+      // If a team member wants to re-add a floor as a soft guide (not
+      // a hard gate), re-introduce here with realistic numbers and
+      // couple with a separate `test:frontend:unit:coverage` job that
+      // only fires on merge-to-master (see .gitlab-ci.yml).
     },
   },
 });

@@ -43,10 +43,15 @@ Reference implementation for the stack + conventions: `C:\Gitlab\Configurator_Ro
 4. Every new service must inherit `BaseService` (lazy `DynamicDespatchDbContext`).
 5. No em-dashes anywhere. Plain ASCII hyphens only.
 6. Do NOT touch `changes.log` in this repo (per user's global preference).
-7. **Testing.** Every new controller / service / component / hook / pure utility / DTO ships with at least one test.
+7. **Testing.** Write tests that pay for themselves. Kevin's 2026-08-21 call revised the earlier "every controller / service / component / hook / pure utility / DTO ships with a test" policy after 1942 vitest tests + 1203 xUnit tests started producing more CI drag than regression coverage (see the 4-iteration debug cycle on the RouteRosterTab remove-override test on `fix/routeviewer-runs-kms-cast`).
+   - **Prefer** Playwright E2E in `tests/e2e/` for user-facing flows (opens page, does clicks, verifies outcome). One E2E replaces 5-8 fragile MSW+full-render vitest tests.
+   - **Prefer** vitest for **pure-logic modules** (utils, mappers, formatters, selectors, hooks that do not fetch). These are fast, deterministic, and catch real bugs. E.g. `runFinancials.test.ts`, `mapDefaults.test.ts`, `timezone.test.ts`.
+   - **Prefer** vitest for **small render tests on individual components** (buttons, chips, small pieces). Also fast, catches prop mismatches.
+   - **Avoid** vitest for **integration-shaped tests**: full-page render + MSW mocks + multi-step user interaction + fetch + re-render + DOM assertion. These are the ones that fail on CI while passing locally because the slow shared runner cannot match the test's timing assumptions. Move them to Playwright.
+   - **Avoid** controller / service / DTO tests that just verify the framework wired something up. TypeScript + compiler already enforces the shape; a "controller returns 200" test with no logic exercises no product code.
    - **Backend** tests live at `tests/RoutedOperations.Tests/<mirror>` (xUnit.v3 + NSubstitute + EF InMemory or SQLite). Run: `cd tests/RoutedOperations.Tests && dotnet run --configuration Release`.
    - **Frontend** tests live next to the code (`Foo.test.tsx` beside `Foo.tsx`) using Vitest + @testing-library/react + jsdom + MSW. Run: `npm run test`.
    - **Local pre-push gate** (Husky, auto-installed on `npm install`) runs lint + type-check + `npm run test` + backend tests. Bypass with `--no-verify` is forbidden.
-   - **CI** blocks merges on any red test (`test:frontend:lint`, `test:frontend:unit`, `test:backend:unit`).
-   - **Coverage target**: 100% raw (Kevin's 2026-08-13 call). Baseline after Wave 5 (1,676 frontend + 1,009 backend = 2,685 tests): frontend statements 86.8% / lines 86.8% / branches 80.8% / functions 74.6%; backend cobertura reported per MR. Vitest thresholds set at baseline-margin (lines/statements 82 / branches 76 / functions 70) so accidental regressions fail the pipeline but small dips do not. Reviewers bump the floor upward in every MR that meaningfully raises coverage until 100% is reached.
+   - **CI** blocks merges on any red test (`test:frontend:lint`, `test:frontend:unit`, `test:backend:unit`). Coverage no longer blocks merges - `test:frontend:unit:coverage` runs on merge-to-master + on-demand on MRs.
+   - **Coverage**: no hard threshold. Number is still measured + reported to the GitLab MR widget; write tests for value, not for the number. Aim for the pattern DespatchWeb settled on (fast focused unit tests + E2E for flows). See its `.gitlab-ci.yml` for the reference config.
    - See `tests/RoutedOperations.Tests/README.md` for the full setup walkthrough.
