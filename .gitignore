@@ -27,3 +27,6 @@ coverage-backend/
 junit-frontend.xml
 *.trx
 TestResults/
+test-results/
+playwright-report/
+playwright/.cache/
