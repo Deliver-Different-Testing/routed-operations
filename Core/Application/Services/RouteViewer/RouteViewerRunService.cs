@@ -136,7 +136,12 @@ public class RouteViewerRunService(
         public string? CourierName { get; set; }
         public string? CourierCode { get; set; }
         public string? CourierPercentageFormatted { get; set; }
-        public int? Kms { get; set; }
+        // tblBulkRun.Kms is float in the DB; projecting as int? throws
+        // InvalidCastException in EF materialisation the moment any run
+        // in the returned set has a non-null Kms (SqlDataReader.GetInt32
+        // on a Double). Keep as double? so the whole endpoint does not
+        // 500 on the first run with a real distance.
+        public double? Kms { get; set; }
         public int? Mins { get; set; }
         public int PreAssigned { get; set; }
         public string? CourierOnlineStatus { get; set; }
@@ -190,7 +195,8 @@ public class RouteViewerRunService(
         public int? CourierID { get; set; }
         public string? CourierName { get; set; }
         public string? CourierCode { get; set; }
-        public int? Kms { get; set; }
+        // See RawMissingRunRow.Kms - same float/int cast trap.
+        public double? Kms { get; set; }
         public int PreAssigned { get; set; }
         public string? CourierOnlineStatus { get; set; }
         public string? CourierOfflineMins { get; set; }
