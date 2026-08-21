@@ -10,8 +10,9 @@ This document is the split-out Kevin brief from:
 
 But only for the slice related to:
 - schedules
-- zone groups
-- zip/zones
+- postcode groups
+- NZ/non-US postcode territory maintenance
+- US zip/zone territory maintenance
 - the schedule-linked boundary
 
 It does **not** carry over the broader client modal / pricing / rate-code migration work.
@@ -21,23 +22,25 @@ It does **not** carry over the broader client modal / pricing / rate-code migrat
 ## Executive call
 
 ### Does this include moving zones and zone groups?
-**Yes — at least the zone/zone-group surface that schedules depend on.**
+**Yes — but with an important distinction Kevin must preserve during the transition.**
 
 A clean schedules-only move would be misleading.
 
 In legacy ClientManager:
 - schedules reference **postcode groups** directly
 - schedules also carry **per-schedule active zone rows**
-- zone groups sit above the zip/zone structure used by the territory UI
+- **NZ / non-US territory** uses `BulkZonePostcode`
+- **US territory** uses `ZoneName` + `ZoneZip`
+- zone groups sit above the US zip/zone structure
 
 So Kevin's scope should be framed as:
 
-> **Schedules + zone groups + zip/zones dependency surface**
+> **Schedules + postcode-group dependency surface + territory maintenance split by NZ/non-US vs US**
 
-not just "schedules" in isolation.
+not just "schedules" in isolation, and not as if all territory maintenance is one US-style zip/zone model.
 
 That does **not** mean Kevin has to bring all historical pricing/rating maintenance with it.
-It means the Routed Operations implementation needs the territory primitives that schedules actually rely on.
+It means Routed Operations needs the territory primitives that schedules actually rely on, while preserving the distinction between the two underlying models.
 
 ---
 
@@ -66,7 +69,9 @@ Use this framing going forward:
 
 - **Routed Operations** = umbrella product / repo landing place
 - **Schedules** = recurring/scheduled operations surface
-- **Territory** = zip zones + zone groups + depot/location support surface
+- **Postcode Groups** = shared schedule dependency surface
+- **Territory (NZ / non-US)** = `BulkZonePostcode` maintenance
+- **Territory (US)** = `ZoneGroup` / `ZoneName` / `ZoneZip` maintenance
 - **Schedule-linked** = handoff/integration boundary between territory/rating context and schedules
 
 This should live in:
@@ -144,25 +149,30 @@ So the schedule definition itself includes zone activation logic.
 - `TblBulkRunSchedule`
 - `ZoneZip`
 
-So a postcode/zone group is part of the operational data model, not just UI grouping.
+So postcode groups are part of the operational model, not just UI grouping.
 
-### 4) zone groups sit above zone names and zips
-`ZoneName` links to:
-- `ZoneGroupId`
-- `LocationId`
+### 4) NZ / non-US and US use different territory tables
+**NZ / non-US path**
+- `BulkZonePostcode`
+- fields include `PostCode`, `FromSiteId`, `DepotId`, `PostcodeGroupId`
+- this is the non-US postcode-based territory model used by pricing/territory logic
 
-`ZoneZip` links to:
-- `ZoneNameId`
-- `ZoneZipGroupId`
+**US path**
+- `ZoneGroup`
+- `ZoneName`
+- `ZoneZip`
+- `ZoneZip.ZoneZipGroupId` still links a zip row into a postcode group
 
-So the hierarchy is effectively:
-- zone group
-- zone name
-- zip/zone row
-- postcode/zone grouping relationships
-- schedules referencing postcode groups and active schedule zones
+### 5) PricingService already preserves this distinction
+`PricingService` explicitly splits:
+- **US path** -> `ZoneName` with `ZoneZip`
+- **Non-US path** -> `BulkZonePostcode`
 
-That is why Kevin's move needs the territory dependency surface, not just the schedule screen.
+That is the distinction Kevin must preserve.
+
+So Kevin's move needs the schedule dependency surface plus a territory implementation that understands:
+- schedules depend on postcode groups in both cases
+- NZ/non-US territory rows are **not** the same thing as US zip/zone rows
 
 ---
 
@@ -195,7 +205,9 @@ From `schedulesService.js` the important reads/writes are:
 - plus postcode/zone CRUD endpoints in `ZonesController`
 
 Kevin does **not** need to preserve these route shapes exactly if Routed Operations uses cleaner endpoints.
-But he **does** need parity for the same operational capability.
+But he **does** need parity for the same operational capability, and that parity must preserve:
+- **NZ/non-US:** `BulkZonePostcode`
+- **US:** `ZoneName` / `ZoneZip`
 
 ---
 
@@ -234,12 +246,18 @@ Kevin should **not** start from blank UI.
 He already has reusable React UI in Configurator for:
 1. schedules
 2. schedule groups
-3. zip zones
+3. territory maintenance screens
 4. zone groups
 5. depots / locations
 6. schedule editing / zone selection patterns
 
 So the job is to **migrate that UI into Routed Operations and wire it properly**, not recreate it.
+
+Important: Kevin should treat that UI as a shared shell that must be wired to:
+- **NZ/non-US postcode data** via `BulkZonePostcode`
+- **US zip/zone data** via `ZoneName` / `ZoneZip`
+
+He should not hard-wire the migrated UI to a US-only zip/zone assumption.
 
 ---
 
@@ -270,10 +288,10 @@ That makes the right split:
    - linehaul-related schedule support where already part of the schedule model
 
 2. **Territory surface required by schedules**
-   - zip zones
-   - zone groups
-   - depots / drop-off locations / location support where needed for schedule maintenance
    - postcode-group selection support used by schedules
+   - NZ/non-US postcode maintenance via `BulkZonePostcode`
+   - US zip/zone maintenance via `ZoneGroup` / `ZoneName` / `ZoneZip`
+   - depots / drop-off locations / location support where needed for schedule maintenance
 
 3. **Schedule-linked boundary**
    - keep as explicit handoff/integration boundary
@@ -282,6 +300,9 @@ That makes the right split:
 4. **Adapter-based real data wiring**
    - map legacy DB/API shape into the React schedule + territory shapes
    - keep the mapping layer explicit
+   - preserve separate adapters / mapping rules for:
+     - NZ/non-US `BulkZonePostcode`
+     - US `ZoneName` / `ZoneZip`
 
 ## Exclude for this Kevin brief
 - client/customer modal migration
@@ -296,7 +317,7 @@ That makes the right split:
 1. **Do not treat this as Configurator work anymore.**
 2. **Do not rebuild the schedules UI from scratch.** Reuse the existing mounted prototype and territory work.
 3. **Do not pretend schedules can move without territory dependencies.**
-4. **Do not drag the whole pricing migration into Routed Operations.** Keep the scope to schedules + zone groups + zip/zones dependency surface.
+4. **Do not drag the whole pricing migration into Routed Operations.** Keep the scope to schedules + postcode groups + the required NZ/non-US and US territory dependency surface.
 5. **Do not disturb legacy AngularJS schedules first.** Build the new surface in parallel, then prove parity.
 6. **Do not wire prototype components directly to raw legacy shapes.** Add adapters.
 7. **Do not collapse Schedule-linked into a second embedded maintenance UI.** Keep it as a clean boundary.
@@ -325,14 +346,16 @@ That makes the right split:
 1. schedules list/detail reads
 2. regions / speeds / couriers / linehaul runs
 3. postcode group reads
-4. zip/zone reads
-5. depot/location reads
+4. NZ/non-US territory reads via `BulkZonePostcode`
+5. US territory reads via `ZoneName` / `ZoneZip`
+6. depot/location reads
 
 ### Phase 4 — wire writes
 1. create/update/delete schedules
 2. auto-book toggle update
-3. zone-group maintenance needed by the schedule flow
-4. zip/zone maintenance needed by the territory flow
+3. postcode-group maintenance needed by the schedule flow
+4. NZ/non-US postcode maintenance needed by the territory flow
+5. US zip/zone maintenance needed by the territory flow
 
 ### Phase 5 — prove operational fit
 1. confirm schedule records round-trip correctly from legacy data
@@ -348,8 +371,8 @@ Kevin can modernise the API shape, but the service boundary needs to cover:
 - schedules
 - schedule groups if persisted separately / derived logically
 - postcode groups
-- zip zones
-- zone groups
+- NZ/non-US postcode territory rows
+- US zone/zip territory rows
 - depots / locations
 - support lookups: regions, speeds, couriers, drop-off locations, linehaul runs
 
@@ -357,6 +380,7 @@ At minimum, preserve parity for these legacy concepts:
 - `TblBulkRunSchedule`
 - `BulkZoneSchedule`
 - `BulkZonePostcodeGroup`
+- `BulkZonePostcode`
 - `ZoneZip`
 - `ZoneName`
 - `ZoneGroup`
@@ -373,9 +397,11 @@ At minimum, preserve parity for these legacy concepts:
 - `gitlab-source/clientmanager/Core/Domain/Despatch/TblBulkRunSchedule.cs`
 - `gitlab-source/clientmanager/Core/Domain/Despatch/BulkZoneSchedule.cs`
 - `gitlab-source/clientmanager/Core/Domain/Despatch/BulkZonePostcodeGroup.cs`
+- `gitlab-source/clientmanager/Core/Domain/Despatch/BulkZonePostcode.cs`
 - `gitlab-source/clientmanager/Core/Domain/Despatch/ZoneZip.cs`
 - `gitlab-source/clientmanager/Core/Domain/Despatch/ZoneName.cs`
 - `gitlab-source/clientmanager/Core/Domain/Despatch/ZoneGroup.cs`
+- `gitlab-source/clientmanager/Core/Application/Services/PricingService.cs`
 
 ### React reference to reuse
 - `Kerran-Configurator/wwwroot/app/react/modules/schedules/SchedulesPage.tsx`
@@ -397,7 +423,7 @@ At minimum, preserve parity for these legacy concepts:
 ## Bottom line for Steve
 The honest split is:
 
-> migrate **schedules + zone groups + zip/zones dependency surface** into **Routed Operations**, and have Kevin **reuse the existing Configurator UI code** rather than rebuilding it
+> migrate **schedules + postcode-group dependency surface** into **Routed Operations**, have Kevin **reuse the existing Configurator UI code**, and preserve the territory split between **NZ/non-US `BulkZonePostcode`** and **US `ZoneName` / `ZoneZip`**
 
 not:
 
@@ -405,8 +431,16 @@ not:
 
 and not:
 
+> treat all territory maintenance as one US-style zip/zone model
+
+and not:
+
 > ask Kevin to redesign or recreate the UI from scratch
 
 That narrower wording would hide a real dependency and create churn later.
 
-So yes — this work **does include zones and zone groups**, and the implementation direction is to **lift the existing Configurator schedules/territory UI into Routed Operations** and wire it to the real legacy-backed data model.
+So yes — this work still includes the territory pieces schedules rely on, but Kevin needs to maintain the distinction between:
+- **NZ/non-US postcode territory maintenance**
+- **US zip/zone territory maintenance**
+
+while lifting the existing Configurator schedules/territory UI into Routed Operations and wiring it to the real legacy-backed data model.
