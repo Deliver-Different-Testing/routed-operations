@@ -73,7 +73,12 @@ This should live in:
 - repo: `routed-operations`
 - docs: `routed-operations/docs/`
 
-The old `scheduled-rate-builder` repo remains a **reference prototype source**, not the final ownership location for this slice.
+The old `scheduled-rate-builder` repo remains useful background, but the practical React source Kevin should lift from is the **Configurator UI code** that already carries the schedules/territory work.
+
+So the instruction is:
+- **migrate this slice into Routed Operations**
+- **reuse the existing Configurator UI code**
+- **do not recreate the UI from scratch**
 
 ---
 
@@ -196,44 +201,45 @@ But he **does** need parity for the same operational capability.
 
 ## React/UI work already available and should be reused
 
-## In `scheduled-rate-builder`
+## Primary source: `Kerran-Configurator`
+These are the files Kevin should copy/lift from first.
 
-### route mounts
-- `wwwroot/app/react/App.tsx`
+### territory UI already built
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/TerritoryPage.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/ZipZonesTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/ZoneGroupsTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/DepotsTab.tsx`
+
+### schedules UI already built
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/SchedulesPage.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleTableView.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleGroupsTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleEditForm.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/OperatingScheduleSection.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ZoneSelector.tsx`
+
+## Secondary/background source: `scheduled-rate-builder`
+Use this as background/reference only where helpful.
+
+### route mounts / prototype lineage
+- `scheduled-rate-builder/wwwroot/app/react/App.tsx`
   - `/schedules` -> `SchedulesPrototypePage`
   - `/territory` -> `TerritoryPage`
-
-### schedules prototype wrapper
-- `wwwroot/app/react/prototypes/admin-schedules-module/SchedulesPrototypePage.tsx`
-
-### vendored schedules prototype
-- `wwwroot/app/react/prototypes/admin-schedules-module/src/modules/schedules/SchedulesPage.tsx`
-- `wwwroot/app/react/prototypes/admin-schedules-module/src/modules/schedules/components/*`
-- `wwwroot/app/react/prototypes/admin-schedules-module/src/features/import-export/*`
-
-### local territory UI already built
-- `wwwroot/app/react/modules/territory/TerritoryPage.tsx`
-- `wwwroot/app/react/modules/territory/components/ZipZonesTab.tsx`
-- `wwwroot/app/react/modules/territory/components/ZoneGroupsTab.tsx`
-- `wwwroot/app/react/modules/territory/components/DepotsTab.tsx`
-- `wwwroot/app/react/modules/territory/types.ts`
-- `wwwroot/app/react/modules/territory/data/sampleData.ts`
-
-### local schedules shell also exists
-- `wwwroot/app/react/modules/schedules/SchedulesPage.tsx`
-- `wwwroot/app/react/modules/schedules/components/OperatingScheduleSection.tsx`
+- `scheduled-rate-builder/wwwroot/app/react/prototypes/admin-schedules-module/SchedulesPrototypePage.tsx`
+- `scheduled-rate-builder/wwwroot/app/react/prototypes/admin-schedules-module/src/modules/schedules/SchedulesPage.tsx`
 
 ## What this means
 Kevin should **not** start from blank UI.
 
-He already has:
-1. a real schedules prototype mount
-2. a real territory page with tabs for:
-   - All Zip Zones
-   - Zone Groups
-   - Depots/Locations
-3. schedule/group interaction patterns
-4. connection-tag / cross-navigation ideas already expressed in React
+He already has reusable React UI in Configurator for:
+1. schedules
+2. schedule groups
+3. zip zones
+4. zone groups
+5. depots / locations
+6. schedule editing / zone selection patterns
+
+So the job is to **migrate that UI into Routed Operations and wire it properly**, not recreate it.
 
 ---
 
@@ -247,8 +253,8 @@ These are not the same feature as the admin schedules/territory maintenance UI, 
 - Polygon / coverage editing workflow
 
 That makes the right split:
-- **admin setup / recurring template / territory maintenance** from `scheduled-rate-builder`
-- landing under **Routed Operations**
+- **admin setup / recurring template / territory maintenance** lifted from the existing **Configurator UI code**
+- migrated into **Routed Operations**
 - while staying conceptually aligned with the existing Scheduled Routes and Polygon Builder work
 
 ---
@@ -304,15 +310,16 @@ That makes the right split:
 2. keep `scheduled-rate-builder` as reference only
 3. implement in `routed-operations`
 
-### Phase 2 — port the React surface first
-1. bring the schedules prototype surface into the Routed Operations frontend
-2. bring the territory surface into the Routed Operations frontend
+### Phase 2 — port the existing React surface first
+1. copy/lift the schedules UI from `Kerran-Configurator` into the Routed Operations frontend
+2. copy/lift the territory UI from `Kerran-Configurator` into the Routed Operations frontend
 3. preserve the existing tab split:
    - Schedules
    - Schedule Groups
    - All Zip Zones
    - Zone Groups
    - Depots/Locations
+4. do not spend time redesigning or recreating the UI unless wiring constraints force a small adjustment
 
 ### Phase 3 — wire read models
 1. schedules list/detail reads
@@ -371,13 +378,15 @@ At minimum, preserve parity for these legacy concepts:
 - `gitlab-source/clientmanager/Core/Domain/Despatch/ZoneGroup.cs`
 
 ### React reference to reuse
-- `scheduled-rate-builder/wwwroot/app/react/App.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/prototypes/admin-schedules-module/SchedulesPrototypePage.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/prototypes/admin-schedules-module/src/modules/schedules/SchedulesPage.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/modules/territory/TerritoryPage.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/modules/territory/components/ZipZonesTab.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/modules/territory/components/ZoneGroupsTab.tsx`
-- `scheduled-rate-builder/wwwroot/app/react/modules/territory/components/DepotsTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/SchedulesPage.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleTableView.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleGroupsTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ScheduleEditForm.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/schedules/components/ZoneSelector.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/TerritoryPage.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/ZipZonesTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/ZoneGroupsTab.tsx`
+- `Kerran-Configurator/wwwroot/app/react/modules/territory/components/DepotsTab.tsx`
 
 ### Routed Operations context
 - `routed-operations/v2/frontend/src/pages/ScheduledRoutes.tsx`
@@ -388,12 +397,16 @@ At minimum, preserve parity for these legacy concepts:
 ## Bottom line for Steve
 The honest split is:
 
-> move **schedules + zone groups + zip/zones dependency surface** to Kevin under **Routed Operations**
+> migrate **schedules + zone groups + zip/zones dependency surface** into **Routed Operations**, and have Kevin **reuse the existing Configurator UI code** rather than rebuilding it
 
 not:
 
 > move only the schedule page and leave its territory model behind
 
-That narrower wording would hide a real dependency and will create churn later.
+and not:
 
-So yes — this work **does include zones and zone groups**, but only to the extent required to make the schedules/territory maintenance surface real inside Routed Operations.
+> ask Kevin to redesign or recreate the UI from scratch
+
+That narrower wording would hide a real dependency and create churn later.
+
+So yes — this work **does include zones and zone groups**, and the implementation direction is to **lift the existing Configurator schedules/territory UI into Routed Operations** and wire it to the real legacy-backed data model.
