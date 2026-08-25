@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RoutedOperations.Core.Domain;
 using Serilog;
+using RoutedOperations.Core.Application.Utilities;
 
 namespace RoutedOperations.Infrastructure;
 
@@ -57,8 +58,16 @@ public class DynamicDespatchDbContextFactory(
             }
         }
 
-        var cacheKey = $"{tenantId}-ClientManager-Connection";
+        var cacheKey = TenantConnectionCache.Key(tenantId);
         var connectionString = connectionStringManager.GetConnectionStringAsync(cacheKey).GetAwaiter().GetResult();
+
+        if (string.IsNullOrEmpty(connectionString))
+        {
+            // Transitional: sessions seeded under the old shared key before this app
+            // owned its own. ApplyOwnCredentials below makes reading it safe.
+            connectionString = connectionStringManager
+                .GetConnectionStringAsync(TenantConnectionCache.LegacyKey(tenantId)).GetAwaiter().GetResult();
+        }
 
         if (string.IsNullOrEmpty(connectionString))
         {
@@ -68,6 +77,9 @@ public class DynamicDespatchDbContextFactory(
             throw new InvalidOperationException(
                 $"Connection string is not set. TenantId: {tenantId ?? "null"}, IsAuthenticated: {isAuthenticated}");
         }
+
+        // Always connect as ourselves, whichever app last wrote the entry we read.
+        connectionString = TenantConnectionCache.ApplyOwnCredentials(connectionString);
 
         var optionsBuilder = new DbContextOptionsBuilder<DespatchContext>(_options);
         optionsBuilder.UseSqlServer(connectionString);

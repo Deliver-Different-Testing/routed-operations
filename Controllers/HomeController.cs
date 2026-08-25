@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Infrastructure;
 using Serilog;
+using RoutedOperations.Core.Application.Utilities;
 
 namespace RoutedOperations.Controllers;
 
@@ -92,7 +93,7 @@ public class HomeController(
             throw new InvalidOperationException("Env var 'SQLCredentials' is not set.");
 
         await connectionStringManager.SetConnectionStringAsync(
-            $"{tenantId}-ClientManager-Connection",
+            TenantConnectionCache.Key(tenantId),
             connectionString + credentials);
 
         // Hub's shared cookie only carries Identity.Name (which is the login

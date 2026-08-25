@@ -105,7 +105,7 @@ public class RunCommitServiceTests
         try { await sut.DispatchAsync(new List<InsertOrUpdateRunRequest>()); }
         catch (InvalidOperationException) { /* expected */ }
 
-        await mgr.Received(1).GetConnectionStringAsync("77-ClientManager-Connection");
+        await mgr.Received(1).GetConnectionStringAsync("77-RoutedOperations-Connection");
     }
 
     [Fact]
@@ -127,6 +127,6 @@ public class RunCommitServiceTests
         try { await sut.DispatchJobsAsync(new DispatchJobsRequest()); }
         catch (InvalidOperationException) { /* expected */ }
 
-        await mgr.Received(1).GetConnectionStringAsync("88-ClientManager-Connection");
+        await mgr.Received(1).GetConnectionStringAsync("88-RoutedOperations-Connection");
     }
 }
