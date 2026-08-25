@@ -495,17 +495,26 @@ export default function PolygonBuilder() {
   }, []);
 
   // Load ALL zip centroids on mount (one call, cached in ref).
+  // Mount-guard prevents "window is not defined" unhandled rejections
+  // in vitest: the fetch can resolve AFTER the test tears down jsdom,
+  // at which point toast.show -> setState -> React scheduler tries to
+  // read `window` and blows up. Bailing out early on unmount also
+  // avoids a React "set state on unmounted component" warning under
+  // StrictMode.
   useEffect(() => {
+    let mounted = true;
     void (async () => {
       try {
         const res = await recurringRouteService.getAllZipcodeCentroids();
+        if (!mounted) return;
         zipCentroidsRef.current = res.response ?? [];
         setZipCentroidsReady(true);
-        // Marker population is triggered from the map-init effect's
-        // one-shot 'idle' listener (guarantees projection is ready) OR
-        // from the [ready, zipCentroidsReady] effect below.
-      } catch (e) { toast.show((e as Error).message, 'error'); }
+      } catch (e) {
+        if (!mounted) return;
+        toast.show((e as Error).message, 'error');
+      }
     })();
+    return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
