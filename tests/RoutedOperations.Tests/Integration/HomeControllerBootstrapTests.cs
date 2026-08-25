@@ -235,8 +235,8 @@ public class HomeControllerBootstrapTests
         Assert.Equal("https://despatch.test", boot.DespatchWebBaseUrl);
 
         // Connection string cached with tenant-prefixed key.
-        Assert.True(fake.Cache.ContainsKey("42-ClientManager-Connection"));
-        Assert.Equal(ConnClaim + SqlCreds, fake.Cache["42-ClientManager-Connection"]);
+        Assert.True(fake.Cache.ContainsKey("42-RoutedOperations-Connection"));
+        Assert.Equal(ConnClaim + SqlCreds, fake.Cache["42-RoutedOperations-Connection"]);
     }
 
     // ─────────────────────────────────────────────────────────────────────

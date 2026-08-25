@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
 using RoutedOperations.Infrastructure;
 using Serilog;
+using RoutedOperations.Core.Application.Utilities;
 
 namespace RoutedOperations.Core.Application.Services.Job;
 
@@ -43,11 +44,15 @@ public class HdJobSyncService(
             throw new InvalidOperationException(
                 "HdJobSyncService called without CurrentTenantID - request is not authenticated to a tenant.");
 
-        var cacheKey = $"{tenantId}-ClientManager-Connection";
+        var cacheKey = TenantConnectionCache.Key(tenantId);
         var connectionString = await connectionStringManager.GetConnectionStringAsync(cacheKey);
+        if (string.IsNullOrEmpty(connectionString))
+            // Transitional: sessions seeded under the old shared key.
+            connectionString = await connectionStringManager
+                .GetConnectionStringAsync(TenantConnectionCache.LegacyKey(tenantId));
         if (string.IsNullOrEmpty(connectionString))
             throw new InvalidOperationException(
                 $"HdJobSyncService could not resolve connection string for tenant {tenantId}.");
-        return connectionString;
+        return TenantConnectionCache.ApplyOwnCredentials(connectionString);
     }
 }

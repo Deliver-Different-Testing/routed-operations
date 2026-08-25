@@ -75,7 +75,7 @@ public class HdJobSyncServiceTests
         try { await sut.SyncAsync(new DateTime(2026, 8, 13)); }
         catch (InvalidOperationException) { /* expected */ }
 
-        await mgr.Received(1).GetConnectionStringAsync("42-ClientManager-Connection");
+        await mgr.Received(1).GetConnectionStringAsync("42-RoutedOperations-Connection");
     }
 
     [Fact]
