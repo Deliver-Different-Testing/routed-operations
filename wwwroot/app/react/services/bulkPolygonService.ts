@@ -42,6 +42,10 @@ export interface BulkPolygon {
   createdBy: string;
   lastModifiedUtc: string | null;
   updatedBy: string | null;
+  /** Bindings (Phase 5 + 8). Populated on list + get; ignored on create/update. */
+  zoneNameId: number | null;
+  postcodeGroupId: number | null;
+  attachedScheduleNames: string[];
 }
 
 /** Parse the comma-delimited PartiallyIncludedZips string (with sentinel

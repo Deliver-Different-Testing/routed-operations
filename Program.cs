@@ -356,6 +356,10 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RecurringL
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygon.BulkPolygonService>();
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
+// Schedules module (nightly booking templates + territory maintenance).
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.TerritoryService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.PolygonBindingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();
 // Historic Archive Upload (2026-08-19). Writes legacy job-history rows
 // into tucJobArchive with the billing-sentinel recipe. Scoped so the
