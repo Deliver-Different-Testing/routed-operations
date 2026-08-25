@@ -215,13 +215,21 @@ export default function ScheduledRoutes() {
                       {r.schedules.length > 0 ? (
                         <div className="flex flex-wrap gap-1" title={scheduleTitle}>
                           {r.schedules.map((s) => (
-                            <span
+                            // Chip click jumps to /schedules?edit=<name>
+                            // which the Schedules page consumes to auto-
+                            // open the group's edit modal.
+                            // stopPropagation so the row's own openEdit
+                            // does not also fire.
+                            <a
                               key={s.scheduleId}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap"
+                              href={`/schedules?edit=${encodeURIComponent(s.name)}`}
+                              onClick={(e) => e.stopPropagation()}
+                              title={`Open schedule "${s.name}" in the Schedules editor`}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap hover:brightness-95"
                             >
                               <span className="font-medium">{s.name}</span>
                               {s.window && <span className="text-text-muted">{s.window}</span>}
-                            </span>
+                            </a>
                           ))}
                         </div>
                       ) : <span className="text-text-muted">-</span>}

@@ -2908,6 +2908,36 @@ export default function PolygonBuilder() {
                           <span>not attached to any route</span>
                         )}
                       </div>
+                      {/* Zone / postcode-group / schedule bindings.
+                          Populated by BulkPolygonService.GetAllAsync
+                          (Phase 5 zoneNameId/postcodeGroupId +
+                          Phase 8 schedule junction). Chips let the
+                          operator see every binding at a glance
+                          without opening the Zone Groups tab. Fields
+                          are defensively defaulted because existing
+                          test fixtures (pre-Phase-8) omit them. */}
+                      {(p.zoneNameId != null || p.postcodeGroupId != null || (p.attachedScheduleNames?.length ?? 0) > 0) && (
+                        <div className="ml-5 mt-0.5 flex flex-wrap gap-1">
+                          {p.zoneNameId != null && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-cyan/15 text-brand-cyan"
+                              title="Bound to a US zone name">
+                              zone #{p.zoneNameId}
+                            </span>
+                          )}
+                          {p.postcodeGroupId != null && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-orange/15 text-brand-orange"
+                              title="Bound to a postcode group">
+                              group #{p.postcodeGroupId}
+                            </span>
+                          )}
+                          {(p.attachedScheduleNames?.length ?? 0) > 0 && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-purple/15 text-brand-purple"
+                              title={`Bound to schedules: ${p.attachedScheduleNames.join(', ')}`}>
+                              {p.attachedScheduleNames.length} schedule{p.attachedScheduleNames.length === 1 ? '' : 's'}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {(() => {
                         const includedZips = parsePartiallyIncludedZips(p.partiallyIncludedZips);
                         if (includedZips.length === 0) return null;

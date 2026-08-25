@@ -33,7 +33,13 @@ public record BulkPolygonDto(
     DateTime CreatedUtc,
     string CreatedBy,
     DateTime? LastModifiedUtc,
-    string? UpdatedBy);
+    string? UpdatedBy,
+    /// <summary>ZoneName this polygon is bound to (Phase-5 tblBulkRunPolygon.ZoneNameId). Null when unbound.</summary>
+    int? ZoneNameId = null,
+    /// <summary>PostcodeGroup this polygon is bound to (Phase-5 tblBulkRunPolygon.PostcodeGroupId). Null when unbound.</summary>
+    int? PostcodeGroupId = null,
+    /// <summary>Schedule groups bound via tblSchedulePolygon. Empty when unbound.</summary>
+    List<string>? AttachedScheduleNames = null);
 
 /// <summary>Create payload. Client precomputes centroid; server stores as-is.</summary>
 public record CreateBulkPolygonRequest(

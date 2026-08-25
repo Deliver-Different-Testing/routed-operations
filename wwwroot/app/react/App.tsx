@@ -5,6 +5,7 @@ import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
 import ScheduledRoutes from './pages/ScheduledRoutes';
 import RecurringRoutes from './pages/RecurringRoutes';
+import Schedules from './pages/Schedules';
 import PolygonBuilder from './pages/PolygonBuilder';
 import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
@@ -38,6 +39,10 @@ export default function App() {
              The Routes tab body is delegated to ScheduledRoutes.tsx (kept
              imported above until that file is folded into RoutesTab.tsx). */}
         <Route path="/recurring-routes" element={<RecurringRoutes />} />
+        {/* Schedules module (nightly booking templates + territory
+             maintenance). Separate from Recurring Routes which lives on
+             the Configurator Route entity. */}
+        <Route path="/schedules" element={<Schedules />} />
         <Route path="/polygon-builder" element={<PolygonBuilder />} />
         <Route path="/auto-assign-log" element={<AutoAssignLog />} />
         {/* Route Viewer module (2026-08-07). 6 sub-pages under /route-viewer/*.

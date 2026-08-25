@@ -31,6 +31,7 @@ const items: NavItem[] = [
   },
   { to: '/quoting', label: 'Quoting' },
   { to: '/recurring-routes', label: 'Recurring Routes' },
+  { to: '/schedules', label: 'Schedules' },
   { to: '/polygon-builder', label: 'Polygon Builder' },
   { to: '/auto-assign-log', label: 'Auto-Assign Log' },
   // Internal-only surface. Loads legacy job history into tucJobArchive.

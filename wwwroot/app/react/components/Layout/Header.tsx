@@ -25,6 +25,7 @@ const PAGE_NAMES: Array<[string, string]> = [
   ['/routes', 'Route Builder'],
   ['/quoting', 'Quoting'],
   ['/recurring-routes', 'Recurring Routes'],
+  ['/schedules', 'Schedules'],
   ['/polygon-builder', 'Polygon Builder'],
   ['/auto-assign-log', 'Auto-Assign Log'],
   ['/historic-archive', 'Historic Archive Upload'],

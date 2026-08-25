@@ -36,6 +36,15 @@ public class BulkPolygonService(
 {
     public async Task<List<BulkPolygonDto>> GetAllAsync()
     {
+        // Schedule-name bindings via tblSchedulePolygon (Phase-8 junction).
+        // Small table - one dictionary lookup is cheaper than a per-row
+        // subquery and lets the projection stay as EF-translatable as
+        // possible.
+        var scheduleBindings = await Context.SchedulePolygons.AsNoTracking()
+            .GroupBy(x => x.PolygonId)
+            .Select(g => new { PolygonId = g.Key, Names = g.Select(x => x.ScheduleName).ToList() })
+            .ToDictionaryAsync(x => x.PolygonId, x => x.Names);
+
         var rows = await Context.BulkRunPolygons
             .AsNoTracking()
             .Where(p => p.Active)
@@ -54,6 +63,8 @@ public class BulkPolygonService(
                 p.CreatedBy,
                 p.LastModifiedUtc,
                 p.UpdatedBy,
+                p.ZoneNameId,
+                p.PostcodeGroupId,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
                 AttachedRoutes = p.Routes
                     .Where(r => r.Active)
@@ -72,11 +83,18 @@ public class BulkPolygonService(
             r.CentroidLatitude, r.CentroidLongitude, r.Active,
             r.Points, r.AttachedRouteCount, r.AttachedRoutes,
             r.PartiallyIncludedZips,
-            r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy)).ToList();
+            r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy,
+            r.ZoneNameId, r.PostcodeGroupId,
+            scheduleBindings.TryGetValue(r.PolygonId, out var names) ? names : new List<string>())).ToList();
     }
 
     public async Task<BulkPolygonDto?> GetByIdAsync(int id)
     {
+        var scheduleNames = await Context.SchedulePolygons.AsNoTracking()
+            .Where(x => x.PolygonId == id)
+            .Select(x => x.ScheduleName)
+            .ToListAsync();
+
         var row = await Context.BulkRunPolygons
             .AsNoTracking()
             .Where(p => p.PolygonId == id)
@@ -94,6 +112,8 @@ public class BulkPolygonService(
                 p.CreatedBy,
                 p.LastModifiedUtc,
                 p.UpdatedBy,
+                p.ZoneNameId,
+                p.PostcodeGroupId,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
                 AttachedRoutes = p.Routes
                     .Where(r => r.Active)
@@ -112,7 +132,8 @@ public class BulkPolygonService(
             row.CentroidLatitude, row.CentroidLongitude, row.Active,
             row.Points, row.AttachedRouteCount, row.AttachedRoutes,
             row.PartiallyIncludedZips,
-            row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy);
+            row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy,
+            row.ZoneNameId, row.PostcodeGroupId, scheduleNames);
     }
 
     public async Task<BulkPolygonDto> CreateAsync(CreateBulkPolygonRequest req)

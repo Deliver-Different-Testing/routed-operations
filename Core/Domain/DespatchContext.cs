@@ -22,6 +22,16 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<TucClient> TucClients { get; set; }
     public virtual DbSet<TblBulkScheduleLinehaul> TblBulkScheduleLinehauls { get; set; }
     public virtual DbSet<TblBulkPostCodeRunName> TblBulkPostCodeRunNames { get; set; }
+    // Schedules module - drop-off targets. Read-only in this app (legacy
+    // ClientManager still owns the CRUD surface).
+    public virtual DbSet<TblDropOffLocation> TblDropOffLocations { get; set; }
+    // Schedules module - three junction tables added in migration
+    // 20260825120000_AddScheduleGroupJunctions. Keyed by schedule Name
+    // (the "group" identity); backend syncs the junctions when a
+    // schedule group is saved.
+    public virtual DbSet<ScheduleClient> ScheduleClients { get; set; }
+    public virtual DbSet<SchedulePostcode> SchedulePostcodes { get; set; }
+    public virtual DbSet<SchedulePolygon> SchedulePolygons { get; set; }
     // Route module (Stage 2 - C.1'/C.2'). Shared with Configurator - same
     // Route / ZipPolygon / Dispatch_RouteRoster tables; RouteZipcodes is an
     // implicit many-to-many junction configured in OnModelCreating below.
@@ -162,6 +172,43 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<TblBulkRunSchedule>(entity =>
         {
             entity.HasKey(e => e.BulkRunScheduleId);
+            // BulkZoneSchedules + TblBulkScheduleLinehauls collections were
+            // added in the Schedules partial. The reciprocal navs are:
+            //   * BulkZoneSchedule.Schedule - wired below in the
+            //     BulkZoneSchedule block (must reciprocate BOTH sides in
+            //     ONE config or EF mints a shadow FK column
+            //     TblBulkRunScheduleBulkRunScheduleId).
+            //   * TblBulkScheduleLinehaul.BulkRunSchedule - wired here.
+            // All other relations (Region, PickupDepot, Speeds,
+            // PostcodeGroups, DropOff) get resolved via dictionary lookup
+            // in ScheduleService rather than nav properties, matching
+            // the pattern documented at line 268-280 above.
+            entity.HasMany(s => s.TblBulkScheduleLinehauls)
+                .WithOne(l => l.BulkRunSchedule)
+                .HasForeignKey(l => l.BulkRunScheduleId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TblDropOffLocation>(entity =>
+        {
+            entity.HasKey(e => e.DropOffLocationId);
+            entity.ToTable("tblDropOffLocation");
+        });
+
+        // Schedules module junction tables. Composite PKs mirror the DB
+        // (ScheduleName + FK columns). No nav properties - the service
+        // layer treats these as plain rows and syncs them explicitly.
+        modelBuilder.Entity<ScheduleClient>(entity =>
+        {
+            entity.HasKey(e => new { e.ScheduleName, e.ClientId });
+        });
+        modelBuilder.Entity<SchedulePostcode>(entity =>
+        {
+            entity.HasKey(e => new { e.ScheduleName, e.PostCode });
+        });
+        modelBuilder.Entity<SchedulePolygon>(entity =>
+        {
+            entity.HasKey(e => new { e.ScheduleName, e.PolygonId });
         });
 
         modelBuilder.Entity<TblBulkJobItems>(entity =>
@@ -774,8 +821,17 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
 
         modelBuilder.Entity<BulkZoneSchedule>(entity =>
         {
+            // Reciprocate the TblBulkRunSchedule.BulkZoneSchedules collection
+            // that the Schedules partial declares. Without the lambda on
+            // WithMany(...), EF sees two overlapping configs (this one and the
+            // implicit convention pickup from the named collection) and mints
+            // a shadow FK "TblBulkRunScheduleBulkRunScheduleId" that does not
+            // exist in the DB. Explicit lambda on both sides pins one
+            // relationship. OnDelete stays NoAction (previous behaviour);
+            // deleting a schedule via ScheduleService.DeleteAsync clears the
+            // zone rows via explicit RemoveRange before SaveChangesAsync.
             entity.HasOne(e => e.Schedule)
-                .WithMany()
+                .WithMany(s => s.BulkZoneSchedules)
                 .HasForeignKey(e => e.ScheduleId)
                 .OnDelete(DeleteBehavior.NoAction);
         });
