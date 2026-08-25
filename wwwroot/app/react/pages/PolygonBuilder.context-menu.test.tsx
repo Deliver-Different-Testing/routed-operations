@@ -103,8 +103,13 @@ describe('PolygonBuilder - context menu', () => {
       polygonRC.cb({ domEvent: { clientX: 50, clientY: 50 } as MouseEvent });
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Zoom to fit' }));
+    // 3s timeout - the default 1s waitFor is too tight on the CI runner
+    // after the Phase-8 binding chips added per-polygon render weight to
+    // the sidebar. Local runs settle in <100ms; shared-runner CI can
+    // take 2-3s to flush the state update that removes the menu.
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Zoom to fit' })).not.toBeInTheDocument(),
+      { timeout: 3000 },
     );
   });
 
@@ -122,8 +127,12 @@ describe('PolygonBuilder - context menu', () => {
     act(() => {
       document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     });
+    // 3s timeout - same reason as the Zoom to fit test above. Flaky on
+    // slow shared CI runner after the Phase-8 chip additions increased
+    // sidebar re-render cost.
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: /Freehand lasso \(L\)/ })).not.toBeInTheDocument(),
+      { timeout: 3000 },
     );
   });
 
