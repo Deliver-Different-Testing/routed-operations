@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
+import { useConfirm } from '../../context/ConfirmContext';
 import { useAuth } from '../../context/AuthContext';
 import { territoryService, type Depot } from '../../services/territoryService';
 import { depotLabel } from '../../lib/tenantLabels';
 import { DataTable, type DataTableColumn } from '../../components/common/DataTable';
 
 /**
- * Depots / Locations tab. Read-only listing of TblBulkRegion rows.
- * Depot CRUD lives in the legacy ClientManager UI (region management is
- * a shared concern across ClientManager + AdminManager + DespatchWeb -
- * the handover doc scopes this module to schedules + zones + zone groups
- * territory, so we surface depots here for reference only).
+ * Depots / Locations tab. Lists TblBulkRegion rows and lets operators
+ * activate / deactivate a depot inline so the on/off toggle doesn't
+ * require a hop to AdminManager. Full depot maintenance (name, address,
+ * GPS, audit) still lives in AdminManager - it's the shared surface
+ * across ClientManager + AdminManager + DespatchWeb and stays owned
+ * there.
  *
  * Terminology: NZ operators call these "depots"; US operators call the
- * same records "locations". Header uses both.
+ * same records "locations". Header + button labels flip via tenantLabels.
  */
 export function DepotsTab() {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const user = useAuth();
   const isUs = user.isUsTenant;
   const depotSingular = depotLabel(isUs, false);
@@ -25,17 +28,17 @@ export function DepotsTab() {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
   const [showInactive, setShowInactive] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await territoryService.depots();
-        setDepots(res.response ?? []);
-      } catch (e) { toast.show((e as Error).message, 'error'); }
-      finally { setLoading(false); }
-    })();
-  }, []);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await territoryService.depots();
+      setDepots(res.response ?? []);
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, []);
 
   const filtered = useMemo(() => {
     return depots.filter((d) => {
@@ -44,6 +47,43 @@ export function DepotsTab() {
       return true;
     });
   }, [depots, q, showInactive]);
+
+  const splice = (updated: Depot) => {
+    setDepots((prev) => {
+      const i = prev.findIndex((d) => d.id === updated.id);
+      if (i < 0) return prev;
+      const copy = prev.slice();
+      copy[i] = updated;
+      return copy;
+    });
+  };
+
+  const deactivate = async (d: Depot) => {
+    const ok = await askConfirm({
+      title: `Deactivate ${depotSingular.toLowerCase()}`,
+      message: `Hide "${d.name}" from active dropdowns? Existing schedules, postcodes and linehaul runs referencing this ${depotSingular.toLowerCase()} keep working; you can reactivate later.`,
+      confirmLabel: 'Deactivate',
+      danger: true,
+    });
+    if (!ok) return;
+    setBusyId(d.id);
+    try {
+      const res = await territoryService.deactivateDepot(d.id);
+      splice(res.response);
+      toast.show(`${depotSingular} "${d.name}" deactivated`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setBusyId(null); }
+  };
+
+  const reactivate = async (d: Depot) => {
+    setBusyId(d.id);
+    try {
+      const res = await territoryService.reactivateDepot(d.id);
+      splice(res.response);
+      toast.show(`${depotSingular} "${d.name}" reactivated`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setBusyId(null); }
+  };
 
   return (
     <div>
@@ -82,6 +122,30 @@ export function DepotsTab() {
                 {d.active ? 'Active' : 'Inactive'}
               </span>
             ) },
+          { key: 'actions', label: '', headerClassName: 'w-28 text-right',
+            render: (d) => (
+              <div className="text-right">
+                {d.active ? (
+                  <button
+                    type="button"
+                    disabled={busyId === d.id}
+                    className="text-[11px] text-red-600 hover:underline disabled:opacity-50"
+                    onClick={() => deactivate(d)}
+                  >
+                    {busyId === d.id ? 'Working...' : 'Deactivate'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busyId === d.id}
+                    className="text-[11px] text-brand-cyan hover:underline disabled:opacity-50"
+                    onClick={() => reactivate(d)}
+                  >
+                    {busyId === d.id ? 'Working...' : 'Reactivate'}
+                  </button>
+                )}
+              </div>
+            ) },
         ] as DataTableColumn<Depot>[]}
         rowKey={(d) => d.id}
         loading={loading}
@@ -91,7 +155,7 @@ export function DepotsTab() {
       />
 
       <p className="mt-2 text-[11px] text-text-muted italic">
-        {depotPlural} are read-only here. Add or edit {depotPlural.toLowerCase()} in the legacy ClientManager (region maintenance is shared across apps).
+        Full {depotSingular.toLowerCase()} maintenance (address, GPS, audit) stays in the AdminManager - this tab surfaces the on/off toggle only.
       </p>
     </div>
   );

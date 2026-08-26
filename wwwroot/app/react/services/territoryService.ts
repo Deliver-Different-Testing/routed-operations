@@ -179,6 +179,15 @@ export const territoryService = {
   removeZoneGroup: (id: number) =>
     write<string, undefined>(`/territory/us/zone-groups/${id}`, 'DELETE'),
 
+  /** Depot activate / deactivate. Full depot maintenance (address /
+   *  GPS / audit) lives in AdminManager; here we only surface the on-off
+   *  toggle so operators can hide a retired depot from the schedule /
+   *  linehaul / postcode-group dropdowns without switching apps. */
+  deactivateDepot: (id: number) =>
+    write<Depot, undefined>(`/territory/depots/${id}/deactivate`, 'POST'),
+  reactivateDepot: (id: number) =>
+    write<Depot, undefined>(`/territory/depots/${id}/reactivate`, 'POST'),
+
   polygonsForZoneName: (zoneNameId: number) =>
     request<{ response: BoundPolygon[] }>(`/territory/us/zone-names/${zoneNameId}/polygons`),
   polygonsForPostcodeGroup: (postcodeGroupId: number) =>
