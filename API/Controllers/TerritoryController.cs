@@ -73,6 +73,22 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
         }
     }
 
+    // ─── DEPOT ACTIVATE / DEACTIVATE ─────────────────────────────────────
+    // Full depot maintenance (address, GPS, audit) stays in AdminManager.
+    // Schedules module only exposes the on/off toggle operators use to
+    // hide a retired depot from the schedule / linehaul / postcode-group
+    // dropdowns without switching apps.
+
+    [HttpPost("depots/{id:int}/deactivate")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DeactivateDepot(int id) =>
+        await Wrap(() => svc.SetDepotActiveAsync(id, false));
+
+    [HttpPost("depots/{id:int}/reactivate")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> ReactivateDepot(int id) =>
+        await Wrap(() => svc.SetDepotActiveAsync(id, true));
+
     /// <summary>
     /// Postcode groups. Filter by client CODE (preferred) or ID.
     /// If both are set, clientCode wins. Matches the legacy

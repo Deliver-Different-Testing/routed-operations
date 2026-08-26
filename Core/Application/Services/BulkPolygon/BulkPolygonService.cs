@@ -45,6 +45,17 @@ public class BulkPolygonService(
             .Select(g => new { PolygonId = g.Key, Names = g.Select(x => x.ScheduleName).ToList() })
             .ToDictionaryAsync(x => x.PolygonId, x => x.Names);
 
+        // Zone / postcode-group name lookups so the sidebar chip can render
+        // "zone Fleet" instead of "zone #17". Both reference tables are tiny
+        // (dozens - low hundreds per tenant) - one dictionary fetch beats a
+        // per-row join and keeps the main projection EF-translatable.
+        var zoneNames = await Context.ZoneNames.AsNoTracking()
+            .Select(z => new { z.ZoneNameId, z.ZoneName1 })
+            .ToDictionaryAsync(z => z.ZoneNameId, z => z.ZoneName1);
+        var groupNames = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .Select(g => new { g.Id, g.Name })
+            .ToDictionaryAsync(g => g.Id, g => g.Name);
+
         var rows = await Context.BulkRunPolygons
             .AsNoTracking()
             .Where(p => p.Active)
@@ -85,7 +96,9 @@ public class BulkPolygonService(
             r.PartiallyIncludedZips,
             r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy,
             r.ZoneNameId, r.PostcodeGroupId,
-            scheduleBindings.TryGetValue(r.PolygonId, out var names) ? names : new List<string>())).ToList();
+            scheduleBindings.TryGetValue(r.PolygonId, out var names) ? names : new List<string>(),
+            r.ZoneNameId is int zid && zoneNames.TryGetValue(zid, out var zName) ? zName : null,
+            r.PostcodeGroupId is int gid && groupNames.TryGetValue(gid, out var gName) ? gName : null)).ToList();
     }
 
     public async Task<BulkPolygonDto?> GetByIdAsync(int id)
@@ -127,13 +140,29 @@ public class BulkPolygonService(
             })
             .FirstOrDefaultAsync();
 
-        return row is null ? null : new BulkPolygonDto(
+        if (row is null) return null;
+        // Single-row hydration for the two name lookups. Cheap - one 1-row
+        // query each when the binding exists, skipped when it doesn't.
+        string? zoneName = null;
+        if (row.ZoneNameId is int zid)
+        {
+            zoneName = await Context.ZoneNames.AsNoTracking()
+                .Where(z => z.ZoneNameId == zid).Select(z => z.ZoneName1).FirstOrDefaultAsync();
+        }
+        string? groupName = null;
+        if (row.PostcodeGroupId is int gid)
+        {
+            groupName = await Context.BulkZonePostcodeGroups.AsNoTracking()
+                .Where(g => g.Id == gid).Select(g => g.Name).FirstOrDefaultAsync();
+        }
+        return new BulkPolygonDto(
             row.PolygonId, row.Name, row.SourceType, row.SourceCode,
             row.CentroidLatitude, row.CentroidLongitude, row.Active,
             row.Points, row.AttachedRouteCount, row.AttachedRoutes,
             row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy,
-            row.ZoneNameId, row.PostcodeGroupId, scheduleNames);
+            row.ZoneNameId, row.PostcodeGroupId, scheduleNames,
+            zoneName, groupName);
     }
 
     public async Task<BulkPolygonDto> CreateAsync(CreateBulkPolygonRequest req)

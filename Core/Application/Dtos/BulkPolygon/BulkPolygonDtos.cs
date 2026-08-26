@@ -39,7 +39,11 @@ public record BulkPolygonDto(
     /// <summary>PostcodeGroup this polygon is bound to (Phase-5 tblBulkRunPolygon.PostcodeGroupId). Null when unbound.</summary>
     int? PostcodeGroupId = null,
     /// <summary>Schedule groups bound via tblSchedulePolygon. Empty when unbound.</summary>
-    List<string>? AttachedScheduleNames = null);
+    List<string>? AttachedScheduleNames = null,
+    /// <summary>Resolved ZoneName.ZoneName1 for the ZoneNameId binding. Null when unbound or the row was deleted.</summary>
+    string? ZoneNameName = null,
+    /// <summary>Resolved BulkZonePostcodeGroup.Name for the PostcodeGroupId binding. Null when unbound or the row was deleted.</summary>
+    string? PostcodeGroupName = null);
 
 /// <summary>Create payload. Client precomputes centroid; server stores as-is.</summary>
 public record CreateBulkPolygonRequest(

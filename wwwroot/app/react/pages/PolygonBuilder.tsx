@@ -2929,14 +2929,14 @@ export default function PolygonBuilder() {
                         <div className="ml-5 mt-0.5 flex flex-wrap gap-1">
                           {p.zoneNameId != null && (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-cyan/15 text-brand-cyan"
-                              title="Bound to a US zone name">
-                              zone #{p.zoneNameId}
+                              title={`Bound to zone: ${p.zoneNameName ?? `#${p.zoneNameId}`}`}>
+                              zone {p.zoneNameName ?? `#${p.zoneNameId}`}
                             </span>
                           )}
                           {p.postcodeGroupId != null && (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-brand-orange/15 text-brand-orange"
-                              title="Bound to a postcode group">
-                              group #{p.postcodeGroupId}
+                              title={`Bound to group: ${p.postcodeGroupName ?? `#${p.postcodeGroupId}`}`}>
+                              group {p.postcodeGroupName ?? `#${p.postcodeGroupId}`}
                             </span>
                           )}
                           {(p.attachedScheduleNames?.length ?? 0) > 0 && (

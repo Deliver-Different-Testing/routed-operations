@@ -13,6 +13,9 @@ import {
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { depotLabel, postcodeGroupLabel, postcodeLabel, postcodePluralLabel } from '../../lib/tenantLabels';
 import { ClientMultiPicker } from './ClientMultiPicker';
+import { ScheduleCoverageMap } from './ScheduleCoverageMap';
+import { LinehaulRunModal } from './LinehaulRunModal';
+import type { LinehaulRunLookup } from '../../services/scheduleService';
 
 // ─── constants ─────────────────────────────────────────────────────────────
 
@@ -75,6 +78,13 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
   // Available polygons for the coverage picker. Fetched lazily on first
   // open; the modal caches the result so re-opening doesn't refetch.
   const [polygons, setPolygons] = useState<BulkPolygon[] | null>(null);
+
+  // Local mirror of lookups.linehaulRuns so the nested LinehaulRunModal
+  // can mutate it (add / update / delete) without a full lookups refetch.
+  // Reset when lookups reloads (schedule editor re-opens with fresh lookups).
+  const [linehaulRuns, setLinehaulRuns] = useState<LinehaulRunLookup[]>(lookups?.linehaulRuns ?? []);
+  useEffect(() => { setLinehaulRuns(lookups?.linehaulRuns ?? []); }, [lookups?.linehaulRuns]);
+  const [runModalOpen, setRunModalOpen] = useState(false);
 
   useEffect(() => {
     setForm(toForm(group));
@@ -192,7 +202,6 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
   const speeds = lookups?.speeds ?? [];
   const dropOffs = lookups?.dropOffLocations ?? [];
   const postcodeGroups = lookups?.postcodeGroups ?? [];
-  const linehaulRuns = lookups?.linehaulRuns ?? [];
   const storageStates = lookups?.storageStates ?? [];
   const deliveryStates = lookups?.deliveryStates ?? [];
   const pickupBoxDiscounts = lookups?.pickupBoxDiscounts ?? [];
@@ -441,30 +450,42 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
           </div>
         </Section>
 
-        {/* ─── Coverage Polygons ────────────────────────────────────── */}
+        {/* ─── Coverage Polygons (map + picker) ─────────────────────── */}
         <Section title="Coverage Polygons">
           <div className="text-[11px] text-text-muted mb-2">
-            Bind existing coverage polygons to this schedule. Draw or edit polygons in <a href="/polygon-builder" target="_blank" rel="noopener noreferrer" className="text-brand-cyan underline">Polygon Builder</a>.
+            Bind coverage polygons to this schedule. Click on the map to bind or unbind, or use the checkbox list on the right. Draw a new polygon inline, or open the full toolkit in <a href="/polygon-builder" target="_blank" rel="noopener noreferrer" className="text-brand-cyan underline">Polygon Builder</a>.
           </div>
-          <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-white">
-            {polygons === null && (
-              <div className="p-3 text-[11px] text-text-muted italic">Loading polygons...</div>
-            )}
-            {polygons?.length === 0 && (
-              <div className="p-3 text-[11px] text-text-muted italic">No polygons available.</div>
-            )}
-            {polygons?.map((p) => {
-              const checked = form.polygonIds.includes(p.polygonId);
-              return (
-                <label key={p.polygonId}
-                  className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-cream ${checked ? 'bg-brand-cyan/10' : ''}`}>
-                  <input type="checkbox" className="w-3.5 h-3.5" checked={checked}
-                    onChange={() => togglePolygon(p.polygonId)} />
-                  <span className="text-xs font-medium flex-1">{p.name}</span>
-                  <span className="text-[10px] text-text-muted">{p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}</span>
-                </label>
-              );
-            })}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-3">
+            <div>
+              {polygons === null ? (
+                <div className="p-3 text-[11px] text-text-muted italic border border-border rounded-lg">Loading polygons...</div>
+              ) : (
+                <ScheduleCoverageMap
+                  polygons={polygons}
+                  selectedIds={form.polygonIds}
+                  onToggle={togglePolygon}
+                  isUsTenant={isUs}
+                  googleMapsKey={user.googleMapsKey}
+                />
+              )}
+            </div>
+            <div className="max-h-[360px] overflow-y-auto rounded-lg border border-border bg-white">
+              {polygons?.length === 0 && (
+                <div className="p-3 text-[11px] text-text-muted italic">No polygons available.</div>
+              )}
+              {polygons?.map((p) => {
+                const checked = form.polygonIds.includes(p.polygonId);
+                return (
+                  <label key={p.polygonId}
+                    className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-cream ${checked ? 'bg-brand-cyan/10' : ''}`}>
+                    <input type="checkbox" className="w-3.5 h-3.5" checked={checked}
+                      onChange={() => togglePolygon(p.polygonId)} />
+                    <span className="text-xs font-medium flex-1">{p.name}</span>
+                    <span className="text-[10px] text-text-muted">{p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}</span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         </Section>
 
@@ -521,7 +542,19 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                     {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                   </select>
                 </Field>
-                <Field label="Run">
+                <Field
+                  label="Run"
+                  rightAdornment={
+                    <button
+                      type="button"
+                      className="text-[10px] text-brand-cyan hover:underline inline-flex items-center gap-0.5"
+                      onClick={() => setRunModalOpen(true)}
+                      title="Manage linehaul runs"
+                    >
+                      Edit
+                    </button>
+                  }
+                >
                   <select className={INPUT_CLASS} value={l.linehaulRunId ?? ''}
                     onChange={(e) => updateLinehaul(i, { linehaulRunId: e.target.value ? Number(e.target.value) : null })}>
                     <option value="">Choose a Run</option>
@@ -625,6 +658,18 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
           </label>
         </Section>
       </div>
+
+      {/* Nested Linehaul Runs manager, opened from the "Edit" chip next to
+          the Run dropdown in each linehaul leg. Parity with the legacy
+          .linehaulRun-modal in ClientManager schedulesView.html. */}
+      <LinehaulRunModal
+        open={runModalOpen}
+        onClose={() => setRunModalOpen(false)}
+        runs={linehaulRuns}
+        depots={depots}
+        couriers={lookups?.couriers ?? []}
+        onRunsChanged={setLinehaulRuns}
+      />
     </Modal>
   );
 }
@@ -634,11 +679,16 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
 const INPUT_CLASS =
   'w-full border border-border rounded-lg px-2 py-1.5 text-sm bg-surface-white focus:outline-none focus:ring-1 focus:ring-brand-cyan disabled:opacity-50 disabled:bg-surface-cream';
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Field({ label, required, children, rightAdornment }: {
+  label: string; required?: boolean; children: React.ReactNode; rightAdornment?: React.ReactNode;
+}) {
   return (
     <div>
-      <div className="text-[11px] font-semibold text-text-muted mb-0.5">
-        {label}{required && <span className="text-red-600"> *</span>}
+      <div className="flex items-center justify-between mb-0.5">
+        <div className="text-[11px] font-semibold text-text-muted">
+          {label}{required && <span className="text-red-600"> *</span>}
+        </div>
+        {rightAdornment}
       </div>
       {children}
     </div>

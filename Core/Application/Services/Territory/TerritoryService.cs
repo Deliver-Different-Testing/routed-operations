@@ -484,4 +484,20 @@ public class TerritoryService(
         if (string.IsNullOrWhiteSpace(name))
             throw new InvalidOperationException("Name is required.");
     }
+
+    // ─── DEPOT ACTIVATE / DEACTIVATE ────────────────────────────────────
+    // Full depot CRUD (address, GPS, audit) stays in AdminManager - that's
+    // the shared surface across ClientManager + AdminManager + DespatchWeb.
+    // The Schedules module only exposes the on/off toggle operators use to
+    // hide a retired depot from the schedule / linehaul / postcode-group
+    // dropdowns without switching apps.
+    public async Task<DepotDto> SetDepotActiveAsync(int id, bool active)
+    {
+        var entity = await Context.TblBulkRegions.FirstOrDefaultAsync(x => x.BulkRegionId == id)
+            ?? throw new InvalidOperationException("Depot not found.");
+        entity.Active = active;
+        await Context.SaveChangesAsync();
+        Log.Information("Depot {Id} Active={Active}", id, active);
+        return new DepotDto(entity.BulkRegionId, entity.Name, entity.Active ?? true);
+    }
 }

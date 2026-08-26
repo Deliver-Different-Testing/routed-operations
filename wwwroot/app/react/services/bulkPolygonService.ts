@@ -46,6 +46,13 @@ export interface BulkPolygon {
   zoneNameId: number | null;
   postcodeGroupId: number | null;
   attachedScheduleNames: string[];
+  /** Resolved ZoneName.ZoneName1 for the zoneNameId binding. Null when
+   *  unbound or the referenced row was deleted. Prefer this for chip
+   *  labels; fall back to `zone #{zoneNameId}` when null but the id is set. */
+  zoneNameName: string | null;
+  /** Resolved BulkZonePostcodeGroup.Name for the postcodeGroupId binding.
+   *  Null when unbound or the referenced row was deleted. */
+  postcodeGroupName: string | null;
 }
 
 /** Parse the comma-delimited PartiallyIncludedZips string (with sentinel
