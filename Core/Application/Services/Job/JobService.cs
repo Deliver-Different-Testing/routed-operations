@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Job;
 using RoutedOperations.Core.Domain;
@@ -80,10 +81,25 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             // + st->street rewrite + retrim) is nasty in EF LINQ, and the
             // filter runs once per page so a single roundtrip is fine.
             //
-            // ids come from int.TryParse in ParseIntList - safe to interpolate.
+            // Push the same date + Done + Void narrowing filters here that
+            // the main EF query applies, so we don't scan the whole tblBulkJob
+            // (millions of rows on Urgent-Prod) just to feed the outer .Where.
+            // Reported 2026-08-27: unfiltered scan timed out at 30s SQL
+            // command timeout on Tenant 5, blocking the Route Builder load.
+            //
+            // regionIdSet ids come from int.TryParse in ParseIntList - safe
+            // to interpolate. Date is parameterised.
             var inList = string.Join(",", regionIdSet);
-            var jobIds = await Context.Database.SqlQueryRaw<int>(
-                $@"SELECT DISTINCT j.BulkJobID AS Value
+            var parameters = new List<SqlParameter>();
+            var dateClause = string.Empty;
+            if (dateTime.HasValue)
+            {
+                var d = dateTime.Value.Date;
+                dateClause = " AND j.BookDate >= @dateStart AND j.BookDate < @dateEnd";
+                parameters.Add(new SqlParameter("@dateStart", d));
+                parameters.Add(new SqlParameter("@dateEnd", d.AddDays(1)));
+            }
+            var sql = $@"SELECT DISTINCT j.BulkJobID AS Value
                    FROM tblBulkJob j
                    LEFT JOIN tblBulkRegion breg
                      ON ((breg.PickupLatitude = j.PickUpLatitude
@@ -95,8 +111,11 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                               '>st<', '>street<'),
                             '<>', ' '
                           )))) COLLATE DATABASE_DEFAULT)
-                   WHERE breg.BulkRegionId IN ({inList})"
-            ).ToListAsync();
+                   WHERE breg.BulkRegionId IN ({inList})
+                     AND ISNULL(j.Done, 0) = 0
+                     AND ISNULL(j.[Void], 0) = 0
+                     {dateClause}";
+            var jobIds = await Context.Database.SqlQueryRaw<int>(sql, parameters.ToArray()).ToListAsync();
             query = query.Where(j => jobIds.Contains(j.BulkJobId));
         }
 

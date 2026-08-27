@@ -15,12 +15,19 @@ export class ApiError extends Error {
   status: number;
   body: unknown;
   hint?: string;
-  constructor(message: string, status: number, body: unknown, hint?: string) {
+  /** Endpoint path this error came from (e.g. "/api/jobs"). Populated by
+   *  `request()` on throw so operator-facing error strips can say WHICH
+   *  endpoint failed instead of just "HTTP 500". Query string is not
+   *  included - too noisy for a status bar and DevTools Network already
+   *  carries the full URL. */
+  endpoint?: string;
+  constructor(message: string, status: number, body: unknown, hint?: string, endpoint?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.body = body;
     this.hint = hint;
+    this.endpoint = endpoint;
   }
 }
 
@@ -39,12 +46,15 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    const message =
-      err?.messages?.[0]?.message
-        ?? err?.error
-        ?? err?.message
-        ?? `HTTP ${res.status}`;
-    throw new ApiError(message, res.status, err, err?.hint);
+    // The endpoint path (without query) - useful in operator-facing error
+    // strips when the server responds with no body (unhandled 500).
+    const path = `${BASE_URL}${url}`.split('?')[0];
+    // Prefer a server-provided message; when the server gave us nothing
+    // (bare 500) append the endpoint so the operator can report which
+    // call failed instead of just "HTTP 500".
+    const serverMsg = err?.messages?.[0]?.message ?? err?.error ?? err?.message;
+    const message = serverMsg ?? `HTTP ${res.status} at ${path}`;
+    throw new ApiError(message, res.status, err, err?.hint, path);
   }
 
   if (res.status === 204 || res.headers.get('content-length') === '0') {
