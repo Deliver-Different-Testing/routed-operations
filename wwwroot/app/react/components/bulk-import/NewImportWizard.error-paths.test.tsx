@@ -108,29 +108,38 @@ function seedNzHandlersForImportError(importFailure: () => Response) {
 }
 
 async function driveToSchedulePicker() {
+  // Every waitFor in this helper uses an explicit 3s timeout. Default is
+  // 1s, which is too tight on the shared CI runner when fake timers are
+  // active (see the vi.useFakeTimers on the describe block); step
+  // transitions here span an MSW mock + a StepWizard re-render and
+  // routinely take 1.5-2.5s to settle on CI, well under 3s locally.
+  const TIMEOUT = { timeout: 3000 };
   const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
   Object.defineProperty(fileInput, 'files', {
     value: [new File(['x'], 'x.csv', { type: 'text/csv' })],
   });
   fireEvent.change(fileInput);
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Upload File' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Upload File' })).not.toBeDisabled(),
+    TIMEOUT,
   );
   fireEvent.click(screen.getByRole('button', { name: 'Upload File' }));
-  await waitFor(() => expect(screen.getByText('Map the Columns')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Map the Columns')).toBeInTheDocument(), TIMEOUT);
   fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-  await waitFor(() => expect(screen.getByText('Fix Suburbs')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Fix Suburbs')).toBeInTheDocument(), TIMEOUT);
   fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-  await waitFor(() => expect(screen.getByText('Fix Addresses')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Fix Addresses')).toBeInTheDocument(), TIMEOUT);
   fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-  await waitFor(() => expect(screen.getByText('Select Depots')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Select Depots')).toBeInTheDocument(), TIMEOUT);
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled(),
+    TIMEOUT,
   );
   fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-  await waitFor(() => expect(screen.getByText(/Central/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/Central/)).toBeInTheDocument(), TIMEOUT);
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled(),
+    TIMEOUT,
   );
 }
 
