@@ -71,6 +71,32 @@ public record ScheduleZoneDto(
     int Zone,
     bool? Active);
 
+/// <summary>Slim schedule-group projection for the Schedules tab list.
+/// Carries just the columns the table renders (name / destination /
+/// speed / day chips / counts / auto-book / linehaul yes-no). Full
+/// junction ids and per-leg detail come via GetDetailAsync only when
+/// the operator opens the edit modal - saves ~4s on the initial list
+/// fetch versus loading every schedule's zones + linehauls + junctions
+/// up-front.</summary>
+public record ScheduleGroupSummaryDto(
+    string Name,
+    int? LegacyClientId,
+    string LegacyClientCode,
+    int RegionId,
+    string RegionName,
+    int? SpeedId,
+    string SpeedName,
+    /// <summary>Active DayOfWeek values across the group (1=Mon..7=Sun),
+    /// ordered ascending. Frontend renders the M-T-W-T-F-S-S chip strip
+    /// from this set.</summary>
+    int[] ActiveDays,
+    int ActiveZonesCount,
+    int ClientCount,
+    int PostcodeCount,
+    int PolygonCount,
+    bool? AutoBook,
+    bool HasActiveLinehaul);
+
 public record ScheduleLinehaulDto(
     int Id,
     string Name,

@@ -464,6 +464,9 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                   polygons={polygons}
                   selectedIds={form.polygonIds}
                   onToggle={togglePolygon}
+                  boundPostcodes={form.postcodeIds}
+                  activeZones={form.zones.filter((z) => z.active === true).map((z) => z.zone)}
+                  destinationDepotId={form.regionId || null}
                   isUsTenant={isUs}
                   googleMapsKey={user.googleMapsKey}
                 />

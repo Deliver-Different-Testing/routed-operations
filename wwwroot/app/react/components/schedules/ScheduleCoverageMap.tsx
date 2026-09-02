@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type BulkPolygon, type PolygonPoint } from '../../services/bulkPolygonService';
 import { tenantMapCentre } from '../../lib/mapDefaults';
+import { territoryService } from '../../services/territoryService';
+import { recurringRouteService } from '../../services/recurringRouteService';
+import { parseWktPolygon } from '../../lib/wktPolygon';
+import { useToast } from '../../context/ToastContext';
 
 interface LatLng { lat: number; lng: number; }
 
@@ -8,6 +12,15 @@ interface Props {
   polygons: BulkPolygon[];
   selectedIds: number[];
   onToggle: (id: number) => void;
+  /** Individual postcodes bound to the schedule (BulkZonePostcode.PostCode
+   *  ints). Rendered as orange filled ZIP polygons on the map. */
+  boundPostcodes: number[];
+  /** Active zone numbers on the schedule. Their postcodes (filtered to
+   *  the destination depot) render as cyan filled ZIP polygons. */
+  activeZones: number[];
+  /** Destination depot id (TblBulkRunSchedule.Region). Required for the
+   *  zone-derived postcode lookup; null skips that layer. */
+  destinationDepotId: number | null;
   isUsTenant: boolean;
   googleMapsKey: string | null;
 }
@@ -28,13 +41,26 @@ interface Props {
  * Drawing / vertex editing lives in Polygon Builder, not here.
  */
 export function ScheduleCoverageMap({
-  polygons, selectedIds, onToggle, isUsTenant, googleMapsKey,
+  polygons, selectedIds, onToggle,
+  boundPostcodes, activeZones, destinationDepotId,
+  isUsTenant, googleMapsKey,
 }: Props) {
+  const toast = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<Map<number, any>>(new Map());
+  /** ZIP polygon overlays keyed by ZipPolygonId. Distinct from `overlaysRef`
+   *  (coverage polygons) so the two layers can sync independently and the
+   *  colours stay predictable. */
+  const zipOverlaysRef = useRef<Map<number, { poly: any; kind: 'bound' | 'zone' }>>(new Map());
   const didInitialFitRef = useRef<boolean>(false);
   const [ready, setReady] = useState(false);
+  /** ZIP polygon shapes (WKT + centroid) resolved for the current schedule.
+   *  Filled by the postcode-fetch effect and consumed by the ZIP overlay
+   *  sync effect. */
+  const [zipShapes, setZipShapes] = useState<Array<{
+    zipPolygonId: number; zip: string; wkt: string | null; kind: 'bound' | 'zone';
+  }>>([]);
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Refs mirror props so map-listener closures see current state without
@@ -88,12 +114,87 @@ export function ScheduleCoverageMap({
     return () => {
       overlaysRef.current.forEach((p) => p.setMap(null));
       overlaysRef.current.clear();
+      zipOverlaysRef.current.forEach((e) => e.poly.setMap(null));
+      zipOverlaysRef.current.clear();
       const io = (mapRef.current as any)?.__scheduleMapObserver as IntersectionObserver | undefined;
       io?.disconnect();
       mapRef.current = null;
       didInitialFitRef.current = false;
     };
   }, [ready, isUsTenant]);
+
+  // ─── Resolve schedule's postcodes -> ZipPolygon shapes. ────────────
+  //     Debounce inside the effect so rapid checkbox flips (toggling
+  //     multiple zones on / off in a row) coalesce into one round-trip
+  //     instead of firing per keystroke.
+  useEffect(() => {
+    if (!ready) return;
+    let mounted = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        // Ask the server which ZipPolygon rows the map should paint.
+        const resolved = await territoryService.postcodesForSchedule({
+          depotId: destinationDepotId,
+          zones: activeZones,
+          boundPostcodes: boundPostcodes,
+        });
+        if (!mounted) return;
+        const boundIds = resolved.response.boundZipPolygonIds;
+        const zoneIds = resolved.response.zoneDerivedZipPolygonIds;
+        const allIds = Array.from(new Set([...boundIds, ...zoneIds]));
+        if (allIds.length === 0) {
+          setZipShapes([]);
+          return;
+        }
+        // Fetch WKT bodies + centroids in one batch (reuses the exact
+        // endpoint RouteCoverageMap uses so caching / RPS behaviour is
+        // shared).
+        const shapesRes = await recurringRouteService.getPolygonShapes(allIds);
+        if (!mounted) return;
+        const boundSet = new Set(boundIds);
+        setZipShapes((shapesRes.response ?? []).map((s) => ({
+          zipPolygonId: s.zipPolygonId,
+          zip: s.zip ?? '',
+          wkt: s.wkt,
+          kind: boundSet.has(s.zipPolygonId) ? 'bound' : 'zone',
+        })));
+      } catch (e) {
+        if (!mounted) return;
+        toast.show((e as Error).message, 'error');
+      }
+    }, 250);
+    return () => { mounted = false; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, destinationDepotId, boundPostcodes.join(','), activeZones.join(',')]);
+
+  // ─── Sync ZIP polygon overlays. Non-clickable (view-only). ──────────
+  useEffect(() => {
+    const g = (window as any).google;
+    if (!ready || !mapRef.current || !g?.maps) return;
+    const wanted = new Set(zipShapes.map((s) => s.zipPolygonId));
+    zipOverlaysRef.current.forEach((entry, id) => {
+      if (!wanted.has(id)) { entry.poly.setMap(null); zipOverlaysRef.current.delete(id); }
+    });
+    zipShapes.forEach((s) => {
+      if (!s.wkt) return;
+      const path = parseWktPolygon(s.wkt);
+      if (!path || path.length < 3) return;
+      const opts = s.kind === 'bound'
+        ? { strokeColor: '#f2994a', strokeOpacity: 0.9, strokeWeight: 1.5, fillColor: '#f2994a', fillOpacity: 0.32, zIndex: 2 }
+        : { strokeColor: '#00A3FF', strokeOpacity: 0.85, strokeWeight: 1, fillColor: '#00A3FF', fillOpacity: 0.14, zIndex: 1 };
+      const existing = zipOverlaysRef.current.get(s.zipPolygonId);
+      if (existing) {
+        existing.poly.setPath(path);
+        existing.poly.setOptions({ ...opts, clickable: false });
+        existing.kind = s.kind;
+      } else {
+        const poly = new g.maps.Polygon({
+          paths: path, map: mapRef.current, clickable: false, ...opts,
+        });
+        zipOverlaysRef.current.set(s.zipPolygonId, { poly, kind: s.kind });
+      }
+    });
+  }, [zipShapes, ready]);
 
   // ─── Sync polygon overlays. ─────────────────────────────────────────
   useEffect(() => {
@@ -144,11 +245,13 @@ export function ScheduleCoverageMap({
   // ─── Auto-fit ONCE on the first render that has any bound shapes. ───
   //     Subsequent toggles don't re-centre; if the operator has panned
   //     to a specific area, we don't yank the viewport out from under them.
+  //     Extends the bounds to include zip shapes so a schedule that has
+  //     only postcode / zone coverage (no bulk polygons) still centres.
   useEffect(() => {
     const g = (window as any).google;
     if (!ready || !mapRef.current || !g?.maps) return;
     if (didInitialFitRef.current) return;
-    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 0 && zipShapes.length === 0) return;
     const bounds = new g.maps.LatLngBounds();
     let count = 0;
     for (const id of selectedIds) {
@@ -161,12 +264,21 @@ export function ScheduleCoverageMap({
         }
       }
     }
+    for (const s of zipShapes) {
+      if (!s.wkt) continue;
+      const path = parseWktPolygon(s.wkt);
+      if (!path) continue;
+      for (const p of path) {
+        bounds.extend(new g.maps.LatLng(p.lat, p.lng));
+        count++;
+      }
+    }
     if (count > 0) {
       mapRef.current.fitBounds(bounds, 40);
       didInitialFitRef.current = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, selectedIds.join(','), polygons.length]);
+  }, [ready, selectedIds.join(','), polygons.length, zipShapes.length]);
 
   if (!googleMapsKey) {
     return (
@@ -179,8 +291,9 @@ export function ScheduleCoverageMap({
   return (
     <div className="rounded-lg border border-border overflow-hidden">
       <div className="px-3 py-1.5 bg-surface-cream border-b border-border text-[11px] text-text-muted">
-        Orange = bound. Blue = available. Click a blue polygon to bind. Remove is via the ×
-        on the checkbox list. Draw or edit polygons in Polygon Builder.
+        <span className="text-brand-orange font-medium">Orange</span> = bound (coverage polygons + individual postcodes).{' '}
+        <span className="text-brand-cyan font-medium">Blue</span> = zone-derived postcodes + available coverage polygons.
+        Click a blue coverage polygon to bind; unbind via the × on the checkbox list. Draw / edit shapes in Polygon Builder.
       </div>
       <div ref={containerRef} className="w-full bg-surface-cream" style={{ height: '360px' }} />
     </div>

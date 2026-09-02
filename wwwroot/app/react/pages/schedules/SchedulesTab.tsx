@@ -4,6 +4,7 @@ import { useConfirm } from '../../context/ConfirmContext';
 import {
   scheduleService,
   type ScheduleGroup,
+  type ScheduleGroupSummary,
   type ScheduleLookups,
 } from '../../services/scheduleService';
 import { RowActionsMenu } from '../../components/tenant/RowActionsMenu';
@@ -41,14 +42,21 @@ function DayChips({ activeDays }: { activeDays: Set<number> }) {
 export function SchedulesTab() {
   const toast = useToast();
   const askConfirm = useConfirm();
-  const [groups, setGroups] = useState<ScheduleGroup[]>([]);
+  const [groups, setGroups] = useState<ScheduleGroupSummary[]>([]);
   const [lookups, setLookups] = useState<ScheduleLookups | null>(null);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
+  /** Edit modal state. 'new' = create; ScheduleGroup = full detail loaded
+   *  from GET /schedules/detail after the operator opens a row. The
+   *  summary from the list never goes to the modal directly - modal fields
+   *  need the full DayWindows / Zones / Linehauls / junction ids. */
   const [editing, setEditing] = useState<ScheduleGroup | 'new' | null>(null);
-  /** Copy modal source. Null = closed. Modal builds a new group named
-   *  `<source> (copy)` bound to the source's clients by default; operator
-   *  can rename + reassign before creating. */
+  /** True while GET /schedules/detail is in flight after a row click but
+   *  before the edit modal opens. Cheap UX guard; the request is fast
+   *  (single-group query with two includes). */
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  /** Copy modal source. Null = closed. Full detail fetched lazily on
+   *  Copy... action, then handed to the modal. */
   const [copying, setCopying] = useState<ScheduleGroup | null>(null);
   const [clientCodeFilter, setClientCodeFilter] = useState<string | undefined>(undefined);
   const [clientInput, setClientInput] = useState('');
@@ -67,6 +75,9 @@ export function SchedulesTab() {
   };
   useEffect(() => { void load(clientCodeFilter); }, [clientCodeFilter]);
 
+  // ?edit=<name> deep-link (used by RecurringRoutes -> Schedules chip
+  // click). Match against the summary list, then fetch full detail
+  // before opening the modal.
   useEffect(() => {
     if (groups.length === 0) return;
     const params = new URLSearchParams(window.location.search);
@@ -75,13 +86,31 @@ export function SchedulesTab() {
     const target = groups.find((g) => g.name === editName && g.legacyClientId == null)
       ?? groups.find((g) => g.name === editName);
     if (target) {
-      setEditing(target);
+      void openEdit(target);
       params.delete('edit');
       const nextQs = params.toString();
       const nextUrl = window.location.pathname + (nextQs ? `?${nextQs}` : '') + window.location.hash;
       window.history.replaceState(null, '', nextUrl);
     }
   }, [groups]);
+
+  const openEdit = async (g: ScheduleGroupSummary) => {
+    setLoadingDetail(true);
+    try {
+      const res = await scheduleService.detail(g.name ?? '', g.legacyClientId);
+      setEditing(res.response);
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setLoadingDetail(false); }
+  };
+
+  const openCopy = async (g: ScheduleGroupSummary) => {
+    setLoadingDetail(true);
+    try {
+      const res = await scheduleService.detail(g.name ?? '', g.legacyClientId);
+      setCopying(res.response);
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setLoadingDetail(false); }
+  };
 
   const applyClientFilter = () => {
     const trimmed = clientInput.trim();
@@ -94,12 +123,11 @@ export function SchedulesTab() {
     const needle = q.trim().toLowerCase();
     return groups.filter((g) =>
       (g.name ?? '').toLowerCase().includes(needle) ||
-      (g.description ?? '').toLowerCase().includes(needle) ||
       (g.regionName ?? '').toLowerCase().includes(needle) ||
       (g.speedName ?? '').toLowerCase().includes(needle));
   }, [groups, q]);
 
-  const toggleAutoBook = async (g: ScheduleGroup) => {
+  const toggleAutoBook = async (g: ScheduleGroupSummary) => {
     try {
       const res = await scheduleService.toggleAutoBook(g.name ?? '', g.legacyClientId);
       setGroups((prev) => prev.map((x) =>
@@ -108,10 +136,11 @@ export function SchedulesTab() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
-  const removeGroup = async (g: ScheduleGroup) => {
+  const removeGroup = async (g: ScheduleGroupSummary) => {
+    const dayCount = g.activeDays.length;
     const ok = await askConfirm({
       title: 'Delete schedule group?',
-      message: `Delete "${g.name}"? This removes all ${g.dayWindows.length} day-window row${g.dayWindows.length === 1 ? '' : 's'} plus zone activation, linehaul legs, and every client / postcode / polygon binding. Cannot be undone.`,
+      message: `Delete "${g.name}"? This removes all ${dayCount} day-window row${dayCount === 1 ? '' : 's'} plus zone activation, linehaul legs, and every client / postcode / polygon binding. Cannot be undone.`,
       confirmLabel: 'Delete',
       danger: true,
     });
@@ -123,19 +152,22 @@ export function SchedulesTab() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
+  // Splice a saved / copied ScheduleGroup back into the list by derived
+  // summary shape. Avoids a full list refetch.
   const onSaved = (row: ScheduleGroup) => {
+    const summary = detailToSummary(row);
     setGroups((prev) => {
       const idx = prev.findIndex((x) => x.name === row.name && x.legacyClientId === row.legacyClientId);
       if (idx >= 0) {
         const next = prev.slice();
-        next[idx] = row;
+        next[idx] = summary;
         return next;
       }
-      return [...prev, row];
+      return [...prev, summary];
     });
   };
 
-  const columns: DataTableColumn<ScheduleGroup>[] = [
+  const columns: DataTableColumn<ScheduleGroupSummary>[] = [
     {
       key: 'name', label: 'Name', sortable: true,
       sortValue: (g) => g.name ?? '',
@@ -158,20 +190,20 @@ export function SchedulesTab() {
     { key: 'days', label: 'Mon-Sun', sortable: true,
       // Sort by count of active days as a reasonable proxy - operators
       // grouping "which schedules run daily" find that useful.
-      sortValue: (g) => g.dayWindows.length,
-      render: (g) => <DayChips activeDays={new Set(g.dayWindows.map((w) => w.dayOfWeek))} /> },
+      sortValue: (g) => g.activeDays.length,
+      render: (g) => <DayChips activeDays={new Set(g.activeDays)} /> },
     { key: 'clients', label: 'Clients', sortable: true, align: 'right',
-      sortValue: (g) => g.clientIds.length,
-      render: (g) => <span className="text-text-primary font-semibold">{g.clientIds.length}</span> },
+      sortValue: (g) => g.clientCount,
+      render: (g) => <span className="text-text-primary font-semibold">{g.clientCount}</span> },
     { key: 'postcodes', label: 'Postcodes', sortable: true, align: 'right',
-      sortValue: (g) => g.postcodeIds.length,
-      render: (g) => <span className="text-text-primary font-semibold">{g.postcodeIds.length}</span> },
+      sortValue: (g) => g.postcodeCount,
+      render: (g) => <span className="text-text-primary font-semibold">{g.postcodeCount}</span> },
     { key: 'polygons', label: 'Polygons', sortable: true, align: 'right',
-      sortValue: (g) => g.polygonIds.length,
-      render: (g) => <span className="text-text-primary font-semibold">{g.polygonIds.length}</span> },
+      sortValue: (g) => g.polygonCount,
+      render: (g) => <span className="text-text-primary font-semibold">{g.polygonCount}</span> },
     { key: 'zones', label: 'Zones', sortable: true, align: 'right',
-      sortValue: (g) => g.zones.filter((z) => z.active === true).length,
-      render: (g) => <span className="text-text-primary font-semibold">{g.zones.filter((z) => z.active === true).length}</span> },
+      sortValue: (g) => g.activeZonesCount,
+      render: (g) => <span className="text-text-primary font-semibold">{g.activeZonesCount}</span> },
     { key: 'autoBook', label: 'Auto Book', sortable: true,
       sortValue: (g) => g.autoBook ? 1 : 0,
       render: (g) => (
@@ -188,24 +220,21 @@ export function SchedulesTab() {
       ),
     },
     { key: 'linehaul', label: 'Linehaul', sortable: true,
-      sortValue: (g) => g.linehauls.some((l) => l.active === true) ? 1 : 0,
-      render: (g) => {
-        const has = g.linehauls.some((l) => l.active === true);
-        return (
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
-            has ? 'bg-brand-cyan/15 text-brand-cyan' : 'bg-surface-cream text-text-muted'
-          }`}>
-            {has ? 'Yes' : 'No'}
-          </span>
-        );
-      },
+      sortValue: (g) => g.hasActiveLinehaul ? 1 : 0,
+      render: (g) => (
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${
+          g.hasActiveLinehaul ? 'bg-brand-cyan/15 text-brand-cyan' : 'bg-surface-cream text-text-muted'
+        }`}>
+          {g.hasActiveLinehaul ? 'Yes' : 'No'}
+        </span>
+      ),
     },
     { key: 'actions', label: 'Actions', align: 'right',
       render: (g) => (
         <RowActionsMenu
           actions={[
-            { label: 'Edit', onClick: () => setEditing(g) },
-            { label: 'Copy...', onClick: () => setCopying(g) },
+            { label: 'Edit', onClick: () => void openEdit(g) },
+            { label: 'Copy...', onClick: () => void openCopy(g) },
             { label: g.autoBook ? 'Disable Auto Book' : 'Enable Auto Book', onClick: () => toggleAutoBook(g) },
             { label: 'Delete', onClick: () => removeGroup(g), danger: true },
           ]}
@@ -265,8 +294,8 @@ export function SchedulesTab() {
         rows={filtered}
         columns={columns}
         rowKey={(g) => `${g.name}::${g.legacyClientId ?? 'default'}`}
-        onRowClick={(g) => setEditing(g)}
-        loading={loading}
+        onRowClick={(g) => void openEdit(g)}
+        loading={loading || loadingDetail}
         emptyMessage={'No schedules yet. Click "+ Add Schedule" to create one.'}
         minWidth="min-w-[1000px]"
         defaultSort={{ key: 'name', dir: 'asc' }}
@@ -299,4 +328,27 @@ export function SchedulesTab() {
       )}
     </div>
   );
+}
+
+/** Derive the list-view summary from a full ScheduleGroup detail. Used
+ *  after upsert / copy to splice the fresh record into the list without
+ *  a full refetch. */
+function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
+  const activeDays = Array.from(new Set(g.dayWindows.map((w) => w.dayOfWeek))).sort((a, b) => a - b);
+  return {
+    name: g.name,
+    legacyClientId: g.legacyClientId,
+    legacyClientCode: g.legacyClientCode,
+    regionId: g.regionId,
+    regionName: g.regionName,
+    speedId: g.speedId,
+    speedName: g.speedName,
+    activeDays,
+    activeZonesCount: g.zones.filter((z) => z.active === true).length,
+    clientCount: g.clientIds.length,
+    postcodeCount: g.postcodeIds.length,
+    polygonCount: g.polygonIds.length,
+    autoBook: g.autoBook,
+    hasActiveLinehaul: g.linehauls.some((l) => l.active === true),
+  };
 }

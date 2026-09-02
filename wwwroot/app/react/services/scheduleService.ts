@@ -43,6 +43,29 @@ export interface ScheduleLinehaul {
   dropOffLocationId: number | null;
 }
 
+/** Slim projection returned by GET /schedules for the list table.
+ *  Detail (full day-windows / zones / linehauls / junction ids) is
+ *  fetched on demand via scheduleService.detail(name, legacyClientId)
+ *  when the operator opens the edit or copy modal. */
+export interface ScheduleGroupSummary {
+  name: string | null;
+  legacyClientId: number | null;
+  legacyClientCode: string | null;
+  regionId: number;
+  regionName: string | null;
+  speedId: number | null;
+  speedName: string | null;
+  /** Active DayOfWeek values (1=Mon..7=Sun), ordered ascending.
+   *  Frontend renders the M-T-W-T-F-S-S chip strip from this. */
+  activeDays: number[];
+  activeZonesCount: number;
+  clientCount: number;
+  postcodeCount: number;
+  polygonCount: number;
+  autoBook: boolean | null;
+  hasActiveLinehaul: boolean;
+}
+
 export interface ScheduleGroup {
   name: string | null;
   /** Populated for legacy per-client override rows only. Null for new
@@ -179,11 +202,18 @@ export interface ScheduleCopyBody {
 }
 
 export const scheduleService = {
-  /** List schedule groups. Pass clientCode (preferred - operators use
-   *  codes like "ACME") or clientId. Omit both for the default view. */
+  /** List schedule groups (slim summary shape). Pass clientCode
+   *  (preferred - operators use codes like "ACME") or clientId. Omit
+   *  both for the default view. Use detail(name, legacyClientId) to
+   *  fetch the full group when opening an edit / copy modal. */
   list: (opts?: { clientCode?: string; clientId?: number }) =>
-    request<{ response: ScheduleGroup[] }>(
+    request<{ response: ScheduleGroupSummary[] }>(
       `/schedules${buildQuery({ clientCode: opts?.clientCode, clientId: opts?.clientId })}`),
+  /** Full detail for one group. Called on-demand from the table row
+   *  click so the initial list load stays slim. */
+  detail: (name: string, legacyClientId?: number | null) =>
+    request<{ response: ScheduleGroup }>(
+      `/schedules/detail${buildQuery({ name, legacyClientId: legacyClientId ?? undefined })}`),
   lookups: () => request<{ response: ScheduleLookups }>('/schedules/lookups'),
   upsert: (body: ScheduleGroupUpsertBody) =>
     request<{ response: ScheduleGroup }>('/schedules', {
