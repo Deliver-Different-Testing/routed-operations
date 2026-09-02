@@ -73,6 +73,13 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
         }
     }
 
+    /// <summary>Resolve postcode → ZipPolygon ids the Schedule editor map
+    /// should render. See PostcodesForScheduleRequest for the input shape.
+    /// Reads only - unauthenticated / read-tier operators can call it.</summary>
+    [HttpPost("postcodes-for-schedule")]
+    public async Task<IActionResult> GetPostcodesForSchedule([FromBody] PostcodesForScheduleRequest req) =>
+        await Wrap(() => svc.GetPostcodesForScheduleAsync(req));
+
     // ─── DEPOT ACTIVATE / DEACTIVATE ─────────────────────────────────────
     // Full depot maintenance (address, GPS, audit) stays in AdminManager.
     // Schedules module only exposes the on/off toggle operators use to

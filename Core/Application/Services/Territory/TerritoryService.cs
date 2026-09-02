@@ -485,6 +485,68 @@ public class TerritoryService(
             throw new InvalidOperationException("Name is required.");
     }
 
+    /// <summary>Resolve the postcodes the Schedule editor map should
+    /// render. Two buckets:
+    ///   * Bound = ZipPolygon rows whose Zip matches one of the passed
+    ///     BoundPostcodes ints (the schedule's individual-postcode
+    ///     junction).
+    ///   * ZoneDerived = ZipPolygon rows for postcodes matched via
+    ///     BulkZonePostcode on (DepotId + Zone IN zones). Excludes any
+    ///     postcode already in the bound set to keep the wire tidy.
+    /// Empty input on either side just returns empty for that bucket -
+    /// caller can skip the second fetch.</summary>
+    public async Task<PostcodesForScheduleResponse> GetPostcodesForScheduleAsync(PostcodesForScheduleRequest req)
+    {
+        var bound = new List<int>();
+        var zoneDerived = new List<int>();
+
+        // Postcode ints -> string comparison for the ZipPolygon.Zip
+        // join. NZ postcodes are 4-digit; US zips are 5-digit; both
+        // survive int.ToString() as-is because we never carry leading
+        // zeros through the int type. If a tenant has zero-padded NZ
+        // postcodes (e.g. "0510") stored as int 510, this WOULD miss
+        // them - flag as a follow-up if it bites.
+        if (req.BoundPostcodes?.Count > 0)
+        {
+            var boundStrs = req.BoundPostcodes.Select(p => p.ToString()).Distinct().ToList();
+            bound = await Context.ZipPolygons.AsNoTracking()
+                .Where(z => z.Zip != null && boundStrs.Contains(z.Zip))
+                .Select(z => z.ZipPolygonId)
+                .ToListAsync();
+        }
+
+        if (req.DepotId.HasValue && req.Zones?.Count > 0)
+        {
+            var depot = req.DepotId.Value;
+            var zoneList = req.Zones.Distinct().ToList();
+            // Two-step: (1) postcode ints for (depot, zones); (2)
+            // ZipPolygon ids by string join. Kept as two round-trips so
+            // the second is EF-translatable (Contains over a small
+            // in-memory list).
+            var derivedInts = await Context.BulkZonePostcodes.AsNoTracking()
+                .Where(p => p.DepotId == depot && zoneList.Contains(p.Zone))
+                .Select(p => p.PostCode)
+                .Distinct()
+                .ToListAsync();
+            // Exclude postcodes already in the bound set - avoid double
+            // colour on the map.
+            var derivedStrs = derivedInts
+                .Where(p => !req.BoundPostcodes.Contains(p))
+                .Select(p => p.ToString())
+                .Distinct()
+                .ToList();
+            if (derivedStrs.Count > 0)
+            {
+                zoneDerived = await Context.ZipPolygons.AsNoTracking()
+                    .Where(z => z.Zip != null && derivedStrs.Contains(z.Zip))
+                    .Select(z => z.ZipPolygonId)
+                    .ToListAsync();
+            }
+        }
+
+        return new PostcodesForScheduleResponse(bound, zoneDerived);
+    }
+
     // ─── DEPOT ACTIVATE / DEACTIVATE ────────────────────────────────────
     // Full depot CRUD (address, GPS, audit) stays in AdminManager - that's
     // the shared surface across ClientManager + AdminManager + DespatchWeb.

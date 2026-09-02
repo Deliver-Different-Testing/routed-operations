@@ -126,6 +126,21 @@ export interface PolygonBindBody {
   postcodeGroupId: number | null;
 }
 
+/** Resolve postcode ZipPolygon rows the Schedule editor map should
+ *  render. Backend joins BulkZonePostcode -> ZipPolygon by depot + zone
+ *  for the zone-derived bucket and by postcode ints for the bound
+ *  bucket. Empty arrays are fine on either side. */
+export interface PostcodesForScheduleBody {
+  depotId: number | null;
+  zones: number[];
+  boundPostcodes: number[];
+}
+
+export interface PostcodesForScheduleResponse {
+  boundZipPolygonIds: number[];
+  zoneDerivedZipPolygonIds: number[];
+}
+
 // Small helper - keeps write-method bodies terse below.
 const write = <TResp, TBody>(url: string, method: 'POST' | 'PUT' | 'DELETE', body?: TBody) =>
   request<{ response: TResp }>(url, body === undefined
@@ -194,4 +209,11 @@ export const territoryService = {
     request<{ response: BoundPolygon[] }>(`/territory/postcode-groups/${postcodeGroupId}/polygons`),
   bindPolygon: (polygonId: number, b: PolygonBindBody) =>
     write<BoundPolygon, PolygonBindBody>(`/territory/polygons/${polygonId}/bind`, 'POST', b),
+
+  /** Resolve postcode ZipPolygon ids for the Schedule editor map (both
+   *  the bound-directly and the zone-derived buckets). Empty input on
+   *  either side returns empty in that bucket. */
+  postcodesForSchedule: (b: PostcodesForScheduleBody) =>
+    write<PostcodesForScheduleResponse, PostcodesForScheduleBody>(
+      '/territory/postcodes-for-schedule', 'POST', b),
 };

@@ -29,15 +29,34 @@ public class SchedulesController(ScheduleService svc) : BaseController
     {
         try
         {
-            List<Core.Application.Dtos.Schedule.ScheduleGroupDto> list;
+            List<Core.Application.Dtos.Schedule.ScheduleGroupSummaryDto> list;
             if (!string.IsNullOrWhiteSpace(clientCode))
-                list = await svc.GetByClientCodeAsync(clientCode);
+                list = await svc.ListSummaryByClientCodeAsync(clientCode);
             else
             {
                 var normalized = clientId.HasValue && clientId.Value > 0 ? clientId : null;
-                list = await svc.GetAsync(normalized);
+                list = await svc.ListSummaryAsync(normalized);
             }
             return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>Full detail for one group. Fetched on-demand when the
+    /// operator opens the edit or copy modal - keeps the list endpoint
+    /// slim.</summary>
+    [HttpGet("detail")]
+    public async Task<IActionResult> GetDetail(
+        [FromQuery] string name,
+        [FromQuery] int? legacyClientId = null)
+    {
+        try
+        {
+            var group = await svc.GetDetailAsync(name, legacyClientId);
+            return Ok(new { response = group });
         }
         catch (InvalidOperationException ex)
         {

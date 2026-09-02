@@ -54,3 +54,24 @@ public class PolygonBindRequest
     public int? ZoneNameId { get; set; }
     public int? PostcodeGroupId { get; set; }
 }
+
+/// <summary>Resolve which ZipPolygon rows the Schedule editor map should
+/// render for the currently-edited schedule. Splits into two buckets so
+/// the map can paint bound (directly-junctioned) postcodes distinctly
+/// from zone-derived postcodes (matched via BulkZonePostcode on the
+/// schedule's destination depot).</summary>
+public class PostcodesForScheduleRequest
+{
+    /// <summary>Destination depot for the schedule (TblBulkRunSchedule.Region).</summary>
+    public int? DepotId { get; set; }
+    /// <summary>Active zone numbers on the schedule (BulkZoneSchedule.Zone
+    /// where Active=true).</summary>
+    public List<int> Zones { get; set; } = new();
+    /// <summary>Postcode ints bound via tblSchedulePostcode. Matched by
+    /// value against ZipPolygon.Zip.</summary>
+    public List<int> BoundPostcodes { get; set; } = new();
+}
+
+public record PostcodesForScheduleResponse(
+    List<int> BoundZipPolygonIds,
+    List<int> ZoneDerivedZipPolygonIds);
