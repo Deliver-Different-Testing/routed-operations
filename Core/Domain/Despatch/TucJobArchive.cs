@@ -42,10 +42,46 @@ public class TucJobArchive
     [Column("ucjbCourierID")]         public int?     UcjbCourierId { get; set; }
     [Column("ucjbClientRefa")]        public string   UcjbClientRefa { get; set; }
     [Column("ucjbClientRefb")]        public string   UcjbClientRefb { get; set; }
+    [Column("ucjbClientRefc")]        public string   UcjbClientRefc { get; set; }
     [Column("ucjbOurRef")]            public string   UcjbOurRef { get; set; }
     [Column("ucjbClientCode")]        public string   UcjbClientCode { get; set; }
     [Column("ucjbPODName")]           public string   UcjbPodname { get; set; }
     [Column("ucjbNotes")]             public string   UcjbNotes { get; set; }
+    [Column("ucjbContactPhone")]      public string   UcjbContactPhone { get; set; }
+    [Column("ucjbOpID")]              public int?     UcjbOpId { get; set; }
+
+    // ---- Extra contact fields exposed by the historic uploader so
+    // pickup + delivery parties are not collapsed into a single Company
+    // column (Steve 2026-09-03). All nullable.
+    [Column("PickUpFromContact")]     public string   PickUpFromContact { get; set; }
+    [Column("PickUpFromPhone")]       public string   PickUpFromPhone { get; set; }
+    [Column("DeliverToContact")]      public string   DeliverToContact { get; set; }
+    [Column("DeliverToPhone")]        public string   DeliverToPhone { get; set; }
+
+    // ---- Long-form notes + descriptive fields ----
+    [Column("ClientNotes")]           public string   ClientNotes { get; set; }
+    [Column("InternalNotes")]         public string   InternalNotes { get; set; }
+    [Column("Connote")]               public string   Connote { get; set; }
+    [Column("Barcode")]               public string   Barcode { get; set; }
+    [Column("CustomJobName")]         public string   CustomJobName { get; set; }
+    [Column("RunName")]               public string   RunName { get; set; }
+    [Column("ScheduleName")]          public string   ScheduleName { get; set; }
+
+    // ---- Timing / milestone fields ----
+    [Column("RequiredDeliveryTime")]  public DateTime? RequiredDeliveryTime { get; set; }
+    [Column("DeliverByTime")]         public DateTime? DeliverByTime { get; set; }
+    [Column("PickupArrivalTime")]     public DateTime? PickupArrivalTime { get; set; }
+    [Column("DeliveryArrivalTime")]   public DateTime? DeliveryArrivalTime { get; set; }
+
+    // ---- Extra reference columns (TextRef1..4 varchar 50, NumRef1..4 int) ----
+    [Column("TextRef1")]              public string   TextRef1 { get; set; }
+    [Column("TextRef2")]              public string   TextRef2 { get; set; }
+    [Column("TextRef3")]              public string   TextRef3 { get; set; }
+    [Column("TextRef4")]              public string   TextRef4 { get; set; }
+    [Column("NumRef1")]               public int?     NumRef1 { get; set; }
+    [Column("NumRef2")]               public int?     NumRef2 { get; set; }
+    [Column("NumRef3")]               public int?     NumRef3 { get; set; }
+    [Column("NumRef4")]               public int?     NumRef4 { get; set; }
 
     // ---- Completed-job defaults (all historic rows) ----
     [Column("ucjbStatus")]            public int?     UcjbStatus { get; set; }

@@ -229,6 +229,46 @@ public class HistoricArchiveService(
                 canonicalToHeader[kv.Value] = kv.Key;
         }
 
+        // ---- preload name -> ID lookups for text-resolvable FKs ----
+        //
+        // Steve 2026-09-03: OTG-style CSVs ship "Service" + "Vehicle" as
+        // text names (e.g. "VAN SERVICE", "Van"), not the pre-resolved
+        // integer IDs the archive columns want. Rather than force the
+        // operator to hand-resolve every row, we hydrate two tenant-local
+        // lookup dicts here (single query each - both tables are tiny)
+        // and BuildRow uses them to translate ServiceName / VehicleName
+        // to UcjbSpeed / UcjbSize.
+        //
+        // Case-insensitive on the name key. Duplicate names collapse to
+        // the FIRST id we see (StringComparer.OrdinalIgnoreCase +
+        // GroupBy first-wins) - the alternative would throw at commit
+        // and reject every row, which is worse UX than a soft dedupe.
+        // Unresolved names on a given row silently leave the FK NULL:
+        // operators can spot missing sizes/speeds in the batch drill-
+        // down and rerun with corrected data.
+        Dictionary<string, int> serviceNameToSpeedId;
+        Dictionary<string, int> vehicleNameToSizeId;
+        await using (var lookupCtx = await contextFactory.CreateDbContextAsync())
+        {
+            serviceNameToSpeedId = await lookupCtx.TucJobTypes
+                .AsNoTracking()
+                .Where(t => t.UcjtName != null)
+                .Select(t => new { t.UcjtName, t.UcjtId })
+                .ToListAsync()
+                .ContinueWith(tk => tk.Result
+                    .GroupBy(x => x.UcjtName.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First().UcjtId, StringComparer.OrdinalIgnoreCase));
+
+            vehicleNameToSizeId = await lookupCtx.VehicleSizes
+                .AsNoTracking()
+                .Where(v => v.VehicleName != null)
+                .Select(v => new { v.VehicleName, v.VehicleSizeId })
+                .ToListAsync()
+                .ContinueWith(tk => tk.Result
+                    .GroupBy(x => x.VehicleName.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First().VehicleSizeId, StringComparer.OrdinalIgnoreCase));
+        }
+
         // ---- build TucJobArchive rows in memory + collect per-row errors ----
         var toInsert = new List<TucJobArchive>(request.Rows.Count);
         var errors = new List<HistoricArchiveRowError>();
@@ -237,7 +277,7 @@ public class HistoricArchiveService(
             var raw = request.Rows[i];
             try
             {
-                var row = BuildRow(raw, canonicalToHeader);
+                var row = BuildRow(raw, canonicalToHeader, serviceNameToSpeedId, vehicleNameToSizeId);
                 toInsert.Add(row);
             }
             catch (Exception ex)
@@ -326,9 +366,16 @@ public class HistoricArchiveService(
     // Build one TucJobArchive from a raw row + operator mapping. Throws on
     // parse / cast failures - the caller catches per-row and records as a
     // rejection.
+    //
+    // serviceNameToSpeedId / vehicleNameToSizeId are the preloaded
+    // tenant-local name -> ID dicts hydrated by CommitAsync. When the
+    // operator maps a ServiceName / VehicleName column, BuildRow looks
+    // the value up in the dict; unresolved names leave the FK NULL.
     private static TucJobArchive BuildRow(
         Dictionary<string, string?> raw,
-        Dictionary<string, string> canonicalToHeader)
+        Dictionary<string, string> canonicalToHeader,
+        Dictionary<string, int> serviceNameToSpeedId,
+        Dictionary<string, int> vehicleNameToSizeId)
     {
         var jobNumber = RequireString(raw, canonicalToHeader, HistoricArchiveField.JobNumber);
         var jobDate = RequireDate(raw, canonicalToHeader, HistoricArchiveField.JobDate);
@@ -402,16 +449,79 @@ public class HistoricArchiveService(
             PpdExclusiveAmount = OptDecimal(raw, canonicalToHeader, HistoricArchiveField.PpdExclusiveAmount),
             RawBaseAmount = OptDecimal(raw, canonicalToHeader, HistoricArchiveField.RawBaseAmount),
 
-            // address bag (best-effort - all nullable)
+            // address bag (best-effort - all nullable). Line5 = city,
+            // Line6 = state (new 2026-09-03), Line7 = postcode/zip.
             PickupAddressLine1 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupAddress1),
             PickupAddressLine2 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupAddress2),
+            PickupAddressLine3 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupAddress3),
+            PickupAddressLine4 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupAddress4),
             PickupAddressLine5 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupAddressCity),
+            PickupAddressLine6 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupState),
             PickupAddressLine7 = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupPostCode),
             DeliveryAddressLine1 = OptString(raw, canonicalToHeader, HistoricArchiveField.CustomerName),
             DeliveryAddressLine2 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryAddress1),
             DeliveryAddressLine3 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryAddress2),
+            DeliveryAddressLine4 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryAddress4),
             DeliveryAddressLine5 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryAddressCity),
+            DeliveryAddressLine6 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryState),
             DeliveryAddressLine7 = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryPostCode),
+
+            // contact bag (Steve 2026-09-03: expose sender + receiver
+            // parties separately so imports do not collapse them into
+            // one Company / Notes column).
+            //
+            // PickupContact + PickupCompany both target PickUpFromContact
+            // - last-writer-wins if the operator maps both. PickupContact
+            //   is more literal for the canonical name; PickupCompany
+            //   matches vendor CSV headers ("Pickup Company").
+            PickUpFromContact = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupContact)
+                              ?? OptString(raw, canonicalToHeader, HistoricArchiveField.PickupCompany),
+            PickUpFromPhone   = OptString(raw, canonicalToHeader, HistoricArchiveField.PickupPhone),
+            DeliverToContact  = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryContact),
+            DeliverToPhone    = OptString(raw, canonicalToHeader, HistoricArchiveField.DeliveryPhone),
+            UcjbContact       = OptString(raw, canonicalToHeader, HistoricArchiveField.Contact),
+            UcjbContactPhone  = OptString(raw, canonicalToHeader, HistoricArchiveField.ContactPhone),
+
+            // long-form notes + descriptive fields
+            ClientNotes       = OptString(raw, canonicalToHeader, HistoricArchiveField.ClientNotes),
+            InternalNotes     = OptString(raw, canonicalToHeader, HistoricArchiveField.InternalNotes),
+            Connote           = OptString(raw, canonicalToHeader, HistoricArchiveField.Connote),
+            Barcode           = OptString(raw, canonicalToHeader, HistoricArchiveField.Barcode),
+            CustomJobName     = OptString(raw, canonicalToHeader, HistoricArchiveField.CustomJobName),
+            RunName           = OptString(raw, canonicalToHeader, HistoricArchiveField.RunName),
+            ScheduleName      = OptString(raw, canonicalToHeader, HistoricArchiveField.ScheduleName),
+
+            // extra references
+            UcjbClientRefc    = OptString(raw, canonicalToHeader, HistoricArchiveField.ClientRefC),
+            TextRef1          = OptString(raw, canonicalToHeader, HistoricArchiveField.TextRef1),
+            TextRef2          = OptString(raw, canonicalToHeader, HistoricArchiveField.TextRef2),
+            TextRef3          = OptString(raw, canonicalToHeader, HistoricArchiveField.TextRef3),
+            TextRef4          = OptString(raw, canonicalToHeader, HistoricArchiveField.TextRef4),
+            NumRef1           = OptInt(raw, canonicalToHeader, HistoricArchiveField.NumRef1),
+            NumRef2           = OptInt(raw, canonicalToHeader, HistoricArchiveField.NumRef2),
+            NumRef3           = OptInt(raw, canonicalToHeader, HistoricArchiveField.NumRef3),
+            NumRef4           = OptInt(raw, canonicalToHeader, HistoricArchiveField.NumRef4),
+
+            // timing / milestone
+            RequiredDeliveryTime = OptDate(raw, canonicalToHeader, HistoricArchiveField.RequiredDeliveryTime),
+            DeliverByTime        = OptDate(raw, canonicalToHeader, HistoricArchiveField.DeliverByTime),
+            PickupArrivalTime    = OptDate(raw, canonicalToHeader, HistoricArchiveField.PickupArrivalTime),
+            DeliveryArrivalTime  = OptDate(raw, canonicalToHeader, HistoricArchiveField.DeliveryArrivalTime),
+
+            // service / booking metadata.
+            //
+            // UcjbSpeed: prefer the explicit Speed int (operator has
+            // already resolved the ID) over the ServiceName lookup so
+            // callers who provide both aren't overridden. If neither is
+            // mapped or the ServiceName can't be resolved, the FK stays
+            // null and the row imports without a speed.
+            UcjbSpeed         = OptInt(raw, canonicalToHeader, HistoricArchiveField.Speed)
+                              ?? LookupOptional(raw, canonicalToHeader, HistoricArchiveField.ServiceName, serviceNameToSpeedId),
+            UcjbOpId          = OptInt(raw, canonicalToHeader, HistoricArchiveField.BookedBy),
+            UcjbSize          = LookupOptional(raw, canonicalToHeader, HistoricArchiveField.VehicleName, vehicleNameToSizeId),
+
+            // extra money pass-through
+            CourierPercentage = OptDecimal(raw, canonicalToHeader, HistoricArchiveField.CourierPercentage),
         };
     }
 
@@ -731,6 +841,25 @@ public class HistoricArchiveService(
     {
         return OptDate(raw, map, field)
             ?? throw new InvalidOperationException($"Required field '{field}' is missing or not a valid date.");
+    }
+
+    /// <summary>Resolve a text name column to an integer FK via the
+    /// preloaded lookup dict. Returns null if the field is unmapped,
+    /// the value is blank, or the name is not present in the dict
+    /// (case-insensitive match; leading/trailing whitespace trimmed).
+    /// Deliberately does NOT throw on unresolved names - historic
+    /// imports commonly carry legacy service / vehicle labels that
+    /// don't exist in the current catalogue, and losing the FK is
+    /// less destructive than rejecting the whole row.</summary>
+    private static int? LookupOptional(
+        Dictionary<string, string?> raw,
+        Dictionary<string, string> map,
+        string field,
+        Dictionary<string, int> lookup)
+    {
+        var v = Get(raw, map, field);
+        if (string.IsNullOrWhiteSpace(v)) return null;
+        return lookup.TryGetValue(v.Trim(), out var id) ? id : (int?)null;
     }
 
     // ---- request-scoped context ----
