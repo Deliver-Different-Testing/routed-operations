@@ -46,8 +46,11 @@ export function RvFilterBar({ value, onChange, onRefresh, isRefreshing, extraAct
   // Audit 7.4: courier filter. Fetch active couriers for the day so
   // operators can narrow the Run List to jobs assigned to a specific
   // courier. Only shown to admin (NP operators can't see other NPs).
+  // Tenant id in the key (2026-09-04) so a hub tenant-switch on the
+  // shared cookie can't leak one tenant's courier list into another.
+  // See useRouteViewerLookups for the full rationale.
   const courierList = useQuery({
-    queryKey: ['rv-filter-couriers', value.runDate],
+    queryKey: ['rv-filter-couriers', user.currentTenantId ?? 0, value.runDate],
     queryFn: () => routeViewerService.getActiveCouriers(value.runDate),
     enabled: !user.isNetworkPartner && !!value.runDate,
     staleTime: 30_000,

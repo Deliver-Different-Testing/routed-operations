@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { ConfirmProvider } from './context/ConfirmContext';
@@ -40,18 +41,26 @@ vi.mock('./pages/route-viewer/Mobile', () => ({ default: () => <div>PAGE:Mobile<
 import App from './App';
 
 function renderAt(route: string) {
+  // Fresh QueryClient per render; AuthProvider now uses useQueryClient()
+  // for its tenant-drift guard so must live inside a QueryClientProvider
+  // (matches production tree in index.tsx).
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <MemoryRouter initialEntries={[route]}>
-      <AuthProvider>
-        <ToastProvider>
-          <ConfirmProvider>
-            <GlobalSearchProvider>
-              <App />
-            </GlobalSearchProvider>
-          </ConfirmProvider>
-        </ToastProvider>
-      </AuthProvider>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[route]}>
+        <AuthProvider>
+          <ToastProvider>
+            <ConfirmProvider>
+              <GlobalSearchProvider>
+                <App />
+              </GlobalSearchProvider>
+            </ConfirmProvider>
+          </ToastProvider>
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

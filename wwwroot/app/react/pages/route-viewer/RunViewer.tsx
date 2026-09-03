@@ -80,13 +80,23 @@ export default function RunViewer() {
   });
   const [viewMode, setViewMode] = useState<ViewMode>((stored as any).viewMode ?? 'Combined');
   const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
+  // Selection identity for the middle-pane Run Jobs grid uses
+  // tucJob.ucjbID (BulkJob.jobId), NOT tblBulkJob.BulkJobID. Synthetic
+  // Route runs have no tblBulkJob row so RVW_stpBulkRunJobs emits
+  // BulkJobID as NULL and the C# mapper coerces it to 0. Keying
+  // selection on bulkJobId therefore makes every row match at once
+  // (`selectedJobId === 0` is true for every row) and the JobDetail
+  // find() sticks on whichever synthetic row sorts first. jobId is
+  // guaranteed unique per row on both real-bulk and synthetic-route
+  // branches, so keying on it fixes both symptoms.
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; runId: number } | null>(null);
   const [topUpOpen, setTopUpOpen] = useState(false);
   // Multi-select on the runJobs grid so bulk actions from the job
   // context menu operate on N jobs. Ctrl/Cmd-click toggles; plain
   // click replaces. Selection is scoped to the currently drilled run
-  // - switching runs clears it.
+  // - switching runs clears it. Same jobId keying as selectedJobId
+  // above so synthetic rows can be individually multi-selected.
   const [selectedJobIds, setSelectedJobIds] = useState<number[]>([]);
   const [jobCtxMenu, setJobCtxMenu] = useState<{ x: number; y: number } | null>(null);
   // Arrow-key navigation follows whichever cockpit table the operator
@@ -182,7 +192,9 @@ export default function RunViewer() {
     if (!jobNumber || runsQuery.isLoading) return;
     routeViewerService.searchByJobNumber(jobNumber).then((match: any) => {
       if (!match) return;
-      setSelectedJobId(match.bulkJobId);
+      // selectedJobId is jobId (tucJob.ucjbID), not bulkJobId - see the
+      // state-declaration comment for the reason.
+      setSelectedJobId(match.jobId ?? null);
       if (match.bulkRunId != null) setSelectedRunIds([match.bulkRunId]);
       const next = new URLSearchParams(searchParams);
       next.delete('jobNumber');
@@ -222,13 +234,13 @@ export default function RunViewer() {
     setSiblingOverride(null);
   }, [runsQuery.data]);
 
-  const onSelectJob = useCallback((bulkJobId: number, mods: { ctrl: boolean }) => {
+  const onSelectJob = useCallback((jobId: number, mods: { ctrl: boolean }) => {
     if (mods.ctrl) {
-      setSelectedJobIds((prev) => prev.includes(bulkJobId) ? prev.filter((v) => v !== bulkJobId) : [...prev, bulkJobId]);
-      setSelectedJobId(bulkJobId);
+      setSelectedJobIds((prev) => prev.includes(jobId) ? prev.filter((v) => v !== jobId) : [...prev, jobId]);
+      setSelectedJobId(jobId);
     } else {
-      setSelectedJobIds([bulkJobId]);
-      setSelectedJobId(bulkJobId);
+      setSelectedJobIds([jobId]);
+      setSelectedJobId(jobId);
     }
     setSiblingOverride(null);   // primary click clears LH-leg override
     setSelectedCourier(null);   // primary click closes the courier map overlay
@@ -246,12 +258,12 @@ export default function RunViewer() {
     };
   }, [onSelectRun]);
 
-  const onJobContextMenu = useCallback((e: React.MouseEvent, bulkJobId: number) => {
+  const onJobContextMenu = useCallback((e: React.MouseEvent, jobId: number) => {
     e.preventDefault();
     // If right-clicked row isn't already in the selection, replace the
     // selection with just this row (matches legacy UX + master 7.10).
-    setSelectedJobIds((prev) => (prev.includes(bulkJobId) ? prev : [bulkJobId]));
-    setSelectedJobId(bulkJobId);
+    setSelectedJobIds((prev) => (prev.includes(jobId) ? prev : [jobId]));
+    setSelectedJobId(jobId);
     setJobCtxMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
@@ -317,7 +329,9 @@ export default function RunViewer() {
   // whose courierCode matches. Falls back to all runs when the
   // selected courier isn't in the current-day list.
   const courierListForFilter = useQuery({
-    queryKey: ['rv-filter-couriers', filters.runDate],
+    // Same tenant-scoped key shape as RvFilterBar so both share cache
+    // instead of duplicate-fetching, and both isolate per-tenant.
+    queryKey: ['rv-filter-couriers', user.currentTenantId ?? 0, filters.runDate],
     queryFn: () => routeViewerService.getActiveCouriers(filters.runDate),
     enabled: !user.isNetworkPartner && filters.courierId != null && !!filters.runDate,
     staleTime: 30_000,
@@ -357,9 +371,23 @@ export default function RunViewer() {
     setRjSort((cur) => (cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
   };
   const runJobs = useMemo(() => {
+    // Legacy homeControl.js `showJobInRun` (line 485-492) filters the
+    // Run Jobs grid by jobNumber suffix based on viewMode:
+    //   Inbound  = jobNumber ends with 'LHP' (pickup-leg children only)
+    //   Outbound = jobNumber does NOT end with 'LHP' (parent + DEL rows)
+    //   Combined = everything
+    // The backend SP (RVW_stpBulkRunJobs) does not take a group param,
+    // so this filter has to happen client-side. Steve reported on
+    // 2026-09-04 that RNO200 Inbound was showing all 9 rows instead of
+    // the 4 LHP jobs the legacy RunViewer surfaces.
     const filtered = rawRunJobs.filter((j: any) => {
       if (!rjShowCancelled && j.jobStatus === 'V') return false;
       if (!rjShowMultibox && j.multiboxParentId != null && j.multiboxParentId !== 0) return false;
+      if (viewMode !== 'Combined') {
+        const isLhp = /LHP$/i.test((j.jobNumber ?? '').trim());
+        if (viewMode === 'Inbound' && !isLhp) return false;
+        if (viewMode === 'Outbound' && isLhp) return false;
+      }
       return true;
     });
     const sorted = filtered.slice().sort((a: any, b: any) => {
@@ -375,7 +403,18 @@ export default function RunViewer() {
       return 0;
     });
     return sorted;
-  }, [rawRunJobs, rjShowCancelled, rjShowMultibox, rjSort]);
+  }, [rawRunJobs, rjShowCancelled, rjShowMultibox, rjSort, viewMode]);
+
+  // Currently-selected row + its bulkJobId. selectedJobId is jobId
+  // (tucJob.ucjbID) per the state-declaration note; bulkJobId is only
+  // meaningful for downstream fetches on real-bulk rows (RvJobDetail
+  // refresh, RvScanDetailBox scans, TopUpDialog). Synthetic rows have
+  // bulkJobId=0 and those fetches short-circuit or fall back to the
+  // in-memory row payload.
+  const selectedRow = selectedJobId != null
+    ? runJobs.find((j) => j.jobId === selectedJobId) ?? null
+    : null;
+  const selectedRowBulkJobId = selectedRow?.bulkJobId ?? null;
 
   // Currently-selected job payload used by the right-column Client
   // Intel box to look up per-mobile intel. Picks the sibling override
@@ -383,9 +422,7 @@ export default function RunViewer() {
   // to the primary runJobs cache entry. MUST be declared after
   // `runJobs` above - referencing it earlier hits a TDZ error at
   // render time the moment selectedJobId becomes non-null.
-  const selectedJobDetail = siblingOverride?.job
-    ?? (selectedJobId != null ? runJobs.find((j) => j.bulkJobId === selectedJobId) : null)
-    ?? null;
+  const selectedJobDetail = siblingOverride?.job ?? selectedRow;
 
   // Arrow-key nav resolves the visible id list for the focused table
   // and moves single-select to the prev/next row. On first press (no
@@ -405,7 +442,9 @@ export default function RunViewer() {
       }
     };
     if (focusedTable === 'runJobs') {
-      const ids = runJobs.map((j) => j.bulkJobId);
+      // jobId keys (see selectedJobId note) so arrow-nav lands on the
+      // unique row even on synthetic runs where bulkJobId is 0 for all.
+      const ids = runJobs.map((j) => j.jobId);
       if (ids.length === 0) return;
       const cur = selectedJobId != null ? ids.indexOf(selectedJobId) : -1;
       const next = cur < 0 ? (dir === 1 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, cur + dir));
@@ -502,6 +541,10 @@ export default function RunViewer() {
             }}
             onTopUp={() => {
               if (selectedJobId == null) { toast.show('Pick a job first to top it up.'); return; }
+              if (selectedRowBulkJobId == null || selectedRowBulkJobId <= 0) {
+                toast.show('Cannot top up a route-only job (no bulk row).');
+                return;
+              }
               setTopUpOpen(true);
             }}
             snapshotLayout={snapshotLayout}
@@ -682,8 +725,12 @@ export default function RunViewer() {
                       </thead>
                       <tbody>
                         {runJobs.map((j) => {
-                          const active = selectedJobId === j.bulkJobId;
-                          const multiSel = selectedJobIds.includes(j.bulkJobId);
+                          // Key selection styling on jobId (tucJob.ucjbID),
+                          // not bulkJobId - the latter is 0 for every row
+                          // on synthetic Route runs so bulkJobId keying
+                          // makes every row appear selected at once.
+                          const active = selectedJobId === j.jobId;
+                          const multiSel = selectedJobIds.includes(j.jobId);
                           // Legacy tenantDate / tenantDateTime filter behaviour:
                           //   NZ -> dd/MM/yyyy + HH:mm (24h)
                           //   US -> MM/dd/yyyy + h:mm AM/PM (12h)
@@ -693,17 +740,28 @@ export default function RunViewer() {
                           const rTime = tenantTimeFromSpString(j.bookTime, user.isUsTenant) || '-';
                           return (
                             <tr
-                              key={j.bulkJobId}
+                              key={j.jobId}
                               draggable={singleRunId != null && j.bulkJobId > 0}
                               onDragStart={(e) => {
                                 // Audit item 20: batch payload = "drop
                                 // this whole selection", so include every
                                 // multi-selected id when the dragged row
                                 // is part of it; otherwise just this row.
-                                const inSel = selectedJobIds.includes(j.bulkJobId);
+                                // selectedJobIds are jobIds (unique) but
+                                // the transfer-route payload needs
+                                // bulkJobIds; map + drop the zeros so
+                                // synthetic rows that can't be
+                                // transferred are filtered out.
+                                const inSel = selectedJobIds.includes(j.jobId);
                                 const jobIds = inSel && selectedJobIds.length > 1
-                                  ? selectedJobIds.slice()
-                                  : [j.bulkJobId];
+                                  ? selectedJobIds
+                                      .map((id) => runJobs.find((row) => row.jobId === id)?.bulkJobId ?? 0)
+                                      .filter((bid) => bid > 0)
+                                  : (j.bulkJobId > 0 ? [j.bulkJobId] : []);
+                                if (jobIds.length === 0) {
+                                  e.preventDefault();
+                                  return;
+                                }
                                 e.dataTransfer.setData(
                                   'application/rv-run-jobs',
                                   JSON.stringify({ fromRunId: singleRunId ?? 0, jobIds }),
@@ -735,8 +793,8 @@ export default function RunViewer() {
                                   }, 0);
                                 } catch { /* setDragImage unsupported - ignore */ }
                               }}
-                              onClick={(e) => onSelectJob(j.bulkJobId, { ctrl: e.ctrlKey || e.metaKey })}
-                              onContextMenu={(e) => onJobContextMenu(e, j.bulkJobId)}
+                              onClick={(e) => onSelectJob(j.jobId, { ctrl: e.ctrlKey || e.metaKey })}
+                              onContextMenu={(e) => onJobContextMenu(e, j.jobId)}
                               className={`cursor-pointer border-b border-border/50 ${
                                 active
                                   ? 'bg-brand-cyan/30'
@@ -784,19 +842,18 @@ export default function RunViewer() {
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={DEFAULT_LAYOUT.rvMidV![1]} minSize={15}>
                 <RvJobDetail
-                  bulkJobId={siblingOverride?.bulkJobId ?? selectedJobId}
+                  bulkJobId={siblingOverride?.bulkJobId ?? selectedRowBulkJobId}
                   selectedCourier={selectedCourier}
-                  initialJob={
-                    siblingOverride?.job ??
-                    (selectedJobId != null ? runJobs.find((j) => j.bulkJobId === selectedJobId) ?? null : null)
-                  }
+                  initialJob={siblingOverride?.job ?? selectedRow}
                   onPickSibling={(sib) => {
                     // If the sibling has a real tblBulkJob row, keep the
                     // selectedJobId flow so future refetches work. LH
                     // legs (bulkJobId=0) can only render via the
-                    // sibling payload override.
+                    // sibling payload override. selectedJobId is jobId
+                    // (tucJob.ucjbID), so pull sib.jobId to key the
+                    // primary-row selection back onto the sibling's row.
                     if (sib.bulkJobId > 0 && sib.job) {
-                      setSelectedJobId(sib.bulkJobId);
+                      setSelectedJobId(sib.jobId ?? null);
                       setSiblingOverride(null);
                     } else {
                       setSiblingOverride(sib);
@@ -890,7 +947,7 @@ export default function RunViewer() {
                 <RvMapBox
                   runDate={filters.runDate}
                   runJobs={runJobs}
-                  selectedJobId={selectedJobId}
+                  selectedJobId={selectedRowBulkJobId}
                   viewMode={viewMode}
                   runColorMap={runColorMap}
                   extraRunJobs={extraRunJobs}
@@ -918,7 +975,7 @@ export default function RunViewer() {
               </Panel>
               <PanelResizeHandle className="h-1" />
               <Panel defaultSize={DEFAULT_LAYOUT.rvRightV![1]} minSize={15}>
-                <RvScanDetailBox selectedJobId={selectedJobId} />
+                <RvScanDetailBox selectedJobId={selectedRowBulkJobId} />
               </Panel>
             </PanelGroup>
           </Panel>
@@ -940,7 +997,7 @@ export default function RunViewer() {
         <RvJobContextMenu
           x={jobCtxMenu.x}
           y={jobCtxMenu.y}
-          jobs={runJobs.filter((j) => selectedJobIds.includes(j.bulkJobId))}
+          jobs={runJobs.filter((j) => selectedJobIds.includes(j.jobId))}
           runDate={filters.runDate}
           onClose={() => setJobCtxMenu(null)}
           onDone={() => {
@@ -950,9 +1007,9 @@ export default function RunViewer() {
         />
       )}
 
-      {topUpOpen && selectedJobId != null && (
+      {topUpOpen && selectedRowBulkJobId != null && selectedRowBulkJobId > 0 && (
         <TopUpDialog
-          jobId={selectedJobId}
+          jobId={selectedRowBulkJobId}
           onClose={() => setTopUpOpen(false)}
           onBooked={() => { setTopUpOpen(false); toast.show('Top up booked.'); }}
         />

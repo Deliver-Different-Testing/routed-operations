@@ -1,23 +1,38 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen, renderHook } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen, renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
 import { AuthProvider, useAuth } from './AuthContext';
+import { server } from '../test/server';
 import type { AppUser } from '../types';
+
+function makeWrapper() {
+  // AuthProvider's tenant-drift guard uses useQueryClient(), so every test
+  // that mounts it must live inside a QueryClientProvider (matches the
+  // production tree in index.tsx).
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <AuthProvider>{children}</AuthProvider>
+    </QueryClientProvider>
+  );
+}
 
 describe('AuthContext', () => {
   it('AuthProvider renders its children', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <AuthProvider>
-        <span data-testid="child">hello</span>
-      </AuthProvider>
+      <QueryClientProvider client={client}>
+        <AuthProvider>
+          <span data-testid="child">hello</span>
+        </AuthProvider>
+      </QueryClientProvider>
     );
     expect(screen.getByTestId('child')).toHaveTextContent('hello');
   });
 
   it('useAuth returns the window.__APP_USER__ bootstrap value', () => {
-    const wrapper = ({ children }: { children: React.ReactNode }) => (
-      <AuthProvider>{children}</AuthProvider>
-    );
-    const { result } = renderHook(() => useAuth(), { wrapper });
+    const { result } = renderHook(() => useAuth(), { wrapper: makeWrapper() });
     expect(result.current.currentTenantId).toBe(1);
     expect(result.current.fullName).toBe('Test User');
     expect(result.current.email).toBe('test@example.com');
@@ -47,11 +62,13 @@ describe('AuthContext', () => {
       despatchWebBaseUrl: 'https://example.com',
     };
     (window as any).__APP_USER__ = custom;
+    // Echo the same tenant id so the drift guard doesn't try to reload.
+    server.use(
+      http.get('/api/session/current', () =>
+        HttpResponse.json({ currentTenantId: 42, email: 'override@example.com' })),
+    );
     try {
-      const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <AuthProvider>{children}</AuthProvider>
-      );
-      const { result } = renderHook(() => useAuth(), { wrapper });
+      const { result } = renderHook(() => useAuth(), { wrapper: makeWrapper() });
       expect(result.current).toEqual(custom);
     } finally {
       (window as any).__APP_USER__ = original;
@@ -62,10 +79,7 @@ describe('AuthContext', () => {
     const original = (window as any).__APP_USER__;
     delete (window as any).__APP_USER__;
     try {
-      const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <AuthProvider>{children}</AuthProvider>
-      );
-      const { result } = renderHook(() => useAuth(), { wrapper });
+      const { result } = renderHook(() => useAuth(), { wrapper: makeWrapper() });
       expect(result.current.currentTenantId).toBeNull();
       expect(result.current.fullName).toBeNull();
       expect(result.current.email).toBeNull();
@@ -86,5 +100,69 @@ describe('AuthContext', () => {
     expect(result.current.fullName).toBeNull();
     expect(result.current.isUsTenant).toBe(false);
     expect(result.current.isNetworkPartner).toBe(false);
+  });
+
+  it('purges stale rv-filters keys and reloads when /api/session/current echoes a different tenant', async () => {
+    const original = (window as any).__APP_USER__;
+    // Bootstrap says tenant 1. Server echo returns tenant 2 - drift detected.
+    (window as any).__APP_USER__ = {
+      ...(original ?? {}),
+      currentTenantId: 1,
+      email: 'test@example.com',
+    };
+    server.use(
+      http.get('/api/session/current', () =>
+        HttpResponse.json({ currentTenantId: 2, email: 'test@example.com' })),
+    );
+
+    // Seed localStorage with filter entries for two tenants: the OLD one
+    // (should be purged) and the NEW one the drift guard is about to
+    // reload us into (should be kept).
+    window.localStorage.setItem('rv-filters:1:test@example.com', '{"clientIds":[99]}');
+    window.localStorage.setItem('rv-filters:2:test@example.com', '{"clientIds":[7]}');
+    window.localStorage.setItem('other:key', 'untouched');
+
+    // jsdom's location.reload is not implemented by default - stub it out
+    // and assert we called it (also prevents the "not implemented" throw).
+    const reloadSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, reload: reloadSpy },
+    });
+
+    try {
+      renderHook(() => useAuth(), { wrapper: makeWrapper() });
+      await waitFor(() => expect(reloadSpy).toHaveBeenCalledTimes(1));
+      // Old-tenant filter entry gone; new-tenant entry preserved; unrelated
+      // key untouched.
+      expect(window.localStorage.getItem('rv-filters:1:test@example.com')).toBeNull();
+      expect(window.localStorage.getItem('rv-filters:2:test@example.com')).toBe('{"clientIds":[7]}');
+      expect(window.localStorage.getItem('other:key')).toBe('untouched');
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+      window.localStorage.removeItem('rv-filters:2:test@example.com');
+      window.localStorage.removeItem('other:key');
+      (window as any).__APP_USER__ = original;
+    }
+  });
+
+  it('does not reload when the echoed tenant matches the bootstrap tenant', async () => {
+    // Default handler echoes tenant 1 which matches the bootstrap.
+    const reloadSpy = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, reload: reloadSpy },
+    });
+    try {
+      renderHook(() => useAuth(), { wrapper: makeWrapper() });
+      // Give the async drift-check time to run. If it were going to
+      // reload, it would fire within a few ticks.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(reloadSpy).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    }
   });
 });
