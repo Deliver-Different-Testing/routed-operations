@@ -23,52 +23,131 @@ namespace RoutedOperations.Core.Application.Dtos.HistoricArchive;
 /// can pass the value straight through without a shared enum contract.</summary>
 public static class HistoricArchiveField
 {
-    public const string JobNumber           = "JobNumber";           // -> UcjbNumber
-    public const string JobDate             = "JobDate";             // -> UcjbDate (DateTime)
-    public const string PickupTime          = "PickupTime";          // -> UcjbTime (TimeSpan/DateTime)
-    public const string CompletedTime       = "CompletedTime";       // -> UcjbComplTime; falls back to JobDate if absent
-    public const string ClientCode          = "ClientCode";          // -> UcjbClientCode (used to look up UcjbClientId)
-    public const string ClientId            = "ClientId";            // -> UcjbClientId (bypass lookup if operator supplies the int)
-    public const string ClientRefA          = "ClientRefA";          // -> UcjbClientRefa
-    public const string ClientRefB          = "ClientRefB";          // -> UcjbClientRefb
-    public const string OurRef              = "OurRef";              // -> UcjbOurRef
-    public const string CustomerName        = "CustomerName";        // -> DeliveryAddressLine1
-    public const string DeliveryAddress1    = "DeliveryAddress1";    // -> DeliveryAddressLine2
-    public const string DeliveryAddress2    = "DeliveryAddress2";    // -> DeliveryAddressLine3
-    public const string DeliveryAddressCity = "DeliveryAddressCity"; // -> DeliveryAddressLine5
-    public const string DeliveryPostCode    = "DeliveryPostCode";    // -> DeliveryAddressLine7
-    public const string PickupAddress1      = "PickupAddress1";      // -> PickupAddressLine1
-    public const string PickupAddress2      = "PickupAddress2";      // -> PickupAddressLine2
-    public const string PickupAddressCity   = "PickupAddressCity";   // -> PickupAddressLine5
-    public const string PickupPostCode      = "PickupPostCode";      // -> PickupAddressLine7
-    public const string CourierCode         = "CourierCode";         // -> future lookup to tucCourier.uccrID (deferred)
-    public const string CourierId           = "CourierId";           // -> UcjbCourierId
-    public const string Amount              = "Amount";              // -> UcjbAmount
-    public const string Weight              = "Weight";              // -> UcjbWeight
-    public const string Quantity            = "Quantity";            // -> UcjbQty
-    public const string Notes               = "Notes";               // -> UcjbNotes
-    public const string PodName             = "PodName";             // -> UcjbPodname
-    public const string CourierPayment      = "CourierPayment";      // -> CourierPayment
-    public const string CourierFuel         = "CourierFuel";         // -> CourierFuel
-    public const string CourierBonus        = "CourierBonus";        // -> CourierBonus
-    public const string FuelSurchargeAmount = "FuelSurchargeAmount"; // -> FuelSurchargeAmount
-    public const string PpdAmount           = "PpdAmount";           // -> PpdAmount
-    public const string PpdExclusiveAmount  = "PpdExclusiveAmount";  // -> PpdExclusiveAmount
-    public const string RawBaseAmount       = "RawBaseAmount";       // -> RawBaseAmount
+    // Core job identity + timing
+    public const string JobNumber            = "JobNumber";            // -> UcjbNumber
+    public const string JobDate              = "JobDate";              // -> UcjbDate (DateTime)
+    public const string PickupTime           = "PickupTime";           // -> UcjbTime
+    public const string CompletedTime        = "CompletedTime";        // -> UcjbComplTime; falls back to JobDate if absent
+    public const string RequiredDeliveryTime = "RequiredDeliveryTime"; // -> RequiredDeliveryTime
+    public const string DeliverByTime        = "DeliverByTime";        // -> DeliverByTime
+    public const string PickupArrivalTime    = "PickupArrivalTime";    // -> PickupArrivalTime
+    public const string DeliveryArrivalTime  = "DeliveryArrivalTime";  // -> DeliveryArrivalTime
+
+    // Client + references
+    public const string ClientCode           = "ClientCode";           // -> UcjbClientCode (used to look up UcjbClientId)
+    public const string ClientId             = "ClientId";             // -> UcjbClientId (bypass lookup if operator supplies the int)
+    public const string ClientRefA           = "ClientRefA";           // -> UcjbClientRefa
+    public const string ClientRefB           = "ClientRefB";           // -> UcjbClientRefb
+    public const string ClientRefC           = "ClientRefC";           // -> UcjbClientRefc
+    public const string OurRef               = "OurRef";               // -> UcjbOurRef
+    public const string Connote              = "Connote";              // -> Connote
+    public const string Barcode              = "Barcode";              // -> Barcode
+    public const string CustomJobName        = "CustomJobName";        // -> CustomJobName
+    public const string TextRef1             = "TextRef1";             // -> TextRef1
+    public const string TextRef2             = "TextRef2";             // -> TextRef2
+    public const string TextRef3             = "TextRef3";             // -> TextRef3
+    public const string TextRef4             = "TextRef4";             // -> TextRef4
+    public const string NumRef1              = "NumRef1";              // -> NumRef1
+    public const string NumRef2              = "NumRef2";              // -> NumRef2
+    public const string NumRef3              = "NumRef3";              // -> NumRef3
+    public const string NumRef4              = "NumRef4";              // -> NumRef4
+
+    // Delivery party + address
+    public const string CustomerName         = "CustomerName";         // -> DeliveryAddressLine1 (delivery company)
+    public const string DeliveryAddress1     = "DeliveryAddress1";     // -> DeliveryAddressLine2 (street line 1)
+    public const string DeliveryAddress2     = "DeliveryAddress2";     // -> DeliveryAddressLine3 (unit/suite)
+    public const string DeliveryAddress4     = "DeliveryAddress4";     // -> DeliveryAddressLine4 (extra address line, unused prior)
+    public const string DeliveryAddressCity  = "DeliveryAddressCity";  // -> DeliveryAddressLine5
+    public const string DeliveryState        = "DeliveryState";        // -> DeliveryAddressLine6
+    public const string DeliveryPostCode     = "DeliveryPostCode";     // -> DeliveryAddressLine7
+    public const string DeliveryContact      = "DeliveryContact";      // -> DeliverToContact
+    public const string DeliveryPhone        = "DeliveryPhone";        // -> DeliverToPhone
+
+    // Pickup party + address
+    public const string PickupCompany        = "PickupCompany";        // -> PickUpFromContact (pickup name/company/contact)
+    public const string PickupAddress1       = "PickupAddress1";       // -> PickupAddressLine1
+    public const string PickupAddress2       = "PickupAddress2";       // -> PickupAddressLine2
+    public const string PickupAddress3       = "PickupAddress3";       // -> PickupAddressLine3
+    public const string PickupAddress4       = "PickupAddress4";       // -> PickupAddressLine4
+    public const string PickupAddressCity    = "PickupAddressCity";    // -> PickupAddressLine5
+    public const string PickupState          = "PickupState";          // -> PickupAddressLine6
+    public const string PickupPostCode       = "PickupPostCode";       // -> PickupAddressLine7
+    public const string PickupContact        = "PickupContact";        // -> PickUpFromContact (same column as PickupCompany; last-writer-wins if both mapped)
+    public const string PickupPhone          = "PickupPhone";          // -> PickUpFromPhone
+
+    // Order-level contact (client-side)
+    public const string Contact              = "Contact";              // -> UcjbContact
+    public const string ContactPhone         = "ContactPhone";         // -> UcjbContactPhone
+
+    // Courier
+    public const string CourierCode          = "CourierCode";          // -> future lookup to tucCourier.uccrID (deferred)
+    public const string CourierId            = "CourierId";            // -> UcjbCourierId
+
+    // Freight / product
+    public const string Amount               = "Amount";               // -> UcjbAmount
+    public const string Weight               = "Weight";               // -> UcjbWeight
+    public const string Quantity             = "Quantity";             // -> UcjbQty
+
+    // Notes + POD
+    public const string Notes                = "Notes";                // -> UcjbNotes
+    public const string ClientNotes          = "ClientNotes";          // -> ClientNotes
+    public const string InternalNotes        = "InternalNotes";        // -> InternalNotes
+    public const string PodName              = "PodName";              // -> UcjbPodname
+
+    // Money pass-through
+    public const string CourierPayment       = "CourierPayment";       // -> CourierPayment
+    public const string CourierFuel          = "CourierFuel";          // -> CourierFuel
+    public const string CourierBonus         = "CourierBonus";         // -> CourierBonus
+    public const string CourierPercentage    = "CourierPercentage";    // -> CourierPercentage
+    public const string FuelSurchargeAmount  = "FuelSurchargeAmount";  // -> FuelSurchargeAmount
+    public const string PpdAmount            = "PpdAmount";            // -> PpdAmount
+    public const string PpdExclusiveAmount   = "PpdExclusiveAmount";   // -> PpdExclusiveAmount
+    public const string RawBaseAmount        = "RawBaseAmount";        // -> RawBaseAmount
+
+    // Service / booking metadata
+    public const string Speed                = "Speed";                // -> UcjbSpeed (int, operator supplies pre-resolved ID)
+    public const string ServiceName          = "ServiceName";          // -> UcjbSpeed via tucJobType.ucjtName lookup at commit
+    public const string VehicleName          = "VehicleName";          // -> UcjbSize via VehicleSize.VehicleName lookup at commit
+    public const string BookedBy             = "BookedBy";             // -> UcjbOpId (Ops/CSR who booked)
+    public const string RunName              = "RunName";              // -> RunName
+    public const string ScheduleName         = "ScheduleName";         // -> ScheduleName
 
     /// <summary>Every canonical field the mapper knows about. Sent to the
     /// frontend so the Map Columns UI can render the dropdown of choices
-    /// without hard-coding the list twice.</summary>
+    /// without hard-coding the list twice. Order is used as the default
+    /// display order when the UI does not apply its own group ordering.</summary>
     public static readonly string[] All =
     [
+        // Core job + timing
         JobNumber, JobDate, PickupTime, CompletedTime,
-        ClientCode, ClientId, ClientRefA, ClientRefB, OurRef,
-        CustomerName, DeliveryAddress1, DeliveryAddress2, DeliveryAddressCity, DeliveryPostCode,
-        PickupAddress1, PickupAddress2, PickupAddressCity, PickupPostCode,
+        RequiredDeliveryTime, DeliverByTime, PickupArrivalTime, DeliveryArrivalTime,
+        // Client + references
+        ClientCode, ClientId,
+        ClientRefA, ClientRefB, ClientRefC, OurRef,
+        Connote, Barcode, CustomJobName,
+        TextRef1, TextRef2, TextRef3, TextRef4,
+        NumRef1, NumRef2, NumRef3, NumRef4,
+        // Delivery
+        CustomerName, DeliveryAddress1, DeliveryAddress2, DeliveryAddress4,
+        DeliveryAddressCity, DeliveryState, DeliveryPostCode,
+        DeliveryContact, DeliveryPhone,
+        // Pickup
+        PickupCompany, PickupAddress1, PickupAddress2, PickupAddress3, PickupAddress4,
+        PickupAddressCity, PickupState, PickupPostCode,
+        PickupContact, PickupPhone,
+        // Order-level contact
+        Contact, ContactPhone,
+        // Courier
         CourierCode, CourierId,
-        Amount, Weight, Quantity, Notes, PodName,
-        CourierPayment, CourierFuel, CourierBonus, FuelSurchargeAmount,
+        // Freight
+        Amount, Weight, Quantity,
+        // Notes + POD
+        Notes, ClientNotes, InternalNotes, PodName,
+        // Money
+        CourierPayment, CourierFuel, CourierBonus, CourierPercentage, FuelSurchargeAmount,
         PpdAmount, PpdExclusiveAmount, RawBaseAmount,
+        // Service / booking metadata
+        Speed, ServiceName, VehicleName, BookedBy, RunName, ScheduleName,
     ];
 
     /// <summary>Fields the operator MUST map for the commit to proceed.

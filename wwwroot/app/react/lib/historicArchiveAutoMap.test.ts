@@ -4,39 +4,40 @@
 import { describe, expect, it } from 'vitest';
 import { autoMapHeaders, labelForCanonicalField, normalize } from './historicArchiveAutoMap';
 
+// Match HistoricArchiveField.All on the server (Steve 2026-09-03 expansion).
+// If the server field list moves, this constant + the assertion set need to
+// move with it - see HistoricArchiveDtos.cs.
 const CANONICAL = [
-  'JobNumber',
-  'JobDate',
-  'PickupTime',
-  'CompletedTime',
-  'ClientCode',
-  'ClientId',
-  'ClientRefA',
-  'ClientRefB',
-  'OurRef',
-  'CustomerName',
-  'DeliveryAddress1',
-  'DeliveryAddress2',
-  'DeliveryAddressCity',
-  'DeliveryPostCode',
-  'PickupAddress1',
-  'PickupAddress2',
-  'PickupAddressCity',
-  'PickupPostCode',
-  'CourierCode',
-  'CourierId',
-  'Amount',
-  'Weight',
-  'Quantity',
-  'Notes',
-  'PodName',
-  'CourierPayment',
-  'CourierFuel',
-  'CourierBonus',
-  'FuelSurchargeAmount',
-  'PpdAmount',
-  'PpdExclusiveAmount',
-  'RawBaseAmount',
+  // Core job + timing
+  'JobNumber', 'JobDate', 'PickupTime', 'CompletedTime',
+  'RequiredDeliveryTime', 'DeliverByTime', 'PickupArrivalTime', 'DeliveryArrivalTime',
+  // Client + references
+  'ClientCode', 'ClientId',
+  'ClientRefA', 'ClientRefB', 'ClientRefC', 'OurRef',
+  'Connote', 'Barcode', 'CustomJobName',
+  'TextRef1', 'TextRef2', 'TextRef3', 'TextRef4',
+  'NumRef1', 'NumRef2', 'NumRef3', 'NumRef4',
+  // Delivery
+  'CustomerName', 'DeliveryAddress1', 'DeliveryAddress2', 'DeliveryAddress4',
+  'DeliveryAddressCity', 'DeliveryState', 'DeliveryPostCode',
+  'DeliveryContact', 'DeliveryPhone',
+  // Pickup
+  'PickupCompany', 'PickupAddress1', 'PickupAddress2', 'PickupAddress3', 'PickupAddress4',
+  'PickupAddressCity', 'PickupState', 'PickupPostCode',
+  'PickupContact', 'PickupPhone',
+  // Order-level contact
+  'Contact', 'ContactPhone',
+  // Courier
+  'CourierCode', 'CourierId',
+  // Freight
+  'Amount', 'Weight', 'Quantity',
+  // Notes + POD
+  'Notes', 'ClientNotes', 'InternalNotes', 'PodName',
+  // Money
+  'CourierPayment', 'CourierFuel', 'CourierBonus', 'CourierPercentage', 'FuelSurchargeAmount',
+  'PpdAmount', 'PpdExclusiveAmount', 'RawBaseAmount',
+  // Service / booking metadata
+  'Speed', 'ServiceName', 'VehicleName', 'BookedBy', 'RunName', 'ScheduleName',
 ];
 
 describe('normalize', () => {
@@ -104,7 +105,11 @@ describe('autoMapHeaders - alias table tier', () => {
     expect(m['RBA']).toBe('RawBaseAmount');
     expect(m['CourierPay']).toBe('CourierPayment');
     expect(m['Delivery Address 3']).toBe('DeliveryAddressCity');
-    expect(m['Delivery Address 4']).toBe('DeliveryAddressCity');
+    // 2026-09-03: "Delivery Address 4" now matches the new DeliveryAddress4
+    // canonical via tier-1 normalised exact match, overriding the old
+    // collapse-to-City alias (which only existed because Line 4 had no
+    // dedicated target).
+    expect(m['Delivery Address 4']).toBe('DeliveryAddress4');
     expect(m['OrderTrackingID']).toBe('JobNumber');
     expect(m['POD Date/Time']).toBe('CompletedTime');
     expect(m['Ref#']).toBe('ClientRefA');
@@ -179,6 +184,119 @@ describe('autoMapHeaders - unmatched headers', () => {
     expect(m['Column11']).toBeUndefined();
     expect(m['   ']).toBeUndefined();
     expect(m['']).toBeUndefined();
+  });
+});
+
+describe('autoMapHeaders - OTG historic spreadsheet shape (Steve 2026-09-03)', () => {
+  it('maps the real OTG_JOBS_COMBINED headers end-to-end', () => {
+    // Header set copied verbatim from the OTG CSV Steve provided
+    // 2026-09-03: OTG Clients - OTG_JOBS_COMBINED_010125_TO_071226.csv.
+    const headers = [
+      'OrderTrackingID', 'Client Code', 'Company Name', 'Ref#',
+      'Pieces', 'Weight',
+      'Pickup Company', 'Pickup City', 'Pickup State',
+      'Delivery Company', 'Delivery City', 'Delivery State',
+      'Grand Total', 'Driver Pay',
+      '[P] Target From', '[D] Target From',
+      '[P] Arrival', '[P] Departure',
+      'POD Name', 'POD Date/Time',
+      'CSR', 'Status',
+      'Pricing Mode', 'Service', 'Vehicle',
+      'DriverNo', 'Driver Quote',
+      'Pickup Zip', 'Delivery Zip',
+      'Packages', 'Documents',
+      'Ref#2', 'Type', 'Driver Class', 'Master Contractor/Agent',
+    ];
+    const m = autoMapHeaders(headers, CANONICAL);
+
+    // Core job identity
+    expect(m['OrderTrackingID']).toBe('JobNumber');
+    expect(m['Client Code']).toBe('ClientCode');
+    expect(m['Ref#']).toBe('ClientRefA');
+    expect(m['Ref#2']).toBe('ClientRefB');
+
+    // Delivery party (Company Name goes to delivery-side company)
+    expect(m['Company Name']).toBe('CustomerName');
+    expect(m['Delivery Company']).toBe('CustomerName');
+    expect(m['Delivery City']).toBe('DeliveryAddressCity');
+    expect(m['Delivery State']).toBe('DeliveryState');
+    expect(m['Delivery Zip']).toBe('DeliveryPostCode');
+
+    // Pickup party (NEW: PickupCompany canonical, not collapsed to
+    // PickupAddress1 like the pre-expansion table did).
+    expect(m['Pickup Company']).toBe('PickupCompany');
+    expect(m['Pickup City']).toBe('PickupAddressCity');
+    expect(m['Pickup State']).toBe('PickupState');
+    expect(m['Pickup Zip']).toBe('PickupPostCode');
+
+    // Freight + money
+    expect(m['Pieces']).toBe('Quantity');
+    expect(m['Weight']).toBe('Weight');
+    expect(m['Grand Total']).toBe('Amount');
+    expect(m['Driver Pay']).toBe('CourierPayment');
+
+    // Timing / milestones (OTG's bracket-prefixed columns)
+    expect(m['[P] Target From']).toBe('RequiredDeliveryTime');
+    expect(m['[D] Target From']).toBe('DeliverByTime');
+    expect(m['[P] Arrival']).toBe('PickupArrivalTime');
+    expect(m['POD Name']).toBe('PodName');
+    expect(m['POD Date/Time']).toBe('CompletedTime');
+
+    // Service / Vehicle now auto-alias to the text-name canonicals which
+    // the server resolves against tucJobType / VehicleSize at commit
+    // time. CSR is still deliberately NOT auto-aliased - staff name
+    // lookup is ambiguous (first-name-only) so operator maps manually
+    // only when the source file carries pre-resolved staff IDs.
+    expect(m['CSR']).toBeUndefined();
+    expect(m['Service']).toBe('ServiceName');
+    expect(m['Vehicle']).toBe('VehicleName');
+    expect(m['DriverNo']).toBe('CourierId');
+
+    // Columns the operator will skip explicitly (no alias intentionally).
+    // "Status" is deliberately unmapped for now - the historic uploader
+    // hard-codes UcjbStatus = 6 regardless (see HistoricArchiveService
+    // comment "billing-sentinel recipe").
+    expect(m['Status']).toBeUndefined();
+    expect(m['Pricing Mode']).toBeUndefined();
+    expect(m['Driver Quote']).toBeUndefined();
+    expect(m['Documents']).toBeUndefined();
+    expect(m['Type']).toBeUndefined();
+    expect(m['Driver Class']).toBeUndefined();
+    expect(m['Master Contractor/Agent']).toBeUndefined();
+  });
+
+  it('maps the new contact + descriptive fields when the spreadsheet uses friendly wording', () => {
+    const m = autoMapHeaders(
+      [
+        'Ref C', 'Connote', 'Barcode', 'Custom Job Name',
+        'Client Notes', 'Internal Notes',
+        'Required Delivery Time', 'Deliver By Time',
+        'Delivery Contact', 'Delivery Phone',
+        'Pickup Contact', 'Pickup Phone',
+        'Contact', 'Contact Phone',
+        'Run Name', 'Schedule Name',
+        'Text Ref 1', 'Num Ref 1',
+      ],
+      CANONICAL,
+    );
+    expect(m['Ref C']).toBe('ClientRefC');
+    expect(m['Connote']).toBe('Connote');
+    expect(m['Barcode']).toBe('Barcode');
+    expect(m['Custom Job Name']).toBe('CustomJobName');
+    expect(m['Client Notes']).toBe('ClientNotes');
+    expect(m['Internal Notes']).toBe('InternalNotes');
+    expect(m['Required Delivery Time']).toBe('RequiredDeliveryTime');
+    expect(m['Deliver By Time']).toBe('DeliverByTime');
+    expect(m['Delivery Contact']).toBe('DeliveryContact');
+    expect(m['Delivery Phone']).toBe('DeliveryPhone');
+    expect(m['Pickup Contact']).toBe('PickupContact');
+    expect(m['Pickup Phone']).toBe('PickupPhone');
+    expect(m['Contact']).toBe('Contact');
+    expect(m['Contact Phone']).toBe('ContactPhone');
+    expect(m['Run Name']).toBe('RunName');
+    expect(m['Schedule Name']).toBe('ScheduleName');
+    expect(m['Text Ref 1']).toBe('TextRef1');
+    expect(m['Num Ref 1']).toBe('NumRef1');
   });
 });
 

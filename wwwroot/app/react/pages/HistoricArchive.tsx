@@ -26,7 +26,12 @@ import { Panel } from '../components/common/Panel';
 import FileUploadZone from '../components/import/FileUploadZone';
 import { BatchDetailModal } from '../components/historic-archive/BatchDetailModal';
 import { downloadCsv } from '../lib/csvExport';
-import { autoMapHeaders, labelForCanonicalField } from '../lib/historicArchiveAutoMap';
+import {
+  autoMapHeaders,
+  labelForCanonicalField,
+  FIELD_GROUPS,
+  GROUP_ORDER,
+} from '../lib/historicArchiveAutoMap';
 import {
   historicArchiveService,
   type HistoricArchiveUploadResponse,
@@ -517,6 +522,32 @@ function MapAndPreview({
   const preview = parsed.rows.slice(0, 10);
   const requiredSet = new Set(parsed.requiredFields);
 
+  // Bucket the canonical field list by FIELD_GROUPS so the dropdown
+  // renders as <optgroup>s. Any canonical field the group map does not
+  // classify falls into "Other" so a newly-added server field always
+  // shows up somewhere. GROUP_ORDER controls the visible section order;
+  // fields inside each group keep the server-supplied order.
+  const groupedFields = useMemo(() => {
+    const buckets = new Map<string, string[]>();
+    for (const f of parsed.canonicalFields) {
+      const group = FIELD_GROUPS[f] ?? 'Other';
+      const arr = buckets.get(group) ?? [];
+      arr.push(f);
+      buckets.set(group, arr);
+    }
+    const ordered: { group: string; fields: string[] }[] = [];
+    for (const g of GROUP_ORDER) {
+      const fields = buckets.get(g);
+      if (fields && fields.length > 0) ordered.push({ group: g, fields });
+    }
+    // Any group not covered by GROUP_ORDER (defensive - GROUP_ORDER
+    // already includes "Other") lands at the end.
+    for (const [g, fields] of buckets) {
+      if (!GROUP_ORDER.includes(g)) ordered.push({ group: g, fields });
+    }
+    return ordered;
+  }, [parsed.canonicalFields]);
+
   return (
     <div className="space-y-3">
       <Panel title="Step 2. Map columns">
@@ -544,11 +575,15 @@ function MapAndPreview({
                   }`}
                 >
                   <option value="">(skip)</option>
-                  {parsed.canonicalFields.map((f) => (
-                    <option key={f} value={f}>
-                      {labelForCanonicalField(f)}
-                      {requiredSet.has(f) ? ' *' : ''}
-                    </option>
+                  {groupedFields.map(({ group, fields }) => (
+                    <optgroup key={group} label={group}>
+                      {fields.map((f) => (
+                        <option key={f} value={f}>
+                          {labelForCanonicalField(f)}
+                          {requiredSet.has(f) ? ' *' : ''}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
               </label>
