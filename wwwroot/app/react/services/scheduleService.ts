@@ -204,11 +204,19 @@ export interface ScheduleCopyBody {
 export const scheduleService = {
   /** List schedule groups (slim summary shape). Pass clientCode
    *  (preferred - operators use codes like "ACME") or clientId. Omit
-   *  both for the default view. Use detail(name, legacyClientId) to
-   *  fetch the full group when opening an edit / copy modal. */
-  list: (opts?: { clientCode?: string; clientId?: number }) =>
+   *  both for the default view. `includeClientSpecific=true` widens
+   *  the default view to also include groups with a client binding
+   *  (legacy or junction) so the Schedules tab search can find any
+   *  group by name; ignored when either client filter is set. Use
+   *  detail(name, legacyClientId) to fetch the full group when opening
+   *  an edit / copy modal. */
+  list: (opts?: { clientCode?: string; clientId?: number; includeClientSpecific?: boolean }) =>
     request<{ response: ScheduleGroupSummary[] }>(
-      `/schedules${buildQuery({ clientCode: opts?.clientCode, clientId: opts?.clientId })}`),
+      `/schedules${buildQuery({
+        clientCode: opts?.clientCode,
+        clientId: opts?.clientId,
+        includeClientSpecific: opts?.includeClientSpecific ? 'true' : undefined,
+      })}`),
   /** Full detail for one group. Called on-demand from the table row
    *  click so the initial list load stays slim. */
   detail: (name: string, legacyClientId?: number | null) =>
