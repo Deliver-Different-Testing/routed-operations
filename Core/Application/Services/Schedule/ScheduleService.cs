@@ -34,8 +34,16 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
     /// on the junction / zone / linehaul tables. 4s -> sub-500ms on the
     /// initial page load. Full detail comes via GetDetailAsync when the
     /// operator opens a row.
+    ///
+    /// `includeClientSpecific` widens the default (clientId == null) view
+    /// to also return groups that HAVE a client binding (legacy or
+    /// junction). Steve requested this so the search box on the Schedules
+    /// tab can find any group by name/region/speed without the operator
+    /// having to know a specific client code up front. Cost: on NZ Urgent
+    /// staging the default view is 42 groups; the widened view is ~2050.
+    /// Keep OFF by default to preserve the fast/lean initial load.
     /// </summary>
-    public async Task<List<ScheduleGroupSummaryDto>> ListSummaryAsync(int? clientId)
+    public async Task<List<ScheduleGroupSummaryDto>> ListSummaryAsync(int? clientId, bool includeClientSpecific = false)
     {
         // Small lookup dictionaries. Depots + speeds are tiny + used for
         // the Destination / Speed columns in the table.
@@ -144,14 +152,27 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                     first.AutoBook, hasLh);
             });
 
-        // Apply client filter (same semantics as GetAsync).
+        // Apply client filter (same semantics as GetAsync). Three cases:
+        //   1. clientId set                     -> only groups that bind to
+        //                                          that client (legacy col
+        //                                          OR junction row).
+        //   2. clientId null + include=false    -> only "default" groups
+        //                                          with no client binding
+        //                                          at all (list default).
+        //   3. clientId null + include=true     -> every group, regardless
+        //                                          of client binding. Fuels
+        //                                          the "search all" UX on
+        //                                          the Schedules tab so
+        //                                          operators can find a
+        //                                          client-specific group
+        //                                          by name.
         if (clientId.HasValue)
         {
             var target = clientId.Value;
             summaries = summaries.Where(s => s.LegacyClientId == target
                 || (clientJunctionsByName.TryGetValue(s.Name, out var ids) && ids.Contains(target)));
         }
-        else
+        else if (!includeClientSpecific)
         {
             summaries = summaries.Where(s => s.LegacyClientId == null && s.ClientCount == 0);
         }

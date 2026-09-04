@@ -21,11 +21,16 @@ public class SchedulesController(ScheduleService svc) : BaseController
     /// operators use ACME etc.) or by ID (kept for internal callers).
     /// Both null / empty = default view (client-agnostic groups).
     /// If both are set, clientCode wins.
+    ///
+    /// `includeClientSpecific=true` widens the default view (clientCode +
+    /// clientId both empty) to include groups with a client binding.
+    /// Ignored when either client filter is set.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> GetAll(
         [FromQuery] string clientCode = null,
-        [FromQuery] int? clientId = null)
+        [FromQuery] int? clientId = null,
+        [FromQuery] bool includeClientSpecific = false)
     {
         try
         {
@@ -35,7 +40,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
             else
             {
                 var normalized = clientId.HasValue && clientId.Value > 0 ? clientId : null;
-                list = await svc.ListSummaryAsync(normalized);
+                list = await svc.ListSummaryAsync(normalized, includeClientSpecific);
             }
             return Ok(new { response = list });
         }

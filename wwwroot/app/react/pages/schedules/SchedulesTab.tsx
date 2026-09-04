@@ -60,12 +60,19 @@ export function SchedulesTab() {
   const [copying, setCopying] = useState<ScheduleGroup | null>(null);
   const [clientCodeFilter, setClientCodeFilter] = useState<string | undefined>(undefined);
   const [clientInput, setClientInput] = useState('');
+  /** When true, the default (no-client) list expands to include
+   *  client-specific groups (legacy or junction bindings). Off by
+   *  default because the widened result set can be 40x larger on tenants
+   *  where every schedule is client-bound (2050 vs 42 groups on NZ
+   *  Urgent staging). Steve requested this so the search box can find
+   *  any schedule regardless of its client scope. */
+  const [includeClientSpecific, setIncludeClientSpecific] = useState(false);
 
-  const load = async (clientCode?: string) => {
+  const load = async (clientCode?: string, includeAll: boolean = includeClientSpecific) => {
     setLoading(true);
     try {
       const [listRes, lookupRes] = await Promise.all([
-        scheduleService.list({ clientCode }),
+        scheduleService.list({ clientCode, includeClientSpecific: includeAll }),
         scheduleService.lookups(),
       ]);
       setGroups(listRes.response ?? []);
@@ -73,7 +80,7 @@ export function SchedulesTab() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { void load(clientCodeFilter); }, [clientCodeFilter]);
+  useEffect(() => { void load(clientCodeFilter, includeClientSpecific); }, [clientCodeFilter, includeClientSpecific]);
 
   // ?edit=<name> deep-link (used by RecurringRoutes -> Schedules chip
   // click). Match against the summary list, then fetch full detail
@@ -251,6 +258,9 @@ export function SchedulesTab() {
           {clientCodeFilter !== undefined && (
             <span className="ml-2 text-text-muted">Client: <span className="font-semibold text-text-secondary">{clientCodeFilter}</span></span>
           )}
+          {clientCodeFilter === undefined && includeClientSpecific && (
+            <span className="ml-2 text-text-muted">Scope: <span className="font-semibold text-text-secondary">default + client-specific</span></span>
+          )}
         </p>
         <div className="flex items-center gap-2">
           <input
@@ -273,6 +283,20 @@ export function SchedulesTab() {
             <button onClick={clearClientFilter} className="text-[11px] text-text-muted hover:text-text-primary underline" type="button">
               Clear
             </button>
+          )}
+          {clientCodeFilter === undefined && (
+            <label
+              className="flex items-center gap-1 text-[11px] text-text-secondary cursor-pointer select-none"
+              title="Include schedules that are bound to a specific client (legacy per-client override or junction). Off by default because the widened set can be much larger."
+            >
+              <input
+                type="checkbox"
+                checked={includeClientSpecific}
+                onChange={(e) => setIncludeClientSpecific(e.target.checked)}
+                className="accent-brand-cyan"
+              />
+              Include client-specific
+            </label>
           )}
           <input
             type="text"
