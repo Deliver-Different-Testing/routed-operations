@@ -249,17 +249,25 @@ describe('NewImportWizard', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Upload File' }));
     await waitFor(() => expect(screen.getByText('Map the Columns')).toBeInTheDocument());
+    // Every Next click is preceded by a `not.toBeDisabled` wait because
+    // each wizard step runs an async setup effect (Map = column
+    // auto-map; Fix Suburbs / Fix Addresses = suburb + address resolve;
+    // Select Depots = depot auto-tick) that keeps Next disabled until
+    // completion. On the CI slow runner those effects can take >5s.
+    // A bare `click Next` fires while the button is still disabled -
+    // the click is a no-op, the next waitFor times out, and the test
+    // flakes. See feedback_vitest_react_ci_flakes.md.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Fix Suburbs')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Fix Addresses')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Select Depots')).toBeInTheDocument());
     // Advance through SelectRegions - it auto-ticks depot 1 via effect.
-    await waitFor(() => {
-      const btn = screen.getByRole('button', { name: 'Next' });
-      expect(btn).not.toBeDisabled();
-    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     // SchedulePickerModal appears; verify title.
     await waitFor(() => expect(screen.getByText(/Central/)).toBeInTheDocument());
@@ -350,13 +358,17 @@ describe('NewImportWizard', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Upload File' }));
     await waitFor(() => expect(screen.getByText('Map the Columns')).toBeInTheDocument());
+    // Same wait-for-enabled pattern as the walkthrough test above.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     // Next -> FixZips (assuming auto-mapping resolved required fields).
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Fix Suburbs')).toBeInTheDocument());
     // Next -> FixAddresses.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Fix Addresses')).toBeInTheDocument());
     // Next -> SelectRegions (NZ = "Select Depots").
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText('Select Depots')).toBeInTheDocument());
   });

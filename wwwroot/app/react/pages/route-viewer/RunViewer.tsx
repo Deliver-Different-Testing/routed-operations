@@ -152,9 +152,26 @@ export default function RunViewer() {
   });
 
   const singleRunId = selectedRunIds.length === 1 ? selectedRunIds[0] : null;
+  // Filter panel state is forwarded to the middle-pane Run Jobs SP so it
+  // applies the same region / speed / client narrowing the Run List
+  // already does. Legacy runViewer passes these; without them
+  // RVW_stpBulkRunJobs returns every row the run touches, causing e.g.
+  // Reno-depot LHPs to surface under a Burbank-only region filter. Query
+  // key includes the filters so a filter change refetches instead of
+  // serving stale un-scoped rows from cache.
   const runJobsQuery = useQuery({
-    queryKey: ['rv-run-jobs', singleRunId, filters.runDate, viewMode],
-    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, viewMode),
+    queryKey: [
+      'rv-run-jobs', singleRunId, filters.runDate, viewMode,
+      filters.regionIds.join(','), filters.speedIds.join(','), filters.clientIds.join(','),
+      filters.courierId ?? 0,
+    ],
+    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, {
+      group: viewMode,
+      regionIds: filters.regionIds,
+      speedIds: filters.speedIds,
+      clientIds: filters.clientIds,
+      courierId: filters.courierId,
+    }),
     enabled: singleRunId != null,
     staleTime: 5_000,
   });
@@ -166,8 +183,22 @@ export default function RunViewer() {
   const extraRunIds = selectedRunIds.length > 1 ? selectedRunIds.slice(1) : [];
   const extraRunJobsQueries = useQueries({
     queries: extraRunIds.map((rid) => ({
-      queryKey: ['rv-run-jobs', rid, filters.runDate, viewMode],
-      queryFn: () => routeViewerService.getRunJobs(rid, filters.runDate, viewMode),
+      // Same tenant-scoped key shape as the primary run's query so a
+      // filter change also refetches the extra multi-selected runs; and
+      // same forwarded filters so all selected runs' pins are narrowed
+      // to the current region / speed / client / courier.
+      queryKey: [
+        'rv-run-jobs', rid, filters.runDate, viewMode,
+        filters.regionIds.join(','), filters.speedIds.join(','), filters.clientIds.join(','),
+        filters.courierId ?? 0,
+      ],
+      queryFn: () => routeViewerService.getRunJobs(rid, filters.runDate, {
+        group: viewMode,
+        regionIds: filters.regionIds,
+        speedIds: filters.speedIds,
+        clientIds: filters.clientIds,
+        courierId: filters.courierId,
+      }),
       staleTime: 5_000,
     })),
   });
@@ -371,24 +402,39 @@ export default function RunViewer() {
     setRjSort((cur) => (cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
   };
   const runJobs = useMemo(() => {
-    // Legacy homeControl.js `showJobInRun` (line 485-492) filters the
-    // Run Jobs grid by jobNumber suffix based on viewMode:
-    //   Inbound  = jobNumber ends with 'LHP' (pickup-leg children only)
-    //   Outbound = jobNumber does NOT end with 'LHP' (parent + DEL rows)
-    //   Combined = everything
-    // The backend SP (RVW_stpBulkRunJobs) does not take a group param,
-    // so this filter has to happen client-side. Steve reported on
-    // 2026-09-04 that RNO200 Inbound was showing all 9 rows instead of
-    // the 4 LHP jobs the legacy RunViewer surfaces.
+    // Route Viewer view-mode filter. Exact port of legacy homeControl.js
+    // `showJobInRun` (line 484-501) + the `classifyJobKind` coord-shape
+    // fallback (line 191-198). Full recap:
+    //
+    //   Combined = show every row the SP returned (no client-side filter).
+    //   Inbound  = row's jobNumber ends 'LHP'  (pickup-leg children only).
+    //   Outbound = row is NOT LHP AND its coord shape is not pickup-only.
+    //              A row with pickup coords but no delivery coords is a
+    //              recurring-route pickup-only leg (Steve's Neogenomics
+    //              pattern) - it belongs on the Inbound view, so drop it
+    //              from Outbound. Any row with both coords or delivery
+    //              coords keeps.
+    //
+    // Note on umbrella parents: RVW_stpBulkRunJobs already applies
+    // `NOT EXISTS (child)` to drop umbrella parents that have live
+    // children, so the frontend never sees them. Orphan leaf jobs
+    // without an LHP/DEL suffix (e.g. medical-prod RNO200's P2983 - a
+    // stand-alone single-leg job) are NOT umbrella parents; legacy
+    // shows them on Combined + Outbound and we do the same.
     const filtered = rawRunJobs.filter((j: any) => {
       if (!rjShowCancelled && j.jobStatus === 'V') return false;
       if (!rjShowMultibox && j.multiboxParentId != null && j.multiboxParentId !== 0) return false;
-      if (viewMode !== 'Combined') {
-        const isLhp = /LHP$/i.test((j.jobNumber ?? '').trim());
-        if (viewMode === 'Inbound' && !isLhp) return false;
-        if (viewMode === 'Outbound' && isLhp) return false;
-      }
-      return true;
+      if (viewMode === 'Combined') return true;
+      const jn = (j.jobNumber ?? '').trim().toUpperCase();
+      const isLhp = jn.endsWith('LHP');
+      if (viewMode === 'Inbound') return isLhp;
+      // Outbound
+      if (isLhp) return false;
+      const hasFrom = j.pickUpLatitude != null && j.pickUpLongitude != null;
+      const hasTo = (j.deliveryLatitude != null && j.deliveryLongitude != null)
+        || (j.toLat != null && j.toLng != null);
+      const kind = hasFrom && hasTo ? 'both' : hasFrom ? 'pickup' : hasTo ? 'delivery' : 'none';
+      return kind !== 'pickup';
     });
     const sorted = filtered.slice().sort((a: any, b: any) => {
       const va = (a as any)[rjSort.key];
@@ -562,6 +608,9 @@ export default function RunViewer() {
                 <RvOverviewBox
                   runDate={filters.runDate}
                   onRegionPick={(regionId) => onFiltersChange({ ...filters, regionIds: [regionId] })}
+                  clientIds={filters.clientIds}
+                  regionIds={filters.regionIds}
+                  speedIds={filters.speedIds}
                 />
               </Panel>
               <PanelResizeHandle className="h-1" />
@@ -738,6 +787,32 @@ export default function RunViewer() {
                           // helpers just re-shape the string per tenant.
                           const dDate = tenantDateFromSpString(j.bookDate, user.isUsTenant) || '-';
                           const rTime = tenantTimeFromSpString(j.bookTime, user.isUsTenant) || '-';
+                          // Per-row Address / City resolution, matching
+                          // legacy showsPickupSideForRow + runBuilder.tpl:
+                          //   Inbound   -> always pickup side.
+                          //   Outbound  -> always delivery side.
+                          //   Combined  -> per-row: LHP shows pickup,
+                          //                everything else shows delivery.
+                          // Rolls up to: "LHP row shows pickup" (works
+                          // uniformly because Inbound is already LHP-only
+                          // and Outbound already excludes LHP).
+                          const jnUpper = (j.jobNumber ?? '').trim().toUpperCase();
+                          const showPickupSide = jnUpper.endsWith('LHP');
+                          const rowAddress = showPickupSide ? (j.fromAddress ?? '-') : (j.toAddress ?? '-');
+                          const rowCity = showPickupSide
+                            ? (j.fromCity ?? j.fromSuburb ?? '-')
+                            : (j.toCity ?? j.toSuburb ?? '-');
+                          // Missing-GPS warning per legacy runBuilder.tpl:37,40:
+                          // legacy renders a `fa fa-exclamation` next to the
+                          // address string when the row's relevant lat is
+                          // null. LHP rows check pickup lat (fromLat), other
+                          // rows check delivery lat (toLat). Operators use
+                          // this to spot jobs that will fail routing before
+                          // drilling into the Detail panel. Without it the
+                          // grid hides a real dispatch signal.
+                          const rowLatMissing = showPickupSide
+                            ? (j.pickUpLatitude == null)
+                            : (j.toLat == null);
                           return (
                             <tr
                               key={j.jobId}
@@ -812,10 +887,19 @@ export default function RunViewer() {
                               <td className="px-2 py-1 font-mono">{j.jobNumber ?? '-'}</td>
                               <td className="px-2 py-1">{dDate}</td>
                               <td className="px-2 py-1">{rTime}</td>
-                              <td className="px-2 py-1 truncate max-w-[12rem]" title={j.toAddress ?? undefined}>
-                                {j.toAddress ?? '-'}
+                              <td className="px-2 py-1 truncate max-w-[12rem]" title={rowLatMissing ? `${rowAddress} (GPS missing)` : rowAddress}>
+                                {rowAddress}
+                                {rowLatMissing && (
+                                  <span
+                                    className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-orange-100 text-orange-700 text-[10px] font-bold align-middle"
+                                    title="GPS missing - job will fail routing"
+                                    aria-label="GPS missing"
+                                  >
+                                    !
+                                  </span>
+                                )}
                               </td>
-                              <td className="px-2 py-1 truncate max-w-[8rem]">{j.toCity ?? j.toSuburb ?? '-'}</td>
+                              <td className="px-2 py-1 truncate max-w-[8rem]">{rowCity}</td>
                               <td className="px-2 py-1">
                                 {j.agentName || '-'}
                                 {j.isNpAgent && (

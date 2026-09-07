@@ -184,12 +184,18 @@ export const routeViewerService = {
   // -----------------------------------------------------------------
   // Filters
   // -----------------------------------------------------------------
-  getClients: (runDate: string, clientInternal = false, multipleClients = false) =>
+  /** Client dropdown lookup. Backend action signature is
+   *  `(runDate, multipleClients, contactId)` and the SP
+   *  `RVW_stpBulkClients` narrows the returned list to what the given
+   *  `@ContactID` may see. Legacy homeService.js:105-108 passes
+   *  contactId; without it every caller sees the full tenant client
+   *  list regardless of their contact-scope. */
+  getClients: (runDate: string, multipleClients = false, contactId?: number | null) =>
     unwrap<Lookup[]>(
       `/runviewer/filters/clients${buildQuery({
         runDate,
-        clientInternal: String(clientInternal),
         multipleClients: String(multipleClients),
+        contactId: contactId ?? undefined,
       })}`,
     ),
 
@@ -220,9 +226,39 @@ export const routeViewerService = {
       })}`,
     ),
 
-  getRunJobs: (runId: number, runDate: string, group?: string) =>
+  /** Middle-pane Run Jobs fetch. `filters` mirrors the filter panel so
+   *  RVW_stpBulkRunJobs applies the same tenant-scoped region / speed /
+   *  client narrowing that RVW_stpBulkRuns_2 (Run List) already uses.
+   *  Legacy homeControl.js:1273 passes these; without them the SP
+   *  receives NULL for every scoping param and returns rows outside the
+   *  currently-selected region (e.g. Reno LHPs surfacing under a
+   *  Burbank-only region filter). Backend contract is
+   *  `BulkRunJobsRequest`: RegionIds / SpeedIds / ClientIds are
+   *  comma-separated int strings; ClientId is a single id override. */
+  getRunJobs: (
+    runId: number,
+    runDate: string,
+    filters?: {
+      group?: string;
+      regionIds?: number[];
+      speedIds?: number[];
+      clientIds?: number[];
+      clientId?: number | null;
+      courierId?: number | null;
+      preAssigned?: boolean;
+    },
+  ) =>
     unwrap<BulkJob[]>(
-      `/runviewer/runs/${runId}/jobs${buildQuery({ runDate, group })}`,
+      `/runviewer/runs/${runId}/jobs${buildQuery({
+        runDate,
+        group: filters?.group,
+        regionIds: toCsv(filters?.regionIds),
+        speedIds: toCsv(filters?.speedIds),
+        clientIds: toCsv(filters?.clientIds),
+        clientId: filters?.clientId ?? undefined,
+        courierId: filters?.courierId ?? undefined,
+        preAssigned: filters?.preAssigned ? 'true' : undefined,
+      })}`,
     ),
 
   getJobSiblings: (jobId: number) =>
@@ -231,8 +267,23 @@ export const routeViewerService = {
   /** Region roll-up used by the Home Overview box. Backend calls
    *  `RVW_stpRunOverview` (NOT `RVW_stpBulkRuns_2` - different SP,
    *  different projection) which returns SortScan / RunScan / PickedUp
-   *  / ToDo / Total per region. Row click narrows the region filter. */
-  getRegionOverview: (runDate: string, group?: string) =>
+   *  / ToDo / Total per region. Row click narrows the region filter.
+   *
+   *  `filters` forwards the same client / speed / region scope the
+   *  filter panel sends to the Run List (RegionOverviewRequest DTO
+   *  fields). Without them the SP receives NULL for scoping params and
+   *  returns tenant-wide totals - the totals bar then disagrees with
+   *  the filtered Run List below it. Legacy homeService.js:135
+   *  passes them. */
+  getRegionOverview: (
+    runDate: string,
+    filters?: {
+      group?: string;
+      clientIds?: number[];
+      speedIds?: number[];
+      regionIds?: number[];
+    },
+  ) =>
     unwrap<Array<{
       regionId: number;
       region: string | null;
@@ -246,7 +297,13 @@ export const routeViewerService = {
       pallet: string | null;
       active: boolean;
     }>>(
-      `/runviewer/runs/overview${buildQuery({ runDate, group })}`,
+      `/runviewer/runs/overview${buildQuery({
+        runDate,
+        group: filters?.group,
+        clientIds: toCsv(filters?.clientIds),
+        speedIds: toCsv(filters?.speedIds),
+        regionIds: toCsv(filters?.regionIds),
+      })}`,
     ),
 
   // -----------------------------------------------------------------

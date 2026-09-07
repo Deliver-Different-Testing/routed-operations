@@ -56,14 +56,14 @@ export default function Mobile() {
 
   const overviewQ = useQuery({
     queryKey: ['mob-overview', runDate],
-    queryFn: () => routeViewerService.getRegionOverview(runDate),
+    queryFn: () => routeViewerService.getRegionOverview(runDate),   // mobile has no filter panel
     enabled: tab === 'overview' && !!runDate,
     staleTime: 15_000,
   });
 
   const runJobsQuery = useQuery({
     queryKey: ['mob-run-jobs', selectedRunId, runDate],
-    queryFn: () => routeViewerService.getRunJobs(selectedRunId!, runDate, 'Combined'),
+    queryFn: () => routeViewerService.getRunJobs(selectedRunId!, runDate, { group: 'Combined' }),
     enabled: selectedRunId != null && !!runDate,
     staleTime: 5_000,
   });
