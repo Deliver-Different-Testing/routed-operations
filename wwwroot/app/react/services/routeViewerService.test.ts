@@ -16,13 +16,23 @@ const wrapPost = (path: string, body: unknown, capture?: (payload: unknown) => v
   });
 
 describe('routeViewerService - filters', () => {
-  it('getClients GETs /runviewer/filters/clients with encoded booleans', async () => {
+  it('getClients GETs /runviewer/filters/clients forwarding multipleClients + contactId', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/filters/clients', [], (u) => (seen = u)));
-    await routeViewerService.getClients('2026-08-13', true, false);
+    await routeViewerService.getClients('2026-08-13', true, 555);
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
-    expect(seen.searchParams.get('clientInternal')).toBe('true');
-    expect(seen.searchParams.get('multipleClients')).toBe('false');
+    expect(seen.searchParams.get('multipleClients')).toBe('true');
+    expect(seen.searchParams.get('contactId')).toBe('555');
+    // clientInternal used to be sent but the SP ignores it; the DTO
+    // dropped it so it must NOT appear on the wire anymore.
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
+  });
+
+  it('getClients omits contactId when the auth claim is null', async () => {
+    let seen!: URL;
+    server.use(wrapGet('/api/runviewer/filters/clients', [], (u) => (seen = u)));
+    await routeViewerService.getClients('2026-08-13', false, null);
+    expect(seen.searchParams.has('contactId')).toBe(false);
   });
 
   it('getSpeeds GETs /runviewer/filters/speeds', async () => {
@@ -83,10 +93,20 @@ describe('routeViewerService - runs', () => {
       seenPath = seen.pathname;
       return HttpResponse.json({ response: [] });
     }));
-    await routeViewerService.getRunJobs(7, '2026-08-13', 'Combined');
+    await routeViewerService.getRunJobs(7, '2026-08-13', {
+      group: 'Combined',
+      regionIds: [11, 22],
+      speedIds: [3],
+      clientIds: [999],
+      courierId: 42,
+    });
     expect(seenPath).toBe('/api/runviewer/runs/7/jobs');
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
     expect(seen.searchParams.get('group')).toBe('Combined');
+    expect(seen.searchParams.get('regionIds')).toBe('11,22');
+    expect(seen.searchParams.get('speedIds')).toBe('3');
+    expect(seen.searchParams.get('clientIds')).toBe('999');
+    expect(seen.searchParams.get('courierId')).toBe('42');
   });
 
   it('getJobSiblings GETs /runviewer/runs/job-siblings?jobId=', async () => {
@@ -96,12 +116,20 @@ describe('routeViewerService - runs', () => {
     expect(seen.searchParams.get('jobId')).toBe('42');
   });
 
-  it('getRegionOverview GETs /runviewer/runs/overview', async () => {
+  it('getRegionOverview GETs /runviewer/runs/overview with the filter panel state forwarded', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/runs/overview', [], (u) => (seen = u)));
-    await routeViewerService.getRegionOverview('2026-08-13', 'Combined');
+    await routeViewerService.getRegionOverview('2026-08-13', {
+      group: 'Combined',
+      clientIds: [7],
+      regionIds: [11, 22],
+      speedIds: [3],
+    });
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
     expect(seen.searchParams.get('group')).toBe('Combined');
+    expect(seen.searchParams.get('clientIds')).toBe('7');
+    expect(seen.searchParams.get('regionIds')).toBe('11,22');
+    expect(seen.searchParams.get('speedIds')).toBe('3');
   });
 });
 

@@ -30,8 +30,11 @@ export function useRouteViewerLookups(runDate: string, enabled: boolean = true) 
   const results = useQueries({
     queries: [
       {
-        queryKey: ['rv-lookups', 'clients', tenantKey, runDate, clientInternal, multipleClients],
-        queryFn: () => routeViewerService.getClients(runDate, clientInternal, multipleClients),
+        // contactId comes from the auth claim and narrows the SP result
+        // to what this operator's contact scope allows. Legacy passes
+        // it; dropping it exposes the full tenant client list.
+        queryKey: ['rv-lookups', 'clients', tenantKey, runDate, multipleClients, user.contactId ?? 0],
+        queryFn: () => routeViewerService.getClients(runDate, multipleClients, user.contactId),
         enabled: enabled && !!runDate,
       },
       {

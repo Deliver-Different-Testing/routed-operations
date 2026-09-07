@@ -29,12 +29,25 @@ interface OverviewRow {
 interface Props {
   runDate: string;
   onRegionPick?: (regionId: number) => void;
+  /** Filter panel state. Forwarded to the SP so overview totals scope
+   *  to the current Client / Region / Speed selection instead of
+   *  showing tenant-wide numbers that disagree with the Run List below. */
+  clientIds?: number[];
+  regionIds?: number[];
+  speedIds?: number[];
 }
 
-export function RvOverviewBox({ runDate, onRegionPick }: Props) {
+export function RvOverviewBox({ runDate, onRegionPick, clientIds, regionIds, speedIds }: Props) {
   const query = useQuery({
-    queryKey: ['rv-overview', runDate],
-    queryFn: () => routeViewerService.getRegionOverview(runDate),
+    // Filter values live in the key so a filter toggle refetches
+    // instead of serving cached tenant-wide totals.
+    queryKey: [
+      'rv-overview', runDate,
+      (clientIds ?? []).join(','),
+      (regionIds ?? []).join(','),
+      (speedIds ?? []).join(','),
+    ],
+    queryFn: () => routeViewerService.getRegionOverview(runDate, { clientIds, regionIds, speedIds }),
     enabled: !!runDate,
     staleTime: 5_000,
   });

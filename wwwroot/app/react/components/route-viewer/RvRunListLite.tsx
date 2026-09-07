@@ -1,13 +1,15 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkRun } from '../../services/routeViewerService';
 import { RvBox } from './RvBox';
 
 // Slimmed 6-column run-list variant used by Pre Assigned / Returns /
 // Exceptions boxes (master Sections 7.6 / 7.7 / 7.8). Same row shape
-// (Run / Area / To / Jobs / Status / Courier) but no view-mode toggle,
-// no column sort, no selection - each box has ONE purpose. Rows are
-// still clickable so the operator can drill through into the run's
-// jobs middle-pane like the primary Run List does.
+// (Run / Area / To / Jobs / Status / Courier) as the primary Run List.
+//
+// Legacy preRunList / returnList / exceptions .tpl each expose header
+// click-to-sort per column - a real UX regression if we drop it. Sort
+// is per-instance (state lives in this component) so each slim box
+// remembers its own column + direction independently.
 //
 // The filter that produces each variant is applied client-side against
 // the same BulkRun[] the parent already has - the SP does not have a
@@ -55,34 +57,77 @@ function filterRuns(runs: BulkRun[], variant: Variant): BulkRun[] {
   }
 }
 
+type SortKey = 'name' | 'area' | 'to' | 'jobs' | 'status' | 'courier';
+
+/** Extract the sort value for a run under the given column. Keeps the
+ *  same fallback shape the cells render (first suburb for `to`,
+ *  jobs-remaining-percent for `jobs`) so the sorted order lines up with
+ *  what the operator sees on screen. */
+function sortValue(r: BulkRun, key: SortKey): string | number {
+  switch (key) {
+    case 'name':    return (r.name ?? '').toLowerCase();
+    case 'area':    return (r.area ?? '').toLowerCase();
+    case 'to':      return ((r.suburbs ?? '').split(/[;,]/)[0].trim() || '').toLowerCase();
+    case 'jobs':    return r.jobs;
+    case 'status':  return (r.status ?? '').toLowerCase();
+    case 'courier': return (r.courierName ?? '').toLowerCase();
+  }
+}
+
 export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextMenu, runColorMap, onVisibleRunsChange }: Props) {
+  // Per-instance sort state. Each slim box remembers its own column +
+  // direction so an operator sorting Preassigned by Courier does not
+  // scramble Returns' default alphabetical order.
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const toggleSort = (k: SortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(k); setSortDir('asc'); }
+  };
+
   const filtered = filterRuns(runs, variant);
+  const sorted = useMemo(() => {
+    const copy = filtered.slice();
+    copy.sort((a, b) => {
+      const av = sortValue(a, sortKey);
+      const bv = sortValue(b, sortKey);
+      if (av < bv) return sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return copy;
+  }, [filtered, sortKey, sortDir]);
+
   const lastVisibleKey = useRef<string>('');
   useEffect(() => {
     if (!onVisibleRunsChange) return;
-    const ids = filtered.map((r) => r.id);
+    const ids = sorted.map((r) => r.id);
     const key = ids.join(',');
     if (key === lastVisibleKey.current) return;
     lastVisibleKey.current = key;
     onVisibleRunsChange(ids);
-    // filtered is recomputed each render; the key check above debounces
+    // sorted is recomputed each render; the key check above debounces
     // callback churn to when the id list actually changes.
   });
+
+  const arrow = (k: SortKey) => (sortKey === k ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+  const thClass = 'px-2 py-1 cursor-pointer select-none hover:text-text-primary';
+
   return (
     <RvBox title={TITLES[variant]}>
       <table className="w-full text-xs">
         <thead className="sticky top-0 bg-surface-white border-b border-border">
           <tr className="text-left text-text-muted">
-            <th className="px-2 py-1">Run</th>
-            <th className="px-2 py-1">Area</th>
-            <th className="px-2 py-1">To</th>
-            <th className="px-2 py-1">Jobs</th>
-            <th className="px-2 py-1">Status</th>
-            <th className="px-2 py-1">Courier</th>
+            <th className={thClass} onClick={() => toggleSort('name')}>Run{arrow('name')}</th>
+            <th className={thClass} onClick={() => toggleSort('area')}>Area{arrow('area')}</th>
+            <th className={thClass} onClick={() => toggleSort('to')}>To{arrow('to')}</th>
+            <th className={thClass} onClick={() => toggleSort('jobs')}>Jobs{arrow('jobs')}</th>
+            <th className={thClass} onClick={() => toggleSort('status')}>Status{arrow('status')}</th>
+            <th className={thClass} onClick={() => toggleSort('courier')}>Courier{arrow('courier')}</th>
           </tr>
         </thead>
         <tbody>
-          {filtered.map((r) => {
+          {sorted.map((r) => {
             const selected = selectedIds.includes(r.id);
             // Only tint when the row is one of the currently-selected
             // runs; unselected rows keep the default hover behaviour so
@@ -109,7 +154,7 @@ export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextM
               </tr>
             );
           })}
-          {filtered.length === 0 && (
+          {sorted.length === 0 && (
             <tr>
               <td className="px-3 py-4 text-center text-text-muted" colSpan={6}>
                 None.

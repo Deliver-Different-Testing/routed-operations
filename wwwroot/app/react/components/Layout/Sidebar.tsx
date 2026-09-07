@@ -23,10 +23,10 @@ const items: NavItem[] = [
     label: 'Route Viewer',
     children: [
       { to: '/route-viewer',           label: 'Route Viewer' },
+      { to: '/route-viewer/linehaul',  label: 'Linehaul' },
       { to: '/route-viewer/scans',     label: 'Scan Manager' },
       { to: '/route-viewer/print',     label: 'Print Manager' },
       { to: '/route-viewer/cs',        label: 'Customer Services' },
-      { to: '/route-viewer/linehaul',  label: 'Linehaul' },
     ],
   },
   { to: '/quoting', label: 'Quoting' },
