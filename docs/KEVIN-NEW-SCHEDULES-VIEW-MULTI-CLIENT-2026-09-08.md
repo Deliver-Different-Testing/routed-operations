@@ -26,9 +26,10 @@ adapted so that **a schedule has its own `ScheduleId` and any number of clients
 attached to it**, per the link-table brief. The existing screen stays as it is
 until ops confirm they can do their work in the new one.
 
-- **Mockup of what to build:** https://claude.ai/code/artifact/e90fe293-31f1-4238-93bf-c54001ca7419 (interactive; attach clients, create an
-  override, view as a client, open a group, open the Dispatch tab, switch to
-  the Recurring Routes tab). Source file:
+- **Mockup of what to build:** https://claude.ai/code/artifact/e90fe293-31f1-4238-93bf-c54001ca7419 (interactive; *+ New Schedule* opens
+  Dane's creator with the Clients row, attach clients, create an override, view
+  as a client, open a group, open the Dispatch tab, switch to the Recurring
+  Routes tab). Source file:
   `docs/mockup-schedules-multi-client.html` in this repo.
 - **Look and feel:** Steve's call (2026-09-08) is to keep it looking like
   Dane's live prototype at
@@ -111,6 +112,55 @@ Dane's `ScheduleEditForm` with the **Clients tab first** and reworked:
 Route and Operating days tabs are Dane's, unchanged (per-day cut-off shown on
 each day cell). An override can have **several clients** (Gisborne pre 10am in
 the mockup: two clients share the Monday-60h variant).
+
+### Creating a schedule (Dane's New Schedule modal, plus a Clients row)
+
+*+ New Schedule* opens Dane's creator as it is on the live prototype — keep
+it as is, with one row added:
+
+1. **Header card** — editable name ("New Schedule" placeholder), *+ Add
+   description*, **Active** toggle, booking mode radio **Fixed Time / Window**,
+   and the **OPERATING DAYS** pills (M T W T F S S, weekdays on by default).
+2. **CLIENTS row** (new) directly under Operating days: *All clients (default)*
+   or *Specific*, and for Specific the attached client chips with an *Attach
+   clients* button that opens the same search-and-tick modal used everywhere
+   else. Most schedules are client-specific (2,606 of 2,725), so Specific is
+   the default and the schedule cannot be created until at least one client is
+   attached or it is made a default. This is the only place the multi-client
+   model touches Dane's creator, and it is there so who-can-book is decided at
+   creation, not discovered later.
+3. **Delivery Route card** — `0 legs` badge, the dashed **Choose first leg**
+   chooser (Collection / Depot / Linehaul / Delivery), "No route legs
+   configured" until one is chosen, then Dane's vertical stacked legs with one
+   expanded inline at a time and the chooser repeated after the last leg (any
+   leg after any leg; a route may end at a depot or linehaul). The leg colour
+   legend and the amber "Route has no legs configured" warning stay. A
+   Linehaul leg's inline config picks the **linehaul run** (`LinehaulRunId`),
+   which is what links the schedule to the Recurring Routes middle-mile row and
+   its master job.
+4. **Bottom tab strip** — Dane has *Schedule Config | Client Overrides*. It
+   becomes *Schedule Config | Clients (n) | Client Overrides*, with Client
+   Overrides disabled until the schedule is saved (an override needs a saved
+   base to point at).
+5. **Create** writes the header (`IsDefault` from the Clients row), one day row
+   per operating day, and the link rows, then opens the schedule in the edit
+   modal.
+
+Where that creator lives in Dane's code (same files in both copies; the
+admin-schedules-module copy is the newer one):
+
+| Piece of the modal | File under `src/modules/schedules/components/` |
+|---|---|
+| Modal shell, header card (name, `+ Add description`, Active toggle, Fixed Time / Window), bottom *Schedule Config \| Client Overrides* strip | `ScheduleEditForm.tsx` (header ≈ lines 300–350, tab strip ≈ 400–420, override tab ≈ 466) |
+| OPERATING DAYS pills | `DayPillsEditor.tsx`, wrapped by `OperatingScheduleSection.tsx` (per-day windows and cut-off) |
+| Delivery Route card, `0 legs` badge, dashed *Choose first leg* chooser, "No route legs configured", legend, "Route has no legs configured" warning | `ChainBuilder.tsx` |
+| One leg card, expand/collapse, inline config per leg type | `LegNode.tsx`, `LegConfigPanel.tsx`, `ZoneSelector.tsx` |
+| Client Overrides tab content | `ClientOverridesTab.tsx` (+ `SideBySideOverrideEditor.tsx`) |
+
+In `Deliver-Different-Testing/Adminmanagerupdate` the same files sit under
+`admin-ui/src/modules/schedules/components/`; `OverrideEditor.tsx` there is the
+older 478-line version that the extracted module replaced with override mode
+inside `ScheduleEditForm`.
 
 ### Dispatch tab on a schedule (new)
 
@@ -377,6 +427,20 @@ them. New, id-keyed:
 - Creating an override moves the client off the base; the base's client count
   drops by one and the override's is one.
 - The old schedules screen still lists every schedule it listed before.
+
+## 8b. Noted for the booking path, not this view
+
+Steve, 2026-09-08: the current schedule setup ties the **parent (booking)
+job's time to the delivery job's start time**, so the parent carries the
+delivery window's start rather than the time the job was actually booked. The
+parent job's time should be the booking time; the delivery job keeps the
+schedule's window. This lives in the booking stored procedures that
+materialise schedule jobs (`WS_stpJob_Insert` /
+`WS_stpBulkScheduleJob_Insert` / `UTL_stpJobBooking_InsertSchedule` and the
+US `DD_` equivalents), not in the schedule tables or this view. It is out of
+scope here and recorded so the schedule rebuild does not bake the same
+assumption into anything new: nothing in the new view should read a schedule's
+day-of-week or start time as the parent job's time.
 
 ## 9. What I need from you
 

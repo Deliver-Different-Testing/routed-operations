@@ -227,6 +227,48 @@ tr:hover .rowact{opacity:1}
 .callout{background:var(--cyan-10);border:1px solid var(--cyan-30);border-radius:8px;padding:10px 12px;font-size:12.5px;color:var(--text-secondary)}
 .callout b{color:var(--text-primary);font-weight:500}
 
+/* new schedule creator (Dane's New Schedule modal) */
+.ncard{border:1px solid var(--border);border-radius:10px;padding:16px 20px;background:var(--surface-white)}
+.nhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.nname{font-size:22px;font-weight:600;border:0;background:transparent;padding:2px 0;width:min(520px,100%);color:var(--text-primary)}
+.nname::placeholder{color:var(--text-muted)}
+.ndesc{display:block;font-size:13px;color:var(--text-secondary);background:transparent;border:0;padding:2px 0;width:min(520px,100%)}
+.nright{display:flex;align-items:center;gap:16px;font-size:13px;color:var(--text-secondary);padding-top:6px}
+.nright label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+.nrow{display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap}
+.nrow .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);font-weight:500;width:120px}
+.dpill{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:var(--surface-white);color:var(--text-muted);font-weight:600;font-size:13px}
+.dpill.on{background:var(--brand-cyan);border-color:var(--brand-cyan);color:#14152D}
+.rcardbox{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--surface-cream)}
+.rcardbox h4{margin:0 0 2px;font-size:14px;font-weight:600}
+.rcardbox .sub2{font-size:12px;color:var(--text-secondary);margin-bottom:12px}
+.chooser{border:2px dashed var(--brand-cyan);border-radius:10px;padding:12px 14px;background:var(--surface-white)}
+.chooser b{display:block;font-size:14px}
+.chooser small{display:block;color:var(--text-secondary);margin-bottom:10px}
+.legbtns{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.legbtns button{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--surface-white);text-align:left;font-weight:500;display:flex;align-items:center;gap:8px}
+.legbtns button:hover{border-color:var(--brand-cyan);background:var(--cyan-10)}
+.legbtns i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.nolegs{text-align:center;color:var(--text-secondary);padding:20px 0;font-size:13px}
+.nolegs b{display:block;color:var(--text-primary);font-weight:500;font-size:14px;margin-bottom:2px}
+.legend2{display:flex;gap:16px;border-top:1px solid var(--border);padding-top:10px;margin-top:12px;font-size:12px;color:var(--text-secondary)}
+.legend2 span{display:inline-flex;align-items:center;gap:6px}.legend2 i{width:12px;height:12px;border-radius:3px;border:1px solid;display:inline-block}
+.warn{margin-top:10px;background:var(--warning-bg);color:#92400e;border-radius:6px;padding:8px 12px;font-size:12.5px}
+.legrow{border:1px solid var(--border);border-left:4px solid var(--c);background:var(--bg);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.legrow .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--c);font-weight:700;width:76px}
+.legrow .v{flex:1;font-weight:500}.legrow .v small{display:block;font-weight:400;color:var(--text-secondary);font-size:12px}
+.legrow .rm{color:var(--text-muted)}
+.legcfg{border:1px solid var(--border);border-top:0;border-radius:0 0 8px 8px;margin-top:-8px;padding:14px 12px 10px;background:var(--surface-white);display:grid;grid-template-columns:repeat(3,1fr);gap:10px;font-size:12.5px}
+.legcfg label{display:flex;flex-direction:column;gap:4px;color:var(--text-secondary)}
+.legcfg select,.legcfg input{padding:6px 8px;font-size:13px}
+.btabs{display:grid;grid-template-columns:1fr 1fr 1fr;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-top:4px}
+.btabs button{padding:12px;font-size:14px;font-weight:500;color:var(--text-secondary);background:var(--surface-white)}
+.btabs button.on{color:var(--brand-dark);background:var(--cyan-10);box-shadow:inset 0 -2px 0 var(--brand-cyan)}
+:root[data-theme="dark"] .btabs button.on{color:var(--text-primary)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .btabs button.on{color:var(--text-primary)}}
+.btabs button[disabled]{opacity:.5;cursor:not-allowed}
+.eyebadge{display:inline-block;margin-left:10px;padding:2px 8px;border-radius:6px;background:var(--surface-light);border:1px solid var(--border);font-size:12px;color:var(--text-secondary);font-weight:400}
+
 /* modal */
 .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:30}
 .modal.open{display:flex}
@@ -258,7 +300,7 @@ tr:hover .rowact{opacity:1}
     </div>
     <div class="actions">
       <button class="btn" onclick="toast('Import / export is unchanged from Dane\'s module')">Import / Export</button>
-      <button class="btn primary" onclick="toast('New schedule opens the route builder (not in this mockup)')">+ New Schedule</button>
+      <button class="btn primary" onclick="openCreator()">+ New Schedule</button>
     </div>
   </div>
 
@@ -325,6 +367,17 @@ tr:hover .rowact{opacity:1}
   </div>
   <div class="dbody" id="dbody"></div>
   <div class="dfoot"><button class="btn" onclick="closeDrawer()">Cancel</button><button class="btn primary" onclick="toast('Saved (mockup)');closeDrawer()">Save</button></div>
+  </div>
+</div>
+
+<div class="drawer" id="creator" role="dialog" aria-modal="true" aria-label="New Schedule" onclick="if(event.target===this)closeCreator()">
+  <div class="dbox">
+    <div class="dhead" style="padding-bottom:14px;display:flex;align-items:center">
+      <h2 style="margin:0;font-size:20px">New Schedule <span class="eyebadge">New Schedule</span></h2>
+      <button class="icobtn x" aria-label="Close" onclick="closeCreator()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="dbody" id="cbody" style="display:flex;flex-direction:column;gap:14px"></div>
+    <div class="dfoot"><button class="btn" onclick="closeCreator()">Cancel</button><button class="btn primary" id="c-save" onclick="saveCreator()">Create schedule</button></div>
   </div>
 </div>
 
@@ -493,7 +546,7 @@ function s_toggle(id){ const s=S()[id]; s.active=!s.active; render(); toast(`${s
 
 // ---------- drawer ----------
 function openDrawer(id){ sel=id; document.getElementById('overlay').classList.add('open'); document.getElementById('drawer').classList.add('open'); renderDrawer(); render(); }
-function closeDrawer(){ sel=null; document.getElementById('overlay').classList.remove('open'); document.getElementById('drawer').classList.remove('open'); render(); }
+function closeDrawer(){ sel=null; if(!nu) document.getElementById('overlay').classList.remove('open'); document.getElementById('drawer').classList.remove('open'); render(); }
 function setDTab(t){ dtab=t; renderDrawer(); }
 function renderDrawer(){
   const M=S(); const s=M[sel]; if(!s) return;
@@ -545,6 +598,42 @@ function renderDrawer(){
 function setVis(id,v){ const s=S()[id]; s.visibility=v; if(v==='all') s.clients=[]; renderDrawer(); render(); toast(v==='all'?'Now a default: link rows removed':'Now specific: attach clients'); }
 function detach(sid,cid){ const s=S()[sid]; s.clients=s.clients.filter(x=>x!==cid); renderDrawer(); render(); renderRoutes(); toast(`${C[cid].name} removed from #${sid}`); }
 
+// ---------- new schedule creator (Dane's New Schedule modal + a Clients row) ----------
+let nu=null; // creator state
+const LEGDEF={col:{k:'Collection',b:'Collect from client address',s:'Pickup source: client address · speed —',c:'--leg-col',bg:'--leg-col-bg'},dep:{k:'Depot',b:'Auckland depot (region 8)',s:'Storage: ambient',c:'--leg-dep',bg:'--leg-dep-bg'},lh:{k:'Linehaul',b:'Choose a linehaul run',s:'run — · depart —',c:'--leg-lh',bg:'--leg-lh-bg'},del:{k:'Delivery',b:'Deliver in destination region',s:'speed — · zone group —',c:'--leg-del',bg:'--leg-del-bg'}};
+function openCreator(){ nu={name:'',desc:'',active:true,mode:'window',days:{1:1,2:1,3:1,4:1,5:1},visibility:'specific',clients:[],legs:[],open:null,tab:'config'}; document.getElementById('creator').classList.add('open'); document.getElementById('overlay').classList.add('open'); renderCreator(); setTimeout(()=>document.getElementById('c-name')?.focus(),50); }
+function closeCreator(){ nu=null; document.getElementById('creator').classList.remove('open'); if(sel==null) document.getElementById('overlay').classList.remove('open'); }
+function renderCreator(){
+  if(!nu) return; const n=nu;
+  const leg=(l,i)=>{const d=LEGDEF[l.t];const openCfg=n.open===i;return `<div class="legrow" style="--c:var(${d.c});--bg:var(${d.bg})" onclick="nu.open=nu.open===${i}?null:${i};renderCreator()"><span class="k">${d.k}</span><span class="v">${esc(l.b||d.b)}<small>${esc(l.s||d.s)}</small></span><span class="rm">${openCfg?'▲':'▼'}</span><button class="icobtn danger" title="Remove leg" onclick="event.stopPropagation();nu.legs.splice(${i},1);nu.open=null;renderCreator()">${I.trash}</button></div>${openCfg?`<div class="legcfg">${l.t==='col'?'<label>Pickup source<select><option>Client address</option><option>Depot</option><option>Booking</option></select></label><label>Pickup speed<select><option>166 · Pickup</option></select></label><label>Pickup zone group<select><option>—</option><option>44 · Te Rapa</option></select></label>':l.t==='dep'?'<label>Depot<select><option>Auckland (region 8)</option><option>Hamilton</option><option>Christchurch</option></select></label><label>Storage state<select><option>Ambient</option><option>Chilled</option><option>Frozen</option></select></label><label>Drop-off location<select><option>—</option><option>Whangarei Inwards</option></select></label>':l.t==='lh'?'<label>Linehaul run<select onchange="nu.legs['+i+'].b=this.options[this.selectedIndex].text;renderCreator()"><option>Choose a run…</option><option>AKL → CHCH Night Air (run 12)</option><option>AKL → GIS Overnight (run 17)</option><option>HLZ → TRG Shuttle (run 41)</option></select></label><label>Departure advance days<input type="number" value="0"></label><label>Linehaul speed<select><option>Use schedule default</option></select></label>':'<label>Delivery speed<select><option>165 · Pre 8am</option><option>164 · Pre 10am</option><option>110 · Home</option></select></label><label>Delivery zone group<select><option>Default postcode group</option><option>33 · Christchurch</option></select></label><label>Additional item charging<select><option>No additional item charge</option><option>Speed second box %</option></select></label>'}</div>`:''}`;};
+  const chooser=`<div class="chooser"><b>${n.legs.length?'Add the next leg':'Choose first leg'}</b><small>${n.legs.length?'Any leg can follow any leg. A route may end at a depot or a linehaul.':'This start point becomes the first route leg after selection.'}</small><div class="legbtns">${['col','dep','lh','del'].map(t=>`<button onclick="nu.legs.push({t:'${t}'});nu.open=nu.legs.length-1;renderCreator()"><i style="background:var(${LEGDEF[t].c})"></i>${LEGDEF[t].k}</button>`).join('')}</div></div>`;
+  const clientsRow = n.visibility==='all' ? `<span class="badge green">All clients</span><span class="note">available to every client with no schedule of its own</span>` : (n.clients.map(id=>`<span class="badge sys">${esc(C[id].code)} <button class="icobtn" style="width:16px;height:16px" title="Remove" onclick="nu.clients=nu.clients.filter(x=>x!==${id});renderCreator()">×</button></span>`).join('')+`<button class="btn sm" onclick="openAttachNew()">${I.users} Attach clients</button>`+(n.clients.length?'':'<span class="note">no clients yet</span>'));
+  let body=`<div class="ncard">
+    <div class="nhead"><div><input id="c-name" class="nname" placeholder="New Schedule" value="${esc(n.name)}" oninput="nu.name=this.value"><input class="ndesc" placeholder="+ Add description" value="${esc(n.desc)}" oninput="nu.desc=this.value"></div>
+      <div class="nright"><span class="tog ${n.active?'on':''}" role="switch" aria-checked="${n.active}" tabindex="0" onclick="nu.active=!nu.active;renderCreator()"><i></i></span> Active
+        <label><input type="radio" name="nmode" ${n.mode==='fixed'?'checked':''} onchange="nu.mode='fixed'"> Fixed Time</label><label><input type="radio" name="nmode" ${n.mode==='window'?'checked':''} onchange="nu.mode='window'"> Window</label></div></div>
+    <div class="nrow"><span class="lbl">Operating days</span>${[1,2,3,4,5,6,7].map(d=>`<button class="dpill ${n.days[d]?'on':''}" onclick="nu.days[${d}]?delete nu.days[${d}]:nu.days[${d}]=1;renderCreator()">${D[d][0]}</button>`).join('')}</div>
+    <div class="nrow"><span class="lbl">Clients</span><label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)"><input type="radio" name="nvis" ${n.visibility==='all'?'checked':''} onchange="nu.visibility='all';nu.clients=[];renderCreator()"> All clients (default)</label><label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)"><input type="radio" name="nvis" ${n.visibility==='specific'?'checked':''} onchange="nu.visibility='specific';renderCreator()"> Specific</label><span class="chips" style="gap:6px">${clientsRow}</span></div>
+  </div>`;
+  if(n.tab==='config'){
+    body+=`<div class="ncard" style="padding:14px 16px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><b>Delivery Route</b><span class="badge cyan">${n.legs.length} leg${n.legs.length===1?'':'s'}</span></div>
+      <div class="rcardbox"><h4>Delivery Route</h4><div class="sub2">Choose the first leg, then add or configure each route leg inline.</div>
+        ${n.legs.length?`<div class="route">${n.legs.map(leg).join('<div class="arrow">▼</div>')}</div><div style="margin-top:10px">${chooser}</div>`:`${chooser}<div class="nolegs"><b>No route legs configured</b>Choose Collection, Depot, Linehaul, or Delivery to create the first route leg.</div>`}
+        <div class="legend2"><span><i style="border-color:var(--leg-col);background:var(--leg-col-bg)"></i>Collection</span><span><i style="border-color:var(--leg-dep);background:var(--leg-dep-bg)"></i>Depot</span><span><i style="border-color:var(--leg-lh);background:var(--leg-lh-bg)"></i>Linehaul</span><span><i style="border-color:var(--leg-del);background:var(--leg-del-bg)"></i>Delivery</span></div></div>
+      ${n.legs.length?'':'<div class="warn">⚠ Route has no legs configured.</div>'}${n.visibility==='specific'&&!n.clients.length?'<div class="warn">⚠ No clients attached. Attach at least one, or make it available to all clients.</div>':''}</div>`;
+  } else if(n.tab==='clients'){
+    body+=`<div class="ncard"><div class="sect"><h3>Attached clients <span class="hint">${n.visibility==='all'?'default schedule — no link rows':n.clients.length+' linked'}</span></h3>${n.visibility==='all'?'<div class="empty">Available to all clients. Switch to Specific to attach individual clients.</div>':`<div class="list">${n.clients.map(id=>`<div class="li"><b>${esc(C[id].name)}</b><span class="code num">${esc(C[id].code)} · ${id}</span><span class="sp"></span><button class="btn ghost sm danger" onclick="nu.clients=nu.clients.filter(x=>x!==${id});renderCreator()">Remove</button></div>`).join('')||'<div class="empty">No clients attached yet.</div>'}</div><div style="margin-top:10px"><button class="btn sm" onclick="openAttachNew()">${I.users} Attach clients</button></div>`}</div></div>`;
+  }
+  body+=`<div class="btabs"><button class="${n.tab==='config'?'on':''}" onclick="nu.tab='config';renderCreator()">Schedule Config</button><button class="${n.tab==='clients'?'on':''}" onclick="nu.tab='clients';renderCreator()">Clients${n.visibility==='specific'?` (${n.clients.length})`:''}</button><button disabled title="Available once the schedule is saved">Client Overrides</button></div>`;
+  document.getElementById('cbody').innerHTML=body;
+  const ok=n.legs.length>0&&Object.keys(n.days).length>0&&(n.visibility==='all'||n.clients.length>0); document.getElementById('c-save').disabled=!ok;
+}
+function openAttachNew(){ modal={mode:'new',picked:new Set()}; document.getElementById('m-title').textContent='Attach clients to the new schedule'; document.getElementById('m-sub').textContent='Each client you tick gets a link row when the schedule is created.'; document.getElementById('m-ok').textContent='Attach'; showModal(); }
+function saveCreator(){ const n=nu; const nid=Math.max(...schedules.map(x=>x.id))+1; const days={}; Object.keys(n.days).forEach(d=>days[d]=['08:00','17:00',24]);
+  const route=n.legs.map(l=>({t:l.t,b:l.b||LEGDEF[l.t].b,s:l.s||'',run:l.t==='lh'&&l.b?+(l.b.match(/run (\d+)/)||[])[1]||null:undefined}));
+  schedules.push({id:nid,name:n.name||'New Schedule',desc:n.desc,visibility:n.visibility,clients:n.clients.slice(),base:null,route,days,origin:route[0]?.t==='col'?'Client address':'Auckland depot',dest:route.find(l=>l.t==='del')?'Destination':'—',active:n.active});
+  closeCreator(); render(); renderGroups(); renderRoutes(); toast(`Schedule #${nid} created${n.visibility==='specific'?` with ${n.clients.length} client${n.clients.length===1?'':'s'}`:' as a default'}`); openDrawer(nid); }
+
 // ---------- attach modal ----------
 function openAttach(sid,asOverride){ modal={mode:asOverride?'override':'schedule',sid,picked:new Set()}; const s=S()[sid];
   document.getElementById('m-title').textContent=asOverride?`Create override of #${sid}`:`Attach clients to #${sid}`;
@@ -558,12 +647,13 @@ function showModal(){ document.getElementById('mq').value=''; document.getElemen
 function closeModal(){ modal=null; document.getElementById('modal').classList.remove('open'); }
 function renderPick(){
   const q=document.getElementById('mq').value.trim().toLowerCase(); const M=S();
-  const target = modal.mode==='group' ? groups.find(g=>g.id===modal.gid).members.map(id=>M[id]) : [M[modal.sid]];
+  const target = modal.mode==='group' ? groups.find(g=>g.id===modal.gid).members.map(id=>M[id]) : modal.mode==='new' ? [] : [M[modal.sid]];
   const base = modal.mode==='schedule' ? M[modal.sid] : null;
   const list=clients.filter(c=>!q||c.name.toLowerCase().includes(q)||c.code.toLowerCase().includes(q)).sort((a,b)=>a.name.localeCompare(b.name));
   document.getElementById('pick').innerHTML=list.map(c=>{
     let why='',dis=false;
-    if(modal.mode==='schedule'){ if(base.clients.includes(c.id)){why='already attached';dis=true;} else { const ov=schedules.find(o=>o.base===base.id&&o.clients.includes(c.id)); if(ov){why=`has own override #${ov.id}`;dis=true;} } }
+    if(modal.mode==='new'){ if(nu&&nu.clients.includes(c.id)){why='already attached';dis=true;} }
+    else if(modal.mode==='schedule'){ if(base.clients.includes(c.id)){why='already attached';dis=true;} else { const ov=schedules.find(o=>o.base===base.id&&o.clients.includes(c.id)); if(ov){why=`has own override #${ov.id}`;dis=true;} } }
     else if(modal.mode==='override'){ const ov=schedules.find(o=>o.base===modal.sid&&o.clients.includes(c.id)); if(ov){why=`already has override #${ov.id}`;dis=true;} else if(M[modal.sid].clients.includes(c.id)) why='on the base — will move to the override'; }
     else { const on=target.filter(s=>s.clients.includes(c.id)).length; if(on===target.length){why='on every member';dis=true;} else if(on) why=`on ${on} of ${target.length}`; }
     const chk=modal.picked.has(c.id);
@@ -575,6 +665,7 @@ function renderPick(){
 function togglePick(id,on){ if(modal.mode==='override'){ modal.picked=new Set(on?[id]:[]); } else { on?modal.picked.add(id):modal.picked.delete(id); } renderPick(); }
 function confirmModal(){
   const M=S(); const ids=[...modal.picked];
+  if(modal.mode==='new'){ nu.visibility='specific'; ids.forEach(id=>{ if(!nu.clients.includes(id)) nu.clients.push(id); }); closeModal(); renderCreator(); return; }
   if(modal.mode==='schedule'){ const s=M[modal.sid]; s.visibility='specific'; ids.forEach(id=>{ if(!s.clients.includes(id)) s.clients.push(id); }); toast(`${ids.length} link row${ids.length>1?'s':''} added to #${s.id}`); }
   else if(modal.mode==='override'){ const b=M[modal.sid]; const cid=ids[0]; const nid=Math.max(...schedules.map(x=>x.id))+1; b.clients=b.clients.filter(x=>x!==cid); schedules.push({id:nid,name:b.name,desc:`Override for ${C[cid].name}`,visibility:'specific',clients:[cid],base:b.id,diff:['No differences yet — edit the route or days'],route:b.route,days:JSON.parse(JSON.stringify(b.days)),origin:b.origin,dest:b.dest,active:b.active}); toast(`Override #${nid} created for ${C[cid].name}`); closeModal(); openDrawer(nid); renderRoutes(); return; }
   else { const g=groups.find(x=>x.id===modal.gid); let n=0; g.members.forEach(mid=>{ const s=M[mid]; if(s.visibility==='all') return; ids.forEach(id=>{ if(!s.clients.includes(id)){s.clients.push(id);n++;} }); }); toast(`${n} link rows written across ${g.members.length} schedules`); }
@@ -636,6 +727,6 @@ function renderRoutes(){
   }).join('')||'<tr><td colspan="10"><div class="empty">Nothing matches.</div></td></tr>';
 }
 
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(modal) closeModal(); else if(sel!=null) closeDrawer(); } });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(modal) closeModal(); else if(nu) closeCreator(); else if(sel!=null) closeDrawer(); } });
 render(); renderGroups(); renderRoutes();
 </script>
