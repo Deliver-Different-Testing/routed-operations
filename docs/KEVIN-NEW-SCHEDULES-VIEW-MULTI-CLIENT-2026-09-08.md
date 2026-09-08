@@ -483,6 +483,14 @@ the UI (the only client controls are the CLIENTS row, the Clients tab and the
 attach picker, all of which write link rows). Kevin's migration owns clearing
 the legacy column; the view does not depend on it.
 
+## 8a-ii. Import / Export is hidden for now
+
+Steve, 2026-09-08: Dane's Import / Export button is removed from the page
+header until the feature actually applies imports (today it ends in a console
+log) and export is verified against the real table. The code stays under
+`src/schedules/features/import-export/`; re-add the button in
+`SchedulesPage.tsx` once both work.
+
 ## 8b. Noted for the booking path, not this view
 
 Steve, 2026-09-08: the current schedule setup ties the **parent (booking)

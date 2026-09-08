@@ -5,8 +5,6 @@ import { Card } from '../../components/layout/Card';
 import { Button } from '../../components/ui/Button';
 import { SearchInput } from '../../components/filters/SearchInput';
 import { TagSidebar } from '../../components/tags';
-import { ImportExportButton } from '../../features/import-export/components/ImportExportButton';
-import { schedulesSchema } from '../../features/import-export/schemas';
 import { ScheduleTableView, type ScheduleTableViewHandle } from './components/ScheduleTableView';
 import { ScheduleGroupsTab } from './components/ScheduleGroupsTab';
 import { RecurringRoutesTab } from './components/RecurringRoutesTab';
@@ -64,16 +62,6 @@ export function SchedulesPage() {
 
   const handleNewSchedule = () => {
     scheduleTableViewRef.current?.openNewSchedule();
-  };
-
-  const handleImportComplete = (result: {
-    created: number;
-    updated: number;
-    deleted: number;
-    errors: number;
-  }) => {
-    console.log('Import complete:', result);
-    // Refresh data after import
   };
 
   const handleCopyGroup = useCallback(
@@ -216,28 +204,8 @@ export function SchedulesPage() {
     }
   }, [schedules]);
 
-  // Transform schedule data for export
-  const scheduleExportData = schedules.map(schedule => {
-    // Get active days from the days object
-    const activeDays = Object.entries(schedule.operatingSchedule.days)
-      .filter(([_, daySchedule]) => daySchedule.enabled)
-      .map(([day]) => day);
-
-    return {
-      id: schedule.id,
-      name: schedule.name,
-      isActive: schedule.isActive,
-      isOverride: schedule.isOverride,
-      originType: schedule.originType,
-      bookingMode: schedule.bookingMode,
-      clientId: schedule.clientId ?? 'all',
-      defaultCollectionSpeedId: schedule.pickupRatingSpeed || '',
-      defaultDeliverySpeedId: schedule.speedId || '',
-      operatingDays: activeDays.join(','),
-      cutoffValue: schedule.operatingSchedule.cutoffValue,
-      cutoffUnit: schedule.operatingSchedule.cutoffUnit,
-    };
-  });
+  // Import / Export: removed from the UI until the feature applies imports and export is verified
+  // against the real table (Steve, 2026-09-08). Code stays under features/import-export.
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-surface-light" data-testid="schedules-page">
@@ -248,11 +216,6 @@ export function SchedulesPage() {
           subtitle="Configure delivery schedule templates and routing rules"
           actions={
             <div className="flex items-center gap-2 md:gap-3 flex-wrap">
-              <ImportExportButton
-                schema={schedulesSchema}
-                data={scheduleExportData}
-                onImportComplete={handleImportComplete}
-              />
               <Button variant="primary" onClick={handleNewSchedule}>
                 + New Schedule
               </Button>
