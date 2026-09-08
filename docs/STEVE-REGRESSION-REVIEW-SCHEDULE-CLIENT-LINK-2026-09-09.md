@@ -1,9 +1,9 @@
 ---
 title: Regression review — Kevin's schedule/client link rollout
 date: 2026-09-09
-revised: 2026-09-09 (v2 — verified against source by Kerran)
+revised: 2026-09-09 (v3 — reconciled against two independent source reviews)
 audience: Steve, George, Kevin, Kerran
-status: Findings verified against source; three decisions open for Steve
+status: Findings verified against source; 4 live defects, 1 product decision
 reviews: KEVIN-SCHEDULE-CLIENT-LINK-BY-SCHEDULE-ID-2026-09-08.md
 baseline_migration: scripts/schedule-rationalisation/sql/001_schedule_header_and_id_keyed_links.sql
 ---
@@ -12,37 +12,50 @@ baseline_migration: scripts/schedule-rationalisation/sql/001_schedule_header_and
 
 ## Verification status
 
-**v1** was written without sighting the source — Kevin's implementation is not on
-the GitHub mirror, only in GitLab (DBMigrationV2 + Routed Operations). Findings
-were measured against the brief and the production data profile.
+**v1** was written without sighting the source (Kevin's implementation is in
+GitLab, not on the GitHub mirror), measured against the brief and the production
+data profile.
 
-**v2** incorporates Kerran's line-by-line source review (2026-09-09). Every v1
-finding now carries a verdict. One finding is refuted, one is downgraded, and
-the source turned up a **new critical defect that is worse than what was
-reported** — see finding 8.
+**v2** incorporated Kerran's source review.
 
-| # | v1 finding | Verdict against source |
-|---|---|---|
-| 1 | UNION vs ELSE resolution rule | **CONFIRMED** — deliberate, at every site |
-| 2 | `BulkRunScheduleId` key collision | **LARGELY REFUTED** — no live bug; latent hazard stands |
-| 3 | Legacy `(name, clientId)` fallback | **REFUTED AS REPORTED** — superseded by finding 8 |
-| 4 | NZ/US zone-layer drift | **REFUTED** — byte-identical; never parallel logic |
-| 4b | Renamed migration re-run risk | **OPEN** — needs a DB query |
-| 5 | `RetiredUtc IS NULL` hides history | **OPEN** — not yet checked |
-| 6 | Legacy day-row `ClientId` writes | **OPEN** — not yet checked |
-| 7 | Filter control inversion | **OPEN** — cosmetic |
-| 8 | `uspPrebookSet` never switched to id resolution | **NEW — CRITICAL** |
+**v3** reconciles Kerran's review with Kevin's independent source review. The two
+**disagree on findings 3 and 4a** — resolved below, in both cases because they
+checked different layers. Kevin also ran the DB query finding 4b needed, closing
+it, and turned up **two defects neither v1 nor Kerran caught**, one of which is
+silent data loss.
+
+Net: **four live defects**, one product decision, three latent hazards, one
+closed.
+
+| # | Finding | Verdict | Severity now |
+|---|---|---|---|
+| 6 | New day rows write `ClientId = null` | **CONFIRMED LIVE BUG** | **CRITICAL** |
+| A | Postcode/polygon junctions orphaned on rename | **NEW — CONFIRMED LIVE** | **HIGH** |
+| B | Migration step 4d wipes multi-client bindings | **NEW — SILENT DATA LOSS** | **HIGH** |
+| 8 | `uspPrebookSet` resolves schedule-active by name | **CONFIRMED** (Kerran) | **HIGH** |
+| 3 | Legacy tuple silently picks on ambiguity | **REINSTATED** — real in C# | **HIGH** |
+| 1 | UNION vs the brief's ELSE | **CONFIRMED — deliberate** | Product decision |
+| 2 | `BulkRunScheduleId` name collision | Latent, not live (both agree) | MEDIUM |
+| 4a | NZ/US zone-layer difference | By design; latent if US enables | LOW |
+| 5 | `RetiredUtc IS NULL` on reads | Correct today; codify the rule | LOW |
+| 7 | Filter control inversion | By design | Release note |
+| 4b | Renamed migration re-run risk | **CLOSED — safe** | — |
+
+**Correction to v2:** v2 marked finding 3 refuted on Kerran's evidence. That was
+a layer error — Kerran checked SQL, where there is indeed no fallback; Kevin
+checked `ScheduleService`, where there are three. Finding 3 is real. Reinstated
+below.
 
 Migrations in the rollout:
 
-- `20260908120000` — header, day-row FK, link table re-key (step 4h deletes the
-  default safety-net rows)
+- `20260908120000_AddScheduleHeaderAndIdKeyedLinks.sql` — header, day-row FK,
+  link table re-key (step 4d wipes; step 4h deletes the safety-net rows)
 - `20260908120001_uspPrebookSetScheduleIdKeyed.sql`
-- `20260908120002` — renamed to `20260908180000_UTL_fncJob_ScheduleIdAndZoneMatch.sql`
-- `20260908120003` — `DD_fncJob…` (US variant)
-- `20260908180000_UTL_fncJob_ScheduleIdAndZoneMatch.sql` (NZ variant, final)
+- `20260908120003_DD_fncJob_…ScheduleIdKeyed.sql` (US variant)
+- `20260908180000_UTL_fncJob_ScheduleIdAndZoneMatch.sql` (NZ variant; was
+  `120002` pre-CI)
 
-Data profile used throughout (current production export):
+Data profile (current production export):
 
 | | |
 |---|---|
@@ -55,307 +68,355 @@ Data profile used throughout (current production export):
 
 ---
 
-## 8. CRITICAL (NEW) — `uspPrebookSet` never switched to id resolution, despite the migration's name
+# Live defects
 
-Found by Kerran in source. This did not appear in the rollout report at all.
+## 6. CRITICAL — new day rows are written with `ClientId = null`
+
+**Confirmed by Kevin in source.** `ScheduleService.UpsertAsync` line 542 and
+`CopyAsync` line 727 both set `ClientId = null` when creating day rows.
+
+Brief §5 is explicit:
+
+> Keep writing the legacy `ClientId` on new day rows for now so anything still
+> reading it keeps working; stop once nothing reads it.
+
+Known consumers still reading it: ClientManager `ScheduleService.GetByClient`,
+booking `ScheduleService.GetRecurringScheduleIds`, and any legacy SP.
+
+**Why this is the worst shape of bug:** it breaks *only on newly created
+schedules*. All 11,110 existing day rows keep working, so nothing fails at
+deploy. It surfaces days later, on the first schedule an operator creates, and
+looks unrelated to the rollout.
+
+**Fix:** `ClientId = header.LegacyClientId` at both sites.
+
+**Test:** create a schedule through the new UI, `SELECT ClientId FROM
+tblBulkRunSchedule` for the new rows. Must be populated. Repeat for copy.
+
+---
+
+## A. HIGH (NEW) — postcode and polygon junctions are silently orphaned on rename
+
+**Found by Kevin. Neither v1 nor Kerran caught this.**
+
+`ScheduleService.SyncPostcodesAsync(header.Name, …)` line 838 and
+`SyncPolygonsAsync(header.Name, …)` line 855 both key on the **current** header
+name. Rename a schedule `Foo` → `Bar` and `SyncPostcodesAsync("Bar", …)` never
+sees the `ScheduleName = 'Foo'` rows. The existing bindings are orphaned, the
+caller is handed a "fresh" empty list, and everything gets re-added under the
+new name.
+
+This is the exact failure mode the brief exists to eliminate — a name used as a
+key, silently detaching dependants on rename (brief §2) — surviving in two
+junctions that were out of scope for the id re-shape (brief §1). It also
+undercuts brief §6's rename-safety acceptance criterion in spirit, even though
+that criterion is worded about client links.
+
+**Fix:** either cascade the rename (`UPDATE ScheduleName` old → new before the
+sync) or port both junctions to `BulkRunScheduleId` in a follow-up MR. The
+cascade is the smaller change; the port is the correct one.
+
+**Test:** create a schedule with postcodes 1000 + 1001. Rename it. Edit again.
+Expected: postcodes still bound. Actual today: bindings lost, list empty.
+
+---
+
+## B. HIGH (NEW) — migration step 4d silently discards multi-client bindings
+
+**Found by Kevin. Raised here one level above his MEDIUM — see below.**
+
+`20260908120000_AddScheduleHeaderAndIdKeyedLinks.sql` step 4d runs an
+**unconditional `DELETE FROM tblScheduleClient`** on fresh apply, then
+repopulates one row per header where `LegacyClientId IS NOT NULL`.
+
+Any multi-client binding the Routed Operations UI wrote to `tblScheduleClient`
+between **2026-08-25** (when the junction was created) and the apply date is
+discarded. Repopulation only restores the 1:1 legacy relationships — a schedule
+an operator attached a *second* client to comes back with that second client
+gone.
+
+Kevin verified the table was empty pre-wipe on `urgent-staging`. That clears
+staging only. Any production tenant that took the 2026-08-25 junction **and** had
+operator activity on it loses those rows.
+
+**Why HIGH rather than MEDIUM:** it is unrecoverable operator work, it is
+silent, and **no assertion in the migration catches it**. The migration prints
+counts and two checks, and a wiped multi-client binding passes all of them — the
+post-state looks perfectly consistent. Nobody finds out until an operator asks
+why a client fell off a schedule.
+
+**Fix, before any further tenant applies:**
+
+1. On every tenant not yet migrated, capture the pre-state:
+   ```sql
+   SELECT * FROM dbo.tblScheduleClient;
+   ```
+   Keep it. This is the only copy.
+2. Add an assertion to step 4d that hard-fails if `tblScheduleClient` contains
+   any row not reproducible from `LegacyClientId` — i.e. any genuine
+   multi-client binding — rather than deleting it.
+3. For tenants already migrated, reconcile against backups taken before the
+   apply date.
+
+---
+
+## 8. HIGH — `uspPrebookSet` resolves schedule-active checks by name
+
+**Found by Kerran in source. Not yet confirmed by Kevin — flagged for him.**
 
 `20260908120001_uspPrebookSetScheduleIdKeyed.sql` is named for id-keying, but
-**all six schedule-active checks still resolve by name**:
+all six schedule-active checks resolve by name:
 
 ```sql
 WHERE h.Name = @CurScheduleName
 ```
 
-at lines 254, 363, 434, 476, 502 and 534. `jb.ScheduleID` *is* fetched into
-`@CurScheduleID` — but only ever used as a boolean gate
+at lines 254, 363, 434, 476, 502, 534. `jb.ScheduleID` is fetched into
+`@CurScheduleID` but used only as a boolean gate
 (`ISNULL(@CurScheduleID, 0) > 0`), never in a join.
 
-**Why this is worse than v1 finding 3.** v1 flagged the name tuple as a
-*temporary fallback retained for one release*. It is not a fallback. It is the
-**permanent, everyday resolution path for every recurring booking re-book**, in
-the exact stored procedure the brief was written to fix. The 164 ambiguous names
-and 48 names shared between a default and client schedules are live on the
-primary path, not a contingency.
+This is compatible with Kevin's finding 1 note that `uspPrebookSet` implements
+the UNION rule — the *resolution rule* and the *schedule-active checks* are
+different parts of the SP. Kevin's review did not cover these six sites.
 
-**Compounding:** the filename asserts the opposite of what the file does.
-Anyone auditing the migration list sees `uspPrebookSetScheduleIdKeyed` and
-reasonably concludes prebook is id-keyed. It is not.
+If it holds, the 164-name / 48-shared-name ambiguity is the everyday path for
+every recurring booking re-book, in the exact SP the brief names — and the
+filename asserts the opposite of what the file does, so an auditor reading the
+migration list concludes prebook is id-keyed when it is not.
 
-**Recommendation:** this is a re-do of `20260908120001`, not a tweak. Resolve
-via `jb.ScheduleID` → header, at all six sites. Until that ships, the brief's
-core objective is unmet for prebook — which is the highest-volume path in the
-system.
+**Kevin: please confirm or refute those six line numbers.** If confirmed this is
+a re-do of `120001`, resolving via `jb.ScheduleID` → header at all six sites.
 
-**Test:** take a client on one of the 48 names shared by a default and a client
-schedule, with a recurring booking. Re-book it. Confirm it resolves to the same
-schedule definition it used before the rollout.
+**Test:** client on one of the 48 shared names, with a recurring booking.
+Re-book. Must resolve to the same definition as pre-rollout.
 
 ---
 
-## 1. CRITICAL — the UNION resolution rule contradicts the brief and widens booking
+## 3. HIGH — the legacy tuple silently picks the first match on ambiguity
 
-**Verdict: CONFIRMED in source, and deliberate.**
-`20260908120001_uspPrebookSetScheduleIdKeyed.sql` and
-`20260908180000_UTL_fncJob_ScheduleIdAndZoneMatch.sql` both use
-`EXISTS(link) OR h.IsDefault = 1` at every site. The migration header comment
-states the reasoning almost verbatim to v1's reconstruction of it: the
-ELSE-shaped safety-net INSERT made the operator UI show 268 pre-checked clients
-on default schedules, so the rule was flipped to UNION and the safety-net rows
-deleted in `20260908120000` step 4h.
+**REINSTATED.** v2 marked this refuted on Kerran's evidence; Kerran checked SQL,
+where there is no such fallback. Kevin checked `ScheduleService`, where there
+are three sites:
 
-**Brief §3 (the only rule the code should implement):**
+- `DeleteAsync(name, legacyClientId)` line 619
+- `CopyAsync` lines 650-654
+- `ToggleAutoBookAsync(name, legacyClientId)` line 800
 
-> A client's schedules are the live headers (`RetiredUtc IS NULL`) it has a link
-> row for. **If it has none**, its schedules are the live headers with
-> `IsDefault = 1`.
+All three:
 
-That is `ELSE`, not `OR`. The two differ for exactly one population: clients
-that have a schedule of their own. Under the brief they see only their own.
-Under UNION they additionally see all 119 default schedules.
-
-**Blast radius:** all 2,606 client-specific schedules. Those clients get up to
-119 extra options in the booking-time schedule picker. This surfaces to
-customers, not just operators.
-
-**This fails the brief's own acceptance test**, §6 — "every existing client
-still gets exactly the schedules it had". Under UNION that comparison cannot
-pass for a client that has its own schedule.
-
-**The stated justification does not hold.** Both symptoms — the 28k-row
-safety-net INSERT and the 268 clients on every default — are consequences of
-*materialising link rows for defaults*, not of the fallback rule. The fallback
-needs no rows at all:
-
-```sql
-IF EXISTS (SELECT 1 FROM tblScheduleClient WHERE ClientId = @ClientId)
-    -- linked headers only
-ELSE
-    -- headers WHERE IsDefault = 1
+```csharp
+.FirstOrDefaultAsync(h => h.Name == trimmed && h.LegacyClientId == legacyClientId && …)
 ```
 
-Zero inserted rows, and no client appears on a default schedule in the UI. The
-UI problem is real and is solved by the fallback, not by UNION.
+`FirstOrDefault` on an ambiguous key: **silently picks one, no log, no throw.**
+With 164 names mapping to multiple definitions in production, this fires
+precisely when the tuple is ambiguous — and the operations are `Delete`, `Copy`
+and `ToggleAutoBook`. A silent wrong pick on `DeleteAsync` retires the wrong
+schedule.
 
-Kerran's review confirms the decision was made **without** the before/after
-client-schedule-count comparison the brief's acceptance criteria require. So the
-scope of the behaviour change was never measured before it shipped.
-
-**Recommendation:** revert to `ELSE`, keep the safety-net rows deleted. If UNION
-is genuinely wanted as a product decision — "clients can always also book the
-defaults" — that is Steve's call to make explicitly, with the before/after
-counts on the table.
+**Fix:** hard-fail on more than one match rather than picking; log every use of
+the legacy path. Then check the log before the release that removes it — if it
+never fires, removal is free.
 
 ---
 
-## 2. LATENT HAZARD (downgraded from HIGH) — the `BulkRunScheduleId` name collision
+# Product decision
 
-**Verdict: largely refuted for the shipped code.** v1 asserted a live
-wrong-key join risk. Kerran checked every join site in both availability
-functions and `uspPrebookSet`: the day-row → header join is
-`s.BulkRunScheduleGroupId`, distinctly named. **No instance of the naive
-wrong-key join exists in what shipped.** The migration file calls the trap out
-explicitly ("Two columns share the name `BulkRunScheduleId` but on different
-tables… day-row.`BulkRunScheduleId` is NOT header.`BulkRunScheduleId`").
+## 1. UNION vs the brief's ELSE — Steve's call
 
-So: no live bug. v1 overstated this.
+**Confirmed by both reviewers. Deliberate, documented, not a bug.**
 
-**What still stands.** The landmine is real and un-renamed.
-`tblScheduleClient.BulkRunScheduleId` points at the *header*, while
-`tblBulkRunSchedule.BulkRunScheduleId` is a *day row* — two key spaces, one
-column name, heavily overlapping id ranges. Kevin navigated it correctly and
-documented it. The next person writing a join has to read that comment to avoid
-silently returning wrong rows, and nothing enforces that they do.
+All three SPs (`uspPrebookSet`, `UTL_fncJob_…`, `DD_fncJob_…`) implement
+`EXISTS (SELECT 1 FROM tblScheduleClient sc WHERE …) OR h.IsDefault = 1`.
+Routed Operations `ScheduleService.ListSummaryAsync` line 169 does the same
+in-memory: `linkedHeaderIds.Contains(…) || headersById[…].IsDefault`.
 
-**Recommendation:** rename to the brief's names (`ScheduleId` throughout,
-`tblBulkRunScheduleClient`) while the surface is still small. If the rename is
-refused, this stays a permanent tax on every future query against these tables.
-Not a release blocker.
+Recorded in `.claude/sp-reference/schedule-id-migration-2026-09-08.md` under
+"Resolution rule (UNION, revised 2026-09-08)". Kevin's mental model: *defaults
+are for everyone always*, not *defaults are the fallback when nothing else is
+bound*.
 
-**Second-order (unchanged):** the baseline migration
-`001_schedule_header_and_id_keyed_links.sql` targets `tblBulkRunScheduleClient`
-and adds a `ScheduleId` column. Run after Kevin's it will not detect his tables
-and will build a **parallel second** header/link structure. One of the two must
-be retired before either touches an environment that has seen the other.
+Trigger on the record: on the first NZ apply an operator opened a default
+schedule and saw 268 pre-checked client chips, because the ELSE rule's
+28k-row safety-net INSERT had materialised every default × every client.
 
----
+**Both reviewers agree the ELSE rule achieves the same UI outcome without the
+safety-net rows**, and that UNION genuinely widens booking for the 2,606
+clients that already have their own schedule — brief §6 test 1 fails as
+predicted.
 
-## 3. REFUTED AS REPORTED — superseded by finding 8
+So the choice is clean and it is Steve's:
 
-v1 flagged a retained legacy `(name, legacyClientId)` fallback "for one release".
-No such separate fallback exists in source. The reality is worse, not milder:
-name resolution is the primary path in `uspPrebookSet`. See **finding 8**.
+- **Revert to ELSE** — matches the brief, no behaviour change for any client,
+  UI problem solved by not materialising default link rows.
+- **Keep UNION** — accept that every client can also book the 119 defaults.
+  A change to what customers can book. If taking this, run the before/after
+  client-schedule-count comparison first; it was never run.
 
 ---
 
-## 4. REFUTED — no NZ/US zone-layer drift
+# Latent hazards
 
-**Verdict: refuted.** Kerran byte-diffed the zone-rated block
-(`170731:125-153` and the other sites) against Kevin's final `180000` body:
-**identical at all four sites.**
+## 2. MEDIUM — the `BulkRunScheduleId` name collision
 
-The premise of v1's concern was also wrong. The US variant (`DD_fncJob`,
-`20260908120003`) never had the NZ `ZoneRated` /
-`UTL_fncBulkZonePostcode_IsActive` mechanism. It has its own separate zone check
-(`ZoneZip` / `pickupPZ`, from the July `AmericanScheduleTimesFix`), which is
-also preserved verbatim in the new body. These were never parallel
-implementations of the same logic, so there is nothing to drift.
+Both reviewers agree: **real, not live.** `tblBulkRunSchedule.BulkRunScheduleId`
+is the day-row PK; `tblBulkRunScheduleHeader.BulkRunScheduleId` is the header
+PK. A join written `ON sc.BulkRunScheduleId = s.BulkRunScheduleId` compiles and
+silently returns wrong rows.
 
-No action.
+Kevin grepped Routed Operations and `DBMigrationV2/Migrations/2026*.sql` for
+that shape: zero matches. Kerran confirmed every shipped join uses the distinctly
+named `s.BulkRunScheduleGroupId`. The trap is documented in the migration header
+and the sp-reference doc.
 
----
+Documentation does not stop the next developer writing the wrong join. Rename to
+distinct names while the surface is small, or accept a permanent tax.
 
-## 4b. OPEN — was `20260908120002` recorded as applied before the rename?
+**Second-order, unchanged and real:** `001_schedule_header_and_id_keyed_links.sql`
+targets `tblBulkRunScheduleClient` and adds a `ScheduleId` column. Run after
+Kevin's on the same tenant it builds a **parallel second** header/link
+structure. Retire one before either touches an environment that has seen the
+other.
 
-The only part of finding 4 still live. The file was renamed
-`20260908120002` → `20260908180000` to order it after Kerran's `170731`. If DbUp
-journalled the **old** name in any environment before the rename, that
-environment will now re-run the script under its new name (or skip it,
-depending on which name landed).
+## 4a. LOW — NZ has the zone layer, US does not
 
-Needs a DB query per environment — SELECT only:
+Reviewers differed in framing; the facts reconcile.
 
-```sql
-SELECT ScriptName, Applied
-FROM dbo.SchemaVersions
-WHERE ScriptName LIKE '%2026090812000%'
-   OR ScriptName LIKE '%20260908180000%'
-ORDER BY Applied;
-```
+The NZ variant (`20260908180000`) carries `ZoneRated` /
+`UTL_fncBulkZonePostcode_IsActive` — 6 references, byte-identical to Kerran's
+`170731` at all four sites (Kerran diffed them). The US variant (`120003`) has
+zero references to that mechanism; it has its own zone check (`ZoneZip` /
+`pickupPZ`, from the July `AmericanScheduleTimesFix`), also preserved verbatim.
 
-Both names present for the same script = the double-apply case. Run on staging
-and on any tenant DB that has seen a 2026-09-08 deploy.
+These were never parallel implementations, so nothing drifted in this rollout —
+Kerran's original fix was NZ-only by design. Kevin adds the mitigation: the US
+tenant `mssql-dfrnt` has the `ZoneRated` column but **zero speeds with
+`ZoneRated = 1`**, so the filter would be a no-op there today.
 
----
+**Latent trigger:** the day a US tenant marks a speed `ZoneRated = 1`, US gets no
+zone filtering from this path. Worth a note in the sp-reference doc rather than
+code today.
 
-## 5. OPEN — `RetiredUtc IS NULL` on *all* SP reads will hide history
+## 5. LOW — `RetiredUtc IS NULL` is correct today; codify the rule
 
-Not yet checked against source.
+Kevin verified via `sys.sql_modules` that only the three schedule-selection SPs
+reference `tblBulkRunScheduleHeader`. All three are "what can I book" selection
+paths, where the filter is correct. **No display-path SP joins the header at
+all** — RunViewer and historic rendering read `tucJob.ScheduleName` directly.
 
-Soft delete is right and is what the brief asked for — but the point of it
-(brief §5) is "so history and dependants survive". A blanket
-`RetiredUtc IS NULL` on every read defeats that for any *historic* view:
+So v1's specific RunViewer regression does not manifest. Also confirmed:
+`BulkZoneSchedule.ScheduleId` keys on the day-row PK, not the header, so
+retiring a header orphans nothing.
 
-- **RunViewer** renders completed runs. If its schedule join filters retired
-  headers, a run booked against a since-retired schedule loses its schedule
-  name — or drops out entirely if the join is inner.
-- The rationalisation that follows this work **retires 522 client schedules**
-  (`summary.csv`). Not hypothetical: as soon as the merge runs, every historic
-  run against those 522 is exposed.
-- `BulkZoneSchedule` rows hang off the day-row id. Retiring a header must not
-  orphan them.
+The caution still holds for the future: the next person adding a display-path SP
+that joins the header will copy the same `RetiredUtc IS NULL` pattern and hit
+exactly the predicted bug — and the rationalisation retires **522** schedules,
+so there will be plenty to hit. Codify in the sp-reference doc: filter
+`RetiredUtc IS NULL` on *selection* paths; never on *display of existing
+records*.
 
-**Rule to apply:** filter `RetiredUtc IS NULL` on *selection* paths (what can I
-book / attach a client to). Do **not** filter it on *display of existing
-records* paths.
-
-**Test:** book a job against a schedule, retire that schedule, open the run in
-RunViewer. The schedule name must still render.
-
----
-
-## 6. OPEN — confirm new day rows still write the legacy `ClientId`
-
-Not yet checked against source. Brief §5 is explicit:
-
-> Keep writing the legacy `ClientId` on new day rows for now so anything still
-> reading it keeps working; stop once nothing reads it.
-
-The report does not mention it. If create-schedule stopped populating day-row
-`ClientId`, consumers still reading it break **only on newly created
-schedules** — the worst failure shape, because existing data keeps working and
-the bug surfaces days later.
-
-**Test:** create a schedule through the new UI, then `SELECT ClientId FROM
-tblBulkRunSchedule` for the new rows. Must be populated.
-
----
-
-## 7. LOW — the Schedules tab filter inverts an existing control's meaning
+## 7. Release note — the Schedules tab filter inversion
 
 "Include client-specific" now means per-client only when ticked, excluding
-defaults; renamed to "Client-specific only". The rename is good and the new
-semantics are defensible. Flagged only because it is a behaviour change to an
-existing control that is not in the brief: an operator who ticked that box
-yesterday to *widen* the list now *narrows* it. Release-note line, not a code
-change.
+defaults; renamed "Client-specific only". Kevin's explicit call, documented.
+Release-note line: an operator who ticked that box to *widen* the list now
+*narrows* it.
 
 ---
 
-## Decisions for Steve
+# Closed
 
-1. **UNION vs ELSE** (finding 1) — revert to the brief, or accept UNION as a
-   deliberate product change to what customers can book? If accepting, get the
-   before/after client-schedule-count comparison first; it was never run.
-2. **`uspPrebookSet` re-do** (finding 8) — this is the brief's core objective
-   unmet on the highest-volume path. Blocker for Phase 1 staging (due
-   2026-09-14) or a fast-follow?
-3. **Rename now or live with it** (finding 2) — `ScheduleId` /
-   `tblBulkRunScheduleClient` while the surface is small, or accept the
-   permanent naming tax and retire one of the two competing migrations.
+## 4b. CLOSED — the `120002` → `180000` rename is safe
+
+Kevin ran the check. `git log --all -- …20260908120002_*` returns nothing — the
+file was never committed under the old name. `SchemaVersions` on `urgent-staging`
+and US has zero rows referencing `120002`, `ScheduleIdKeyed` or
+`AddScheduleHeader`. The rename happened pre-first-CI; no tenant ever saw the old
+name. No risk.
 
 ---
 
-## Regression test set
+# Recommended order of work
 
-Findings 8, 1, 5 and 6 are the ones that reach customers.
+Phase 1 staging is due **2026-09-14** — five days.
 
-### Booking (`_fncJob_GetClientAvailableBulkRunSchedule`, `uspPrebookSet`)
+**Before any further tenant applies migration `20260908120000`:**
 
-1. **Recurring re-book on an ambiguous name** — client on one of the 48 names
-   shared by a default and a client schedule, with a recurring booking. Re-book
-   and confirm the same schedule definition as pre-rollout. *Expected to FAIL on
-   finding 8.*
-2. **Schedule-set parity, client WITH its own schedule.** Capture
-   `GET API/Schedules/Clients/{id}` before and after for ~20 clients that have
-   client-specific schedules. Sets must be identical. *Expected to FAIL on
-   finding 1.*
-3. **Schedule-set parity, client with NONE of its own.** Must return the 119
-   defaults, unchanged.
-4. **Variant name.** One of the 164 names with differing definitions. Confirm
-   returned `CutoffHours` / `StartTime` / `SpeedId` match the pre-migration
-   values for that client.
-5. **Zone-rated booking, NZ** (`ZoneRated` / `UTL_fncBulkZonePostcode_IsActive`)
-   **and US** (`ZoneZip` / `pickupPZ`). Both mechanisms confirmed preserved in
-   source — this is the runtime check.
-6. **`uspPrebookSet` end to end** — prebook against a client-specific schedule
-   and against a default, both territories.
+1. **B** — capture `SELECT * FROM tblScheduleClient` on every un-migrated
+   tenant, and add the step 4d assertion. This is the only irreversible item on
+   the list.
 
-### RunViewer
+**Blockers for Phase 1:**
 
-7. **Historic run against a retired schedule** renders the schedule name
-   (finding 5).
-8. **Run against a merged-away schedule** — after the rationalisation retires
-   522 schedules, historic runs against them still render.
-9. **Zone/linehaul offsets** still resolve — `BulkZoneSchedule.ScheduleId` keys
-   on the day-row id, which the header FK must not have disturbed.
+2. **6** — one-line fix at two sites (`ClientId = header.LegacyClientId`).
+3. **A** — rename cascade for the postcode/polygon junctions.
+4. **8** — pending Kevin's confirmation; if confirmed, a re-do of `120001`.
+5. **1** — Steve's decision. If reverting to ELSE, it lands in the same pass as 8.
 
-### Routed Operations
+**Fast-follow:**
 
-10. **Create schedule** → header, day rows with the FK, link row for the owning
-    client, **and legacy day-row `ClientId` populated** (finding 6).
-11. **Rename schedule** → clients still linked (brief §6).
-12. **Attach then detach a second client** → link rows only, day rows untouched
-    (brief §6).
-13. **Delete schedule** → header retired, day rows and link rows intact.
-14. **FK / PK enforcement** → link row to a non-existent schedule rejected;
+6. **3** — hard-fail + log on the legacy tuple.
+7. **2** — rename decision, and retire one of the two competing migrations.
+8. **4a, 5** — sp-reference doc notes.
+9. **7** — release note.
+
+---
+
+# Regression test set
+
+## Booking
+
+1. **Recurring re-book on an ambiguous name** — client on one of the 48 shared
+   names. Must resolve to the pre-rollout definition. *Fails on finding 8.*
+2. **Schedule-set parity, client WITH its own schedule** —
+   `GET API/Schedules/Clients/{id}` before/after for ~20 such clients. Sets
+   identical. *Fails on finding 1 while UNION stands.*
+3. **Schedule-set parity, client with NONE of its own** — the 119 defaults,
+   unchanged.
+4. **Variant name** — one of the 164. `CutoffHours` / `StartTime` / `SpeedId`
+   match pre-migration values for that client.
+5. **Zone-rated booking, NZ** (`ZoneRated`) **and US** (`ZoneZip` / `pickupPZ`).
+6. **`uspPrebookSet` end to end** — client-specific and default, both
+   territories.
+
+## Routed Operations
+
+7. **Create schedule** → header, day rows with FK, link row, **and legacy
+   day-row `ClientId` populated** (finding 6). Repeat for **copy**.
+8. **Rename schedule** → clients still linked (brief §6) **and postcodes /
+   polygons still bound** (finding A).
+9. **Attach then detach a second client** → link rows only, day rows untouched.
+10. **Delete schedule with an ambiguous name** → retires the *intended*
+    schedule, not the first match (finding 3).
+11. **FK / PK enforcement** → link row to a non-existent schedule rejected;
     duplicate `(schedule, client)` rejected.
 
-### Migration
+## RunViewer
 
-15. **DbUp journal check** for the `120002` → `180000` rename (finding 4b), on
-    staging and every tenant DB that has seen a 2026-09-08 deploy.
-16. Run on staging with `@Commit = 0` first. Counts must be 2,725 headers /
-    119 defaults / 11,110 day rows.
-17. Both checks empty: link rows without an id, client schedules without a link
+12. **Historic run against a retired schedule** renders the schedule name.
+    Expected to pass today (finding 5) — this is the guard test for later.
+13. **Zone/linehaul offsets** still resolve.
+
+## Migration
+
+14. **Multi-client binding preservation** — seed `tblScheduleClient` with a
+    genuine second-client row, apply, confirm it survives (finding B).
+    *Fails today.*
+15. Staging with `@Commit = 0` first. Counts: 2,725 headers / 119 defaults /
+    11,110 day rows.
+16. Both checks empty: link rows without an id, client schedules without a link
     row.
-18. **Idempotency** — re-run on an already-migrated database; no duplicate
-    headers, no duplicate link rows.
-19. **Partial-failure retry** — kill mid-run, re-run, confirm clean.
-20. **Confirm the two competing migrations cannot both apply** (finding 2,
+17. **Idempotency** — re-run on a migrated database; no duplicate headers or
+    link rows.
+18. **Partial-failure retry** — kill mid-run, re-run, confirm clean.
+19. **Confirm the two competing migrations cannot both apply** (finding 2,
     second-order).
 
-## Still unsighted
+---
 
-Findings 5, 6 and 7 have not been checked against source. Read-only GitLab
-access to DBMigrationV2 + Routed Operations, or the relevant diffs, would close
-them.
+## Open items
+
+- **Kevin** to confirm or refute finding 8's six line numbers in `120001`.
+- **Steve** to call finding 1 (UNION vs ELSE).
+- Findings 5 and 7 were verified by Kevin against source; findings 2 and 4a are
+  agreed by both reviewers. No item now rests on the report alone.
