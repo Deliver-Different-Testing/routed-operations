@@ -713,6 +713,7 @@ function Section({ title, right, children }: { title: string; right?: React.Reac
 function toForm(g: ScheduleGroup | null): ScheduleGroupUpsertBody {
   if (!g) {
     return {
+      scheduleId: null,
       name: '', description: '', regionId: 0, pickupDepotId: null,
       speedId: null, parentSpeedId: null,
       autoBook: false, bookPickup: false, applyPickupCutoff: false, pickupCutoff: null,
@@ -724,6 +725,7 @@ function toForm(g: ScheduleGroup | null): ScheduleGroupUpsertBody {
     };
   }
   return {
+    scheduleId: g.scheduleId,
     name: g.name ?? '',
     description: g.description,
     regionId: g.regionId,

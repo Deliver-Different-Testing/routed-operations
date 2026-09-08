@@ -82,16 +82,19 @@ export function SchedulesTab() {
   };
   useEffect(() => { void load(clientCodeFilter, includeClientSpecific); }, [clientCodeFilter, includeClientSpecific]);
 
-  // ?edit=<name> deep-link (used by RecurringRoutes -> Schedules chip
-  // click). Match against the summary list, then fetch full detail
-  // before opening the modal.
+  // ?edit=<value> deep-link (used by RecurringRoutes -> Schedules chip
+  // click). Prefer numeric scheduleId; fall back to legacy name for
+  // existing deep links (e.g. bookmarks).
   useEffect(() => {
     if (groups.length === 0) return;
     const params = new URLSearchParams(window.location.search);
-    const editName = params.get('edit');
-    if (!editName) return;
-    const target = groups.find((g) => g.name === editName && g.legacyClientId == null)
-      ?? groups.find((g) => g.name === editName);
+    const editValue = params.get('edit');
+    if (!editValue) return;
+    const asId = Number.parseInt(editValue, 10);
+    const target = Number.isFinite(asId) && asId > 0
+      ? groups.find((g) => g.scheduleId === asId)
+      : (groups.find((g) => g.name === editValue && g.legacyClientId == null)
+         ?? groups.find((g) => g.name === editValue));
     if (target) {
       void openEdit(target);
       params.delete('edit');
@@ -104,7 +107,7 @@ export function SchedulesTab() {
   const openEdit = async (g: ScheduleGroupSummary) => {
     setLoadingDetail(true);
     try {
-      const res = await scheduleService.detail(g.name ?? '', g.legacyClientId);
+      const res = await scheduleService.detail(g.scheduleId);
       setEditing(res.response);
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setLoadingDetail(false); }
@@ -113,7 +116,7 @@ export function SchedulesTab() {
   const openCopy = async (g: ScheduleGroupSummary) => {
     setLoadingDetail(true);
     try {
-      const res = await scheduleService.detail(g.name ?? '', g.legacyClientId);
+      const res = await scheduleService.detail(g.scheduleId);
       setCopying(res.response);
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setLoadingDetail(false); }
@@ -136,9 +139,9 @@ export function SchedulesTab() {
 
   const toggleAutoBook = async (g: ScheduleGroupSummary) => {
     try {
-      const res = await scheduleService.toggleAutoBook(g.name ?? '', g.legacyClientId);
+      const res = await scheduleService.toggleAutoBook(g.scheduleId);
       setGroups((prev) => prev.map((x) =>
-        x.name === g.name && x.legacyClientId === g.legacyClientId
+        x.scheduleId === g.scheduleId
           ? { ...x, autoBook: res.response.autoBook } : x));
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
@@ -147,14 +150,14 @@ export function SchedulesTab() {
     const dayCount = g.activeDays.length;
     const ok = await askConfirm({
       title: 'Delete schedule group?',
-      message: `Delete "${g.name}"? This removes all ${dayCount} day-window row${dayCount === 1 ? '' : 's'} plus zone activation, linehaul legs, and every client / postcode / polygon binding. Cannot be undone.`,
+      message: `Delete "${g.name}"? Retires the schedule (soft delete via RetiredUtc on the header) - existing bookings + history are preserved; nightly prebook + booking availability lookups stop returning this schedule immediately. Applies to all ${dayCount} day-window row${dayCount === 1 ? '' : 's'} in the group.`,
       confirmLabel: 'Delete',
       danger: true,
     });
     if (!ok) return;
     try {
-      await scheduleService.remove(g.name ?? '', g.legacyClientId);
-      setGroups((prev) => prev.filter((x) => !(x.name === g.name && x.legacyClientId === g.legacyClientId)));
+      await scheduleService.remove(g.scheduleId);
+      setGroups((prev) => prev.filter((x) => x.scheduleId !== g.scheduleId));
       toast.show('Schedule deleted', 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
@@ -164,7 +167,7 @@ export function SchedulesTab() {
   const onSaved = (row: ScheduleGroup) => {
     const summary = detailToSummary(row);
     setGroups((prev) => {
-      const idx = prev.findIndex((x) => x.name === row.name && x.legacyClientId === row.legacyClientId);
+      const idx = prev.findIndex((x) => x.scheduleId === row.scheduleId);
       if (idx >= 0) {
         const next = prev.slice();
         next[idx] = summary;
@@ -259,7 +262,7 @@ export function SchedulesTab() {
             <span className="ml-2 text-text-muted">Client: <span className="font-semibold text-text-secondary">{clientCodeFilter}</span></span>
           )}
           {clientCodeFilter === undefined && includeClientSpecific && (
-            <span className="ml-2 text-text-muted">Scope: <span className="font-semibold text-text-secondary">default + client-specific</span></span>
+            <span className="ml-2 text-text-muted">Scope: <span className="font-semibold text-text-secondary">client-specific only</span></span>
           )}
         </p>
         <div className="flex items-center gap-2">
@@ -287,7 +290,7 @@ export function SchedulesTab() {
           {clientCodeFilter === undefined && (
             <label
               className="flex items-center gap-1 text-[11px] text-text-secondary cursor-pointer select-none"
-              title="Include schedules that are bound to a specific client (legacy per-client override or junction). Off by default because the widened set can be much larger."
+              title="Tick to switch the browse to per-client (legacy override) schedules only. Off = default schedules only. Type a client code above to see what a specific client actually resolves to."
             >
               <input
                 type="checkbox"
@@ -295,7 +298,7 @@ export function SchedulesTab() {
                 onChange={(e) => setIncludeClientSpecific(e.target.checked)}
                 className="accent-brand-cyan"
               />
-              Include client-specific
+              Client-specific only
             </label>
           )}
           <input
@@ -317,7 +320,7 @@ export function SchedulesTab() {
       <DataTable
         rows={filtered}
         columns={columns}
-        rowKey={(g) => `${g.name}::${g.legacyClientId ?? 'default'}`}
+        rowKey={(g) => String(g.scheduleId)}
         onRowClick={(g) => void openEdit(g)}
         loading={loading || loadingDetail}
         emptyMessage={'No schedules yet. Click "+ Add Schedule" to create one.'}
@@ -360,6 +363,7 @@ export function SchedulesTab() {
 function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
   const activeDays = Array.from(new Set(g.dayWindows.map((w) => w.dayOfWeek))).sort((a, b) => a - b);
   return {
+    scheduleId: g.scheduleId,
     name: g.name,
     legacyClientId: g.legacyClientId,
     legacyClientCode: g.legacyClientCode,

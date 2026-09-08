@@ -13,6 +13,26 @@ public partial class TblBulkRunSchedule
 {
     [Column("BulkRunScheduleId")]
     public int BulkRunScheduleId { get; set; }
+
+    /// <summary>
+    /// FK to tblBulkRunScheduleHeader.BulkRunScheduleId (the header PK).
+    /// One header groups N day rows (one per DayOfWeek + Speed + Region
+    /// variant). Added 2026-09-08 by AddScheduleHeaderAndIdKeyedLinks.
+    /// Note: the header PK column shares this column's NAME
+    /// (BulkRunScheduleId) but on a different table with a different
+    /// value - the FK column here is deliberately called
+    /// BulkRunScheduleGroupId to avoid a collision with the day-row PK
+    /// on this same entity.
+    /// </summary>
+    public int BulkRunScheduleGroupId { get; set; }
+
+    /// <summary>
+    /// Nav prop to the schedule header. Left optional so EF isn't forced
+    /// to eager-load - the service layer opts in via Include when it
+    /// needs IsDefault / RetiredUtc / LegacyClientId.
+    /// </summary>
+    public virtual BulkRunScheduleHeader Header { get; set; }
+
     public string Name { get; set; }
     // smallint in the DB (not int) - typing this as `int?` triggers an
     // InvalidCastException when EF materialises the row.

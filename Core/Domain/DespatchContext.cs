@@ -25,10 +25,15 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     // Schedules module - drop-off targets. Read-only in this app (legacy
     // ClientManager still owns the CRUD surface).
     public virtual DbSet<TblDropOffLocation> TblDropOffLocations { get; set; }
-    // Schedules module - three junction tables added in migration
-    // 20260825120000_AddScheduleGroupJunctions. Keyed by schedule Name
-    // (the "group" identity); backend syncs the junctions when a
-    // schedule group is saved.
+    // Schedules module - header table added 2026-09-08 by
+    // AddScheduleHeaderAndIdKeyedLinks. One row per schedule group;
+    // owns the canonical Name + IsDefault + RetiredUtc soft-delete.
+    // Day rows in TblBulkRunSchedule FK back via BulkRunScheduleGroupId.
+    public virtual DbSet<BulkRunScheduleHeader> BulkRunScheduleHeaders { get; set; }
+    // Client link table: reshaped 2026-09-08 from (ScheduleName, ClientId)
+    // to (BulkRunScheduleId, ClientId) FK-referencing the header.
+    // Postcode + polygon junctions still keyed on ScheduleName (out of
+    // scope for this MR).
     public virtual DbSet<ScheduleClient> ScheduleClients { get; set; }
     public virtual DbSet<SchedulePostcode> SchedulePostcodes { get; set; }
     public virtual DbSet<SchedulePolygon> SchedulePolygons { get; set; }
@@ -211,13 +216,36 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.ToTable("tblDropOffLocation");
         });
 
-        // Schedules module junction tables. Composite PKs mirror the DB
-        // (ScheduleName + FK columns). No nav properties - the service
-        // layer treats these as plain rows and syncs them explicitly.
+        // Schedules module tables.
+        // Header (2026-09-08 AddScheduleHeaderAndIdKeyedLinks): one row
+        // per schedule group. PK column is BulkRunScheduleId (identity)
+        // - shares a NAME with tblBulkRunSchedule.BulkRunScheduleId but
+        // NOT a value.
+        modelBuilder.Entity<BulkRunScheduleHeader>(entity =>
+        {
+            entity.HasKey(e => e.BulkRunScheduleId);
+        });
+        // Day rows link to header via BulkRunScheduleGroupId. HasPrincipalKey
+        // makes the FK explicit against header.BulkRunScheduleId.
+        modelBuilder.Entity<TblBulkRunSchedule>(entity =>
+        {
+            entity.HasOne(e => e.Header)
+                  .WithMany()
+                  .HasForeignKey(e => e.BulkRunScheduleGroupId)
+                  .HasPrincipalKey(h => h.BulkRunScheduleId);
+        });
+        // Client link (reshaped 2026-09-08 from ScheduleName to
+        // BulkRunScheduleId FK-referencing the header).
         modelBuilder.Entity<ScheduleClient>(entity =>
         {
-            entity.HasKey(e => new { e.ScheduleName, e.ClientId });
+            entity.HasKey(e => new { e.BulkRunScheduleId, e.ClientId });
+            entity.HasOne(e => e.Header)
+                  .WithMany()
+                  .HasForeignKey(e => e.BulkRunScheduleId)
+                  .HasPrincipalKey(h => h.BulkRunScheduleId);
         });
+        // Postcode + polygon junctions still keyed on ScheduleName (out
+        // of scope for this MR).
         modelBuilder.Entity<SchedulePostcode>(entity =>
         {
             entity.HasKey(e => new { e.ScheduleName, e.PostCode });

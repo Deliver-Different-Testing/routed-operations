@@ -45,9 +45,13 @@ export interface ScheduleLinehaul {
 
 /** Slim projection returned by GET /schedules for the list table.
  *  Detail (full day-windows / zones / linehauls / junction ids) is
- *  fetched on demand via scheduleService.detail(name, legacyClientId)
- *  when the operator opens the edit or copy modal. */
+ *  fetched on demand via scheduleService.detail(scheduleId) when the
+ *  operator opens the edit or copy modal. */
 export interface ScheduleGroupSummary {
+  /** Header PK (BulkRunScheduleHeader.BulkRunScheduleId). Introduced
+   *  2026-09-08 alongside the header table. Use as the schedule
+   *  identity everywhere in the frontend. */
+  scheduleId: number;
   name: string | null;
   legacyClientId: number | null;
   legacyClientCode: string | null;
@@ -67,9 +71,14 @@ export interface ScheduleGroupSummary {
 }
 
 export interface ScheduleGroup {
+  /** Header PK (BulkRunScheduleHeader.BulkRunScheduleId). Introduced
+   *  2026-09-08 alongside the header table. Use as the schedule
+   *  identity for detail/update/delete/copy calls. */
+  scheduleId: number;
   name: string | null;
   /** Populated for legacy per-client override rows only. Null for new
-   *  schedules using the tblScheduleClient junction. */
+   *  schedules using the tblScheduleClient junction. Informational
+   *  only from 2026-09-08 - the link table is the source of truth. */
   legacyClientId: number | null;
   /** Resolved client code (e.g. "ACME"). Null when legacyClientId is null.
    *  Prefer this over legacyClientId for any operator-visible label. */
@@ -139,6 +148,9 @@ export interface ScheduleLookups {
 }
 
 export interface ScheduleGroupUpsertBody {
+  /** Present = update existing header; absent = create fresh header +
+   *  day rows. Populate from ScheduleGroup.scheduleId on edit. */
+  scheduleId?: number | null;
   name: string;
   description: string | null;
   regionId: number;
@@ -191,13 +203,15 @@ export interface ScheduleGroupUpsertBody {
 }
 
 export interface ScheduleCopyBody {
-  /** Group identity to copy from. */
-  sourceName: string;
-  /** Null for the default (junction) group; set for a legacy per-client override source. */
-  sourceLegacyClientId: number | null;
-  /** New group's name. Must differ from sourceName when the source is default. */
+  /** Source header id. Preferred (matches the ScheduleGroup.scheduleId
+   *  the operator just clicked). Backend still accepts sourceName +
+   *  sourceLegacyClientId as a legacy fallback for one release. */
+  sourceScheduleId: number;
+  /** New group's name. Must differ from source's name when the source
+   *  is a default group. */
   newName: string;
-  /** Client codes to bind on the copy (preferred). Empty = inherit source's clients. */
+  /** Client codes to bind on the copy (preferred). Empty = inherit
+   *  source's link rows. */
   clientCodes: string[];
 }
 
@@ -219,21 +233,21 @@ export const scheduleService = {
       })}`),
   /** Full detail for one group. Called on-demand from the table row
    *  click so the initial list load stays slim. */
-  detail: (name: string, legacyClientId?: number | null) =>
+  detail: (scheduleId: number) =>
     request<{ response: ScheduleGroup }>(
-      `/schedules/detail${buildQuery({ name, legacyClientId: legacyClientId ?? undefined })}`),
+      `/schedules/detail${buildQuery({ scheduleId })}`),
   lookups: () => request<{ response: ScheduleLookups }>('/schedules/lookups'),
   upsert: (body: ScheduleGroupUpsertBody) =>
     request<{ response: ScheduleGroup }>('/schedules', {
       method: 'PUT', body: JSON.stringify(body),
     }),
-  remove: (name: string, legacyClientId?: number | null) =>
+  remove: (scheduleId: number) =>
     request<{ response: string }>(
-      `/schedules${buildQuery({ name, legacyClientId: legacyClientId ?? undefined })}`,
+      `/schedules${buildQuery({ scheduleId })}`,
       { method: 'DELETE' }),
-  toggleAutoBook: (name: string, legacyClientId?: number | null) =>
+  toggleAutoBook: (scheduleId: number) =>
     request<{ response: { autoBook: boolean } }>(
-      `/schedules/auto-book${buildQuery({ name, legacyClientId: legacyClientId ?? undefined })}`,
+      `/schedules/auto-book${buildQuery({ scheduleId })}`,
       { method: 'POST' }),
   copy: (body: ScheduleCopyBody) =>
     request<{ response: ScheduleGroup }>('/schedules/copy', {
