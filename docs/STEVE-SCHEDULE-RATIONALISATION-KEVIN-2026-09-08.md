@@ -89,7 +89,6 @@ business call, not a data call:
 | `schedule-rationalisation.xlsx` | All of the above as one workbook with a Summary sheet |
 | `rationalise_schedules.sql` | SQL Server migration, transaction + safety checks, `@Commit = 0` by default |
 
-The same workbook is also in Google Drive as **"Schedule rationalisation 2026-09-08"**.
 
 ## 4. Data-quality findings (168, in `data_quality.csv`)
 
