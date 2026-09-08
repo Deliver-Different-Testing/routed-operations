@@ -324,7 +324,7 @@ tr:hover .rowact{opacity:1}
         </div>
       </div>
       <div class="tscroll"><table>
-        <thead><tr><th style="width:24%">Name</th><th>Days</th><th>Origin</th><th>Dest</th><th>Window</th><th>Cut-off</th><th style="width:16%">Clients</th><th>Dispatch</th><th class="tc">Status</th><th class="tc">Actions</th></tr></thead>
+        <thead><tr><th style="width:24%">Name</th><th>Days</th><th>Origin</th><th>Dest</th><th>Window</th><th>Cut-off</th><th style="width:16%">Clients</th><th>Roster</th><th class="tc">Status</th><th class="tc">Actions</th></tr></thead>
         <tbody id="rows"></tbody>
       </table></div>
     </section>
@@ -364,7 +364,7 @@ tr:hover .rowact{opacity:1}
       <button id="dt-clients" class="on" onclick="setDTab('clients')">Clients</button>
       <button id="dt-route" onclick="setDTab('route')">Route</button>
       <button id="dt-days" onclick="setDTab('days')">Operating days</button>
-      <button id="dt-dispatch" onclick="setDTab('dispatch')">Dispatch</button>
+      <button id="dt-dispatch" onclick="setDTab('dispatch')">Roster</button>
     </div>
   </div>
   <div class="dbody" id="dbody"></div>
@@ -583,7 +583,7 @@ function renderDrawer(){
       <p class="note" style="margin-top:10px">Each enabled day is one <code>tblBulkRunSchedule</code> row carrying ScheduleId #${s.id}.</p></div>`;
   } else {
     const rts=routesFor(s.id); const lhs=lhFor(s);
-    h+=`<div class="callout span"><b>Dispatch view.</b> The schedule owns the time window, days and cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk leg and its <b>master job</b>, the one booking a linehaul driver picks up so every item on the run is marked picked up together. All of it is read from the Recurring Routes tables and edited there.</div>`;
+    h+=`<div class="callout span"><b>Roster.</b> The schedule owns the time window, days and cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk leg and its <b>master job</b>, the one booking a linehaul driver picks up so every item on the run is marked picked up together. All of it is read from the Recurring Routes tables and edited there.</div>`;
     h+=`<div class="sect"><h3>Recurring routes bound to this schedule <span class="hint">${rts.length} route${rts.length===1?'':'s'}</span></h3>
       ${rts.length?rts.map(r=>`<div class="rcard"><div class="rh"><b>${esc(r.name)}</b><span class="badge blue">${r.area}</span>${r.scheduleIds.length>1?`<span class="badge purple" title="Also bound to ${r.scheduleIds.filter(x=>x!==s.id).map(x=>'#'+x).join(', ')}">shared by ${r.scheduleIds.length} schedules</span>`:''}${r.active?'':'<span class="badge sys">Inactive</span>'}<span class="sp" style="flex:1"></span><button class="btn ghost sm" onclick="toast('Opens Route Roster for #${r.id} (Configurator page)')">Roster ${I.ext}</button></div>
         <div class="rm"><span><span class="num">${r.zips}</span> zips</span><span><span class="num">${r.stops}</span> mapped stops</span><span>Default: ${esc(r.target.name)} <span class="badge sys sm">${r.target.type}</span></span></div>${weekStrip(r,false)}</div>`).join(''):'<div class="empty">No recurring route is bound to this schedule. Pickups are matched from bookings, not a rostered run.</div>'}

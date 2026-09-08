@@ -58,9 +58,9 @@ export function DispatchTab({
   const boundRuns = runsForSchedule(runs, schedule);
 
   return (
-    <div className="space-y-6" data-testid="dispatch-tab" aria-label="dispatch tab">
+    <div className="space-y-6" data-testid="dispatch-tab" aria-label="roster tab">
       <div className="rounded-lg border border-brand-cyan/30 bg-brand-cyan/5 p-3 text-xs text-text-secondary">
-        <span className="font-medium text-text-primary">Dispatch view.</span> The schedule owns the time window, days and
+        <span className="font-medium text-text-primary">Roster.</span> The schedule owns the time window, days and
         cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk
         leg and its <span className="font-medium text-text-primary">master job</span>, the one booking a linehaul driver
         picks up so every item on the run is marked picked up together. Read from the Recurring Routes tables; edited there.

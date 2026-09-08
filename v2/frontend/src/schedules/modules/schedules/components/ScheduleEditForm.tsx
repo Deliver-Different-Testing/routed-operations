@@ -501,7 +501,7 @@ export function ScheduleEditForm({
                 : 'text-text-muted hover:text-text-primary hover:bg-surface-cream'
             }`}
           >
-            Dispatch
+            Roster
           </button>
         </div>
       )}
@@ -563,7 +563,7 @@ export function ScheduleEditForm({
           />
         </div>
       )}
-      {/* Routed Operations: Dispatch (routes, runs, master job) */}
+      {/* Routed Operations: Roster (routes, runs, master job) */}
       {activeTab === 'dispatch' && (
         <div className="bg-white rounded-lg border border-border p-4">
           <DispatchTab schedule={formSchedule} allSchedules={allSchedules} routes={sampleRecurringRoutes} runs={sampleLinehaulRuns} />

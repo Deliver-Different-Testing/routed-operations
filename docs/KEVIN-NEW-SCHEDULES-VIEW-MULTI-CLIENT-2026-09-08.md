@@ -28,7 +28,7 @@ until ops confirm they can do their work in the new one.
 
 - **Mockup of what to build:** https://claude.ai/code/artifact/e90fe293-31f1-4238-93bf-c54001ca7419 (interactive; *+ New Schedule* opens
   Dane's creator with the Clients row, attach clients, create an override, view
-  as a client, open a group, open the Dispatch tab, switch to the Recurring
+  as a client, open a group, open the Roster tab, switch to the Recurring
   Routes tab). Source file:
   `docs/mockup-schedules-multi-client.html` in this repo.
 - **Look and feel:** Steve's call (2026-09-08) is to keep it looking like
@@ -43,7 +43,7 @@ until ops confirm they can do their work in the new one.
 - **One UI for schedules, recurring routes and linehaul:** the page carries
   three tabs — Schedules, Schedule Groups, Recurring Routes (with the live
   page's First / Middle / Final mile types, so linehaul runs are rows there,
-  not a separate page) — and every schedule has a Dispatch tab showing the
+  not a separate page) — and every schedule has a Roster tab showing the
   routes and run that deliver it, including the run's **master job**.
   Section 2b explains the model and what is read-only here.
 - **Where it lives:** in the Routed Operations shell as a second sidebar
@@ -139,7 +139,7 @@ it as is, with one row added:
    which is what links the schedule to the Recurring Routes middle-mile row and
    its master job.
 4. **Bottom tab strip** — Dane has *Schedule Config | Client Overrides*. It
-   becomes *Schedule Config | Clients (n) | Client Overrides | Dispatch*, with
+   becomes *Schedule Config | Clients (n) | Client Overrides | Roster*, with
    Client Overrides disabled until the schedule is saved (an override needs a
    saved base to point at).
 5. **Create** writes the header (`IsDefault` from the Clients row), one day row
@@ -162,7 +162,7 @@ In `Deliver-Different-Testing/Adminmanagerupdate` the same files sit under
 older 478-line version that the extracted module replaced with override mode
 inside `ScheduleEditForm`.
 
-### Dispatch tab on a schedule (new)
+### Roster tab on a schedule (new)
 
 Read-only in the first phases. Shows, for this schedule:
 
@@ -181,7 +181,7 @@ Read-only in the first phases. Shows, for this schedule:
   it materialised and how many items are linked to it). A run without a
   master job is flagged red, because the driver would then see every item as
   its own job.
-- The row in the Schedules table summarises the same thing in a **Dispatch**
+- The row in the Schedules table summarises the same thing in a **Roster**
   column: `2 routes` and `LH AUC→CHR 21:30` chips, so ops can see at a glance
   which schedules have a rostered pickup run and a trunk leg and which rely on
   ad-hoc matching.
@@ -208,7 +208,7 @@ three columns the existing page cannot show:
 "This week" is the seven-day roster strip (date override › weekly pattern ›
 default target). Row click opens the existing Edit Route / Edit Linehaul Run
 modal; the Route Roster and Linehaul Roster editors stay on their pages and
-are deep-linked from the Dispatch tab.
+are deep-linked from the Roster tab.
 
 ### Why the master job matters here
 
@@ -283,10 +283,10 @@ What was added on top of Dane's code, all under `src/schedules/modules/schedules
 | `dispatch/types.ts`, `dispatch/dispatchData.ts` | Recurring routes, linehaul runs, master job, roster resolution (date override › weekly › default), joins to schedules |
 | `components/AttachClientsModal.tsx` | Search-and-tick picker with greyed-out blockers; single-pick mode for overrides |
 | `components/ClientsTab.tsx` | Who can book: visibility radio, attached list, overrides list, create override |
-| `components/DispatchTab.tsx` | Routes bound, linehaul runs, master job, seven-day roster strips |
+| `components/DispatchTab.tsx` | The Roster tab: routes bound, linehaul runs, master job, seven-day roster strips |
 | `components/RecurringRoutesTab.tsx` | The Recurring Routes rows with Type filter, Schedule(s), Clients via schedule, Master job |
-| `components/ScheduleTable.tsx` | Clients and Dispatch columns, Defaults / Shared / Overrides filter, View as client, Attach action, overrides nested under their base |
-| `components/ScheduleEditForm.tsx` | CLIENTS row in the header card; tab strip Schedule Config · Clients · Client Overrides · Dispatch (overrides disabled until saved) |
+| `components/ScheduleTable.tsx` | Clients and Roster columns, Defaults / Shared / Overrides filter, View as client, Attach action, overrides nested under their base |
+| `components/ScheduleEditForm.tsx` | CLIENTS row in the header card; tab strip Schedule Config · Clients · Client Overrides · Roster (overrides disabled until saved) |
 | `components/ScheduleTableView.tsx` | Controlled schedules, attach from the row, create / open override, override save moves the client off the base |
 | `components/ScheduleGroupsTab.tsx`, `SchedulesPage.tsx` | Attach clients to group; Recurring Routes tab; one schedules state shared by all tabs |
 | `api/v2.ts` | Typed client + DTOs for Kevin's ScheduleId-keyed endpoints (unused until `VITE_SCHEDULES_API` is set) |
@@ -445,8 +445,8 @@ them. New, id-keyed:
    screen is untouched. Both read the same day rows, so ops can open a schedule
    in each and compare.
 2. **Phase 1 — read-only list + modal** on the 001 tables: table with Clients
-   and Dispatch columns, nesting by `BaseScheduleId`, View-as-client, modal
-   with Clients / Route / Days / Dispatch tabs read-only, plus the read-only
+   and Roster columns, nesting by `BaseScheduleId`, View-as-client, modal
+   with Clients / Route / Days / Roster tabs read-only, plus the read-only
    Recurring Routes tab with the Schedule(s), Clients via schedule and Master
    job columns. This is enough for ops to validate
    the rationalisation on staging and to see routes and runs against

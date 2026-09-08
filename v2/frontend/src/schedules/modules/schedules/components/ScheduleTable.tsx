@@ -281,7 +281,7 @@ export function ScheduleTable({
                   </span>
                 </div>
               </th>
-              <th className="hidden md:table-cell text-left py-2 px-2 font-medium text-text-muted uppercase text-xs">Dispatch</th>
+              <th className="hidden md:table-cell text-left py-2 px-2 font-medium text-text-muted uppercase text-xs">Roster</th>
               <th
                 onClick={() => handleSort('speedDisplay')}
                 className={`hidden lg:table-cell text-left py-2 px-2 font-medium uppercase text-xs cursor-pointer hover:text-text-primary hover:bg-surface-cream select-none transition-colors  ${sortConfig?.column === 'speedDisplay' ? 'text-brand-dark bg-brand-cyan/5' : 'text-text-muted'}`}
