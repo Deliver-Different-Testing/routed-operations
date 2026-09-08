@@ -1,9 +1,13 @@
 ---
 title: Kevin RunViewer duplicate RNO200 run / job membership spec
 created: 2026-09-07
-status: Decision + fix spec for the Route 5 / RNO200 Runviewer bug report
-source: Kenneth bug report (Route 5 / RNO200, NeoGenomics corridor) + Kevin investigation + Steve direction
+updated: 2026-09-08
+status: Decision + minimal time-boxed fix for the Route 5 / RNO200 Runviewer bug report
+source: Kenneth bug report (Route 5 / RNO200, NeoGenomics corridor) + Kevin investigation + Steve direction + code trace
 bug_report: https://docs.google.com/document/d/1ABXBw2LE7xpQW58EyhjdfCPHjv1_ofPx/edit?usp=sharing
+code_traced:
+  - https://github.com/Deliver-Different-Testing/runviewer (branch feat/runviewer-recurring-routes, 2233d0c)
+  - https://github.com/Deliver-Different-Testing/dbmigrationsv2 (DatabaseScripts/Migrations/20260528100000_RvwOverviewIncludeLhpDeliveryRegion.sql)
 related_docs:
   - KEVIN-LEGACY-RUNBUILDER-FIXES-SPEC-2026-06-23.md
   - KEVIN-RUNVIEWER-OFFSETS-ADMIN-LINEHAUL-SPEC-2026-06-25.md
@@ -12,185 +16,164 @@ related_docs:
 
 # Kevin RunViewer duplicate RNO200 run / job membership spec
 
+## Read this first: scope constraint
+
+**RunViewer is being deprecated once Routed Operations ships.** Steve does not want a lot of Kevin's time going into it.
+
+So this is a **time-boxed patch, not a redesign**:
+
+- budget: **half a day**, all in
+- no new UX (no Option A / Option B labelling work)
+- no shared-membership-rule refactor
+- no SQL change unless the two client-side fixes below do not close the gap
+- the "one route, one row" presentation question moves to the **Routed Operations Route Viewer** backlog
+
+If the fixes below take longer than the budget, stop and report rather than keep digging.
+
+---
+
 ## Feature overview
 
-This spec answers Kevin's bug report on the Runviewer for Route 5 / RNO200 and turns it into an execution brief.
+Kevin reported three issues on Route 5 / RNO200 and asked for a decision on the first:
 
-Kevin reported three issues and asked for one decision:
-
-1. `RNO200` appears twice in the Run List (one `LIVE` / Dane Test `123`, one `READY` / unassigned with 7 jobs).
-2. `P2891DEL` appears in the expanded job list of the `READY` / unassigned `RNO200` run even though it is assigned to courier `123`, so the row says 7 jobs and the expanded list shows 8.
-3. `P2891DEL` appears under the Reno depot instead of Burbank because its location data points at Reno while its address is Burbank.
+1. `RNO200` appears twice in the Run List: one `LIVE` / Dane Test `123`, one `READY` / unassigned with 7 jobs.
+2. `P2891DEL` (assigned to courier `123`) appears in the expanded job list of the `READY` / unassigned run, so the row says 7 and the expanded list shows 8.
+3. `P2891DEL` sits under the Reno depot instead of Burbank because its location data points at Reno while its address text says Burbank.
 
 Steve's direction on reading the report:
 
 > We should never see the same job number replicated on a run. It seems the filtering is the issue. How can a job show as assigned and unassigned at the same time?
 
-That reframes the ask. Bug 1 is **not** primarily a naming / presentation choice. Bugs 1 and 2 are the same defect seen from two angles: the Run List and the expanded job list do not share one membership rule, so one job can land in two runs at once.
+The code trace below confirms that read. Bugs 1 and 2 are one defect: the two `RNO200` rows share the same run id, and the RunViewer client has paths that select or expand by run id alone. Bug 2 is that overlap made visible.
 
 ---
 
-## Steve decisions
+## Decisions
 
-These are the calls for this batch:
-
-1. **Invariant: a job number appears in exactly one run row for a given despatch date.** No job may be counted or listed in more than one run. This is the acceptance bar for the whole fix.
-2. **Fix the membership rule first, not the labels.** The Run List row count and the expanded job list must be produced by the **same** predicate. Kevin's proposed Bug 2 fix is approved, with the constraint that it must be a shared rule, not a second patch on the expanded list.
-3. **Bug 1 direction: Option A (keep the split by courier, label it clearly), applied only after decision 2 makes the rows disjoint.** Reasoning is in the next section. If Steve or George want Option B after seeing disjoint rows, that is a follow-on, not part of this fix.
-4. **Bug 3 stays a data / booking-path investigation.** Kevin continues tracing how `P2891DEL` was created. The broader "depot filter uses location, not pickup / delivery direction" limitation is logged as a separate follow-on and is **not** folded into this fix.
+1. **Invariant.** A job number appears in exactly one expanded run for a given despatch date. That is the acceptance bar.
+2. **Fix the two concrete divergences found in the code (section 2), nothing more.** Both are client-side edits in the `runviewer` repo. Estimated 2 to 3 hours including a staging check.
+3. **Bug 1 presentation: no work in RunViewer.** The two rows are correct data (route + date + courier) and the Courier column already shows `Unassigned` versus `Dane Test : 123`. Neither Option A nor Option B is built in RunViewer. The single-row-per-route question is logged for Routed Operations' Route Viewer, where the run model is being rebuilt anyway.
+4. **Bug 3 stays a booking-data investigation, capped at one hour.** Find how `P2891DEL` was created differently from `P2893DEL` / `P2894DEL`, fix the one job's data, and log the "depot filter keys on location, not pickup/delivery direction" limitation as a Routed Operations item. Do not change depot-filter semantics in RunViewer.
 
 ---
 
-## Why Option A and not Option B (for now)
+## 1. What the code actually does today
 
-The `LIVE` / Dane Test row and the `READY` / unassigned row are in genuinely different operational states.
+### Where the two lists come from
 
-`KEVIN-LEGACY-RUNBUILDER-FIXES-SPEC-2026-06-23.md` section 3 already sets the rule that **run list status must not contradict the jobs inside the run**. A single merged `RNO200` row would have to show one status for a set of jobs that are half dispatched and half not. That reintroduces the status drift that spec removed.
-
-So the operational unit shown in the Run List stays: **route + despatch date + courier**. Two rows for `RNO200` are correct while part of the route is dispatched to a courier and part is still unassigned. What is wrong today is that the two rows overlap. Once they are disjoint, a clear label removes the operator confusion at near-zero cost.
-
-Option B remains open as a later UX change once the data underneath is trustworthy. Do not build it in this batch.
-
----
-
-## 1. Root cause to confirm: two different "unassigned" rules
-
-Kevin's finding is that the Run List and the expanded job list apply different rules when deciding which jobs belong to an unassigned run. That is the whole bug. Kevin must pin down the exact divergence and write it down before changing code.
-
-### Likely places the two rules differ
-
-Check each of these against the actual Runviewer code and SPs. Any one of them produces the observed 7 vs 8 mismatch:
-
-| Candidate divergence | Run List (count) side | Expanded job list side |
-|---|---|---|
-| Courier key normalisation | groups on the raw courier value | treats `NULL`, empty string, `0`, or an unknown / test courier code as "unassigned" |
-| Courier lookup | uses the courier field on the job row directly | joins to `tucCourier` / fleet and drops or reclassifies jobs whose courier does not resolve or is not in the selected depot's fleet |
-| Run key | groups on route name + despatch date + courier | queries on route name + despatch date only, then filters out jobs whose *run* is `LIVE` rather than jobs whose *courier* is set |
-| Status vs assignment | "unassigned" means no courier | "unassigned" means not yet dispatched (`READY`), which is a status test, not an assignment test |
-| Source table | reads a run-level rollup (e.g. a `tblBulkRun`-style header or an SP rollup) | reads job rows (`tucJob`) live |
-
-The bug report says `P2891DEL` is assigned to courier `123` yet lands in the unassigned expanded list. That points at either the courier-normalisation row or the status-vs-assignment row above. Confirm which.
-
-### Minimum output Kevin should produce during implementation
-
-A short truth table, the same way the run-status fix was handled:
-
-| Predicate | Run List today | Expanded list today | Agreed single rule |
+| Surface | RunViewer call | Stored procedure | Notes |
 |---|---|---|---|
-| job is unassigned when | ? | ? | ? |
-| job belongs to run `X` when | ? | ? | ? |
-| courier value treated as "no courier" | ? | ? | ? |
+| Run List rows + counts | `HomeController.BulkRunList` -> `RunRepository.JobRunList` | `RVW_stpBulkRuns_2` | receives `@Regions` (depot filter) |
+| Expanded job list for one row | `HomeController.BulkRunJobs` -> `RunRepository.RunJobs` | `RVW_stpBulkRunJobs` | **never receives `@Regions`** |
 
-Without this table the fix is guesswork and will drift again.
+Recurring-route runs such as `RNO200` are "synthetic" runs. The SP builds one row per **route + courier** from `tucJob` where `RouteId` is set, with `ID = -RouteId`. That is why both `RNO200` rows carry the same negative id. The courier split is the intended design from the May 2026 recurring-route work, not an accident.
 
----
+### The run key is not unique on the client
 
-## 2. Required single membership rule
+Both `RNO200` rows have `run.id = -5` (Route 5) and differ only by `run.courierID`. Most of the client already knows this and looks rows up by `[data-runid][data-courierID]` (job locate paths around `homeControl.js` lines 4507 to 4594). Two paths do not.
 
-Define one function / one SP predicate that answers: **which run does this job belong to?** Both the Run List aggregation and the expanded job list must call it.
+### Divergence A: deep-link / job-number locate activates every row with that run id
 
-### Run key
+`homeControl.js` line 1378:
 
-For a given despatch date, a run row is identified by:
+```js
+$("#runList").find("[data-runID='" + RunID + "']").addClass("active");
+$scope.showRun();
+```
 
-- route / run name (`RNO200`)
-- despatch date
-- normalised courier key
+`RunID` comes from the job-number search (`?jobNumber=` deep link, line 5386). For a recurring route this selector matches **both** `RNO200` rows. `showRun()` then loops every `#runList .active` row, fetches each row's jobs, and concatenates them into `$scope.runBuilder`. Result: the READY row is highlighted, its count says 7, and the expanded list shows 7 unassigned jobs plus the LIVE row's job(s). `P2891DEL` is a LIVE-row job. That is exactly Kenneth's screenshot.
 
-### Normalised courier key
+The `searchJobSelect` locate path (line 4483 onward) has the same shape of problem in a softer form: it finds the run with `job.runID === parseInt(obj.id) && (job.courierID === 0 || job.courierID === parseInt(obj.courierID))`, so a courier id of `0` is treated as a wildcard and matches the first `RNO200` row in list order rather than the unassigned one.
 
-Kevin must define one normalisation and use it everywhere:
+### Divergence B: the depot filter is applied to the count but not the expansion
 
-- a job has a courier when the courier field resolves to a real courier identifier
-- `NULL`, empty string, whitespace, and any legacy placeholder value all normalise to **unassigned**
-- a courier code that is present but does not resolve to a `tucCourier` row is **still assigned** for membership purposes (it belongs to that courier's run, not to the unassigned run); surface it as a data problem, do not silently reclassify it
+Migration `20260528100000` added `@Regions` to `RVW_stpBulkRunJobs` and says "threaded from the controller". It never was. `RunRepository.RunJobs` does not pass it, `HomeController.BulkRunJobs` has no `regionIds` parameter, and `homeService.getRunJobs` does not send one.
 
-The last point matters for this exact report: `123` is a real test courier (Dane Test). Whether or not it is in the Reno fleet, a job carrying `123` must never be shown as unassigned.
+Effect: with a depot selected, the Run List `Total` for a synthetic row counts only jobs whose pickup lands in that depot, but expanding the row returns every job on the route for that courier. Any route with one job in a different depot bucket shows a count that disagrees with its expansion. `P2891DEL`, with its wrong location (Bug 3), is precisely such a job.
 
-### Status is not membership
+### Lesser differences, not fixing now
 
-`LIVE` / `READY` is the run's **status**, derived from or reconciled with the jobs inside it per the legacy fixes spec. It must not be used as the test for whether a job is in the unassigned run. Assignment is a courier test. Dispatch state is a status test. Keep them separate.
-
-### Where the rule should live
-
-Preferred: one server-side query / SP that returns job rows already stamped with their run key, and the Run List rows are a `GROUP BY` over that same result. The expanded list is then a filter on the same rows by run key. That makes the count and the list structurally unable to disagree.
-
-Acceptable fallback if the legacy structure makes that expensive: one shared client-side membership function used by both the run rollup and the expansion, fed by the same job payload. Do not keep two independent queries with two independent `WHERE` clauses.
+For the record, the synthetic `Total` subquery in `RVW_stpBulkRuns_2` and the `WHERE` in `RVW_stpBulkRunJobs` also differ in that the count treats Agent/NP-assigned jobs as unassigned while the expansion excludes them, and the count ignores status 18 and the client/speed filters. All of these make the expansion **smaller** than the count, never larger, so none of them produce the reported 7 versus 8. Leave them unless a mismatch survives fixes A and B.
 
 ---
 
-## 3. Bug 1: Run Name labelling (Option A)
+## 2. The fix (runviewer repo, branch `feat/runviewer-recurring-routes`)
 
-Once rows are disjoint, label each `RNO200` row so operators can tell them apart without expanding:
+Note: `Views/Shared/_Layout.cshtml` references `homeControl.js` directly, so no bundle rebuild is needed for these edits.
 
-- courier-assigned row: `RNO200 (Dane Test)` or `RNO200 - 123 Dane Test`, whichever matches existing Runviewer courier display conventions
-- unassigned row: `RNO200 (Unassigned)`
+### Fix A: key row activation by run id **and** courier
 
-Rules:
+`wwwroot/app/components/home/homeControl.js`
 
-- the base route code stays first so sorting and searching by `RNO200` still work
-- the suffix is display only; do not write it back to the stored run / route name
-- if the same route has two different couriers on the same date, that produces two labelled courier rows, which is correct
-- the `From` / `To` columns can stay identical across the rows; the label and status carry the difference
+1. Line 1378: activate only the row for the job's courier. `RunID` needs a companion `CourierID` from the job search result (the search returns `courierID` alongside `runID`; use `0` / empty for unassigned, matching the `data-courierID=""` the template renders when `run.courierID` is null).
 
----
+```js
+// before
+$("#runList").find("[data-runID='" + RunID + "']").addClass("active");
 
-## 4. Bug 2: expanded list must match the row count
+// after
+$("#runList")
+    .find("[data-runid='" + RunID + "'][data-courierID='" + (CourierID || "") + "']")
+    .first()
+    .addClass("active");
+```
 
-This is a consequence of section 2, not separate work. Acceptance is:
+2. In `searchJobSelect` (line 4483 onward, and the sibling block near line 4680), prefer an exact courier match before falling back to the wildcard, so an unassigned job resolves to the unassigned row and an assigned job to its courier's row:
 
-- the `READY` / unassigned `RNO200` row shows 7 jobs and expands to exactly those 7 jobs
-- the `LIVE` / Dane Test `RNO200` row includes `P2891DEL` and only jobs carrying courier `123`
-- `P2891DEL` appears in exactly one run row for that date
+```js
+var byExact = list => list.find(obj =>
+    job.runID === parseInt(obj.id) &&
+    (parseInt(obj.courierID) || 0) === (job.courierID || 0));
+var run = byExact($scope.preRunList) || byExact($scope.runList);
+```
 
-Kevin's proposed fix for this is approved provided it is implemented via the shared rule in section 2 rather than a second filter added to the expansion only.
+Keep the existing wildcard `find` only as a last resort after the exact match fails.
 
----
+3. Defensive: at the top of `showRun()`, if more than one active `#runList` row shares the same `data-runid`, keep only the one that was clicked (`event.currentTarget`) unless the operator used ctrl-click. This stops any other path that activates by id alone from concatenating both `RNO200` rows.
 
-## 5. Bug 3: `P2891DEL` under Reno instead of Burbank
+### Fix B: thread the depot filter into the expansion
 
-### Status
+Four small edits, no SQL change (the SP already accepts `@Regions`):
 
-Investigation continues. No decision required yet.
+1. `wwwroot/app/components/home/homeService.js` `getRunJobs(...)`: add a `selectedRegions` argument and append `'&regionIds=' + selectedRegions` to the URL.
+2. `wwwroot/app/components/home/homeControl.js`: at each of the six live `getRunJobs(...)` call sites (lines 726, 851, 4095, 4142, 4187, 4233) pass `selectedRegions.join(',')`, computed the same way the Run List load already does:
+   ```js
+   var selectedRegions = ($scope.pickDateService.regions || [])
+       .filter(a => a && typeof a.id !== "undefined").map(a => a.id);
+   ```
+3. `Controllers/HomeController.cs` `BulkRunJobs(...)`: add `string regionIds = null` and pass it through.
+4. `Repositories/RunRepository.cs` `RunJobs(...)`: add `string regionIds = null` and `.WithSqlParam("@Regions", string.IsNullOrWhiteSpace(regionIds) ? DBNull.Value : regionIds)`.
 
-### What Kevin should bring back
+Passing `NULL` keeps today's behaviour for every non-synthetic run, and the real-bulkrun branch of the SP ignores the parameter anyway.
 
-1. How `P2891DEL` was created (booking path, user, source) compared with `P2893DEL` and `P2894DEL`, which are correct.
-2. Which field holds the Reno location reference while the address text says Burbank, and which step should have updated it when the route was built.
-3. Whether the same defect exists on any other job on Route 5 today.
+### Before pushing
 
-### Follow-on, not part of this fix
-
-Kevin's additional finding stands: the Runviewer depot filter keys on the job's location without knowing whether that location is the pickup or the delivery point. Log this as a separate Runviewer follow-on with its own spec. It changes depot-filter semantics for every route and must not ride along with the membership fix.
-
-Also note for the record: recurring-route runs such as `RNO200` are currently excluded from the Outbound view altogether. Kenneth's observation that Outbound should not show this run is correct in effect, but for that reason rather than because of direction filtering.
-
----
-
-## Database / code surfaces
-
-The Runviewer source is in the separate `runviewer` repo (referenced in `KEVIN-RUNVIEWER-OFFSETS-ADMIN-LINEHAUL-SPEC-2026-06-25.md` as `gitlab-source/runviewer/wwwroot/app/components/...`). Kevin owns locating the exact files; the areas to inspect are:
-
-| Area | What to look for |
-|---|---|
-| Run List data source | the SP / query that produces one row per run with a job count and courier; confirm its `GROUP BY` and its courier predicate |
-| Run expansion data source | the SP / query / client filter that produces the job list for a selected run; confirm its run key and courier predicate |
-| Courier normalisation | any place that maps courier `NULL` / empty / placeholder / unknown to "unassigned" |
-| `tucJob` | live job rows; courier field, run / route name field, despatch date, status |
-| `tucCourier` | courier `123` (Dane Test) and how the Runviewer resolves courier display names |
-| Depot filter | the location-based depot predicate (Bug 3 follow-on only; do not change in this batch) |
+- Confirm the deployed `RVW_stpBulkRunJobs` on Medical staging matches migration `20260528100000` (it must accept `@Regions`); `sp_helptext` is enough.
+- Run the acceptance checks below on the Route 5 date.
 
 ---
 
-## Recommended implementation order
+## 3. Bug 3: `P2891DEL` under Reno instead of Burbank (one hour cap)
 
-1. Write the predicate truth table in section 1 from the real code and SPs.
-2. Define the single membership rule (section 2) and implement it once.
-3. Point the Run List aggregation and the expanded job list at that one rule.
-4. Verify on the Route 5 / RNO200 data that rows are disjoint and counts match.
-5. Apply the Option A labels (section 3).
-6. Report back on the `P2891DEL` booking-path trace (section 5).
-7. Raise the depot pickup / delivery direction limitation as a separate follow-on.
+The synthetic run SQL buckets a DEL row by exact match of `tucJob.PickUpLatitude/Longitude` against `tblBulkRegion.PickupLatitude/Longitude`. So "location information pointing to Reno" means `P2891DEL`'s pickup coordinates are Reno's, while its `ucjbFromAddr` text says Burbank.
+
+What Kevin should do, in order, and stop at the hour:
+
+1. Compare `P2891DEL` with `P2893DEL` / `P2894DEL` on `PickUpLatitude`, `PickUpLongitude`, `DepotId`, `ucjbPickUpFrom`, `CreatedTime`, and the creating user / source.
+2. Correct the one job's pickup coordinates to Burbank so it buckets correctly.
+3. Write one paragraph on how it was created differently. If the cause is a booking-path bug that will recur, raise it as its own item; do not fix it inside this batch.
+
+The broader limitation (depot filter is location-based, not pickup/delivery-direction aware) is real and is **logged for Routed Operations**, not fixed in RunViewer. Also for the record: recurring-route runs are excluded from the Outbound view altogether, which is why Kenneth does not see `RNO200` there.
+
+---
+
+## 4. What moves to Routed Operations
+
+Log these against the Route Viewer rebuild so they are designed in rather than patched:
+
+- one row per route per date, with courier split shown inside the run (the Option B shape), and a run key that is unique by construction
+- one membership predicate shared by the run rollup and the job expansion
+- depot bucketing that knows whether a job's depot match is on the pickup or delivery side
 
 ---
 
@@ -198,32 +181,25 @@ The Runviewer source is in the separate `runviewer` repo (referenced in `KEVIN-R
 
 ### How can a job show as assigned and unassigned at the same time?
 
-Because two different code paths decide membership with two different predicates. The Run List count uses one idea of "unassigned"; the expansion uses another. `P2891DEL` satisfies the second but not the first, so it is counted in the `LIVE` row and listed in the `READY` row. Section 2 removes the second predicate.
+It does not, in the data. `P2891DEL` has a courier and belongs to the LIVE row. The client activated both `RNO200` rows because they share a run id, then concatenated both expansions under the READY row's heading. Separately, the depot filter narrows the row count but not the expansion. Fix A and Fix B remove both.
 
-### Should there be one `RNO200` row or two?
+### Is the split into two `RNO200` rows the bug?
 
-Two, while the route is partly dispatched and partly unassigned, because those are different run states and the Run List status must stay truthful to the jobs inside. Label them (Option A). Revisit Option B only after the rows are disjoint.
+No. It is the intended route + courier row model from the recurring-route work, and the Courier column already tells them apart. What was wrong is that the rows shared an id and the client keyed on id alone in two places.
 
-### Is the split by courier itself the bug?
+### Why not do Option A or B?
 
-No. The split is correct data. The overlap between the split rows is the bug.
-
-### Does the depot / direction finding change this fix?
-
-No. It is a real limitation but a separate one. Keep it out of this batch.
+Because RunViewer is going away. The labelling is cosmetic and the single-row model belongs in the Route Viewer rebuild.
 
 ---
 
-## Testing checklist
+## Acceptance checklist (Route 5 / RNO200 date, Medical staging)
 
-1. Load the Route 5 / RNO200 despatch date in the Runviewer.
-2. Confirm exactly two `RNO200` rows: one labelled for Dane Test / `123`, one labelled Unassigned.
-3. Confirm the unassigned row count equals the number of jobs in its expanded list.
-4. Confirm the Dane Test row count equals the number of jobs in its expanded list.
-5. Confirm `P2891DEL` appears only in the Dane Test row.
-6. Confirm no job number appears in more than one run row for that date (run the check across every run on the date, not just RNO200).
-7. Assign one of the 7 unassigned jobs to courier `123` and confirm it moves rows and both counts update with no overlap.
-8. Unassign it again and confirm it moves back cleanly.
-9. Confirm a courier code that does not resolve to a `tucCourier` row still keeps its job out of the Unassigned row and is visibly flagged rather than reclassified.
-10. Confirm the run status per row still reflects the dispatch state of the jobs inside it, per the legacy fixes spec.
-11. Confirm the depot filter behaviour is unchanged by this batch.
+1. Load the date with no depot filter. Click the READY `RNO200` row: expansion count equals the row's `Total`, and `P2891DEL` is not in it.
+2. Click the LIVE `RNO200` row: `P2891DEL` is in it, and nothing from the READY row is.
+3. Open the deep link `?jobNumber=P2891DEL`: only the LIVE row is highlighted and expanded.
+4. Open the deep link for one of the 7 unassigned jobs: only the READY row is highlighted and expanded.
+5. Select the Reno depot, then the Burbank depot: for each, every `RNO200` row's expansion count equals its `Total`.
+6. Ctrl-click both `RNO200` rows: the combined expansion equals the sum of the two `Total` values with no job listed twice.
+7. Spot-check one non-recurring (positive id) run with a depot filter on: unchanged behaviour.
+8. After the Bug 3 data fix, `P2891DEL` buckets under Burbank with the depot filter on Burbank and not under Reno.
