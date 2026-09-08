@@ -16,7 +16,7 @@ Multiple differing rows for the same DayOfWeek,HF Sunday Home Delivery Blenheim,
 Multiple differing rows for the same DayOfWeek,RAWES - Sunday Hamilton,17238,days 7x2
 Multiple differing rows for the same DayOfWeek,AKL > TGA Pre 930am Medical Run,14763,"days 1x2, 2x2, 3x2, 4x2, 5x2"
 Multiple differing rows for the same DayOfWeek,AKL > HLZ Pre 8am Medical Run,14763,"days 1x2, 2x2, 3x2, 4x2, 5x2"
-Multiple differing rows for the same DayOfWeek,Auckland - Hamilton 11am Chilled,NULL,"days 1x2, 2x2, 3x2, 4x2, 5x2"
+Identical duplicate day rows inside one schedule,Auckland - Hamilton 11am Chilled,NULL,"5 redundant row(s); ids 2998, 2999, 3000, 3001, 3002, 8292, 8293, 8294, 8295, 8296"
 Multiple differing rows for the same DayOfWeek,Tauranga 9am > AKL Next Day Run,33103,"days 1x2, 2x2, 3x2, 4x2, 5x2"
 Identical duplicate day rows inside one schedule,Woop Tga Xmas,17535,"1 redundant row(s); ids 4052, 4053"
 Identical duplicate day rows inside one schedule,Woop Napier Xmas,18137,"1 redundant row(s); ids 4055, 4258"
@@ -62,7 +62,7 @@ Identical duplicate day rows inside one schedule,AKL > Palmerston North pre 8am,
 Identical duplicate day rows inside one schedule,AKL > New Plymouth pre 10am,3191,"4 redundant row(s); ids 9529, 9530, 9531, 9532, 9533, 9534, 9535, 9536, 9537, 9538"
 Identical duplicate day rows inside one schedule,AKL > Whanganui Pre 10am,3191,"4 redundant row(s); ids 9544, 9545, 9546, 9547, 9548, 9641, 9642, 9643, 9644, 9645"
 Identical duplicate day rows inside one schedule,AKL > Whanganui Pre 10am,14927,"4 redundant row(s); ids 9646, 9647, 9648, 9649, 9650, 9662, 9663, 9664, 9665, 9666"
-Multiple differing rows for the same DayOfWeek,AKL > Whanganui Pre 10am,32946,"days 1x2, 2x2, 3x2, 4x2, 5x2"
+Identical duplicate day rows inside one schedule,AKL > Whanganui Pre 10am,32946,"4 redundant row(s); ids 10254, 10255, 10256, 10257, 10258, 10259, 10260, 10261, 10262, 10263"
 Multiple differing rows for the same DayOfWeek,AKL > HLZ Afternoon Medical Run 930am Collection,32946,"days 1x2, 2x2, 3x2, 4x2, 5x2"
 Identical duplicate day rows inside one schedule,DevTe Whanganui > Akl Returns,9477,"5 redundant row(s); ids 10608, 10609, 10610, 10611, 10612, 10723, 10724, 10725, 10726, 10727"
 Multiple differing rows for the same DayOfWeek,AKL > Palmerston North pre 10am,35755,"days 1x2, 2x2, 3x2, 4x2, 5x2"
@@ -86,7 +86,7 @@ Client schedule shares its name with a default schedule,Auckland - Waikato Home 
 Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,17827,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > Tauranga afternoon,31796,client is linked to the default and its copy retired
 Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,36249,distinct ScheduleId; consider a clearer name
-Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,9225,distinct ScheduleId; consider a clearer name
+Client schedule identical to the default schedule of the same name,Auckland - Tauranga Chilled,9225,client is linked to the default and its copy retired
 Client schedule shares its name with a default schedule,Hamilton Local Chilled,36459,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Wellington Afternoons AH,36266,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,32929,distinct ScheduleId; consider a clearer name
@@ -120,7 +120,7 @@ Client schedule shares its name with a default schedule,BOP > Waikato Morning Ru
 Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,36813,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Tauranga > Waikato Morning Run,36813,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Hamilton Local Chilled,36813,distinct ScheduleId; consider a clearer name
-Client schedule shares its name with a default schedule,Auckland - Wellington Chilled,4609,distinct ScheduleId; consider a clearer name
+Client schedule identical to the default schedule of the same name,Auckland - Wellington Chilled,4609,client is linked to the default and its copy retired
 Client schedule shares its name with a default schedule,Hamilton > Auckland Express 11am-1pm,36813,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Hamilton > Auckland Express 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,Waikato Local > Auckland Express 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
@@ -137,7 +137,7 @@ Client schedule identical to the default schedule of the same name,Waikato > Tau
 Client schedule identical to the default schedule of the same name,Hamilton > Tauranga afternoon,36813,client is linked to the default and its copy retired
 Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,16298,distinct ScheduleId; consider a clearer name
 Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,33149,distinct ScheduleId; consider a clearer name
-Client schedule shares its name with a default schedule,Hamilton - Auckland Afternoon Chilled,36991,distinct ScheduleId; consider a clearer name
+Client schedule identical to the default schedule of the same name,Hamilton - Auckland Afternoon Chilled,36991,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Hamilton - Auckland Morning Chilled,36991,client is linked to the default and its copy retired
 Client schedule shares its name with a default schedule,Sunday 12-6pm AKL,37006,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Tauranga > Waikato Morning Run,31730,client is linked to the default and its copy retired

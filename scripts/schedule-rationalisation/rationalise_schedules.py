@@ -18,7 +18,10 @@ Rules (see docs/STEVE-SCHEDULE-RATIONALISATION-KEVIN-2026-09-08.md):
   * A "schedule" is the set of day rows sharing (Name, ClientId).
   * Names are compared case-insensitively with whitespace collapsed.
   * Two schedules are the SAME schedule when every column other than
-    BulkRunScheduleId, ClientId and Name matches on every day row.
+    BulkRunScheduleId, ClientId, Name and the --ignore columns (default:
+    Description, which holds some incorrect data) matches on every day row.
+    The survivor's value of an ignored column is kept; the other values
+    are listed per merge group so they can be checked.
   * Same name + same definition -> ONE schedule: the default (ClientId NULL)
     if there is one with that definition, otherwise the copy with the lowest
     BulkRunScheduleId. Every client is linked to the survivor; the other
@@ -59,9 +62,10 @@ def chunks(seq, n):
         yield seq[i : i + n]
 
 
-def analyse(rows):
+def analyse(rows, ignore=()):
     columns = list(rows[0].keys())
-    sig_cols = [c for c in columns if c not in (ID, CLIENT, NAME)]  # Name compared via norm_name
+    ignore = [c for c in ignore if c in columns]
+    sig_cols = [c for c in columns if c not in (ID, CLIENT, NAME, *ignore)]  # Name compared via norm_name
     sig_cols_no_day = [c for c in sig_cols if c != "DayOfWeek"]
 
     sched = collections.defaultdict(list)
@@ -149,6 +153,12 @@ def analyse(rows):
             if not convert:
                 continue
             example = sorted(g["surv_rows"], key=lambda r: r[ID])[0]
+            ignored_vals = {}
+            for col in ignore:
+                vals = collections.Counter(r[col] for _, rs in clients for r in rs)
+                if g["is_default"]:
+                    vals.update(r[col] for r in g["surv_rows"])
+                ignored_vals[f"{col}Values"] = " | ".join(f"{v} (x{n})" for v, n in vals.most_common())
             merge_groups.append({
                 "ScheduleName": base,
                 "SurvivorIsDefault": "Yes" if g["is_default"] else "No",
@@ -157,6 +167,8 @@ def analyse(rows):
                 "RetiredRowIds": id_list(r[ID] for _, rs in retire_clients for r in rs),
                 "Days": ", ".join(sorted(set(r["DayOfWeek"] for r in g["surv_rows"]), key=int)),
                 **{c: example[c] for c in sig_cols_no_day},
+                **{f"Survivor{c}": example[c] for c in ignore},
+                **ignored_vals,
             })
             for c, _ in clients:
                 link_rows.append((base, c, surv_ids[0]))
@@ -168,7 +180,7 @@ def analyse(rows):
 
     return dict(sched=sched, canonical=canonical, dq=dq, merge_groups=merge_groups, variants=variants,
                 link_rows=link_rows, retired_rows=retired_rows, merges=merges, by_name=by_name,
-                all_cols=columns)
+                all_cols=columns, ignore=ignore)
 
 
 def write_sql(path, a, args, created_utc_s, staging):
@@ -178,6 +190,7 @@ def write_sql(path, a, args, created_utc_s, staging):
     out = []
     w = out.append
     w(f"-- Schedule merge{' (STAGING)' if staging else ''}: fold identical client copies into one ScheduleId.")
+    w(f"-- Columns ignored in the comparison: {', '.join(a['ignore']) or '(none)'} (survivor's value kept).")
     w(f"-- Generated {created_utc_s} by scripts/schedule-rationalisation/rationalise_schedules.py")
     w(f"-- Requires sql/001_schedule_header_and_id_keyed_links.sql to have run (header {H}, link {L}).")
     w("-- Runs inside a transaction and ROLLS BACK unless @Commit = 1.")
@@ -281,7 +294,10 @@ def main():
     ap.add_argument("--header-table", default="dbo.tblBulkRunScheduleHeader")
     ap.add_argument("--schedule-table", default="dbo.tblBulkRunSchedule")
     ap.add_argument("--created-utc", help="override run timestamp, e.g. 2026-09-08T00:00:00Z")
+    ap.add_argument("--ignore", default="Description",
+                    help="comma-separated columns NOT compared when deciding two schedules are the same (default: Description)")
     args = ap.parse_args()
+    ignore = [c.strip() for c in args.ignore.split(",") if c.strip()]
 
     created_utc_s = args.created_utc or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     os.makedirs(args.out_dir, exist_ok=True)
@@ -290,7 +306,7 @@ def main():
     for r in rows:
         r[ID] = int(r[ID])
 
-    a = analyse(rows)
+    a = analyse(rows, ignore)
     link_table = [(n, c, created_utc_s, args.created_by) for n, c, _ in a["link_rows"]]
     link_by_row = [(sv, c, n) for n, c, sv in a["link_rows"]]
 
@@ -314,6 +330,7 @@ def main():
     n_client = sum(1 for k in sched if k[1] != NULL)
     n_default = sum(1 for k in sched if k[1] == NULL)
     summary = [
+        ("Columns ignored when comparing schedules", ", ".join(a["ignore"]) or "(none)"),
         ("Source rows (tblBulkRunSchedule)", len(rows)),
         ("Schedules = ScheduleIds after migration 001", n_client + n_default),
         ("  default schedules (ClientId NULL)", n_default),
@@ -370,7 +387,8 @@ def main():
                  f"Source: 'Schedule Table' Google Sheet export, run {created_utc_s}",
                  "Step 1 (sql/001) gives every Name + ClientId schedule its own ScheduleId and a link row.",
                  "Step 2 (this) merges schedules with the same name and identical day rows on every column except "
-                 "BulkRunScheduleId/ClientId/Name into one ScheduleId; the default or the lowest id survives."])
+                 f"BulkRunScheduleId/ClientId/Name/{'/'.join(a['ignore'])} into one ScheduleId; the default or the lowest id survives.",
+                 "Ignored columns keep the survivor's value; the other values seen in the group are listed in MergedSchedules."])
     sheet("ScheduleClients", ["ScheduleName", "ClientId", "CreatedUtc", "CreatedBy"], link_table,
           {"ScheduleName": 48, "ClientId": 12, "CreatedUtc": 22, "CreatedBy": 24},
           notes=["Clients attached to each shared schedule after the merge, in the link-table shape.",
@@ -380,7 +398,8 @@ def main():
           notes=["Same rows keyed by the survivor's lowest day-row id, which the SQL turns into the ScheduleId at run time."])
     sheet("MergedSchedules", mg_cols, [[g[c] for c in mg_cols] for g in a["merge_groups"]],
           {"ScheduleName": 44, "ClientIds": 40, "SurvivorRowIds": 34, "RetiredRowIds": 60},
-          notes=["One row per surviving shared schedule. SurvivorRowIds = day rows that stay; RetiredRowIds = identical copies removed."])
+          notes=["One row per surviving shared schedule. SurvivorRowIds = day rows that stay; RetiredRowIds = identical copies removed.",
+                 "SurvivorDescription is what the shared schedule will carry; DescriptionValues lists every value seen across the merged copies (x count)."])
     sheet("Variants", v_cols, [[v[c] for c in v_cols] for v in a["variants"]],
           {"ScheduleName": 44, "ClientIds": 40, "SurvivorRowIds": 34, "DiffersFromGroup1On": 50},
           notes=["Names whose definitions are NOT identical across clients (or vs the default). Each group keeps its own ScheduleId;",

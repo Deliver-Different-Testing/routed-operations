@@ -44,8 +44,12 @@ re-run against a fresh export of the target environment before applying.
   (`Hamilton  > BOP` == `Hamilton > BOP`). The migration trims and collapses
   spelling on the header and syncs the day rows to it.
 - Two schedules are **the same schedule** when every day row matches on every
-  column except `BulkRunScheduleId`, `ClientId` and `Name`. Identical
-  duplicate rows inside one schedule are ignored for the comparison.
+  column except `BulkRunScheduleId`, `ClientId`, `Name` and **`Description`**
+  (ignored on Steve's instruction, 2026-09-08: the column holds some incorrect
+  data). The survivor keeps its own description; every other description seen
+  in the group is listed in `MergedSchedules` so the wrong ones can be fixed.
+  Identical duplicate rows inside one schedule are ignored for the comparison.
+  The ignored columns are a script parameter (`--ignore`).
 - Same name + same definition → **one schedule**. If a default (`ClientId
   NULL`) has that definition it is the survivor; otherwise the client copy
   with the lowest `BulkRunScheduleId`. Every client's link row is re-pointed
@@ -64,26 +68,31 @@ re-run against a fresh export of the target environment before applying.
 | … default (no client) | 119 |
 | … client-specific | 2,606 |
 | Names used by 2+ clients | 203 |
-| Shared schedules after the merge (survivors with 2+ clients) | 164 |
-| … of which the survivor is an existing default | 20 |
-| Client schedules retired into a survivor | 482 |
-| Schedules remaining after the merge | 2,243 |
-| Client schedules that stay one-client | 1,980 |
-| Day rows retired | 2,433 |
-| Day rows remaining | 8,677 |
-| Names whose definitions differ across clients / default | 169 |
+| Shared schedules after the merge (survivors with 2+ clients) | 179 |
+| … of which the survivor is an existing default | 23 |
+| Client schedules retired into a survivor | 522 |
+| Schedules remaining after the merge | 2,203 |
+| Client schedules that stay one-client | 1,928 |
+| Day rows retired | 2,606 |
+| Day rows remaining | 8,504 |
+| Merge groups where the copies had differing descriptions | 40 |
+| Names whose definitions still differ across clients / default | 164 |
 
 Only a minority of the shared names are used identically by every client. The
-other names hide different definitions — most often `CutoffHours` and
-`Description`, then `ParentSpeedId`, `StartTime`, `PickupBoxDiscount`,
-`SpeedId`, `AutoBook`. Relaxing the rule would merge more, but that is a
-business call, not a data call:
+other names hide different definitions — most often `CutoffHours`, then
+`ParentSpeedId`, `StartTime`, `PickupBoxDiscount`, `SpeedId`, `AutoBook`.
+Relaxing the rule further would merge more, but that is a business call:
 
-| Comparison | Shared schedules | Client schedules merged | Rows retired |
-|---|---|---|---|
-| Strict (as generated) | 164 | 626 | 2,433 |
-| Ignore `Description` | 179 | 678 | 2,606 |
-| Ignore `Description` + `CutoffHours` | 208 | 798 | 3,004 |
+| Comparison | Shared schedules | Clients on shared schedules | Copies retired | Rows retired |
+|---|---|---|---|---|
+| Strict (every column) | 164 | 626 | 482 | 2,433 |
+| **Ignore `Description` (as generated)** | 179 | 678 | 522 | 2,606 |
+| Ignore `Description` + `CutoffHours` | 208 | 798 | 574 | 3,004 |
+
+Of the 40 groups whose copies disagreed on description, most differ by an
+appended note ("NO DGs allowed") or a wrong town/time ("delivered before 8am"
+vs "10am", "New Plymouth" vs "Napier"). The `DescriptionValues` column shows
+each value with how many rows carry it.
 
 ## 3. Files
 
@@ -183,9 +192,9 @@ merge plus one extra step. `output/rationalise_schedules_staging.sql`:
 | Step | What it does |
 |---|---|
 | 0 | Snapshots `tblBulkRunSchedule`, the header, the link table and `BulkZoneSchedule` into `*_PreMerge_20260908` tables |
-| 1-2 | Resolves the 482 merge pairs to `ScheduleId`s and runs the safety checks |
+| 1-2 | Resolves the 522 merge pairs to `ScheduleId`s and runs the safety checks |
 | 3 | Re-points the retired schedules' link rows to the survivor |
-| 4 | Removes the 2,433 retired day rows and (`@RetireDependants = 1`) their `BulkZoneSchedule` rows; marks the headers retired |
+| 4 | Removes the 2,606 retired day rows and (`@RetireDependants = 1`) their `BulkZoneSchedule` rows; marks the headers retired |
 | 5 | `@DisableLegacyClientId = 1`: sets `ClientId = NULL` on every remaining day row |
 
 After it commits, `tblBulkRunSchedule.ClientId` is NULL everywhere. The old
