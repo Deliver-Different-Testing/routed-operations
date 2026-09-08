@@ -27,12 +27,28 @@ attached to it**, per the link-table brief. The existing screen stays as it is
 until ops confirm they can do their work in the new one.
 
 - **Mockup of what to build:** https://claude.ai/code/artifact/e90fe293-31f1-4238-93bf-c54001ca7419 (interactive; attach clients, create an
-  override, view as a client, open a group). Source file:
+  override, view as a client, open a group, open the Dispatch tab, switch to
+  the Recurring Routes and Linehaul Runs tabs). Source file:
   `docs/mockup-schedules-multi-client.html` in this repo.
-- **Base design it extends:** Dane's prototype, live at
+- **Look and feel:** Steve's call (2026-09-08) is to keep it looking like
+  Dane's live prototype at
   https://deliver-different-testing.github.io/scheduled-rate-builder/#/schedules
-  — the route builder, leg cards, operating days and override editor are his;
-  keep them. What changes is everything about *clients*.
+  — same page header, card with tabs, search-then-filters row, compact table
+  with day pills, `O` badge and `+n` on nested overrides, toggle for status,
+  icon actions. The mockup is styled on those tokens (`index.css` in the
+  module: brand cyan / dark, surface-light, text-primary/secondary/muted). Do
+  not invent a new visual language; reuse Dane's `components/ui`, `layout`,
+  `filters` and `data` primitives.
+- **One UI for schedules, recurring routes and linehaul:** the page carries
+  three tabs — Schedules, Schedule Groups, Recurring Routes (with the live
+  page's First / Middle / Final mile types, so linehaul runs are rows there,
+  not a separate page) — and every schedule has a Dispatch tab showing the
+  routes and run that deliver it, including the run's **master job**.
+  Section 2b explains the model and what is read-only here.
+- **Where it lives:** in the Routed Operations shell as a second sidebar
+  entry, "Schedules (NEW)", next to the existing Schedules page
+  (`routedoperations.urgent.deliverdifferent.com/schedules`). The existing
+  page and the existing Recurring Routes page are untouched.
 - **React code to lift:** section 3.
 - **Data model:** the header + link tables from migration 001, plus
   `BaseScheduleId` on the header and two small group tables (section 5).
@@ -93,6 +109,63 @@ Route and Operating days tabs are Dane's, unchanged (per-day cut-off shown on
 each day cell). An override can have **several clients** (Gisborne pre 10am in
 the mockup: two clients share the Monday-60h variant).
 
+### Dispatch tab on a schedule (new)
+
+Read-only in the first phases. Shows, for this schedule:
+
+- **Recurring routes bound to it** (`Routes.ScheduleId` → this header): name,
+  area, zip count, mapped stops, default target (Courier / Agent / NP), and a
+  seven-day strip of who is rostered each day (date overrides win over the
+  weekly pattern, shown amber). "Roster" opens the Configurator Route Roster
+  page for that route. A route bound to several schedules carries a
+  "shared by n schedules" chip.
+- **Linehaul legs**: the run behind each linehaul leg
+  (`TblBulkScheduleLinehaul.LinehaulRunId` → `TblbulkLinehaulRun`): from → to,
+  mode (Road / Flight), despatch and depart times, default target (Courier /
+  Agent / NP), speed (schedule default or the run's own), seven-day roster
+  strip, how many schedules use the run, and the **master job** — the
+  booking that represents the run (job number chip, and today's state: when
+  it materialised and how many items are linked to it). A run without a
+  master job is flagged red, because the driver would then see every item as
+  its own job.
+- The row in the Schedules table summarises the same thing in a **Dispatch**
+  column: `2 routes` and `LH AUC→CHR 21:30` chips, so ops can see at a glance
+  which schedules have a rostered pickup run and a trunk leg and which rely on
+  ad-hoc matching.
+
+### Recurring Routes tab (new here, same rows as the existing page)
+
+The Routed Operations Recurring Routes page already lists first-mile routes,
+middle-mile (linehaul) runs and final-mile routes in one table with a Type
+chip and a "Used by schedules" count. That table moves in here unchanged in
+shape, with a Type filter (All / First mile / Middle mile / Final mile) and
+three columns the existing page cannot show:
+
+- **Schedule(s)** — the bound schedules as clickable chips that open the
+  schedule drawer (`Routes.ScheduleId` for routes,
+  `TblBulkScheduleLinehaul.LinehaulRunId` for runs). Unbound routes show
+  `Unbound`.
+- **Clients via schedule** — the union of the clients attached to those
+  schedules and their overrides. This is the answer to "who is actually on
+  this run", which today needs a trip through three pages.
+- **Master job** — for middle-mile runs, the booking that represents the run
+  (the Edit Linehaul Run modal's *Master job* field, `IsLinehaulMaster`), with
+  today's state; click opens it in Route Viewer.
+
+"This week" is the seven-day roster strip (date override › weekly pattern ›
+default target). Row click opens the existing Edit Route / Edit Linehaul Run
+modal; the Route Roster and Linehaul Roster editors stay on their pages and
+are deep-linked from the Dispatch tab.
+
+### Why the master job matters here
+
+A linehaul driver should see one or two jobs on the handheld, not fifty. The
+run's master job is the booking every item on the run is associated with, so
+picking up the master marks all items picked up. Today that association is
+only visible inside the Edit Linehaul Run modal. In the new view it is on the
+run row and on every schedule that rides the run, and a missing master job is
+an obvious red flag rather than something found on the road.
+
 ### Schedule Groups tab
 
 Dane's groups are named bundles of schedules with Quick copy, Copy & edit and
@@ -103,6 +176,37 @@ member keep their row. The expanded group shows which clients are on every
 member and how many overrides hang off it. Groups need a home in the database
 (section 5) — in Dane's prototype they were frontend-only.
 
+## 2b. How schedules, recurring routes and linehaul fit together
+
+This is the model the UI above makes visible. It is the layered model already
+agreed in `HANDOVER-GARRY-ROUTE-SCHEDULE-BINDING-2026-06-02.md` and
+`RECURRING-ROUTES-VS-SCHEDULES-ANALYSIS.md` (dfrntdrive_configurator docs),
+with the schedule now identified by `ScheduleId`:
+
+| Layer | Owns | Table(s) | Edited in |
+|---|---|---|---|
+| **Schedule** | Time window, days, per-day cut-off, legs, speeds, zones, commercials; **which clients** (link table) | `tblBulkRunScheduleHeader`, `tblBulkRunSchedule`, `tblBulkRunScheduleClient` | this view |
+| **Recurring route** | Pickup geography (zip cluster), default target, `ScheduleId` binding | `Routes`, `RouteZipcodes` | Configurator Routes editor (opened from here) |
+| **Route roster** | Who runs the route per weekday / date (Courier / Agent / NP) | `Dispatch_RouteRoster` | Configurator Route Roster (deep link) |
+| **Linehaul run** | The trunk movement: depots, despatch/depart, mode, default target, speed, **master job** (`tucJobBooking` with `IsLinehaulMaster = 1`) | `TblbulkLinehaulRun`, `tucJobBooking` | Recurring Routes (Middle mile) / Linehaul Roster |
+| **Booking** | `tucJobBooking.ScheduleID` + `RouteId` — the join at run time | | dispatch, not this view |
+
+Rules for the join:
+
+- `Routes.ScheduleId` currently points at a representative day-row id
+  (`ScheduleLookup.id` in `tenant_routeService.ts`). After migration 001 it
+  should point at the **header** `ScheduleId`; back-fill by
+  `tblBulkRunSchedule.ScheduleId` of that row. That is a one-line ALTER plus
+  update and removes the last name-based join in the route page.
+- Binding is **M:1** today (many routes → one schedule). The 2026-08-03 spec
+  proposes N:M with the effective window being the tightest across the bound
+  schedules; the mockup shows that state as "shared by n schedules". Build
+  the view on M:1 and let the chip become plural when the join table lands.
+- Linehaul is already bound by id (`TblBulkScheduleLinehaul.LinehaulRunId`),
+  so the Linehaul Runs tab needs no schema change.
+- Clients never attach to a route or a run. They attach to schedules; the
+  route's clients are derived through the binding. That keeps one truth.
+
 ## 3. Where the React code is
 
 | Repo / path | What it is | Use it? |
@@ -111,6 +215,7 @@ member and how many overrides hang off it. Groups need a home in the database
 | `Deliver-Different-Testing/scheduled-rate-builder` → `wwwroot/app/react/prototypes/admin-schedules-module/` | Byte-identical vendored copy of the above, mounted at `/schedules`; this is what the live Pages demo runs. | Same code; use whichever is handier. |
 | `Deliver-Different-Testing/Adminmanagerupdate` → `admin-ui/src/modules/schedules/` | Dane's *original* admin-manager rebuild. **Older** in 7 files (`OverrideEditor.tsx` is the 478-line pre-simplification version, `ClientOverridesTab.tsx` 455 vs 205 lines). | Reference for the Tag/Connections system (`TAG-SYSTEM-SPEC.md`) only. Do not lift schedules from here. |
 | `Kerran-Configurator` (any branch) | Start-here doc says a schedules module was transplanted; **it is not there** on GitHub. `/scheduling` there is NP driver scheduling. | No. |
+| `Kerran-Configurator` → `wwwroot/app/react/pages/tenant/RecurringRoutes.tsx` (+ `LinehaulTab.tsx`, `LinehaulRosterTab.tsx`, `services/tenant_routeService.ts`) | The Recurring Routes page: route table, editor, roster (weekly pattern, date overrides, 14-day preview), linehaul tabs. `TenantRoute` / `RosterEntry` / `ScheduleLookup` types. | **Yes** — the route and linehaul list rows, the `ScheduleChip`, `TargetTypeChip` and the roster preview logic are what the new tabs and Dispatch tab reuse. |
 | `scheduled-rate-builder` → `wwwroot/app/react/modules/schedules/` | An older native module with string ids and `clientVisibility`/`clientIds`. | No, but its `clientVisibility: 'all' \| 'specific'` is the shape we want on the header. |
 
 Files that carry the behaviour described above, all under
@@ -228,6 +333,8 @@ them. New, id-keyed:
 | POST | `/api/v2/schedules/{id}/overrides` | Body `{ clientId }` → creates the override, moves the link, returns the new schedule. |
 | GET | `/api/v2/clients/{clientId}/schedules` | Resolution rule above, with `source`. |
 | GET / POST / PUT / DELETE | `/api/v2/schedule-groups` | Groups + members. |
+| GET | `/api/v2/schedules/{id}/dispatch` | Routes bound to the schedule (with the next 7 days of roster resolved: date override › weekly › default) and the linehaul runs behind its legs. Read-only. |
+| GET | `/api/v2/recurring-routes?type=first\|middle\|final&q=` | The existing Recurring Routes rows (routes and runs) plus `scheduleIds[]`, `clientsViaSchedule[]`, and for runs `mode`, `speed`, `masterJob { jobNumber, materialisedUtc, itemsLinked }`. Writes stay on the existing Recurring Routes API. |
 | POST | `/api/v2/schedule-groups/{id}/clients` | Body `{ clientIds: [] }` → link rows on every non-default member. |
 
 `CreatedBy` on link rows is the logged-in user.
@@ -239,9 +346,12 @@ them. New, id-keyed:
    screen is untouched. Both read the same day rows, so ops can open a schedule
    in each and compare.
 2. **Phase 1 — read-only list + drawer** on the 001 tables: table with Clients
-   column, nesting by `BaseScheduleId`, View-as-client, drawer with Clients /
-   Route / Days tabs read-only. This is enough for ops to validate the
-   rationalisation on staging.
+   and Dispatch columns, nesting by `BaseScheduleId`, View-as-client, drawer
+   with Clients / Route / Days / Dispatch tabs read-only, plus the read-only
+   Recurring Routes tab with the Schedule(s), Clients via schedule and Master
+   job columns. This is enough for ops to validate
+   the rationalisation on staging and to see routes and runs against
+   schedules for the first time.
 3. **Phase 2 — attach / detach / visibility / retire** (link table writes).
 4. **Phase 3 — overrides** (create override, override-mode editor).
 5. **Phase 4 — groups** (two tables, attach to group).

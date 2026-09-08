@@ -1,278 +1,307 @@
 <title>Shared Schedules Workbench</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 :root{
-  --ground:#F5F8FA; --surface:#FFFFFF; --surface-2:#EEF3F7; --ink:#14152D; --muted:#5B6478; --faint:#8A93A6; --line:#D9E1EA; --line-strong:#B9C4D2;
-  --accent:#43C7F4; --accent-ink:#0E8FC0; --accent-soft:#E3F6FD; --dark:#14152D; --on-dark:#FFFFFF;
-  --amber:#B45309; --amber-soft:#FFF4DF; --amber-line:#F1C27A;
-  --good:#15803D; --good-soft:#DCFCE7; --bad:#B91C1C; --bad-soft:#FEE2E2;
-  --leg-col:#1D4ED8; --leg-col-bg:#DBEAFE; --leg-dep:#334155; --leg-dep-bg:#E2E8F0; --leg-lh:#C2410C; --leg-lh-bg:#FFEDD5; --leg-del:#15803D; --leg-del-bg:#DCFCE7;
-  --shadow:0 12px 40px rgba(20,21,45,.18);
-  --radius:10px;
+  --brand-dark:#14152D; --brand-cyan:#43C7F4; --brand-purple:#606DB4;
+  --surface-white:#ffffff; --surface-light:#f6f8fa; --surface-cream:#fafbfc;
+  --border:#e8ecf1; --border-light:#f1f5f9;
+  --text-primary:#0d0c2c; --text-secondary:#64748b; --text-muted:#94a3b8;
+  --success:#10b981; --success-bg:#d1fae5; --warning:#f59e0b; --warning-bg:#fef3c7; --error:#ef4444; --error-bg:#fee2e2;
+  --purple-bg:#ede9fe; --purple-text:#5b21b6; --blue-bg:#dbeafe; --blue-text:#1d4ed8; --orange-bg:#ffedd5; --orange-text:#c2410c; --green-bg:#dcfce7; --green-text:#15803d;
+  --cyan-10:rgba(67,199,244,.10); --cyan-15:rgba(67,199,244,.15); --cyan-30:rgba(67,199,244,.30);
+  --leg-col:#1d4ed8; --leg-col-bg:#dbeafe; --leg-dep:#334155; --leg-dep-bg:#e2e8f0; --leg-lh:#c2410c; --leg-lh-bg:#ffedd5; --leg-del:#15803d; --leg-del-bg:#dcfce7;
+  --shadow-sm:0 1px 2px rgba(0,14,37,.05); --shadow-md:0 2px 8px rgba(0,14,37,.08); --shadow-xl:0 8px 24px rgba(0,14,37,.15); --cyan-glow:0 4px 12px rgba(67,199,244,.3);
+  --overlay:rgba(13,12,44,.35);
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --ground:#0F1220; --surface:#171A2B; --surface-2:#1F2338; --ink:#E8ECF3; --muted:#A3ACBE; --faint:#7C8599; --line:#2A2F44; --line-strong:#3A4160;
-    --accent:#43C7F4; --accent-ink:#5CD3FA; --accent-soft:#12303D; --dark:#0B0D18; --on-dark:#FFFFFF;
-    --amber:#F5B457; --amber-soft:#3A2A10; --amber-line:#7A5A2A;
-    --good:#4ADE80; --good-soft:#12301C; --bad:#F87171; --bad-soft:#3B1515;
-    --leg-col:#93C5FD; --leg-col-bg:#152447; --leg-dep:#CBD5E1; --leg-dep-bg:#262E3E; --leg-lh:#FDBA74; --leg-lh-bg:#3B2314; --leg-del:#86EFAC; --leg-del-bg:#123020;
-    --shadow:0 12px 40px rgba(0,0,0,.5);
+    --brand-dark:#0b0c1c; --surface-white:#171a2b; --surface-light:#0f1220; --surface-cream:#1b1f31;
+    --border:#2a2f44; --border-light:#232840; --text-primary:#e8ecf3; --text-secondary:#a3acbe; --text-muted:#7c8599;
+    --success:#4ade80; --success-bg:#12301c; --warning:#f5b457; --warning-bg:#3a2a10; --error:#f87171; --error-bg:#3b1515;
+    --purple-bg:#2a2350; --purple-text:#c4b5fd; --blue-bg:#152447; --blue-text:#93c5fd; --orange-bg:#3b2314; --orange-text:#fdba74; --green-bg:#123020; --green-text:#86efac;
+    --cyan-10:rgba(67,199,244,.14); --cyan-15:rgba(67,199,244,.2); --cyan-30:rgba(67,199,244,.35);
+    --leg-col:#93c5fd; --leg-col-bg:#152447; --leg-dep:#cbd5e1; --leg-dep-bg:#262e3e; --leg-lh:#fdba74; --leg-lh-bg:#3b2314; --leg-del:#86efac; --leg-del-bg:#123020;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow-md:0 2px 8px rgba(0,0,0,.4); --shadow-xl:0 8px 24px rgba(0,0,0,.55); --overlay:rgba(0,0,0,.55);
   }
 }
 :root[data-theme="dark"]{
-  --ground:#0F1220; --surface:#171A2B; --surface-2:#1F2338; --ink:#E8ECF3; --muted:#A3ACBE; --faint:#7C8599; --line:#2A2F44; --line-strong:#3A4160;
-  --accent:#43C7F4; --accent-ink:#5CD3FA; --accent-soft:#12303D; --dark:#0B0D18; --on-dark:#FFFFFF;
-  --amber:#F5B457; --amber-soft:#3A2A10; --amber-line:#7A5A2A;
-  --good:#4ADE80; --good-soft:#12301C; --bad:#F87171; --bad-soft:#3B1515;
-  --leg-col:#93C5FD; --leg-col-bg:#152447; --leg-dep:#CBD5E1; --leg-dep-bg:#262E3E; --leg-lh:#FDBA74; --leg-lh-bg:#3B2314; --leg-del:#86EFAC; --leg-del-bg:#123020;
-  --shadow:0 12px 40px rgba(0,0,0,.5);
+  --brand-dark:#0b0c1c; --surface-white:#171a2b; --surface-light:#0f1220; --surface-cream:#1b1f31;
+  --border:#2a2f44; --border-light:#232840; --text-primary:#e8ecf3; --text-secondary:#a3acbe; --text-muted:#7c8599;
+  --success:#4ade80; --success-bg:#12301c; --warning:#f5b457; --warning-bg:#3a2a10; --error:#f87171; --error-bg:#3b1515;
+  --purple-bg:#2a2350; --purple-text:#c4b5fd; --blue-bg:#152447; --blue-text:#93c5fd; --orange-bg:#3b2314; --orange-text:#fdba74; --green-bg:#123020; --green-text:#86efac;
+  --cyan-10:rgba(67,199,244,.14); --cyan-15:rgba(67,199,244,.2); --cyan-30:rgba(67,199,244,.35);
+  --leg-col:#93c5fd; --leg-col-bg:#152447; --leg-dep:#cbd5e1; --leg-dep-bg:#262e3e; --leg-lh:#fdba74; --leg-lh-bg:#3b2314; --leg-del:#86efac; --leg-del-bg:#123020;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3); --shadow-md:0 2px 8px rgba(0,0,0,.4); --shadow-xl:0 8px 24px rgba(0,0,0,.55); --overlay:rgba(0,0,0,.55);
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--ground);color:var(--ink);font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.45}
-.mono{font-family:"IBM Plex Mono","SFMono-Regular",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
-button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
-button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-input,select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+body{margin:0;background:var(--surface-light);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;line-height:1.5}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--brand-cyan);outline-offset:2px}
+input,select{font:inherit;color:var(--text-primary);background:var(--surface-white);border:1px solid var(--border);border-radius:8px;padding:8px 12px}
 h1,h2,h3{margin:0;text-wrap:balance}
+svg{width:16px;height:16px;flex:none}
 
-/* shell */
-.top{background:var(--dark);color:var(--on-dark);padding:0 24px;height:52px;display:flex;align-items:center;gap:20px}
-.top .brand{font-weight:700;letter-spacing:.02em;display:flex;align-items:center;gap:10px}
-.top .brand i{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--accent)}
-.top nav{display:flex;gap:4px;margin-left:8px}
-.top nav span{padding:6px 10px;border-radius:6px;color:#C7CEDB;font-size:13px}
-.top nav span.on{background:rgba(255,255,255,.1);color:#fff}
-.top .env{margin-left:auto;font-size:12px;color:#C7CEDB}
-.top .env b{color:var(--accent)}
-.page{max-width:1380px;margin:0 auto;padding:24px}
-.pagehead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
-.pagehead h1{font-size:22px;font-weight:600}
-.pagehead p{margin:4px 0 0;color:var(--muted);max-width:68ch}
-.pagehead .actions{display:flex;gap:8px}
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px}
-.tabs button{padding:10px 14px;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--muted);font-weight:500}
-.tabs button.on{color:var(--ink);border-color:var(--accent)}
-.tabs button .n{display:inline-block;margin-left:6px;padding:0 6px;border-radius:9px;background:var(--surface-2);font-size:11px;color:var(--muted)}
+.app{display:grid;grid-template-columns:224px 1fr;min-height:100vh}
+.side{background:#14152D;color:#c9cfdb;padding:20px 0}
+.side .brand{color:#fff;font-size:18px;font-weight:600;padding:8px 20px 20px}
+.side a{display:block;padding:9px 20px;margin:2px 8px;border-radius:6px;font-size:14px;color:#c9cfdb;text-decoration:none;cursor:pointer}
+.side a:hover{background:rgba(255,255,255,.06);color:#fff}
+.side a.on{background:var(--brand-cyan);color:#14152D;font-weight:500}
+.side a .tag{float:right;font-size:10px;background:rgba(255,255,255,.14);color:#fff;padding:1px 6px;border-radius:999px;margin-top:2px}
+.side a.on .tag{background:#14152D;color:#fff}
+.side .foot{position:sticky;top:calc(100vh - 40px);padding:0 20px;font-size:12px;color:#8a93a6;margin-top:40px}
+.main{min-width:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--surface-white);font-size:13px;color:var(--text-secondary)}
+.topbar b{font-size:16px;color:var(--text-primary);font-weight:500}
+.wrap{max-width:1360px;margin:0 auto;padding:24px}
+@media (max-width:900px){.app{grid-template-columns:1fr}.side{display:none}}
+.crumb{font-size:12px;color:var(--text-muted);margin-bottom:12px}
+.crumb b{color:var(--text-secondary);font-weight:500}
+.crumb .new{display:inline-block;margin-left:8px;padding:1px 6px;border-radius:999px;background:var(--cyan-15);color:var(--brand-dark);font-size:10px;font-weight:600;letter-spacing:.04em}
+:root[data-theme="dark"] .crumb .new{color:var(--brand-cyan)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .crumb .new{color:var(--brand-cyan)}}
+.phead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}
+.phead h1{font-size:30px;font-weight:600;color:var(--text-primary)}
+.phead p{margin:4px 0 0;font-size:16px;color:var(--text-secondary);max-width:70ch}
+.phead .actions{display:flex;gap:12px;align-items:center}
 
-/* toolbar */
-.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
-.toolbar .search{flex:1 1 260px;min-width:220px}
-.toolbar label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{padding:7px 12px;color:var(--muted)}
-.seg button.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:500}
-.count{color:var(--muted);font-size:13px;margin:0 0 8px}
-
-/* buttons */
-.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--surface);font-weight:500;white-space:nowrap}
-.btn:hover{border-color:var(--line-strong)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#0B1B22}
-.btn.primary:hover{filter:brightness(.96)}
-.btn.sm{padding:5px 9px;font-size:12.5px}
-.btn.ghost{border-color:transparent;background:transparent;color:var(--muted)}
-.btn.ghost:hover{background:var(--surface-2);color:var(--ink)}
-.btn.danger{color:var(--bad)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface-white);font-weight:500;font-size:14px;color:var(--text-primary);white-space:nowrap;transition:all .15s}
+.btn:hover{background:var(--surface-cream);border-color:var(--text-muted)}
+.btn.primary{background:var(--brand-cyan);border-color:var(--brand-cyan);color:#14152D}
+.btn.primary:hover{box-shadow:var(--cyan-glow)}
+.btn.sm{padding:5px 10px;font-size:13px}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--text-secondary)}
+.btn.ghost:hover{background:var(--cyan-10);color:var(--text-primary)}
+.btn.danger:hover{background:var(--error-bg);color:var(--error)}
 .btn[disabled]{opacity:.5;cursor:not-allowed}
+.icobtn{display:inline-flex;width:32px;height:32px;align-items:center;justify-content:center;border-radius:8px;color:var(--text-muted)}
+.icobtn:hover{background:var(--cyan-10);color:var(--brand-dark)}
+.icobtn.danger:hover{background:var(--error-bg);color:var(--error)}
+:root[data-theme="dark"] .icobtn:hover{color:var(--brand-cyan)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .icobtn:hover{color:var(--brand-cyan)}}
 
-/* table */
-.table{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.card{background:var(--surface-white);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow-sm);overflow:hidden}
+.tabs{display:flex;border-bottom:1px solid var(--border);padding:0 16px}
+.tabs button{padding:12px 16px;font-size:14px;font-weight:500;color:var(--text-secondary);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button:hover{color:var(--text-primary)}
+.tabs button.on{color:var(--brand-dark);border-color:var(--brand-cyan)}
+:root[data-theme="dark"] .tabs button.on{color:var(--text-primary)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .tabs button.on{color:var(--text-primary)}}
+.tabs .n{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--border);font-size:11px;color:var(--text-secondary)}
+.filters{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+.search{position:relative}
+.search input{width:100%;padding-left:36px}
+.search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted)}
+.frow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.frow label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)}
+.frow select{padding:6px 28px 6px 10px;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg button{padding:6px 12px;font-size:13px;color:var(--text-secondary)}
+.seg button.on{background:var(--cyan-15);color:var(--brand-dark);font-weight:500}
+:root[data-theme="dark"] .seg button.on{color:var(--text-primary)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .seg button.on{color:var(--text-primary)}}
+.count{margin-left:auto;font-size:12px;color:var(--text-muted)}
+
 .tscroll{overflow-x:auto}
-table{width:100%;border-collapse:collapse;min-width:1040px}
-th{position:sticky;top:0;background:var(--surface-2);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:9px 12px;font-weight:600}
-td{padding:10px 12px;border-top:1px solid var(--line);vertical-align:middle}
-td.mono{white-space:nowrap}
-th{white-space:nowrap}
-tr.row{cursor:pointer}
-tr.row:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,var(--surface))}
-tr.row.sel td{background:var(--accent-soft)}
-tr.over td{background:color-mix(in srgb,var(--amber-soft) 55%,var(--surface))}
-tr.over:hover td{background:var(--amber-soft)}
-tr.over td:first-child{padding-left:36px}
-.name{font-weight:600}
-.name small{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
-.id{color:var(--faint);font-size:12px}
-.tr{text-align:right}
-.tc{text-align:center}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:1080px}
+th{position:sticky;top:0;background:var(--surface-light);text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);padding:8px;font-weight:500;white-space:nowrap;border-bottom:1px solid var(--border)}
+td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr.row{cursor:pointer;transition:background .15s}
+tr.row:hover td{background:var(--surface-cream)}
+tr.row.sel td{background:var(--cyan-10)}
+tr.row.sel td:first-child{box-shadow:inset 2px 0 0 var(--brand-cyan)}
+tr.over td{background:var(--surface-cream)}
+tr.over td:first-child{padding-left:28px}
+.tc{text-align:center}.tr{text-align:right}
+.nm{font-weight:500;color:var(--text-primary);display:flex;align-items:center;gap:6px;min-width:0}
+.nm .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{font-size:11px;color:var(--text-muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
+.sec{color:var(--text-secondary);font-size:12px;white-space:nowrap}
 
-/* chips */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap;line-height:1.4}
+.badge.sm{padding:1px 6px;font-size:10px}
+.badge.sys{background:var(--border);color:var(--text-secondary)}
+.badge.green{background:var(--green-bg);color:var(--green-text)}
+.badge.purple{background:var(--purple-bg);color:var(--purple-text)}
+.badge.blue{background:var(--blue-bg);color:var(--blue-text)}
+.badge.orange{background:var(--orange-bg);color:var(--orange-text)}
+.badge.cyan{background:var(--cyan-15);color:var(--brand-dark)}
+:root[data-theme="dark"] .badge.cyan{color:var(--brand-cyan)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .badge.cyan{color:var(--brand-cyan)}}
+.badge.red{background:var(--error-bg);color:var(--error)}
 .chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
-.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);white-space:nowrap}
-.chip.all{background:var(--good-soft);border-color:transparent;color:var(--good);font-weight:500}
-.chip.more{color:var(--muted);background:var(--surface-2);border-color:transparent}
-.chip.ov{background:var(--amber-soft);border-color:var(--amber-line);color:var(--amber);font-weight:500;vertical-align:1px;margin-right:4px}
-.chip.src{background:var(--surface-2);border-color:transparent;color:var(--muted)}
-.chip .x{margin-left:2px;color:var(--faint);border-radius:50%;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;line-height:1}
-.chip .x:hover{background:var(--bad-soft);color:var(--bad)}
-.legs{display:inline-flex;gap:3px}
-.leg{width:22px;height:8px;border-radius:2px}
-.leg.col{background:var(--leg-col)}.leg.dep{background:var(--leg-dep)}.leg.lh{background:var(--leg-lh)}.leg.del{background:var(--leg-del)}
+.plus{font-size:11px;color:var(--text-muted)}
 .days{display:inline-flex;gap:2px}
-.day{width:18px;height:18px;border-radius:4px;background:var(--surface-2);color:var(--faint);font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
-.day.on{background:var(--accent-soft);color:var(--accent-ink)}
-.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--muted)}
-.pill.on{background:var(--good-soft);color:var(--good)}
-.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
-.rowactions{display:inline-flex;gap:2px;opacity:.55}
-tr:hover .rowactions{opacity:1}
-.diff{font-size:12px;color:var(--amber)}
-.diff b{font-weight:600}
+.day{width:20px;height:20px;border-radius:4px;background:var(--border-light);color:var(--text-muted);font-size:10px;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
+.day.on{background:var(--cyan-15);color:var(--brand-dark)}
+:root[data-theme="dark"] .day.on{color:var(--brand-cyan)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .day.on{color:var(--brand-cyan)}}
+.tog{display:inline-flex;width:32px;height:18px;border-radius:999px;background:var(--border);position:relative;transition:background .15s;vertical-align:middle}
+.tog i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);transition:left .15s}
+.tog.on{background:var(--brand-cyan)}.tog.on i{left:16px}
+.legs{display:inline-flex;gap:2px;vertical-align:middle}
+.leg{width:14px;height:6px;border-radius:2px}
+.leg.col{background:var(--leg-col)}.leg.dep{background:var(--leg-dep)}.leg.lh{background:var(--leg-lh)}.leg.del{background:var(--leg-del)}
+.rowact{display:inline-flex;gap:2px;opacity:.6}
+tr:hover .rowact{opacity:1}
+.diff{color:var(--orange-text);font-size:11px}
+.dcell{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
+
+.empty{color:var(--text-muted);font-size:13px;padding:24px;text-align:center}
+.note{font-size:12.5px;color:var(--text-secondary)}
+.footer{margin-top:20px;color:var(--text-muted);font-size:12px;max-width:90ch}
+.footer b{color:var(--text-secondary);font-weight:500}
+
+/* groups */
+.glist{padding:16px;display:grid;gap:8px}
+.group{border:1px solid var(--border);border-radius:10px;background:var(--surface-white);overflow:hidden}
+.ghead{display:grid;grid-template-columns:20px 1fr auto auto auto;gap:14px;align-items:center;padding:12px 16px;cursor:pointer}
+.ghead:hover{background:var(--surface-cream)}
+.ghead .chev{color:var(--text-muted);transition:transform .15s}
+.group.open .chev{transform:rotate(90deg)}
+.gname{font-weight:500}.gname small{display:block;color:var(--text-secondary);font-weight:400;font-size:12px}
+.stat{text-align:center;min-width:72px}.stat b{display:block;font-size:15px;font-weight:600}.stat span{font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.gbody{display:none;border-top:1px solid var(--border);background:var(--surface-cream);padding:14px 16px;flex-direction:column;gap:12px}
+.group.open .gbody{display:flex}
+.gact{display:flex;flex-wrap:wrap;gap:8px}
+.members{display:grid;gap:6px}
+.member{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;background:var(--surface-white);border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer}
+.member:hover{border-color:var(--brand-cyan)}
+.member .mn{font-weight:500;font-size:13px}.member .mn small{color:var(--text-muted);font-weight:400;margin-left:6px}
+.gsum{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12.5px;color:var(--text-secondary)}
 
 /* drawer */
-.overlay{position:fixed;inset:0;background:rgba(10,12,24,.35);display:none;z-index:20}
+.overlay{position:fixed;inset:0;background:var(--overlay);display:none;z-index:20}
 .overlay.open{display:block}
-.drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,100%);background:var(--surface);box-shadow:var(--shadow);transform:translateX(100%);transition:transform .22s ease;z-index:21;display:flex;flex-direction:column}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(660px,100%);background:var(--surface-white);box-shadow:var(--shadow-xl);transform:translateX(100%);transition:transform .2s ease;z-index:21;display:flex;flex-direction:column}
 .drawer.open{transform:none}
 @media (prefers-reduced-motion:reduce){.drawer{transition:none}}
-.dhead{padding:18px 22px 0;border-bottom:1px solid var(--line)}
-.dhead .eyebrow{font-size:12px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase}
-.dhead h2{font-size:18px;font-weight:600;margin:4px 0 2px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.dhead p{margin:0 0 12px;color:var(--muted)}
-.dtabs{display:flex;gap:2px}
-.dtabs button{padding:8px 12px;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--muted);font-weight:500}
-.dtabs button.on{color:var(--ink);border-color:var(--accent)}
-.dbody{padding:20px 22px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:20px}
-.dfoot{padding:12px 22px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;background:var(--surface)}
-.ovbar{background:var(--amber-soft);border:1px solid var(--amber-line);color:var(--amber);padding:8px 12px;border-radius:8px;font-size:13px}
-.sect h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.dhead{padding:20px 24px 0;border-bottom:1px solid var(--border)}
+.dhead .eyebrow{font-size:12px;color:var(--text-muted)}
+.dhead h2{font-size:20px;font-weight:600;margin:2px 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dhead p{margin:0 0 12px;color:var(--text-secondary);font-size:13px}
+.dtabs{display:flex}
+.dtabs button{padding:8px 12px;font-size:13px;font-weight:500;color:var(--text-secondary);border-bottom:2px solid transparent;margin-bottom:-1px}
+.dtabs button.on{color:var(--brand-dark);border-color:var(--brand-cyan)}
+:root[data-theme="dark"] .dtabs button.on{color:var(--text-primary)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .dtabs button.on{color:var(--text-primary)}}
+.dbody{padding:20px 24px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:20px}
+.dfoot{padding:12px 24px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
+.ovbar{background:var(--warning-bg);border:1px solid var(--warning);color:var(--orange-text);padding:8px 12px;border-radius:8px;font-size:13px}
+.sect h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-weight:600;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
 .sect h3 .hint{font-weight:400;text-transform:none;letter-spacing:0;font-size:12px}
 .radio{display:grid;gap:8px}
-.radio label{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
-.radio label.on{border-color:var(--accent);background:var(--accent-soft)}
+.radio label{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer}
+.radio label.on{border-color:var(--brand-cyan);background:var(--cyan-10)}
 .radio input{margin-top:3px}
-.radio b{display:block;font-weight:600}
-.radio span{color:var(--muted);font-size:12.5px}
-.clientlist{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.clientlist .cl{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line)}
-.clientlist .cl:first-child{border-top:0}
-.clientlist .cl b{font-weight:500}
-.clientlist .cl .code{color:var(--faint);font-size:12px}
-.clientlist .cl .sp{flex:1}
-.clientlist .cl .meta{font-size:12px;color:var(--muted)}
-.empty{color:var(--muted);font-size:13px;padding:12px;border:1px dashed var(--line);border-radius:8px;text-align:center}
-.legcard{border:1px solid var(--line);border-left:4px solid var(--c);background:var(--bg);border-radius:8px;padding:10px 12px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
-.legcard .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--c);font-weight:700;width:76px}
-.legcard .v b{display:block;font-weight:600}
-.legcard .v span{color:var(--muted);font-size:12.5px}
-.legcard .m{color:var(--muted);font-size:12px}
-.route{display:grid;gap:8px}
-.route .arrow{text-align:center;color:var(--faint);font-size:12px;line-height:1;margin:-4px 0}
+.radio b{display:block;font-weight:500}.radio span{color:var(--text-secondary);font-size:12.5px}
+.list{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.li{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--border);font-size:13px}
+.li:first-child{border-top:0}
+.li b{font-weight:500}.li .code{color:var(--text-muted);font-size:12px}.li .sp{flex:1}.li .meta{font-size:12px;color:var(--text-secondary)}
+.li.click{cursor:pointer}.li.click:hover{background:var(--surface-cream)}
+.legcard{border:1px solid var(--border);border-left:4px solid var(--c);background:var(--bg);border-radius:8px;padding:10px 12px;display:grid;grid-template-columns:76px 1fr auto;gap:12px;align-items:center}
+.legcard .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--c);font-weight:700}
+.legcard .v b{display:block;font-weight:500}.legcard .v span{color:var(--text-secondary);font-size:12px}
+.legcard .m{color:var(--text-muted);font-size:12px}
+.route{display:grid;gap:6px}.route .arrow{text-align:center;color:var(--text-muted);font-size:11px;line-height:1;margin:-3px 0}
 .dgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
-.dcell{border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
-.dcell.off{opacity:.45}
-.dcell b{display:block;font-size:12px;margin-bottom:4px}
-.dcell .t{font-size:11.5px}
-.dcell .c{margin-top:4px;font-size:11px;color:var(--muted)}
-.note{font-size:12.5px;color:var(--muted)}
-.kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:13px}
-.kv dt{color:var(--muted)}.kv dd{margin:0}
+.dc{border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center}.dc.off{opacity:.45}
+.dc b{display:block;font-size:12px;margin-bottom:3px}.dc .t{font-size:11.5px}.dc .c{margin-top:3px;font-size:11px;color:var(--text-secondary)}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px}.kv dt{color:var(--text-secondary)}.kv dd{margin:0}
+.rcard{border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.rcard .rh{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rcard .rh b{font-weight:500}
+.rcard .rm{font-size:12.5px;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:12px}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.wd{border:1px solid var(--border);border-radius:6px;padding:5px 4px;text-align:center;font-size:11px}
+.wd b{display:block;font-size:10px;color:var(--text-muted);font-weight:500;text-transform:uppercase}
+.wd.today{border-color:var(--brand-cyan);background:var(--cyan-10)}
+.wd.ovr{background:var(--warning-bg);border-color:var(--warning)}
+.wd.off{opacity:.4}
+.wd .who{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.callout{background:var(--cyan-10);border:1px solid var(--cyan-30);border-radius:8px;padding:10px 12px;font-size:12.5px;color:var(--text-secondary)}
+.callout b{color:var(--text-primary);font-weight:500}
 
 /* modal */
 .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:30}
 .modal.open{display:flex}
-.mbox{width:min(560px,calc(100% - 32px));max-height:min(80vh,720px);background:var(--surface);border-radius:12px;box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
-.mhead{padding:16px 20px;border-bottom:1px solid var(--line)}
-.mhead h2{font-size:16px;font-weight:600}
-.mhead p{margin:4px 0 0;color:var(--muted);font-size:13px}
+.mbox{width:min(560px,calc(100% - 32px));max-height:min(80vh,720px);background:var(--surface-white);border-radius:12px;box-shadow:var(--shadow-xl);display:flex;flex-direction:column;overflow:hidden}
+.mhead{padding:16px 20px;border-bottom:1px solid var(--border)}.mhead h2{font-size:16px;font-weight:600}.mhead p{margin:4px 0 0;color:var(--text-secondary);font-size:13px}
 .mbody{padding:14px 20px;overflow:auto;display:flex;flex-direction:column;gap:12px}
-.mfoot{padding:12px 20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px}
-.mfoot .sum{color:var(--muted);font-size:13px}
-.pick{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;overflow:hidden;max-height:320px;overflow-y:auto}
-.pick label{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line);cursor:pointer}
-.pick label:first-child{border-top:0}
-.pick label.dis{opacity:.55;cursor:not-allowed}
-.pick label .sp{flex:1}
-.pick label .why{font-size:12px;color:var(--muted)}
-
-/* groups */
-.groups{display:grid;gap:10px}
-.group{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
-.ghead{display:grid;grid-template-columns:1fr auto auto auto;gap:16px;align-items:center;padding:14px 16px;cursor:pointer}
-.ghead:hover{background:color-mix(in srgb,var(--accent-soft) 40%,var(--surface))}
-.ghead .gname{font-weight:600}
-.ghead .gname small{display:block;color:var(--muted);font-weight:400;font-size:12.5px;margin-top:2px}
-.ghead .stat{text-align:center;min-width:90px}
-.ghead .stat b{display:block;font-size:16px;font-weight:600}
-.ghead .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.ghead .chev{color:var(--faint);transition:transform .15s}
-.group.open .chev{transform:rotate(90deg)}
-.gbody{display:none;border-top:1px solid var(--line);background:var(--surface-2);padding:14px 16px;gap:14px;flex-direction:column}
-.group.open .gbody{display:flex}
-.gbody .actions{display:flex;flex-wrap:wrap;gap:8px}
-.members{display:grid;gap:6px}
-.member{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}
-.member:hover{border-color:var(--accent)}
-.member .mn{font-weight:500}
-.member .mn small{color:var(--muted);font-weight:400;margin-left:6px}
-.gsum{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;color:var(--muted)}
-.footer{margin-top:28px;color:var(--faint);font-size:12px;max-width:80ch}
-.footer b{color:var(--muted);font-weight:500}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--dark);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
+.mfoot{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.mfoot .sum{color:var(--text-secondary);font-size:13px}
+.pick{border:1px solid var(--border);border-radius:8px;max-height:320px;overflow-y:auto}
+.pick label{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--border);cursor:pointer;font-size:13px}
+.pick label:first-child{border-top:0}.pick label.dis{opacity:.55;cursor:not-allowed}.pick label .sp{flex:1}.pick label .why{font-size:12px;color:var(--text-secondary)}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--brand-dark);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:var(--shadow-xl);opacity:0;pointer-events:none;transition:opacity .2s;z-index:40}
 .toast.show{opacity:1}
-.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:10px}
-.legend span{display:inline-flex;align-items:center;gap:6px}
-.legend .leg{width:14px}
 </style>
 
-<div class="top">
-  <div class="brand"><i></i>Routed Operations</div>
-  <nav><span>Routes</span><span>Run Viewer</span><span class="on">Schedules</span><span>Territory</span><span>Clients</span></nav>
-  <div class="env">Tenant <b>Urgent Couriers</b> · staging</div>
-</div>
-
-<div class="page">
-  <div class="pagehead">
+<div class="app">
+<nav class="side" aria-label="Routed Operations">
+  <div class="brand">Routed Operations</div>
+  <a>Dashboard</a><a>Bulk Import</a><a>Route Builder</a><a>Route Viewer</a><a>Quoting</a><a>Recurring Routes</a><a>Schedules</a><a class="on">Schedules <span class="tag">NEW</span></a><a>Polygon Builder</a><a>Auto-Assign Log</a><a>Historic Archive Upload</a>
+  <div class="foot">Stage 1 - Route Builder</div>
+</nav>
+<div class="main">
+<div class="topbar"><b>Schedules (new view)</b><span>Tenant 5 - New Zealand Standard Time &nbsp;·&nbsp; Steve Bonnici</span></div>
+<div class="wrap">
+  <div class="phead">
     <div>
       <h1>Schedules</h1>
-      <p>One schedule, many clients. A schedule has its own id; clients are attached to it, and a client that needs different values gets an override that stays linked to the base.</p>
+      <p>One schedule, many clients. Each schedule has its own id; clients are attached to it, overrides stay linked to their base, and the recurring routes and linehaul runs that deliver it sit alongside instead of on a separate page.</p>
     </div>
-    <div class="actions"><button class="btn" onclick="toast('Import / export is unchanged from Dane\'s design')">Import / Export</button><button class="btn primary" onclick="toast('New schedule opens the route builder (not in this mockup)')">+ New schedule</button></div>
+    <div class="actions">
+      <button class="btn" onclick="toast('Import / export is unchanged from Dane\'s module')">Import / Export</button>
+      <button class="btn primary" onclick="toast('New schedule opens the route builder (not in this mockup)')">+ New Schedule</button>
+    </div>
   </div>
 
-  <div class="tabs">
-    <button id="tab-s" class="on" onclick="setTab('s')">Schedules <span class="n" id="n-s"></span></button>
-    <button id="tab-g" onclick="setTab('g')">Schedule Groups <span class="n" id="n-g"></span></button>
-  </div>
+  <div class="card">
+    <div class="tabs" role="tablist">
+      <button id="tab-s" class="on" onclick="setTab('s')">Schedules<span class="n" id="n-s"></span></button>
+      <button id="tab-g" onclick="setTab('g')">Schedule Groups<span class="n" id="n-g"></span></button>
+      <button id="tab-r" onclick="setTab('r')">Recurring Routes<span class="n" id="n-r"></span></button>
+    </div>
 
-  <section id="pane-s">
-    <div class="toolbar">
-      <input class="search" id="q" placeholder="Search schedules, clients, routes…" oninput="render()">
-      <label>View as
-        <select id="viewas" onchange="render()"></select>
-      </label>
-      <div class="seg" id="typeseg">
-        <button class="on" data-t="all" onclick="setType('all')">All</button>
-        <button data-t="default" onclick="setType('default')">Defaults</button>
-        <button data-t="shared" onclick="setType('shared')">Shared</button>
-        <button data-t="override" onclick="setType('override')">Overrides</button>
+    <section id="pane-s">
+      <div class="filters">
+        <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" placeholder="Search schedules by name, route, client or run…" oninput="render()"></div>
+        <div class="frow">
+          <label>View as <select id="viewas" onchange="render()"></select></label>
+          <div class="seg" id="typeseg"><button class="on" data-t="all" onclick="setType('all')">All</button><button data-t="default" onclick="setType('default')">Defaults</button><button data-t="shared" onclick="setType('shared')">Shared</button><button data-t="override" onclick="setType('override')">Overrides</button></div>
+          <label>Depot <select onchange="toast('Depot filter (mockup)')"><option>All depots</option><option>Auckland</option><option>Hamilton</option><option>Christchurch</option></select></label>
+          <span class="count" id="count"></span>
+        </div>
       </div>
-    </div>
-    <p class="count" id="count"></p>
-    <div class="table"><div class="tscroll">
-      <table>
-        <thead><tr>
-          <th style="width:30%">Schedule</th><th>Route</th><th>Days</th><th>Window</th><th>Cut-off</th><th style="width:22%">Clients</th><th class="tc">Active</th><th class="tc">Actions</th>
-        </tr></thead>
+      <div class="tscroll"><table>
+        <thead><tr><th style="width:24%">Name</th><th>Days</th><th>Origin</th><th>Dest</th><th>Window</th><th>Cut-off</th><th style="width:16%">Clients</th><th>Dispatch</th><th class="tc">Status</th><th class="tc">Actions</th></tr></thead>
         <tbody id="rows"></tbody>
-      </table>
-    </div></div>
-    <div class="legend">
-      <span><i class="leg col"></i>Collection</span><span><i class="leg dep"></i>Depot</span><span><i class="leg lh"></i>Linehaul</span><span><i class="leg del"></i>Delivery</span>
-      <span style="margin-left:auto">Cut-off shown as hours before the window; <span class="mono">66/18</span> = Monday / other days</span>
-    </div>
-  </section>
+      </table></div>
+    </section>
 
-  <section id="pane-g" hidden>
-    <div class="toolbar">
-      <input class="search" id="gq" placeholder="Search schedule groups…" oninput="renderGroups()">
-      <button class="btn" onclick="toast('New group: pick schedules to bundle (not in this mockup)')">+ New group</button>
-    </div>
-    <p class="count" id="gcount"></p>
-    <div class="groups" id="groups"></div>
-    <p class="note" style="margin-top:12px">A group is a named bundle of schedules. Attaching a client to a group writes one link row per member schedule; the link table stays the only record of who uses what.</p>
-  </section>
+    <section id="pane-g" hidden>
+      <div class="filters"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="gq" placeholder="Search schedule groups…" oninput="renderGroups()"></div>
+        <div class="frow"><span class="note">A group is a named bundle of schedules. Attaching a client to a group writes one link row per member; the link table stays the only record of who uses what.</span><span class="count" id="gcount"></span></div></div>
+      <div class="glist" id="groups"></div>
+    </section>
 
-  <p class="footer"><b>Mockup.</b> Schedule names, days, windows and cut-offs are taken from the real Urgent Couriers schedule table (September 2026 export). Client names are examples. Nothing here is saved.</p>
+    <section id="pane-r" hidden>
+      <div class="filters"><div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="rq" placeholder="Search routes by name, area, schedule or client…" oninput="renderRoutes()"></div>
+        <div class="frow">
+          <div class="seg" id="rtypeseg"><button class="on" data-t="all" onclick="setRType('all')">All types</button><button data-t="first" onclick="setRType('first')">First mile</button><button data-t="middle" onclick="setRType('middle')">Middle mile</button><button data-t="final" onclick="setRType('final')">Final mile</button></div>
+          <span class="note">Same rows as the Recurring Routes page, anchored to the schedules that give them their window and the clients those schedules serve. Rosters are edited on the Route Roster / Linehaul Roster pages.</span><span class="count" id="rcount"></span></div></div>
+      <div class="tscroll"><table>
+        <thead><tr><th style="width:19%">Name</th><th>Type</th><th>Area / From → To</th><th>Schedule(s)</th><th>Clients via schedule</th><th>Default target</th><th>Master job</th><th>This week</th><th class="tc">Stops</th><th class="tc">Status</th></tr></thead>
+        <tbody id="rrows"></tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <p class="footer"><b>Mockup.</b> Schedule names, days, windows and cut-offs come from the real Urgent Couriers schedule table (September 2026 export). Client names, routes, runs and rosters are examples. Nothing here is saved. Layout follows Dane's schedules module in scheduled-rate-builder, inside the Routed Operations shell.</p>
+</div>
+</div>
 </div>
 
 <div class="overlay" id="overlay" onclick="closeDrawer()"></div>
@@ -285,32 +314,24 @@ tr:hover .rowactions{opacity:1}
       <button id="dt-clients" class="on" onclick="setDTab('clients')">Clients</button>
       <button id="dt-route" onclick="setDTab('route')">Route</button>
       <button id="dt-days" onclick="setDTab('days')">Operating days</button>
+      <button id="dt-dispatch" onclick="setDTab('dispatch')">Dispatch</button>
     </div>
   </div>
   <div class="dbody" id="dbody"></div>
-  <div class="dfoot">
-    <button class="btn ghost" onclick="closeDrawer()">Close</button>
-    <button class="btn primary" onclick="toast('Saved (mockup)');closeDrawer()">Save</button>
-  </div>
+  <div class="dfoot"><button class="btn ghost" onclick="closeDrawer()">Close</button><button class="btn primary" onclick="toast('Saved (mockup)');closeDrawer()">Save</button></div>
 </aside>
 
 <div class="modal" id="modal" role="dialog" aria-modal="true">
   <div class="mbox">
     <div class="mhead"><h2 id="m-title"></h2><p id="m-sub"></p></div>
-    <div class="mbody">
-      <input id="mq" placeholder="Search clients by name or code…" oninput="renderPick()">
-      <div class="pick" id="pick"></div>
-    </div>
-    <div class="mfoot">
-      <span class="sum" id="m-sum"></span>
-      <span><button class="btn ghost" onclick="closeModal()">Cancel</button> <button class="btn primary" id="m-ok" onclick="confirmModal()">Attach</button></span>
-    </div>
+    <div class="mbody"><input id="mq" placeholder="Search clients by name or code…" oninput="renderPick()"><div class="pick" id="pick"></div></div>
+    <div class="mfoot"><span class="sum" id="m-sum"></span><span><button class="btn ghost" onclick="closeModal()">Cancel</button> <button class="btn primary" id="m-ok" onclick="confirmModal()">Attach</button></span></div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
 
 <script>
-// ---------- sample data (schedule facts from the real table; client names are examples) ----------
+// ---------- sample data ----------
 const clients = [
   {id:16513,name:'MedLab Central',code:'MLC'},{id:14763,name:'Pathway Diagnostics',code:'PATH'},{id:169,name:'Northern Pharmacy Group',code:'NPG'},
   {id:18185,name:'Awanui Reference Lab',code:'AWA'},{id:13713,name:'Harbour Radiology',code:'HRAD'},{id:16947,name:'Citywide Dental Lab',code:'CDL'},
@@ -324,161 +345,207 @@ const clients = [
 const C = Object.fromEntries(clients.map(c=>[c.id,c]));
 const D = {1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat',7:'Sun'};
 
-// legs: type col|dep|lh|del
-const routeMed = [{t:'col',b:'Collect from client address',s:'Pickup speed 166 · book pickup'},{t:'dep',b:'Auckland depot (region 8)',s:'Ambient'},{t:'lh',b:'AKL → CHCH linehaul',s:'Overnight · run 12'},{t:'del',b:'Deliver in Christchurch (region 34)',s:'Speed 165 · zone group 33'}];
-const routeGis = [{t:'col',b:'Collect from client address',s:'Pickup speed 166'},{t:'dep',b:'Auckland depot (region 8)',s:'Ambient'},{t:'lh',b:'AKL → GIS linehaul',s:'Overnight'},{t:'del',b:'Deliver in Gisborne',s:'Speed 164 · before 10am'}];
+const linehauls = [
+  {id:12,name:'AKL → CHCH Night Air',from:'Auckland',to:'Christchurch',days:[1,2,3,4,5],despatch:'20:45',depart:'21:30',mode:'Flight',courier:'Air Cargo NZ (contract)',target:'NP',roster:{3:'Freightways overflow'},master:{job:'P1075',today:'Materialised 04:10 · 38 items linked'},speed:'Use schedule default',stops:485,active:true},
+  {id:17,name:'AKL → GIS Overnight',from:'Auckland',to:'Gisborne',days:[1,2,3,4,5],despatch:'21:30',depart:'22:15',mode:'Road',courier:'Eastland Freight',target:'Agent',roster:{},master:{job:'P1088',today:'Materialised 04:10 · 12 items linked'},speed:'Use schedule default',stops:61,active:true},
+  {id:41,name:'HLZ → TRG Shuttle',from:'Hamilton',to:'Tauranga',days:[1,2,3,4,5],despatch:'10:30',depart:'11:00',mode:'Road',courier:'J. Marsh',target:'Courier',roster:{5:'P. Kāretu'},master:null,speed:'Regional Run',stops:41,active:true},
+];
+const LH = Object.fromEntries(linehauls.map(l=>[l.id,l]));
+
+const routeMed = [{t:'col',b:'Collect from client address',s:'Pickup speed 166 · book pickup'},{t:'dep',b:'Auckland depot (region 8)',s:'Ambient'},{t:'lh',b:'AKL → CHCH Night Air',s:'run 12',run:12},{t:'del',b:'Deliver in Christchurch (region 34)',s:'Speed 165 · zone group 33'}];
+const routeGis = [{t:'col',b:'Collect from client address',s:'Pickup speed 166'},{t:'dep',b:'Auckland depot (region 8)',s:'Ambient'},{t:'lh',b:'AKL → GIS Overnight',s:'run 17',run:17},{t:'del',b:'Deliver in Gisborne',s:'Speed 164 · before 10am'}];
 const routeHome = [{t:'dep',b:'Auckland depot (region 8)',s:'From depot stock'},{t:'del',b:'Auckland metro delivery',s:'Speed 110 · zone group 62'}];
 const routeAft = [{t:'dep',b:'Auckland depot (region 8)',s:''},{t:'del',b:'Auckland metro delivery',s:'Speed 94 · zone group 62'}];
-const routeHB = [{t:'col',b:'Collect in Hamilton',s:'Pickup zone group 44'},{t:'lh',b:'HLZ → TRG linehaul',s:''},{t:'del',b:'Deliver Bay of Plenty',s:'Region 3 · zone group 20'}];
+const routeHB = [{t:'col',b:'Collect in Hamilton',s:'Pickup zone group 44'},{t:'lh',b:'HLZ → TRG Shuttle',s:'run 41',run:41},{t:'del',b:'Deliver Bay of Plenty',s:'Region 3 · zone group 20'}];
 const routeHF = [{t:'col',b:'Collect from client address',s:''},{t:'dep',b:'Auckland depot (region 8)',s:''},{t:'del',b:'Auckland metro delivery',s:'Speed 96'}];
 const routeSun = [{t:'dep',b:'Auckland depot (region 8)',s:''},{t:'del',b:'Auckland metro delivery',s:'Speed 95 · zone group 14'}];
-
-// days: {d:[start,end,cutoff]}
 const wk = (s,e,mon,rest)=>({1:[s,e,mon],2:[s,e,rest],3:[s,e,rest],4:[s,e,rest],5:[s,e,rest]});
+
 let schedules = [
-  {id:1042,name:'AKL > CHCH Pre 8am Medical',desc:'Book by 2 pm. Next business day service to Christchurch',visibility:'specific',clients:[16513,14763,169,18185,16947,32946,9477,35755,18188,36739],base:null,route:routeMed,days:wk('06:00','08:00',66,18),active:true},
-  {id:1043,name:'AKL > CHCH Pre 8am Medical',desc:'Earlier cut-off for Rangitoto',visibility:'specific',clients:[14578],base:1042,diff:['Cut-off 64/16 (base 66/18)'],route:routeMed,days:wk('06:00','08:00',64,16),active:true},
-  {id:1050,name:'AKL > CHCH Pre 10am Medical',desc:'Book by 3 pm. Next business day service to Christchurch',visibility:'specific',clients:[16513,14763,169,18185,32946,9477,35755,18188,36739],base:null,route:routeMed,days:wk('08:00','10:00',65,17),active:true},
-  {id:1051,name:'AKL > CHCH Pre 10am Medical',desc:'Manual booking only',visibility:'specific',clients:[13713],base:1050,diff:['Auto-book off (base on)','Cut-off 24 all days'],route:routeMed,days:wk('08:00','10:00',24,24),active:false},
-  {id:1060,name:'AKL > Gisborne pre 10am',desc:'Book by 1pm for overnight to Gisborne delivered before 10am',visibility:'specific',clients:[18185,169,16947,32946,9477,35755,18188,36739],base:null,route:routeGis,days:wk('06:00','10:00',65,17),active:true},
-  {id:1061,name:'AKL > Gisborne pre 10am',desc:'Monday cut-off 60h',visibility:'specific',clients:[14763,16513],base:1060,diff:['Monday cut-off 60 (base 65)'],route:routeGis,days:wk('06:00','10:00',60,17),active:true},
-  {id:12,name:'Evening Home Auckland',desc:'Evening Home',visibility:'all',clients:[],base:null,route:routeHome,days:wk('18:00','21:00',3,3),active:true},
-  {id:7,name:'Auckland Afternoons',desc:'',visibility:'all',clients:[],base:null,route:routeAft,days:wk('12:00','17:00',2,2),active:true},
-  {id:60,name:'Sunday 12-6pm AKL',desc:'',visibility:'all',clients:[],base:null,route:routeSun,days:{7:['12:00','18:00',70]},active:true},
-  {id:2362,name:'Hamilton > BOP',desc:'',visibility:'all',clients:[],base:null,route:routeHB,days:wk('10:00','14:00',2,2),active:true},
-  {id:11938,name:'Hamilton > BOP',desc:'Home-meal clients collect from the Te Rapa group',visibility:'specific',clients:[31458,31504,31944,31476,31465,31501],base:2362,diff:['Pickup zone group 45 (base 44)'],route:routeHB,days:wk('10:00','14:00',2,2),active:true},
-  {id:35,name:'WedHFAK',desc:'',visibility:'specific',clients:[32374],base:null,route:routeHF,days:{3:['07:00','17:00',24]},active:true},
-  {id:36,name:'SatHFAK',desc:'',visibility:'specific',clients:[32374],base:null,route:routeHF,days:{6:['08:00','19:00',1]},active:true},
-  {id:9661,name:'Frozen - Central Run',desc:'',visibility:'all',clients:[],base:null,route:routeAft,days:wk('06:00','12:00',12,12),active:true},
+  {id:1042,name:'AKL > CHCH Pre 8am Medical',desc:'Book by 2 pm. Next business day service to Christchurch',visibility:'specific',clients:[16513,14763,169,18185,16947,32946,9477,35755,18188,36739],base:null,route:routeMed,days:wk('06:00','08:00',66,18),origin:'Client address',dest:'Christchurch',active:true},
+  {id:1043,name:'AKL > CHCH Pre 8am Medical',desc:'Earlier cut-off for Rangitoto',visibility:'specific',clients:[14578],base:1042,diff:['Cut-off 64/16 (base 66/18)'],route:routeMed,days:wk('06:00','08:00',64,16),origin:'Client address',dest:'Christchurch',active:true},
+  {id:1050,name:'AKL > CHCH Pre 10am Medical',desc:'Book by 3 pm. Next business day service to Christchurch',visibility:'specific',clients:[16513,14763,169,18185,32946,9477,35755,18188,36739],base:null,route:routeMed,days:wk('08:00','10:00',65,17),origin:'Client address',dest:'Christchurch',active:true},
+  {id:1051,name:'AKL > CHCH Pre 10am Medical',desc:'Manual booking only',visibility:'specific',clients:[13713],base:1050,diff:['Auto-book off (base on)','Cut-off 24 all days'],route:routeMed,days:wk('08:00','10:00',24,24),origin:'Client address',dest:'Christchurch',active:false},
+  {id:1060,name:'AKL > Gisborne pre 10am',desc:'Book by 1pm for overnight to Gisborne delivered before 10am',visibility:'specific',clients:[18185,169,16947,32946,9477,35755,18188,36739],base:null,route:routeGis,days:wk('06:00','10:00',65,17),origin:'Client address',dest:'Gisborne',active:true},
+  {id:1061,name:'AKL > Gisborne pre 10am',desc:'Monday cut-off 60h',visibility:'specific',clients:[14763,16513],base:1060,diff:['Monday cut-off 60 (base 65)'],route:routeGis,days:wk('06:00','10:00',60,17),origin:'Client address',dest:'Gisborne',active:true},
+  {id:12,name:'Evening Home Auckland',desc:'Evening Home',visibility:'all',clients:[],base:null,route:routeHome,days:wk('18:00','21:00',3,3),origin:'Auckland depot',dest:'Auckland metro',active:true},
+  {id:7,name:'Auckland Afternoons',desc:'',visibility:'all',clients:[],base:null,route:routeAft,days:wk('12:00','17:00',2,2),origin:'Auckland depot',dest:'Auckland metro',active:true},
+  {id:60,name:'Sunday 12-6pm AKL',desc:'',visibility:'all',clients:[],base:null,route:routeSun,days:{7:['12:00','18:00',70]},origin:'Auckland depot',dest:'Auckland metro',active:true},
+  {id:2362,name:'Hamilton > BOP',desc:'',visibility:'all',clients:[],base:null,route:routeHB,days:wk('10:00','14:00',2,2),origin:'Hamilton',dest:'Bay of Plenty',active:true},
+  {id:11938,name:'Hamilton > BOP',desc:'Home-meal clients collect from the Te Rapa group',visibility:'specific',clients:[31458,31504,31944,31476,31465,31501],base:2362,diff:['Pickup zone group 45 (base 44)'],route:routeHB,days:wk('10:00','14:00',2,2),origin:'Hamilton (Te Rapa)',dest:'Bay of Plenty',active:true},
+  {id:35,name:'WedHFAK',desc:'',visibility:'specific',clients:[32374],base:null,route:routeHF,days:{3:['07:00','17:00',24]},origin:'Client address',dest:'Auckland metro',active:true},
+  {id:36,name:'SatHFAK',desc:'',visibility:'specific',clients:[32374],base:null,route:routeHF,days:{6:['08:00','19:00',1]},origin:'Client address',dest:'Auckland metro',active:true},
+  {id:9661,name:'Frozen - Central Run',desc:'',visibility:'all',clients:[],base:null,route:routeAft,days:wk('06:00','12:00',12,12),origin:'Auckland depot',dest:'Auckland central',active:true},
 ];
 const S = ()=>Object.fromEntries(schedules.map(s=>[s.id,s]));
 
+// Recurring routes (Configurator: Routes + RouteZipcodes + Dispatch_RouteRoster). scheduleIds > 1 shows the proposed multi-binding.
+let routes = [
+  {id:301,type:'first',name:'AKL Medical AM – North Shore',area:'North Shore',zips:31,scheduleIds:[1042,1050],target:{name:'V. Patel',type:'Courier',hint:'Van 14'},roster:{1:'V. Patel',2:'V. Patel',3:'R. Singh',4:'V. Patel',5:'V. Patel'},overrides:{'2026-09-10':'R. Singh (cover)'},stops:38,active:true},
+  {id:302,type:'first',name:'AKL Medical AM – Central & East',area:'Auckland Central',zips:47,scheduleIds:[1042,1050,1060],target:{name:'M. Faʻaiu',type:'Courier',hint:'Van 3'},roster:{1:'M. Faʻaiu',2:'M. Faʻaiu',3:'M. Faʻaiu',4:'M. Faʻaiu',5:'T. Wong'},overrides:{},stops:52,active:true},
+  {id:304,type:'final',name:'BOP home meals loop',area:'Tauranga / Mount / Papamoa',zips:19,scheduleIds:[11938],target:{name:'BOP Couriers',type:'NP',hint:'Network partner'},roster:{1:'BOP Couriers',2:'BOP Couriers',3:'BOP Couriers',4:'BOP Couriers',5:'BOP Couriers'},overrides:{'2026-09-11':'Tauranga Agent'},stops:41,active:true},
+  {id:305,type:'final',name:'Evening Home – West',area:'West Auckland',zips:22,scheduleIds:[12],target:{name:'K. Ngata',type:'Courier',hint:'Car 21'},roster:{1:'K. Ngata',2:'K. Ngata',3:'K. Ngata',4:'K. Ngata',5:'K. Ngata'},overrides:{},stops:26,active:true},
+  {id:306,type:'first',name:'Harvest Fresh Wednesday run',area:'Auckland wide',zips:64,scheduleIds:[35],target:{name:'Fresh Logistics',type:'Agent',hint:'Agent'},roster:{3:'Fresh Logistics'},overrides:{},stops:88,active:true},
+  {id:307,type:'final',name:'Airport express zone',area:'Māngere / Airport',zips:9,scheduleIds:[],target:{name:'S. Ahmed',type:'Courier',hint:'Van 8'},roster:{1:'S. Ahmed',2:'S. Ahmed',3:'S. Ahmed',4:'S. Ahmed',5:'S. Ahmed'},overrides:{},stops:12,active:false},
+];
 let groups = [
-  {id:1,name:'AKL medical overnight bundle',desc:'What a new medical client gets on day one: CHCH, Gisborne and the other pre-8/pre-10 runs.',members:[1042,1050,1060],active:true},
+  {id:1,name:'AKL medical overnight bundle',desc:'What a new medical client gets on day one: CHCH, Gisborne and the other pre-8 / pre-10 runs.',members:[1042,1050,1060],active:true},
   {id:2,name:'Auckland home delivery defaults',desc:'Default metro schedules every client can book.',members:[12,7,60],active:true},
   {id:3,name:'Harvest Fresh weekly',desc:'Wednesday and Saturday collections for HFAK.',members:[35,36],active:true},
 ];
 
 // ---------- state ----------
-let tab='s', type='all', sel=null, dtab='clients', modal=null, gopen=new Set([1]);
+let tab='s', type='all', rtype='all', sel=null, dtab='clients', modal=null, gopen=new Set([1]);
+const TODAY = new Date('2026-09-08T00:00:00'); // Tuesday
 
 // ---------- helpers ----------
 const esc = s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const I = {
+  copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
+  users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4.5-6.2"/></svg>',
+  chev:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>',
+  ext:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>',
+};
 function kind(s){ return s.base?'override':(s.visibility==='all'?'default':'shared'); }
-function cutoffText(s){ const v=Object.values(s.days).map(d=>d[2]); const mon=s.days[1]?s.days[1][2]:null; const rest=[...new Set(Object.entries(s.days).filter(([k])=>k!=='1').map(([,d])=>d[2]))]; if(mon!=null&&rest.length===1&&rest[0]!==mon) return `${mon}/${rest[0]}`; return [...new Set(v)].join('/'); }
-function windowText(s){ const w=[...new Set(Object.values(s.days).map(d=>d[0]+'–'+d[1]))]; return w.join(', '); }
-function chipsFor(s,limit){ if(s.visibility==='all') return `<span class="chip all">All clients</span>`; const ids=s.clients; const show=ids.slice(0,limit); let h=show.map(id=>`<span class="chip" title="${esc(C[id].name)}">${esc(C[id].code)}</span>`).join(''); if(ids.length>limit) h+=`<span class="chip more">+${ids.length-limit}</span>`; if(!ids.length) h=`<span class="chip more">No clients</span>`; return h; }
-function legsFor(s){ return `<span class="legs" title="${s.route.map(l=>l.b).join(' → ')}">${s.route.map(l=>`<i class="leg ${l.t}"></i>`).join('')}</span>`; }
-function daysFor(s){ return `<span class="days">${[1,2,3,4,5,6,7].map(d=>`<span class="day ${s.days[d]?'on':''}">${D[d][0]}</span>`).join('')}</span>`; }
+function cutoffText(s){ const mon=s.days[1]?s.days[1][2]:null; const rest=[...new Set(Object.entries(s.days).filter(([k])=>k!=='1').map(([,d])=>d[2]))]; if(mon!=null&&rest.length===1&&rest[0]!==mon) return `${mon}/${rest[0]}`; return [...new Set(Object.values(s.days).map(d=>d[2]))].join('/'); }
+function windowText(s){ return [...new Set(Object.values(s.days).map(d=>d[0]+'–'+d[1]))].join(', '); }
+function chipsFor(s,limit){ if(s.visibility==='all') return `<span class="badge green">All clients</span>`; const ids=s.clients; if(!ids.length) return `<span class="badge sys">No clients</span>`; let h=ids.slice(0,limit).map(id=>`<span class="badge sys" title="${esc(C[id].name)}">${esc(C[id].code)}</span>`).join(''); if(ids.length>limit) h+=`<span class="plus">+${ids.length-limit}</span>`; return h; }
+function daysFor(days){ return `<span class="days">${[1,2,3,4,5,6,7].map(d=>`<span class="day ${days[d]?'on':''}">${D[d][0]}</span>`).join('')}</span>`; }
+function daysArr(arr){ const o={}; arr.forEach(d=>o[d]=1); return daysFor(o); }
+function routesFor(sid){ return routes.filter(r=>r.scheduleIds.includes(sid)); }
+function lhFor(s){ return s.route.filter(l=>l.t==='lh'&&l.run).map(l=>LH[l.run]).filter(Boolean); }
 function toast(m){ const t=document.getElementById('toast'); t.textContent=m; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200); }
-
-// effective schedules for a client (the resolution rule)
 function effective(cid){
   const own = schedules.filter(s=>s.visibility==='specific'&&s.clients.includes(cid));
-  const overriddenBases = new Set(own.filter(s=>s.base).map(s=>s.base));
-  const out = own.filter(s=>!overriddenBases.has(s.id)).map(s=>({s,src:s.base?'Own override':'Shared'}));
-  schedules.filter(s=>s.visibility==='all'&&!overriddenBases.has(s.id)).forEach(s=>out.push({s,src:'Default'}));
+  const overridden = new Set(own.filter(s=>s.base).map(s=>s.base));
+  const out = own.filter(s=>!overridden.has(s.id)).map(s=>({s,src:s.base?'Own override':'Shared'}));
+  schedules.filter(s=>s.visibility==='all'&&!overridden.has(s.id)).forEach(s=>out.push({s,src:'Default'}));
   return out;
 }
+function clientsVia(scheduleIds){ const M=S(); const set=new Set(); let all=false; scheduleIds.forEach(id=>{ const s=M[id]; if(!s) return; if(s.visibility==='all') all=true; s.clients.forEach(c=>set.add(c)); schedules.filter(o=>o.base===id).forEach(o=>o.clients.forEach(c=>set.add(c))); }); return {all,ids:[...set]}; }
+function weekStrip(r, isLH){
+  // next 7 days from TODAY; dow ISO 1..7
+  let h='<div class="week">';
+  for(let i=0;i<7;i++){ const d=new Date(TODAY); d.setDate(d.getDate()+i); const iso=d.toISOString().slice(0,10); const dow=((d.getDay()+6)%7)+1;
+    let who = r.overrides && r.overrides[iso]; let cls='';
+    if(who) cls='ovr'; else if(isLH){ who = r.days.includes(dow) ? (r.roster[dow]||r.courier) : null; } else { who = r.roster[dow] || null; }
+    if(!who) cls+=' off';
+    if(i===0) cls+=' today';
+    h+=`<div class="wd ${cls}" title="${who?esc(who):'not running'}"><b>${D[dow]}${i===0?' ·':''}</b><span class="who">${who?esc(who):'—'}</span></div>`; }
+  return h+'</div>';
+}
 
-// ---------- render: schedules tab ----------
-function setTab(t){ tab=t; document.getElementById('tab-s').classList.toggle('on',t==='s'); document.getElementById('tab-g').classList.toggle('on',t==='g'); document.getElementById('pane-s').hidden=t!=='s'; document.getElementById('pane-g').hidden=t!=='g'; }
+// ---------- tabs ----------
+function setTab(t){ tab=t; ['s','g','r'].forEach(k=>{ document.getElementById('tab-'+k).classList.toggle('on',t===k); document.getElementById('pane-'+k).hidden=t!==k; }); }
+function setRType(t){ rtype=t; document.querySelectorAll('#rtypeseg button').forEach(b=>b.classList.toggle('on',b.dataset.t===t)); renderRoutes(); }
 function setType(t){ type=t; document.querySelectorAll('#typeseg button').forEach(b=>b.classList.toggle('on',b.dataset.t===t)); render(); }
 function fillViewAs(){ const v=document.getElementById('viewas'); const cur=v.value; v.innerHTML=`<option value="">All schedules</option>`+clients.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>`<option value="${c.id}">${esc(c.name)} (${esc(c.code)})</option>`).join(''); v.value=cur; }
+
+// ---------- schedules tab ----------
 function render(){
   fillViewAs();
-  document.getElementById('n-s').textContent=schedules.length; document.getElementById('n-g').textContent=groups.length;
+  document.getElementById('n-s').textContent=schedules.length; document.getElementById('n-g').textContent=groups.length; document.getElementById('n-r').textContent=routes.length+linehauls.length;
   const q=document.getElementById('q').value.trim().toLowerCase();
   const cid=+document.getElementById('viewas').value||null;
   const M=S();
-  let list;
-  if(cid){ list=effective(cid).map(x=>({...x.s,_src:x.src})); }
-  else { list=schedules.slice(); }
-  const match=s=>!q||s.name.toLowerCase().includes(q)||(s.desc||'').toLowerCase().includes(q)||s.clients.some(id=>C[id].name.toLowerCase().includes(q)||C[id].code.toLowerCase().includes(q))||s.route.some(l=>l.b.toLowerCase().includes(q))||String(s.id).includes(q);
+  let list = cid ? effective(cid).map(x=>({...x.s,_src:x.src})) : schedules.slice();
+  const match=s=>!q||s.name.toLowerCase().includes(q)||(s.desc||'').toLowerCase().includes(q)||s.clients.some(id=>C[id].name.toLowerCase().includes(q)||C[id].code.toLowerCase().includes(q))||s.route.some(l=>l.b.toLowerCase().includes(q))||String(s.id).includes(q)||routesFor(s.id).some(r=>r.name.toLowerCase().includes(q));
   list=list.filter(match).filter(s=>type==='all'||kind(s)===type);
-  // order: base then its overrides, defaults last-ish by name
   const bases=list.filter(s=>!s.base).sort((a,b)=>a.name.localeCompare(b.name));
-  const rows=[];
-  bases.forEach(b=>{ rows.push(b); list.filter(o=>o.base===b.id).forEach(o=>rows.push(o)); });
-  list.filter(o=>o.base&&!bases.some(b=>b.id===o.base)).forEach(o=>rows.push(o)); // orphans of filtered bases
-  document.getElementById('count').textContent = cid ? `${rows.length} schedule${rows.length===1?'':'s'} available to ${C[cid].name} — own overrides win over shared, shared over defaults` : `Showing ${rows.length} of ${schedules.length} schedules`;
+  const rows=[]; bases.forEach(b=>{ rows.push(b); list.filter(o=>o.base===b.id).forEach(o=>rows.push(o)); });
+  list.filter(o=>o.base&&!bases.some(b=>b.id===o.base)).forEach(o=>rows.push(o));
+  document.getElementById('count').textContent = cid ? `${rows.length} available to ${C[cid].name} · own override › shared › default` : `Showing ${rows.length} of ${schedules.length} schedules`;
   document.getElementById('rows').innerHTML = rows.map(s=>{
-    const isOv=!!s.base;
-    const base=isOv?M[s.base]:null;
-    const src=s._src?`<span class="chip src">${s._src}</span>`:'';
+    const isOv=!!s.base; const ovCount=schedules.filter(o=>o.base===s.id).length;
+    const src=s._src?`<span class="badge cyan">${s._src}</span>`:'';
     const nameCell = isOv
-      ? `<div class="name"><span class="chip ov">Override</span> ${esc(s.name)}<small>Based on <span class="mono">#${s.base}</span> · ${s.diff.map(d=>`<span class="diff">${esc(d)}</span>`).join(' · ')}</small></div>`
-      : `<div class="name">${esc(s.name)}<small><span class="mono id">#${s.id}</span>${s.desc?' · '+esc(s.desc):''}</small></div>`;
+      ? `<div class="nm"><span class="badge sys sm" title="Client override">O</span><span class="t">${esc(s.name)}</span></div><div class="sub">Based on #${s.base} · <span class="diff">${s.diff.map(esc).join(' · ')}</span></div>`
+      : `<div class="nm"><span class="t">${esc(s.name)}</span>${ovCount?`<span class="plus">+${ovCount}</span>`:''}</div><div class="sub"><span class="num">#${s.id}</span>${s.desc?' · '+esc(s.desc):''}</div>`;
+    const rts=routesFor(s.id); const lhs=lhFor(s);
+    const dispatch = `<div class="dcell">${rts.length?`<span class="badge blue">${rts.length} route${rts.length>1?'s':''}</span>`:''}${lhs.map(l=>`<span class="badge orange" title="${esc(l.name)} · depart ${l.depart}">LH ${esc(l.from.slice(0,3).toUpperCase())}→${esc(l.to.slice(0,3).toUpperCase())} ${l.depart}</span>`).join('')}${!rts.length&&!lhs.length?'<span class="sec">—</span>':''}</div>`;
     return `<tr class="row ${isOv?'over':''} ${sel===s.id?'sel':''}" onclick="openDrawer(${s.id})">
       <td>${nameCell}</td>
-      <td>${legsFor(s)}</td>
-      <td>${daysFor(s)}</td>
-      <td class="mono">${windowText(s)}</td>
-      <td class="mono">${cutoffText(s)}h</td>
+      <td>${isOv?'<span class="sec">—</span>':daysFor(s.days)}</td>
+      <td class="sec">${isOv?'—':esc(s.origin)}</td>
+      <td class="sec">${isOv?'—':esc(s.dest)}</td>
+      <td class="sec num">${windowText(s)}</td>
+      <td class="sec num">${cutoffText(s)}h</td>
       <td><div class="chips">${src}${chipsFor(s,3)}</div></td>
-      <td class="tc"><span class="pill ${s.active?'on':''}"><i></i>${s.active?'Active':'Off'}</span></td>
-      <td class="tc"><span class="rowactions">
-        <button class="btn ghost sm" title="Attach clients" onclick="event.stopPropagation();openAttach(${s.id})">＋ Clients</button>
-        <button class="btn ghost sm" title="Copy" onclick="event.stopPropagation();toast('Copy creates a new ScheduleId with the same route (mockup)')">⧉</button>
-        <button class="btn ghost sm danger" title="Retire" onclick="event.stopPropagation();toast('Retire marks the header RetiredUtc; links and history stay (mockup)')">🗑</button>
+      <td>${isOv?'<span class="sec">as base</span>':dispatch}</td>
+      <td class="tc"><span class="tog ${s.active?'on':''}" role="switch" aria-checked="${s.active}" tabindex="0" onclick="event.stopPropagation();s_toggle(${s.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();s_toggle(${s.id})}"><i></i></span></td>
+      <td class="tc"><span class="rowact">
+        <button class="icobtn" title="Attach clients" onclick="event.stopPropagation();openAttach(${s.id})">${I.users}</button>
+        <button class="icobtn" title="Copy schedule" onclick="event.stopPropagation();toast('Copy creates a new ScheduleId with the same route and no clients (mockup)')">${I.copy}</button>
+        <button class="icobtn danger" title="Retire schedule" onclick="event.stopPropagation();toast('Retire sets RetiredUtc on the header; links and history stay (mockup)')">${I.trash}</button>
       </span></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8"><div class="empty">No schedules match.</div></td></tr>`;
+  }).join('') || `<tr><td colspan="10"><div class="empty">No schedules match.</div></td></tr>`;
 }
+function s_toggle(id){ const s=S()[id]; s.active=!s.active; render(); toast(`${s.name} ${s.active?'active':'inactive'} (auto-book ${s.active?'on':'off'})`); }
 
 // ---------- drawer ----------
-function openDrawer(id){ sel=id; dtab='clients'; document.getElementById('overlay').classList.add('open'); document.getElementById('drawer').classList.add('open'); renderDrawer(); render(); }
+function openDrawer(id){ sel=id; document.getElementById('overlay').classList.add('open'); document.getElementById('drawer').classList.add('open'); renderDrawer(); render(); }
 function closeDrawer(){ sel=null; document.getElementById('overlay').classList.remove('open'); document.getElementById('drawer').classList.remove('open'); render(); }
 function setDTab(t){ dtab=t; renderDrawer(); }
 function renderDrawer(){
   const M=S(); const s=M[sel]; if(!s) return;
   const isOv=!!s.base; const base=isOv?M[s.base]:null;
-  document.getElementById('d-eyebrow').innerHTML=`Schedule <span class="mono">#${s.id}</span>${isOv?` · override of <span class="mono">#${s.base}</span>`:''}`;
-  document.getElementById('d-title').innerHTML=`${esc(s.name)} ${isOv?'<span class="chip ov">Override</span>':(s.visibility==='all'?'<span class="chip all">Default</span>':'')}`;
+  document.getElementById('d-eyebrow').innerHTML=`Schedule <span class="num">#${s.id}</span>${isOv?` · override of <span class="num">#${s.base}</span>`:''}`;
+  document.getElementById('d-title').innerHTML=`${esc(s.name)} ${isOv?'<span class="badge orange">Override</span>':(s.visibility==='all'?'<span class="badge green">Default</span>':'')}`;
   document.getElementById('d-sub').textContent=s.desc||'No description';
-  ['clients','route','days'].forEach(t=>document.getElementById('dt-'+t).classList.toggle('on',dtab===t));
+  ['clients','route','days','dispatch'].forEach(t=>document.getElementById('dt-'+t).classList.toggle('on',dtab===t));
   const overrides=schedules.filter(o=>o.base===s.id);
   let h='';
-  if(isOv) h+=`<div class="ovbar">Editing client override · ${s.clients.map(id=>esc(C[id].name)).join(', ')||'no clients yet'} · based on <b>${esc(base.name)}</b> <span class="mono">#${base.id}</span>. Structure is locked; only the override fields differ: ${s.diff.map(esc).join('; ')}.</div>`;
+  if(isOv) h+=`<div class="ovbar">Editing client override · ${s.clients.map(id=>esc(C[id].name)).join(', ')||'no clients yet'} · based on <b>${esc(base.name)}</b> #${base.id}. Structure is locked; only the override fields differ: ${s.diff.map(esc).join('; ')}.</div>`;
   if(dtab==='clients'){
-    h+=`<div class="sect"><h3>Who can book this schedule</h3>
-      <div class="radio">
-        <label class="${s.visibility==='all'?'on':''}"><input type="radio" name="vis" ${s.visibility==='all'?'checked':''} ${isOv?'disabled':''} onchange="setVis(${s.id},'all')"><span><b>All clients (default)</b><span>Available to every client that has no schedule of its own for this run. No link rows.</span></span></label>
-        <label class="${s.visibility==='specific'?'on':''}"><input type="radio" name="vis" ${s.visibility==='specific'?'checked':''} onchange="setVis(${s.id},'specific')"><span><b>Specific clients</b><span>Only the clients attached below. Each one is a row in the schedule/client link table.</span></span></label>
-      </div></div>`;
+    h+=`<div class="sect"><h3>Who can book this schedule</h3><div class="radio">
+        <label class="${s.visibility==='all'?'on':''}"><input type="radio" name="vis" ${s.visibility==='all'?'checked':''} ${isOv?'disabled':''} onchange="setVis(${s.id},'all')"><span><b>All clients (default)</b><span>Available to every client with no schedule of its own for this run. No link rows.</span></span></label>
+        <label class="${s.visibility==='specific'?'on':''}"><input type="radio" name="vis" ${s.visibility==='specific'?'checked':''} onchange="setVis(${s.id},'specific')"><span><b>Specific clients</b><span>Only the clients attached below. Each is a row in the schedule/client link table.</span></span></label></div></div>`;
     if(s.visibility==='specific'){
-      h+=`<div class="sect"><h3>Attached clients <span class="hint">${s.clients.length} linked</span></h3>
-        <div class="clientlist">${s.clients.map(id=>`<div class="cl"><b>${esc(C[id].name)}</b><span class="code mono">${esc(C[id].code)} · ${id}</span><span class="sp"></span><span class="meta">since 2026-09-08</span><button class="btn ghost sm danger" onclick="detach(${s.id},${id})">Remove</button></div>`).join('')||'<div class="empty">No clients attached yet. Attach at least one, or make it a default.</div>'}</div>
-        <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" onclick="openAttach(${s.id})">＋ Attach clients</button></div></div>`;
+      h+=`<div class="sect"><h3>Attached clients <span class="hint">${s.clients.length} linked</span></h3><div class="list">${s.clients.map(id=>`<div class="li"><b>${esc(C[id].name)}</b><span class="code num">${esc(C[id].code)} · ${id}</span><span class="sp"></span><span class="meta">since 2026-09-08</span><button class="btn ghost sm danger" onclick="detach(${s.id},${id})">Remove</button></div>`).join('')||'<div class="empty">No clients attached yet.</div>'}</div>
+        <div style="margin-top:10px"><button class="btn sm" onclick="openAttach(${s.id})">${I.users} Attach clients</button></div></div>`;
     }
     if(!isOv){
       h+=`<div class="sect"><h3>Client overrides <span class="hint">same route, different values</span></h3>
-        ${overrides.length?`<div class="clientlist">${overrides.map(o=>`<div class="cl" style="cursor:pointer" onclick="openDrawer(${o.id})"><span class="chip ov">#${o.id}</span><b>${o.clients.map(id=>esc(C[id].code)).join(', ')||'no clients'}</b><span class="sp"></span><span class="meta">${o.diff.map(esc).join(' · ')}</span></div>`).join('')}</div>`:'<div class="empty">No overrides. Every attached client uses these exact values.</div>'}
-        <div style="margin-top:10px"><button class="btn" onclick="openAttach(${s.id},true)">＋ Create override for a client…</button></div>
-        <p class="note" style="margin-top:8px">An override is a new ScheduleId that keeps <span class="mono">BaseScheduleId = #${s.id}</span>. The client is moved from this schedule's links to the override's links, so it is never on both.</p></div>`;
+        ${overrides.length?`<div class="list">${overrides.map(o=>`<div class="li click" onclick="openDrawer(${o.id})"><span class="badge sys sm">O</span><b>#${o.id}</b><span class="code">${o.clients.map(id=>esc(C[id].code)).join(', ')||'no clients'}</span><span class="sp"></span><span class="meta">${o.diff.map(esc).join(' · ')}</span></div>`).join('')}</div>`:'<div class="empty">No overrides. Every attached client uses these exact values.</div>'}
+        <div style="margin-top:10px"><button class="btn sm" onclick="openAttach(${s.id},true)">+ Create override for a client…</button></div>
+        <p class="note" style="margin-top:8px">An override is a new ScheduleId with BaseScheduleId = #${s.id}. The client's link row moves from this schedule to the override, so it is never on both.</p></div>`;
     }
   } else if(dtab==='route'){
     const colors={col:['--leg-col','--leg-col-bg','Collection'],dep:['--leg-dep','--leg-dep-bg','Depot'],lh:['--leg-lh','--leg-lh-bg','Linehaul'],del:['--leg-del','--leg-del-bg','Delivery']};
-    h+=`<div class="sect"><h3>Route <span class="hint">read-only in this mockup · Dane's vertical leg builder</span></h3><div class="route">${s.route.map((l,i)=>{const c=colors[l.t];return `${i?'<div class="arrow">▼</div>':''}<div class="legcard" style="--c:var(${c[0]});--bg:var(${c[1]})"><span class="k">${c[2]}</span><span class="v"><b>${esc(l.b)}</b><span>${esc(l.s)}</span></span><span class="m">${isOv?'locked':'edit ▸'}</span></div>`}).join('')}</div></div>
-      <div class="sect"><h3>Production fields</h3><dl class="kv"><dt>Region</dt><dd>${esc(s.route.find(l=>l.t==='del')?.b||'')}</dd><dt>Max jobs</dt><dd class="mono">10000</dd><dt>Auto-book</dt><dd>${s.active?'On':'Off'}</dd><dt>Storage state</dt><dd>Ambient</dd></dl></div>`;
+    h+=`<div class="sect"><h3>Route <span class="hint">Dane's vertical leg builder · read-only here</span></h3><div class="route">${s.route.map((l,i)=>{const c=colors[l.t];return `${i?'<div class="arrow">▼</div>':''}<div class="legcard" style="--c:var(${c[0]});--bg:var(${c[1]})"><span class="k">${c[2]}</span><span class="v"><b>${esc(l.b)}</b><span>${esc(l.s)}</span></span><span class="m">${isOv?'locked':'edit ▸'}</span></div>`}).join('')}</div></div>
+      <div class="sect"><h3>Production fields</h3><dl class="kv"><dt>Origin depot</dt><dd>${esc(s.origin)}</dd><dt>Destination region</dt><dd>${esc(s.dest)}</dd><dt>Max jobs</dt><dd class="num">10000</dd><dt>Auto-book</dt><dd>${s.active?'On':'Off'}</dd><dt>Storage state</dt><dd>Ambient</dd></dl></div>`;
+  } else if(dtab==='days'){
+    h+=`<div class="sect"><h3>Operating days <span class="hint">cut-off is per day, hours before the window</span></h3><div class="dgrid">${[1,2,3,4,5,6,7].map(d=>{const v=s.days[d];return `<div class="dc ${v?'':'off'}"><b>${D[d]}</b>${v?`<div class="t num">${v[0]}<br>${v[1]}</div><div class="c">cut-off <span class="num">${v[2]}h</span></div>`:'<div class="t">—</div>'}</div>`}).join('')}</div>
+      <p class="note" style="margin-top:10px">Each enabled day is one <code>tblBulkRunSchedule</code> row carrying ScheduleId #${s.id}.</p></div>`;
   } else {
-    h+=`<div class="sect"><h3>Operating days <span class="hint">cut-off is per day, in hours before the window</span></h3><div class="dgrid">${[1,2,3,4,5,6,7].map(d=>{const v=s.days[d];return `<div class="dcell ${v?'':'off'}"><b>${D[d]}</b>${v?`<div class="t mono">${v[0]}<br>${v[1]}</div><div class="c">cut-off <span class="mono">${v[2]}h</span></div>`:'<div class="t">—</div>'}</div>`}).join('')}</div>
-      <p class="note" style="margin-top:10px">Each enabled day is one <span class="mono">tblBulkRunSchedule</span> row carrying <span class="mono">ScheduleId #${s.id}</span>.</p></div>`;
+    const rts=routesFor(s.id); const lhs=lhFor(s);
+    h+=`<div class="callout"><b>Dispatch view.</b> The schedule owns the time window, days and cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk leg and its <b>master job</b>, the one booking a linehaul driver picks up so every item on the run is marked picked up together. All of it is read from the Recurring Routes tables and edited there.</div>`;
+    h+=`<div class="sect"><h3>Recurring routes bound to this schedule <span class="hint">${rts.length} route${rts.length===1?'':'s'}</span></h3>
+      ${rts.length?rts.map(r=>`<div class="rcard"><div class="rh"><b>${esc(r.name)}</b><span class="badge blue">${r.area}</span>${r.scheduleIds.length>1?`<span class="badge purple" title="Also bound to ${r.scheduleIds.filter(x=>x!==s.id).map(x=>'#'+x).join(', ')}">shared by ${r.scheduleIds.length} schedules</span>`:''}${r.active?'':'<span class="badge sys">Inactive</span>'}<span class="sp" style="flex:1"></span><button class="btn ghost sm" onclick="toast('Opens Route Roster for #${r.id} (Configurator page)')">Roster ${I.ext}</button></div>
+        <div class="rm"><span><span class="num">${r.zips}</span> zips</span><span><span class="num">${r.stops}</span> mapped stops</span><span>Default: ${esc(r.target.name)} <span class="badge sys sm">${r.target.type}</span></span></div>${weekStrip(r,false)}</div>`).join(''):'<div class="empty">No recurring route is bound to this schedule. Pickups are matched from bookings, not a rostered run.</div>'}
+      </div>`;
+    h+=`<div class="sect"><h3>Linehaul legs <span class="hint">${lhs.length?lhs.length+' run'+(lhs.length>1?'s':''):'none on this route'}</span></h3>
+      ${lhs.map(l=>`<div class="rcard"><div class="rh"><b>${esc(l.name)}</b><span class="badge orange">Middle mile · run ${l.id}</span><span class="badge sys">${l.mode==='Flight'?'✈ Flight':'🚚 Road'}</span><span class="sec">${esc(l.from)} → ${esc(l.to)}</span><span class="sp" style="flex:1"></span><button class="btn ghost sm" onclick="toast('Opens Linehaul Roster for run ${l.id}')">Roster ${I.ext}</button></div>
+        <div class="rm"><span>Despatch <span class="num">${l.despatch}</span> · depart <span class="num">${l.depart}</span></span><span>Default: ${esc(l.courier)} <span class="badge sys sm">${l.target}</span></span><span>Speed: ${esc(l.speed)}</span><span>Used by ${schedules.filter(x=>lhFor(x).includes(l)).length} schedules</span></div>
+        <div class="rm">${l.master?`<span><b style="font-weight:500">Master job</b> <span class="badge purple" style="cursor:pointer" onclick="toast('Opens master job ${l.master.job} in Route Viewer')">${l.master.job}</span> <span class="sec">${esc(l.master.today)}</span></span>`:`<span class="badge red">No master job</span> <span class="sec">the driver will see every item as its own job</span>`}</div>${weekStrip(l,true)}</div>`).join('')}
+      </div>`;
+    h+=`<p class="note">Binding today is one schedule per route (<code>Routes.ScheduleId</code>). Routes shown as "shared by n schedules" illustrate the multi-binding proposal of 2026-08-03; the effective window is the tightest across the bound schedules.</p>`;
   }
   document.getElementById('dbody').innerHTML=h;
 }
 function setVis(id,v){ const s=S()[id]; s.visibility=v; if(v==='all') s.clients=[]; renderDrawer(); render(); toast(v==='all'?'Now a default: link rows removed':'Now specific: attach clients'); }
-function detach(sid,cid){ const s=S()[sid]; s.clients=s.clients.filter(x=>x!==cid); renderDrawer(); render(); toast(`${C[cid].name} removed from #${sid}`); }
+function detach(sid,cid){ const s=S()[sid]; s.clients=s.clients.filter(x=>x!==cid); renderDrawer(); render(); renderRoutes(); toast(`${C[cid].name} removed from #${sid}`); }
 
-// ---------- attach modal (schedule, override, or group) ----------
+// ---------- attach modal ----------
 function openAttach(sid,asOverride){ modal={mode:asOverride?'override':'schedule',sid,picked:new Set()}; const s=S()[sid];
   document.getElementById('m-title').textContent=asOverride?`Create override of #${sid}`:`Attach clients to #${sid}`;
   document.getElementById('m-sub').textContent=asOverride?`Pick the client that needs different values on "${s.name}". A new ScheduleId is created, based on this one.`:`"${s.name}" — each client you tick gets a link row.`;
-  document.getElementById('m-ok').textContent=asOverride?'Create override':'Attach';
-  showModal(); }
+  document.getElementById('m-ok').textContent=asOverride?'Create override':'Attach'; showModal(); }
 function openAttachGroup(gid){ const g=groups.find(x=>x.id===gid); modal={mode:'group',gid,picked:new Set()};
   document.getElementById('m-title').textContent=`Attach clients to "${g.name}"`;
-  document.getElementById('m-sub').textContent=`One link row per client per member schedule (${g.members.length} schedules). Clients already on a member keep their existing link.`;
+  document.getElementById('m-sub').textContent=`One link row per client per member schedule (${g.members.length} schedules). Defaults are skipped; existing links are kept.`;
   document.getElementById('m-ok').textContent='Attach to group'; showModal(); }
 function showModal(){ document.getElementById('mq').value=''; document.getElementById('modal').classList.add('open'); renderPick(); document.getElementById('mq').focus(); }
 function closeModal(){ modal=null; document.getElementById('modal').classList.remove('open'); }
@@ -489,17 +556,11 @@ function renderPick(){
   const list=clients.filter(c=>!q||c.name.toLowerCase().includes(q)||c.code.toLowerCase().includes(q)).sort((a,b)=>a.name.localeCompare(b.name));
   document.getElementById('pick').innerHTML=list.map(c=>{
     let why='',dis=false;
-    if(modal.mode==='schedule'){
-      if(base.clients.includes(c.id)){why='already attached';dis=true;}
-      else { const ov=schedules.find(o=>o.base===base.id&&o.clients.includes(c.id)); if(ov){why=`has own override #${ov.id}`;dis=true;} }
-    } else if(modal.mode==='override'){
-      const ov=schedules.find(o=>o.base===modal.sid&&o.clients.includes(c.id)); if(ov){why=`already has override #${ov.id}`;dis=true;}
-      else if(base===null&&M[modal.sid].clients.includes(c.id)) why='currently on the base — will move to the override';
-    } else {
-      const on=target.filter(s=>s.clients.includes(c.id)).length; if(on===target.length){why='on every member';dis=true;} else if(on) why=`on ${on} of ${target.length}`;
-    }
+    if(modal.mode==='schedule'){ if(base.clients.includes(c.id)){why='already attached';dis=true;} else { const ov=schedules.find(o=>o.base===base.id&&o.clients.includes(c.id)); if(ov){why=`has own override #${ov.id}`;dis=true;} } }
+    else if(modal.mode==='override'){ const ov=schedules.find(o=>o.base===modal.sid&&o.clients.includes(c.id)); if(ov){why=`already has override #${ov.id}`;dis=true;} else if(M[modal.sid].clients.includes(c.id)) why='on the base — will move to the override'; }
+    else { const on=target.filter(s=>s.clients.includes(c.id)).length; if(on===target.length){why='on every member';dis=true;} else if(on) why=`on ${on} of ${target.length}`; }
     const chk=modal.picked.has(c.id);
-    return `<label class="${dis?'dis':''}"><input type="${modal.mode==='override'?'radio':'checkbox'}" name="pk" ${dis?'disabled':''} ${chk?'checked':''} onchange="togglePick(${c.id},this.checked)"><span><b>${esc(c.name)}</b> <span class="mono" style="color:var(--faint);font-size:12px">${esc(c.code)}</span></span><span class="sp"></span><span class="why">${why}</span></label>`;
+    return `<label class="${dis?'dis':''}"><input type="${modal.mode==='override'?'radio':'checkbox'}" name="pk" ${dis?'disabled':''} ${chk?'checked':''} onchange="togglePick(${c.id},this.checked)"><span><b>${esc(c.name)}</b> <span class="num" style="color:var(--text-muted);font-size:12px">${esc(c.code)}</span></span><span class="sp"></span><span class="why">${why}</span></label>`;
   }).join('')||'<div class="empty">No clients match.</div>';
   const n=modal.picked.size; document.getElementById('m-sum').textContent = n? (modal.mode==='group'?`${n} client${n>1?'s':''} × ${target.length} schedules`:`${n} selected`) : 'Nothing selected';
   document.getElementById('m-ok').disabled=!n;
@@ -508,9 +569,9 @@ function togglePick(id,on){ if(modal.mode==='override'){ modal.picked=new Set(on
 function confirmModal(){
   const M=S(); const ids=[...modal.picked];
   if(modal.mode==='schedule'){ const s=M[modal.sid]; s.visibility='specific'; ids.forEach(id=>{ if(!s.clients.includes(id)) s.clients.push(id); }); toast(`${ids.length} link row${ids.length>1?'s':''} added to #${s.id}`); }
-  else if(modal.mode==='override'){ const b=M[modal.sid]; const cid=ids[0]; const nid=Math.max(...schedules.map(x=>x.id))+1; b.clients=b.clients.filter(x=>x!==cid); schedules.push({id:nid,name:b.name,desc:`Override for ${C[cid].name}`,visibility:'specific',clients:[cid],base:b.id,diff:['No differences yet — edit the route or days'],route:b.route,days:JSON.parse(JSON.stringify(b.days)),active:b.active}); toast(`Override #${nid} created for ${C[cid].name}`); closeModal(); openDrawer(nid); return; }
+  else if(modal.mode==='override'){ const b=M[modal.sid]; const cid=ids[0]; const nid=Math.max(...schedules.map(x=>x.id))+1; b.clients=b.clients.filter(x=>x!==cid); schedules.push({id:nid,name:b.name,desc:`Override for ${C[cid].name}`,visibility:'specific',clients:[cid],base:b.id,diff:['No differences yet — edit the route or days'],route:b.route,days:JSON.parse(JSON.stringify(b.days)),origin:b.origin,dest:b.dest,active:b.active}); toast(`Override #${nid} created for ${C[cid].name}`); closeModal(); openDrawer(nid); renderRoutes(); return; }
   else { const g=groups.find(x=>x.id===modal.gid); let n=0; g.members.forEach(mid=>{ const s=M[mid]; if(s.visibility==='all') return; ids.forEach(id=>{ if(!s.clients.includes(id)){s.clients.push(id);n++;} }); }); toast(`${n} link rows written across ${g.members.length} schedules`); }
-  closeModal(); render(); if(sel) renderDrawer(); renderGroups();
+  closeModal(); render(); if(sel) renderDrawer(); renderGroups(); renderRoutes();
 }
 
 // ---------- groups tab ----------
@@ -518,33 +579,55 @@ function toggleGroup(id){ gopen.has(id)?gopen.delete(id):gopen.add(id); renderGr
 function renderGroups(){
   const q=(document.getElementById('gq').value||'').trim().toLowerCase(); const M=S();
   const list=groups.filter(g=>!q||g.name.toLowerCase().includes(q)||g.desc.toLowerCase().includes(q));
-  document.getElementById('gcount').textContent=`Showing ${list.length} of ${groups.length} schedule groups`;
+  document.getElementById('gcount').textContent=`Showing ${list.length} of ${groups.length} groups`;
   document.getElementById('groups').innerHTML=list.map(g=>{
-    const ms=g.members.map(id=>M[id]).filter(Boolean);
-    const specific=ms.filter(s=>s.visibility==='specific');
+    const ms=g.members.map(id=>M[id]).filter(Boolean); const specific=ms.filter(s=>s.visibility==='specific');
     const common=specific.length?specific[0].clients.filter(c=>specific.every(s=>s.clients.includes(c))):[];
-    const allDefault=ms.length&&ms.every(s=>s.visibility==='all');
-    const distinct=new Set(ms.flatMap(s=>s.clients)).size;
+    const allDefault=ms.length&&ms.every(s=>s.visibility==='all'); const distinct=new Set(ms.flatMap(s=>s.clients)).size;
     const ovs=schedules.filter(o=>o.base&&g.members.includes(o.base));
     return `<div class="group ${gopen.has(g.id)?'open':''}">
-      <div class="ghead" onclick="toggleGroup(${g.id})">
-        <div class="gname">${esc(g.name)}<small>${esc(g.desc)}</small></div>
-        <div class="stat"><b>${ms.length}</b><span>Schedules</span></div>
-        <div class="stat"><b>${allDefault?'All':distinct}</b><span>Clients</span></div>
-        <span class="chev">▶</span>
-      </div>
+      <div class="ghead" onclick="toggleGroup(${g.id})"><span class="chev">${I.chev}</span><div class="gname">${esc(g.name)}<small>${esc(g.desc)}</small></div>
+        <div class="stat"><b>${ms.length}</b><span>Schedules</span></div><div class="stat"><b>${allDefault?'All':distinct}</b><span>Clients</span></div><span class="badge ${g.active?'purple':'sys'}">${g.active?'Active':'Inactive'}</span></div>
       <div class="gbody">
-        <div class="actions">
-          ${allDefault?'':`<button class="btn primary sm" onclick="openAttachGroup(${g.id})">＋ Attach clients to group</button>`}
-          <button class="btn sm" onclick="toast('Quick copy: new ScheduleIds with the same routes, no clients (mockup)')">⧉ Quick copy</button>
-          <button class="btn sm" onclick="toast('Copy & edit: bulk-edit fields on the copies before creating (Dane\'s CopyGroupModal)')">⧉ Copy &amp; edit</button>
-          <button class="btn sm" onclick="toast('Add client override: creates one override per member for a client (Dane\'s AddClientOverrideModal)')">Add client override</button>
-        </div>
-        <div class="gsum">${allDefault?'<span class="chip all">All clients</span> Defaults need no link rows.':(common.length?`On every member: <span class="chips">${common.map(id=>`<span class="chip">${esc(C[id].code)}</span>`).join('')}</span>`:'No client is on every member yet.')}${ovs.length?` · ${ovs.length} override${ovs.length>1?'s':''} hang off this group`:''}</div>
-        <div class="members">${ms.map(s=>`<div class="member" onclick="setTab('s');openDrawer(${s.id})"><span class="mn">${esc(s.name)}<small class="mono">#${s.id}</small></span><span>${legsFor(s)} ${daysFor(s)}</span><span class="chips">${chipsFor(s,4)}</span></div>`).join('')}</div>
+        <div class="gact">${allDefault?'':`<button class="btn primary sm" onclick="openAttachGroup(${g.id})">${I.users} Attach clients to group</button>`}
+          <button class="btn sm" onclick="toast('Quick copy: new ScheduleIds with the same routes, no clients (mockup)')">${I.copy} Quick Copy</button>
+          <button class="btn sm" onclick="toast('Copy & Edit: bulk-edit fields on the copies before creating (Dane\'s CopyGroupModal)')">${I.copy} Copy &amp; Edit</button>
+          <button class="btn sm" onclick="toast('Add Client Override: one override per member for a client (Dane\'s AddClientOverrideModal)')">Add Client Override</button></div>
+        <div class="gsum">${allDefault?'<span class="badge green">All clients</span> Defaults need no link rows.':(common.length?`On every member: <span class="chips">${common.map(id=>`<span class="badge sys">${esc(C[id].code)}</span>`).join('')}</span>`:'No client is on every member yet.')}${ovs.length?` · ${ovs.length} override${ovs.length>1?'s':''} hang off this group`:''}</div>
+        <div class="members">${ms.map(s=>`<div class="member" onclick="setTab('s');openDrawer(${s.id})"><span class="mn">${esc(s.name)}<small class="num">#${s.id}</small></span><span>${daysFor(s.days)}</span><span class="chips">${chipsFor(s,4)}</span></div>`).join('')}</div>
       </div></div>`;
   }).join('')||'<div class="empty">No groups match.</div>';
 }
 
-render(); renderGroups();
+// ---------- recurring routes tab (routes + middle-mile runs, like the live page) ----------
+const TYPE={first:['First mile','blue'],middle:['Middle mile','orange'],final:['Final mile','green']};
+function renderRoutes(){
+  const q=(document.getElementById('rq').value||'').trim().toLowerCase(); const M=S();
+  const rows=[];
+  routes.forEach(r=>rows.push({kind:'route',id:r.id,type:r.type,name:r.name,where:r.area,scheduleIds:r.scheduleIds,target:r.target,zips:r.zips,stops:r.stops,active:r.active,obj:r}));
+  linehauls.forEach(l=>{ const used=schedules.filter(x=>lhFor(x).includes(l)); rows.push({kind:'run',id:l.id,type:'middle',name:l.name,where:`${l.from} → ${l.to}`,scheduleIds:used.map(x=>x.id),target:{name:l.courier,type:l.target,hint:`${l.mode} · despatch ${l.despatch} · depart ${l.depart}`},zips:null,stops:l.stops,active:l.active,obj:l}); });
+  const list=rows.filter(r=>rtype==='all'||r.type===rtype).filter(r=>{ if(!q) return true; const via=clientsVia(r.scheduleIds); return r.name.toLowerCase().includes(q)||r.where.toLowerCase().includes(q)||r.scheduleIds.some(id=>M[id]&&M[id].name.toLowerCase().includes(q))||via.ids.some(id=>C[id].name.toLowerCase().includes(q)||C[id].code.toLowerCase().includes(q)); }).sort((a,b)=>a.name.localeCompare(b.name));
+  document.getElementById('rcount').textContent=`Showing ${list.length} of ${rows.length}`;
+  document.getElementById('rrows').innerHTML=list.map(r=>{
+    const via=clientsVia(r.scheduleIds); const scheds=r.scheduleIds.map(id=>M[id]).filter(Boolean); const bases=scheds.filter(x=>!x.base);
+    const schedCell = scheds.length? (bases.slice(0,2).map(x=>`<div><span class="badge cyan" style="cursor:pointer" onclick="event.stopPropagation();setTab('s');openDrawer(${x.id})">${esc(x.name)} · ${windowText(x)}</span></div>`).join('')+(scheds.length>2?`<span class="plus">+${scheds.length-2} more</span>`:'')) : '<span class="badge sys">Unbound</span>';
+    const clientCell = via.all ? '<span class="badge green">All clients</span>' : (via.ids.length ? via.ids.slice(0,3).map(id=>`<span class="badge sys">${esc(C[id].code)}</span>`).join('')+(via.ids.length>3?`<span class="plus">+${via.ids.length-3}</span>`:'') : '<span class="sec">—</span>');
+    const master = r.kind==='run' ? (r.obj.master?`<span class="badge purple" style="cursor:pointer" onclick="event.stopPropagation();toast('Opens master job ${r.obj.master.job} in Route Viewer')">${r.obj.master.job}</span><div class="sub">${esc(r.obj.master.today)}</div>`:'<span class="badge red">None</span>') : '<span class="sec">—</span>';
+    const t=TYPE[r.type];
+    return `<tr class="row" onclick="toast('Opens the ${r.kind==='run'?'Edit Linehaul Run':'Edit Route'} modal for #${r.id}')">
+      <td><div class="nm"><span class="t">${esc(r.name)}</span></div><div class="sub num">${r.kind==='run'?'run':'route'} ${r.id}${r.zips!=null?` · ${r.zips} zips`:''}</div></td>
+      <td><span class="badge ${t[1]}">${t[0]}</span></td>
+      <td class="sec">${esc(r.where)}</td>
+      <td><div class="dcell">${schedCell}</div></td>
+      <td><div class="chips">${clientCell}</div></td>
+      <td><div>${esc(r.target.name)} <span class="badge sys sm">${r.target.type}</span></div><div class="sub">${esc(r.target.hint)}</div></td>
+      <td>${master}</td>
+      <td style="min-width:250px">${weekStrip(r.obj, r.kind==='run')}</td>
+      <td class="tc num">${r.stops}</td>
+      <td class="tc"><span class="badge ${r.active?'green':'sys'}">${r.active?'Active':'Inactive'}</span></td>
+    </tr>`;
+  }).join('')||'<tr><td colspan="10"><div class="empty">Nothing matches.</div></td></tr>';
+}
+
+render(); renderGroups(); renderRoutes();
 </script>
