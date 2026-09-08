@@ -15,5 +15,7 @@ Day rows retired,2606
 Day rows remaining,8504
 "Names with differing definitions (variants, kept as separate ScheduleIds)",164
 Data-quality findings,168
+Groups that would also merge if CutoffHours were ignored,82
+  schedules in those groups,422
 CreatedUtc used,2026-09-08T02:00:00Z
 CreatedBy used,steve@urgent.co.nz

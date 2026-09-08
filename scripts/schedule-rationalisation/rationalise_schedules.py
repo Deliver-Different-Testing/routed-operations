@@ -183,6 +183,60 @@ def analyse(rows, ignore=()):
                 all_cols=columns, ignore=ignore)
 
 
+DAY = {"1": "Mon", "2": "Tue", "3": "Wed", "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
+
+
+def near_miss(rows, ignore, col):
+    """Schedules that would merge if `col` were ignored as well: one row per member."""
+    base = analyse(rows, ignore)
+    relaxed = analyse(rows, list(ignore) + [col])
+    sched = base["sched"]
+    canon_key = {v: k for k, v in base["canonical"].items()}
+
+    def members(g):
+        m = set(g["ClientIds"].split(", ")) if g["ClientIds"] else set()
+        if g["SurvivorIsDefault"] == "Yes":
+            m.add(NULL)
+        return frozenset(m)
+
+    base_groups = collections.defaultdict(list)
+    for g in base["merge_groups"]:
+        base_groups[g["ScheduleName"]].append(members(g))
+
+    def col_by_day(rs):
+        by = collections.defaultdict(set)
+        for r in rs:
+            by[r["DayOfWeek"]].add(r[col])
+        return " ".join(f"{DAY.get(d, d)}:{'/'.join(sorted(v))}" for d, v in sorted(by.items(), key=lambda x: int(x[0])))
+
+    out = []
+    n = 0
+    for g in relaxed["merge_groups"]:
+        m = members(g)
+        if m in base_groups.get(g["ScheduleName"], []):
+            continue  # already merged as-is
+        n += 1
+        k = canon_key[g["ScheduleName"]]
+        for c in sorted(m, key=lambda c: (c != NULL, min(r[ID] for r in sched[(k, c)]))):
+            rs = sched[(k, c)]
+            current = next((f"shared by {len(b) - (NULL in b)} clients" for b in base_groups.get(g["ScheduleName"], []) if c in b), "")
+            if not current:
+                current = "default" if c == NULL else "one-client"
+            distinct = sorted(set(r[col] for r in rs))
+            out.append({
+                "Group": n, "ScheduleName": g["ScheduleName"],
+                "ClientId": "" if c == NULL else c,
+                "CurrentlyIn": current,
+                f"{col}": "/".join(distinct),
+                f"{col}ByDay": col_by_day(rs),
+                "Days": ", ".join(sorted(set(r["DayOfWeek"] for r in rs), key=int)),
+                "StartTime": rs[0]["StartTime"], "EndTime": rs[0]["EndTime"],
+                "SpeedId": rs[0]["SpeedId"], "Region": rs[0]["Region"],
+                "RowIds": id_list(r[ID] for r in rs),
+            })
+    return out
+
+
 def write_sql(path, a, args, created_utc_s, staging):
     S, L, H = args.schedule_table, args.link_table, args.header_table
     tag = created_utc_s[:10].replace("-", "")
@@ -296,6 +350,8 @@ def main():
     ap.add_argument("--created-utc", help="override run timestamp, e.g. 2026-09-08T00:00:00Z")
     ap.add_argument("--ignore", default="Description",
                     help="comma-separated columns NOT compared when deciding two schedules are the same (default: Description)")
+    ap.add_argument("--near-miss", default="CutoffHours",
+                    help="also report schedules that would merge if this column were ignored too (default: CutoffHours)")
     args = ap.parse_args()
     ignore = [c.strip() for c in args.ignore.split(",") if c.strip()]
 
@@ -325,6 +381,10 @@ def main():
     write_csv("retired_schedule_rows.csv", ret_hdr, a["retired_rows"])
     write_csv("variants.csv", v_cols, [[v[c] for c in v_cols] for v in a["variants"]])
     write_csv("data_quality.csv", ["Check", "ScheduleName", "ClientId", "Detail"], a["dq"])
+    nm = near_miss(rows, ignore, args.near_miss) if args.near_miss else []
+    nm_cols = list(nm[0].keys()) if nm else []
+    if nm:
+        write_csv(f"near_miss_{args.near_miss}.csv", nm_cols, [[r[c] for c in nm_cols] for r in nm])
 
     sched = a["sched"]
     n_client = sum(1 for k in sched if k[1] != NULL)
@@ -347,6 +407,8 @@ def main():
         ("Names with differing definitions (variants, kept as separate ScheduleIds)",
          len(set(v["ScheduleName"] for v in a["variants"]))),
         ("Data-quality findings", len(a["dq"])),
+        (f"Groups that would also merge if {args.near_miss} were ignored", len(set(r["Group"] for r in nm))),
+        (f"  schedules in those groups", len(nm)),
         ("CreatedUtc used", created_utc_s),
         ("CreatedBy used", args.created_by),
     ]
@@ -409,6 +471,12 @@ def main():
     sheet("DataQuality", ["Check", "ScheduleName", "ClientId", "Detail"], a["dq"],
           {"Check": 62, "ScheduleName": 44, "Detail": 80},
           notes=["Findings that were NOT auto-fixed."])
+    if nm:
+        sheet(f"NearMiss-{args.near_miss}", nm_cols, [[r[c] for c in nm_cols] for r in nm],
+              {"ScheduleName": 44, f"{args.near_miss}ByDay": 40, "RowIds": 40, "CurrentlyIn": 20},
+              notes=[f"Schedules identical to each other except for {args.near_miss} (and the ignored columns). Each Group would become",
+                     "one shared schedule if that column were ignored too. CurrentlyIn = what the schedule is today under the generated merge.",
+                     f"{args.near_miss}ByDay shows the value per weekday (a/b = several rows for that day)."])
     wb.save(os.path.join(args.out_dir, "schedule-rationalisation.xlsx"))
 
     write_sql(os.path.join(args.out_dir, "rationalise_schedules.sql"), a, args, created_utc_s, staging=False)
