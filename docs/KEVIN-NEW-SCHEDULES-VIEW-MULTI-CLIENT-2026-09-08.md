@@ -303,8 +303,19 @@ hidden behind a client's own override).
 
 What Kevin still does: replace the sample-data sources with `api/v2.ts`
 calls (the DTOs are the contract), wire Roster / Route / Run / master-job
-deep links to the existing pages, and keep the old Schedules page alongside
-until ops sign off.
+deep links to the existing pages, **create the two schedule-group tables and
+their API (below — a launch blocker)**, and keep the old Schedules page
+alongside until ops sign off.
+
+> **Launch blocker — schedule groups have no table yet.** The Schedule Groups
+> tab (expand, Quick Copy, Copy & Edit, Add Client Override, Attach clients to
+> group) is fully built and runs on sample rows only; Dane's module never had a
+> production table for groups. Before this view launches, Kevin adds
+> `tblBulkRunScheduleGroup` and `tblBulkRunScheduleGroupMember` (DDL in
+> section 5) and the `/api/v2/schedule-groups` endpoints in `api/v2.ts`
+> (list / create / update / delete, and `POST …/{id}/clients` which writes one
+> link row per client per non-default member). Without them every group
+> disappears on refresh. Steve, 2026-09-08.
 
 ## 3b. Where Dane's original React code is
 
@@ -394,7 +405,9 @@ CREATE TABLE dbo.tblBulkRunScheduleGroupMember (
 ```
 
 Attaching a client to a group writes link rows; the group is a convenience,
-the link table is the only record of who uses what.
+the link table is the only record of who uses what. **These two tables do not
+exist today and must be created before launch** — the Schedule Groups tab has
+nothing to persist to without them.
 
 **Resolution rule** (one query, used by *View as client* and by dispatch once
 it moves to the new tables):
@@ -473,6 +486,9 @@ them. New, id-keyed:
 - Creating an override moves the client off the base; the base's client count
   drops by one and the override's is one.
 - The old schedules screen still lists every schedule it listed before.
+- A schedule group created in the new view survives a refresh, and attaching a
+  client to it writes the link rows on its non-default members (the group
+  tables and API exist — see the launch blocker in section 3).
 
 ## 8a. The one-to-one ClientId is not exposed
 
