@@ -267,7 +267,7 @@ export const ScheduleTableView = forwardRef<ScheduleTableViewHandle, ScheduleTab
     : false;
 
   return (
-    <div className="h-[calc(100vh-200px)] min-h-[500px] relative" data-testid="schedule-table-view" aria-label="schedule table view">
+    <div className="flex-1 min-h-0 relative flex flex-col" data-testid="schedule-table-view" aria-label="schedule table view">
       {/* Table - always visible */}
       <ScheduleTable
         schedules={schedules}

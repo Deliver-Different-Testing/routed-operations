@@ -112,7 +112,7 @@ export function RecurringRoutesTab({
   );
 
   return (
-    <div className="flex flex-col" data-testid="recurring-routes-tab" aria-label="recurring routes tab">
+    <div className="flex flex-col flex-1 min-h-0" data-testid="recurring-routes-tab" aria-label="recurring routes tab">
       <div className="p-3 border-b border-border bg-surface-light space-y-2">
         <SearchInput value={search} onChange={setSearch} placeholder="Search routes by name, area, schedule or client…" />
         <div className="flex items-center gap-3 flex-wrap">
@@ -125,7 +125,7 @@ export function RecurringRoutesTab({
           <span className="ml-auto text-xs text-text-muted">Showing {visible.length} of {rows.length}</span>
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
         <table className="w-full text-sm" data-testid="recurring-routes-table">
           <thead className="bg-surface-light sticky top-0 z-10">
             <tr className="border-b border-border">

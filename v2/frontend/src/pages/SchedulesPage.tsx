@@ -6,7 +6,7 @@ import { SchedulesPage as SchedulesModulePage } from '../schedules/modules/sched
 
 export default function SchedulesPage() {
   return (
-    <div className="h-full overflow-auto bg-surface-light text-text-primary">
+    <div className="h-full min-h-0 flex flex-col overflow-hidden bg-surface-light text-text-primary">
       <SchedulesModulePage />
     </div>
   );

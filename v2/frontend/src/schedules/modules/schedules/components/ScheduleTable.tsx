@@ -177,7 +177,7 @@ export function ScheduleTable({
   const depotOptions = ['All Depots', ...sampleDepots.map((d) => d.name)];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* Filters */}
       <div className="p-3 border-b border-border bg-surface-light space-y-2">
         <SearchInput
@@ -239,7 +239,7 @@ export function ScheduleTable({
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-x-auto overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-x-auto overflow-y-auto">
         <table className="w-full text-sm" data-testid="schedule-table" aria-label="schedule table">
           <caption className="sr-only">Schedule list with sorting and filtering</caption>
           <thead className="bg-surface-light sticky top-0 z-10">

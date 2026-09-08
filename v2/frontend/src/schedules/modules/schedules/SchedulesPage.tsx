@@ -240,7 +240,7 @@ export function SchedulesPage() {
   });
 
   return (
-    <div className="min-h-screen bg-surface-light" data-testid="schedules-page">
+    <div className="h-full min-h-0 flex flex-col bg-surface-light" data-testid="schedules-page">
       {/* Header */}
       <div className="px-3 md:px-6 pt-4 md:pt-6 pb-3" data-testid="schedules-header">
         <PageHeader
@@ -262,8 +262,8 @@ export function SchedulesPage() {
       </div>
 
       {/* Main Content */}
-      <div className="px-3 md:px-6 pb-4 md:pb-6">
-        <Card padding="none">
+      <div className="px-3 md:px-6 pb-4 md:pb-6 flex-1 min-h-0 flex flex-col">
+        <Card padding="none" className="flex-1 min-h-0 flex flex-col">
           <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
 
           {/* Search + Filters Section */}
@@ -327,7 +327,7 @@ export function SchedulesPage() {
             />
           )}
           {activeTab === 'groups' && (
-            <div className="p-4">
+            <div className="p-4 flex-1 min-h-0 overflow-y-auto">
               <ScheduleGroupsTab
                 onConnectionsClick={handleConnectionsClick}
                 schedules={schedules}
