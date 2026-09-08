@@ -1,610 +1,627 @@
 ScheduleName,ClientId,CreatedUtc,CreatedBy
-AKL > CHCH Pre 10am Medical,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 10am Medical,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > CHCH Pre 8am Medical,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 10am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Gisborne pre 8am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run 10am Cutoff,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run 10am Cutoff,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run 9:30am Cutoff,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run 9:30am Cutoff,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #2,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #3,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #3,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,17122,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #2,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #2,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #2,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #3,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #3,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #3,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #4,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > HLZ Pre 8am Medical Run #4,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton #2,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Masterton #2,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 10am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Napier pre 8am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > New Plymouth pre 10am #2,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am #2,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am #2,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am #2,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am #3,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 10am #3,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Palmerston North pre 8am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,36820,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,14821,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Pukekohe Overnight Medical Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Afternoon Medical Run,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Afternoon Medical Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Afternoon Medical Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run #2,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run #2,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 10am Medical Run #2,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,17122,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Taupo Pre 8am Medical Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Taupo Pre 8am Medical Run,14821,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #2,17122,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #2,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,17122,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #2,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #2,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #2,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #3,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > TGA Pre 930am Medical Run #3,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whakatane Medical Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whakatane Medical Run,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,1088,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am #2,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > Whanganui Pre 10am #2,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 10am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am #2,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WLG Pre 8am #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,33103,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #2,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #2,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #2,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #2,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #3,17122,2026-09-08T02:02:53Z,steve@urgent.co.nz
-AKL > WRG Pre 8am Medical Run #3,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland - Waikato Home Delivery 11am,16298,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland - Waikato Home Delivery 11am,13681,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 1-6,14853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 1-6,32110,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 1-6,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 7-12,33014,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 7-12,14853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 7-12,32110,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run 7-12,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run Express 1-6,33014,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland > Hamilton Run Express 1-6,32110,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland Afternoons,17761,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Auckland Afternoons,13681,2026-09-08T02:02:53Z,steve@urgent.co.nz
-BOP Regional Home Delivery 11am,16298,2026-09-08T02:02:53Z,steve@urgent.co.nz
-BOP Regional Home Delivery 11am,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-BOP Regional Home Delivery 5am,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-BOP Regional Home Delivery 5am,33149,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Friday Afternoon Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Friday Afternoon Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Friday Evening Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Friday Evening Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31458,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31944,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31476,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31465,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Taupo,31501,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon,31504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon,31944,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon,31476,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon,31465,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon,31501,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon #2,31796,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Afternoon #2,36813,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Morning,31504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Morning,31944,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Morning,31476,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Morning,31465,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton - Waikato Morning,31501,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > Auckland Express 4pm-6pm,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > Auckland Express 4pm-6pm,31721,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31458,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31944,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31476,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31465,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > BOP,31501,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > Tauranga afternoon,31796,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton > Tauranga afternoon,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton Chilled 5am Run,33710,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton Chilled 5am Run,34623,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton Weds Regional,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hamilton Weds Regional,31654,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Waikato Afternoon,37352,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Waikato Afternoon,37354,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Waikato Morning,37352,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Waikato Morning,37354,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Whakatane,37354,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Tauranga to Whakatane,37352,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Whakatane to Tauranga,37352,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HB - Whakatane to Tauranga,37354,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run #2,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Day Run #2,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL Next Day Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-HLZ > AKL PM Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hyper Ride 2 - 3 Hour Service 10am,15744,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Hyper Ride 2 - 3 Hour Service 10am,32929,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Kaimai - North Island Freight Collection,32082,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Kaimai - North Island Freight Collection,15608,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Afternoon Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Afternoon Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Evening Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Evening Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Morning Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Monday Morning Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Mothers Day,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Mothers Day,33656,2026-09-08T02:02:53Z,steve@urgent.co.nz
-P2P Auckland > BoP Express 10am - 3:30pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-P2P Auckland > BoP Express 10am - 3:30pm,36834,2026-09-08T02:02:53Z,steve@urgent.co.nz
-P2P Auckland > Hamilton Express 1pm - 5pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-P2P Auckland > Hamilton Express 1pm - 5pm,36834,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Returns,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Returns,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Returns,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Returns,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run,14927,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run #2,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run #2,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run #2,14821,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe > AKL Run #2,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery #2,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Pukekohe Afternoon Delivery #2,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Day Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-ROT > AKL Next Day Run,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 12 pm,16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 12 pm,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 4pm,16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 4pm,17326,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 4pm,35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 4pm,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 6pm,16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 6pm,17326,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 6pm,35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 6pm,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 9pm,16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 9pm,35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Standard Baggage Run 9pm,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 10am,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 10am,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 11am,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 11am,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 12pm,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 12pm,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 1pm,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 1pm,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 2pm,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Store-to-Door Express Delivery 2pm,17589,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Auckland Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Auckland Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Christchurch Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Christchurch Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Hamilton Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Hamilton Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Napier Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Napier Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Palmerston North Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Palmerston North Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Tauranga Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Tauranga Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Wellington Home Delivery,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Sunday Wellington Home Delivery,32854,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*10:00:00-11:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*10:00:00-11:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*11:00:00-12:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*11:00:00-12:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*12:00:00-13:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*12:00:00-13:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*13:00:00-14:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*13:00:00-14:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*14:00:00-15:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*14:00:00-15:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*15:00:00-16:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*15:00:00-16:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*16:00:00-17:00:00,12671,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga 1 Hour*16:00:00-17:00:00,33118,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > BOP Outer Run,31488,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > BOP Outer Run,31486,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Waikato Morning Run,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Waikato Morning Run,31730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run,32186,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run,32206,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run,32993,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run,35321,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run #2,32767,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga > Whakatane Run #2,32246,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga Weds Regional,31654,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tauranga Weds Regional,32853,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Afternoon Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Afternoon Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Evening Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Evening Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Morning Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Thursday Morning Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-TRG > AKL Next Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Afternoon Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Afternoon Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Evening Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Evening Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Morning Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Tuesday Morning Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 10am,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 10am,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 10am,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 10am,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 11am,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 11am,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 11am,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 11am,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 12pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 12pm,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 1pm,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 1pm,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 1pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 1pm,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 2pm,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 2pm,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 2pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 2pm,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 3pm,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 3pm,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 3pm,32896,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 3pm,32335,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 9am,32584,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Urgent Express Delivery 9am,32893,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Waikato > Tauranga afternoon,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Waikato > Tauranga afternoon,36813,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Waikato Local & Outer > BOP,9196,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Waikato Local & Outer > BOP,36813,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Afternoon Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Afternoon Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Evening Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Evening Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Morning Express,33089,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wednesday Morning Express,33091,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wellington Schedules,1088,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wellington Schedules,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,14578,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WHK > AKL Next Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wild Flour Tauranga - Auckland Morning Chilled,32490,2026-09-08T02:02:53Z,steve@urgent.co.nz
-Wild Flour Tauranga - Auckland Morning Chilled,36266,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Napier,16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Napier,35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Napier,17326,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Napier,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Palmerston North,35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Palmerston North,17326,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Palmerston North,16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (G&B),16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (G&B),35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (G&B),17326,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (G&B),16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (QC),16730,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (QC),35642,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WLG > Whanganui (QC),16166,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,14582,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,16947,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,16513,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,18188,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,13713,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,504,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,9477,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,14763,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,18185,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,13822,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,13773,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,35755,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,169,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,36672,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run,36739,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run #2,3191,2026-09-08T02:02:53Z,steve@urgent.co.nz
-WRG > AKL Day Run #2,32946,2026-09-08T02:02:53Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 10am Medical,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > CHCH Pre 8am Medical,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 10am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Gisborne pre 8am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run 10am Cutoff,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run 10am Cutoff,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run 9:30am Cutoff,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run 9:30am Cutoff,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #2,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #3,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #3,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,17122,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #2,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #2,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #2,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #3,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #3,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #3,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #4,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > HLZ Pre 8am Medical Run #4,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton #2,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Masterton #2,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 10am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Napier pre 8am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > New Plymouth pre 10am #2,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am #2,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am #2,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am #2,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am #3,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 10am #3,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Palmerston North pre 8am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,36820,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,14821,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Pukekohe Overnight Medical Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Afternoon Medical Run,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Afternoon Medical Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Afternoon Medical Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run #2,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run #2,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 10am Medical Run #2,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,17122,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > ROT Pre 8am Medical Run*09:00:00-10:00:00,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Taupo Pre 8am Medical Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Taupo Pre 8am Medical Run,14821,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #2,17122,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #2,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,17122,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #2,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #2,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #2,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #3,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > TGA Pre 930am Medical Run #3,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whakatane Medical Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whakatane Medical Run,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,1088,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am #2,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > Whanganui Pre 10am #2,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 10am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am #2,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WLG Pre 8am #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,33103,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #2,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #2,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #2,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #2,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #3,17122,2026-09-08T02:00:00Z,steve@urgent.co.nz
+AKL > WRG Pre 8am Medical Run #3,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland - Waikato Home Delivery 11am #2,16298,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland - Waikato Home Delivery 11am #2,13681,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 1-6,14853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 1-6,32110,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 1-6,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 7-12,33014,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 7-12,14853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 7-12,32110,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run 7-12,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run Express 1-6,33014,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland > Hamilton Run Express 1-6,32110,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland Afternoons,17761,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Auckland Afternoons,13681,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP > Waikato Morning Run,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP Outer > Auckland Express Run 11-1,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP Regional Home Delivery 11am #2,16298,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP Regional Home Delivery 11am #2,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP Regional Home Delivery 5am #2,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+BOP Regional Home Delivery 5am #2,33149,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Friday Afternoon Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Friday Afternoon Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Friday Evening Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Friday Evening Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Frozen - Central Run,37022,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Frozen - North Run,37022,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Frozen - South Run,37022,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Auckland Morning Chilled,36991,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31458,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31944,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31476,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31465,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Taupo,31501,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon,31504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon,31944,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon,31476,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon,31465,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon,31501,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon #2,31796,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Afternoon #2,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Morning,31504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Morning,31944,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Morning,31476,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Morning,31465,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton - Waikato Morning,31501,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Auckland Express 11am-1pm,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Auckland Express 4pm-6pm,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Auckland Express 4pm-6pm,31721,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31458,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31944,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31476,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31465,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > BOP #2,31501,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Tauranga afternoon,31796,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Tauranga afternoon,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Tauranga afternoon,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton > Waikato Morning,32587,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton Chilled 5am Run,33710,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton Chilled 5am Run,34623,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton Weds Regional,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hamilton Weds Regional,31654,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Waikato Afternoon,37352,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Waikato Afternoon,37354,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Waikato Morning,37352,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Waikato Morning,37354,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Whakatane,37354,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Tauranga to Whakatane,37352,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Whakatane to Tauranga,37352,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HB - Whakatane to Tauranga,37354,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run #2,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Day Run #2,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL Next Day Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+HLZ > AKL PM Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hyper Ride 2 - 3 Hour Service 10am,15744,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Hyper Ride 2 - 3 Hour Service 10am,32929,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Kaimai - North Island Freight Collection,32082,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Kaimai - North Island Freight Collection,15608,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Afternoon Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Afternoon Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Evening Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Evening Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Morning Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Monday Morning Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Mothers Day,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Mothers Day,33656,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Outer BOP > Tauranga,17272,2026-09-08T02:00:00Z,steve@urgent.co.nz
+P2P Auckland > BoP Express 10am - 3:30pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+P2P Auckland > BoP Express 10am - 3:30pm,36834,2026-09-08T02:00:00Z,steve@urgent.co.nz
+P2P Auckland > Hamilton Express 1pm - 5pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+P2P Auckland > Hamilton Express 1pm - 5pm,36834,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Returns,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Returns,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Returns,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Returns,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run,14927,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run #2,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run #2,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run #2,14821,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe > AKL Run #2,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery #2,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Pukekohe Afternoon Delivery #2,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Day Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+ROT > AKL Next Day Run,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 12 pm,16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 12 pm,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 4pm,16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 4pm,17326,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 4pm,35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 4pm,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 6pm,16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 6pm,17326,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 6pm,35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 6pm,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 9pm,16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 9pm,35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Standard Baggage Run 9pm,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 10am,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 10am,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 11am,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 11am,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 12pm,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 12pm,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 1pm,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 1pm,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 2pm,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Store-to-Door Express Delivery 2pm,17589,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Auckland Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Auckland Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Christchurch Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Christchurch Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Hamilton Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Hamilton Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Napier Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Napier Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Palmerston North Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Palmerston North Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Tauranga Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Tauranga Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Wellington Home Delivery,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Sunday Wellington Home Delivery,32854,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Taupo > Tauranga,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*10:00:00-11:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*10:00:00-11:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*11:00:00-12:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*11:00:00-12:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*12:00:00-13:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*12:00:00-13:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*13:00:00-14:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*13:00:00-14:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*14:00:00-15:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*14:00:00-15:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*15:00:00-16:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*15:00:00-16:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*16:00:00-17:00:00,12671,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga 1 Hour*16:00:00-17:00:00,33118,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > BOP Outer Run,31488,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > BOP Outer Run,31486,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Outer BOP,17272,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Waikato Afternoon Run,32943,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Waikato Morning Run,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Waikato Morning Run,31730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run,32186,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run,32206,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run,32993,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run,35321,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run #2,32767,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga > Whakatane Run #2,32246,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga Weds Regional,31654,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tauranga Weds Regional,32853,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Afternoon Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Afternoon Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Evening Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Evening Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Morning Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Thursday Morning Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+TRG > AKL Next Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Afternoon Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Afternoon Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Evening Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Evening Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Morning Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Tuesday Morning Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 10am,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 10am,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 10am,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 10am,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 11am,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 11am,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 11am,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 11am,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 12pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 12pm,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 1pm,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 1pm,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 1pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 1pm,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 2pm,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 2pm,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 2pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 2pm,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 3pm,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 3pm,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 3pm,32896,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 3pm,32335,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 9am,32584,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Urgent Express Delivery 9am,32893,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Waikato > Tauranga afternoon,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Waikato > Tauranga afternoon,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Waikato Local & Outer > BOP,9196,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Waikato Local & Outer > BOP,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Waikato Outer - Morning,36813,2026-09-08T02:00:00Z,steve@urgent.co.nz
+"Waikato Outer > Taupo, Tokoroa, Putaruru",31492,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Afternoon Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Afternoon Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Evening Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Evening Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Morning Express,33089,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wednesday Morning Express,33091,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wellington Schedules,1088,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wellington Schedules,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,14578,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WHK > AKL Next Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wild Flour Tauranga - Auckland Morning Chilled,32490,2026-09-08T02:00:00Z,steve@urgent.co.nz
+Wild Flour Tauranga - Auckland Morning Chilled,36266,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Napier,16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Napier,35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Napier,17326,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Napier,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Palmerston North,35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Palmerston North,17326,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Palmerston North,16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (G&B),16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (G&B),35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (G&B),17326,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (G&B),16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (QC),16730,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (QC),35642,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WLG > Whanganui (QC),16166,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,14582,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,16947,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,16513,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,18188,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,13713,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,504,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,9477,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,14763,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,18185,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,13822,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,13773,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,35755,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,169,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,36672,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run,36739,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run #2,3191,2026-09-08T02:00:00Z,steve@urgent.co.nz
+WRG > AKL Day Run #2,32946,2026-09-08T02:00:00Z,steve@urgent.co.nz
