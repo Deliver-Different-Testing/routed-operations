@@ -15,7 +15,7 @@ related_docs:
 # New Schedules view — one schedule, many clients
 
 Workstream: Routed Operations, RunBuilder & RunViewer (schedules)
-Due by: to be agreed with Steve at handover
+Due by: 2026-09-14 — Phase 1 (section 7) in tenant staging for testing, per Steve 2026-09-08
 
 ## TL;DR
 
@@ -526,4 +526,4 @@ day-of-week or start time as the parent job's time.
 - The name of the link table you created, so 001 and this brief match it.
 - Whether the new view lives at `/schedules` in Routed Operations or somewhere
   else in the shell.
-- A delivery date for Phase 1, which then goes on the dashboard card.
+- Phase 1 is due in tenant staging on **2026-09-14** (on the dashboard card).
