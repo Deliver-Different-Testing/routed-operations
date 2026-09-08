@@ -11,6 +11,9 @@ related_docs:
 
 # Key the schedule/client link on a ScheduleId
 
+Workstream: Routed Operations, RunBuilder & RunViewer (schedules)
+Due by: to be agreed with Steve at handover
+
 ## Decision
 
 The new schedule/client link table currently keys on `ScheduleName`. That
