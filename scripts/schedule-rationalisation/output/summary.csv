@@ -1,0 +1,16 @@
+Metric,Value
+Source rows (tblBulkRunSchedule),11110
+Default schedules (ClientId NULL),119
+Client-specific schedules (Name + ClientId),2606
+Names shared by 2+ clients,203
+Merged shared schedules created,149
+Client schedules folded into a shared schedule,609
+Link-table rows (ScheduleClient),609
+Schedule rows retired,2289
+Schedule rows remaining,8821
+Names whose clients have differing definitions (variants),158
+Shared schedules that need a new '#n' name (variant groups),29
+Client schedules in a variant group of one (left as-is),383
+Data-quality findings,168
+CreatedUtc used,2026-09-08T02:02:53Z
+CreatedBy used,steve@urgent.co.nz

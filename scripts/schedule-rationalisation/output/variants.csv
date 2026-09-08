@@ -1,0 +1,488 @@
+ScheduleName,VariantGroup,ProposedName,ClientCount,ClientIds,SurvivorIds,DiffersFromMainGroupOn,MergedIntoSharedSchedule
+Afternoon Home*12:00:00-17:00:00,1,Afternoon Home*12:00:00-17:00:00,1,32530,"99, 101, 102, 103, 141",(name holder),No
+Afternoon Home*12:00:00-17:00:00,2,Afternoon Home*12:00:00-17:00:00 #2,1,32454,"150, 151, 152, 153, 154","CutoffHours, Description, PostcodeGroupId",No
+AKL > CHCH Pre 10am Medical,1,AKL > CHCH Pre 10am Medical,10,"16513, 14763, 169, 18185, 14578, 32946, 9477, 35755, 18188, 36739","8610, 8611, 8612, 8613, 8614",(name holder),Yes
+AKL > CHCH Pre 10am Medical,2,AKL > CHCH Pre 10am Medical #2,1,13713,"8391, 8392, 8393, 8394, 8395","CutoffHours, Description, AutoBook",No
+AKL > CHCH Pre 10am Medical,3,AKL > CHCH Pre 10am Medical #3,1,16947,"9722, 9723, 9724, 9725, 9726",Description,No
+AKL > CHCH Pre 10am Medical,4,AKL > CHCH Pre 10am Medical #4,1,13773,"11174, 11175, 11176, 11177, 11178","PickupRatingSpeed, PickupBoxDiscount",No
+AKL > CHCH Pre 10am Medical,5,AKL > CHCH Pre 10am Medical #5,1,14927,"11663, 11664, 11665, 11666, 11667","Region, CutoffHours, Description, AutoBook",No
+AKL > CHCH Pre 10am Medical,6,AKL > CHCH Pre 10am Medical #6,1,35773,"13087, 13088, 13089, 13090, 13091",PickupRatingSpeed,No
+AKL > CHCH Pre 8am Medical,1,AKL > CHCH Pre 8am Medical,10,"16513, 14763, 169, 18185, 13713, 32946, 9477, 35755, 18188, 36739","8605, 8606, 8607, 8608, 8609",(name holder),Yes
+AKL > CHCH Pre 8am Medical,2,AKL > CHCH Pre 8am Medical #2,1,14927,"8322, 8324, 8325, 8326, 11673","Region, CutoffHours, Description, AutoBook, ParentSpeedId",No
+AKL > CHCH Pre 8am Medical,3,AKL > CHCH Pre 8am Medical #3,1,3191,"9177, 9178, 9179, 9180, 9181","CutoffHours, AutoBook",No
+AKL > CHCH Pre 8am Medical,4,AKL > CHCH Pre 8am Medical #4,1,14578,"9328, 9329, 9330, 9331, 9332",CutoffHours,No
+AKL > CHCH Pre 8am Medical,5,AKL > CHCH Pre 8am Medical #5,1,16947,"9717, 9718, 9719, 9720, 9721",Description,No
+AKL > CHCH Pre 8am Medical,6,AKL > CHCH Pre 8am Medical #6,1,36266,"9862, 9863, 9864, 9865, 9866","Region, PostcodeGroupId, PickupDepotId, DropOffLocationID",No
+AKL > CHCH Pre 8am Medical,7,AKL > CHCH Pre 8am Medical #7,1,13773,"11169, 11170, 11171, 11172, 11173","PickupRatingSpeed, PickupBoxDiscount, DropOffLocationID",No
+AKL > CHCH Pre 8am Medical,8,AKL > CHCH Pre 8am Medical #8,1,35773,"13082, 13083, 13084, 13085, 13086",PickupRatingSpeed,No
+AKL > Gisborne pre 10am,1,AKL > Gisborne pre 10am,8,"18185, 169, 16947, 32946, 9477, 35755, 36739, 13713","9238, 9239, 9240, 9241, 9242",(name holder),Yes
+AKL > Gisborne pre 10am,2,AKL > Gisborne pre 10am #2,2,"14763, 16513","9045, 9046, 9047, 9048, 9049",CutoffHours,Yes
+AKL > Gisborne pre 10am,3,AKL > Gisborne pre 10am #3,1,14927,"8405, 8406, 8407, 8408, 8409","Description, DropOffLocationID",No
+AKL > Gisborne pre 10am,4,AKL > Gisborne pre 10am #4,1,3191,"9514, 9515, 9516, 9517, 9518",AutoBook,No
+AKL > Gisborne pre 10am,5,AKL > Gisborne pre 10am #5,1,18188,"10864, 10865, 10866, 10867, 10868",DropOffLocationID,No
+AKL > Gisborne pre 10am,6,AKL > Gisborne pre 10am #6,1,14582,"11074, 11075, 11076, 11077, 11078",Description,No
+AKL > Gisborne pre 10am,7,AKL > Gisborne pre 10am #7,1,13773,"11179, 11180, 11181, 11182, 11183","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Gisborne pre 8am,1,AKL > Gisborne pre 8am,8,"18185, 169, 16947, 32946, 9477, 36739, 14582, 13713","9243, 9244, 9245, 9246, 9247",(name holder),Yes
+AKL > Gisborne pre 8am,2,AKL > Gisborne pre 8am #2,2,"14763, 16513","9050, 9051, 9052, 9053, 9054",CutoffHours,Yes
+AKL > Gisborne pre 8am,3,AKL > Gisborne pre 8am #3,1,14927,"8410, 8411, 8412, 8413, 8414",DropOffLocationID,No
+AKL > Gisborne pre 8am,4,AKL > Gisborne pre 8am #4,1,14578,"9338, 9339, 9340, 9341, 9342",EndTime,No
+AKL > Gisborne pre 8am,5,AKL > Gisborne pre 8am #5,1,3191,"9519, 9520, 9521, 9522, 9523",AutoBook,No
+AKL > Gisborne pre 8am,6,AKL > Gisborne pre 8am #6,1,35755,"10748, 10749, 10750, 10751, 10752","PickupDepotId, DropOffLocationID",No
+AKL > Gisborne pre 8am,7,AKL > Gisborne pre 8am #7,1,18188,"10869, 10870, 10871, 10872, 10873",DropOffLocationID,No
+AKL > Gisborne pre 8am,8,AKL > Gisborne pre 8am #8,1,13773,"11184, 11185, 11186, 11187, 11188","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > HLZ Afternoon Medical Run,1,AKL > HLZ Afternoon Medical Run,4,"9477, 16947, 13713, 14578","2511, 2512, 2513, 2514, 2515",(name holder),Yes
+AKL > HLZ Afternoon Medical Run,2,AKL > HLZ Afternoon Medical Run #2,1,3191,"2436, 2437, 2438, 2439, 2440",StartTime,No
+AKL > HLZ Afternoon Medical Run 10am Collection,1,AKL > HLZ Afternoon Medical Run 10am Collection,1,35755,"6893, 6894, 6895, 6896, 6897",(name holder),No
+AKL > HLZ Afternoon Medical Run 10am Collection,2,AKL > HLZ Afternoon Medical Run 10am Collection #2,1,14927,"7899, 7900, 7901, 7902, 7903","StartTime, CutoffHours, Description",No
+AKL > HLZ Afternoon Medical Run 10am Cutoff,1,AKL > HLZ Afternoon Medical Run 10am Cutoff,2,"169, 36672","6988, 6989, 6990, 6991, 6992",(name holder),Yes
+AKL > HLZ Afternoon Medical Run 10am Cutoff,2,AKL > HLZ Afternoon Medical Run 10am Cutoff #2,1,16513,"7053, 7054, 7055, 7056, 7057",PostcodeGroupId,No
+AKL > HLZ Afternoon Medical Run 930am Collection,1,AKL > HLZ Afternoon Medical Run 930am Collection,1,14927,"2170, 2171, 2172, 2173, 2174",(name holder),No
+AKL > HLZ Afternoon Medical Run 930am Collection,2,AKL > HLZ Afternoon Medical Run 930am Collection #2,1,32946,"10274, 10275, 10276, 10277, 10278, 10304, 10305, 10306, 10307, 10308","StartTime, EndTime, CutoffHours, Description",No
+AKL > HLZ Afternoon Medical Run 9:30am Collection,1,AKL > HLZ Afternoon Medical Run 9:30am Collection,1,13773,"4204, 4205, 4206, 4207, 4208",(name holder),No
+AKL > HLZ Afternoon Medical Run 9:30am Collection,2,AKL > HLZ Afternoon Medical Run 9:30am Collection #2,1,35755,"6298, 6299, 6300, 6301, 6302","PickupRatingSpeed, PickupBoxDiscount",No
+AKL > HLZ Afternoon Medical Run 9:30am Cutoff,1,AKL > HLZ Afternoon Medical Run 9:30am Cutoff,2,"169, 36672","6983, 6984, 6985, 6986, 6987",(name holder),Yes
+AKL > HLZ Afternoon Medical Run 9:30am Cutoff,2,AKL > HLZ Afternoon Medical Run 9:30am Cutoff #2,1,14582,"2546, 2547, 2548, 2549, 2550",PostcodeGroupId,No
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,1,AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,3,"33103, 504, 13822","2731, 2732, 2733, 2734, 2735",(name holder),Yes
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,2,AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #2,2,"14763, 18185","2471, 2472, 2473, 2474, 2475","StartTime, PostcodeGroupId",Yes
+AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00,3,AKL > HLZ Afternoon Medical Run*12:30:00-17:00:00 #3,2,"18188, 36739","2661, 2662, 2663, 2664, 2665",PostcodeGroupId,Yes
+AKL > HLZ Pre 8am Medical Run,1,AKL > HLZ Pre 8am Medical Run,6,"9477, 16947, 18188, 17122, 36739, 32946","2516, 2517, 2518, 2519, 2520",(name holder),Yes
+AKL > HLZ Pre 8am Medical Run,2,AKL > HLZ Pre 8am Medical Run #2,4,"16513, 14578, 35755, 169","2631, 2632, 2633, 2634, 2635",EndTime,Yes
+AKL > HLZ Pre 8am Medical Run,3,AKL > HLZ Pre 8am Medical Run #3,3,"33103, 504, 13822","2736, 2737, 2738, 2739, 2740",PostcodeGroupId,Yes
+AKL > HLZ Pre 8am Medical Run,4,AKL > HLZ Pre 8am Medical Run #4,2,"13713, 18185","2701, 2702, 2703, 2704, 2705",EndTime,Yes
+AKL > HLZ Pre 8am Medical Run,5,AKL > HLZ Pre 8am Medical Run #5,1,3191,"2175, 2176, 2177, 2178, 2179","EndTime, CutoffHours",No
+AKL > HLZ Pre 8am Medical Run,6,AKL > HLZ Pre 8am Medical Run #6,1,14927,"2501, 2502, 2503, 2504, 2505","EndTime, CutoffHours, Description",No
+AKL > HLZ Pre 8am Medical Run,7,AKL > HLZ Pre 8am Medical Run #7,1,14763,"2506, 2507, 2508, 2509, 2510, 5839, 5840, 5841, 5842, 5843","StartTime, EndTime, CutoffHours",No
+AKL > HLZ Pre 8am Medical Run,8,AKL > HLZ Pre 8am Medical Run #8,1,14582,"2551, 2552, 2553, 2554, 2555",CutoffHours,No
+AKL > HLZ Pre 8am Medical Run,9,AKL > HLZ Pre 8am Medical Run #9,1,13773,"4872, 4873, 4874, 4875, 4876","EndTime, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > HLZ Pre 8am Medical Run,10,AKL > HLZ Pre 8am Medical Run #10,1,36672,"7149, 7150, 7151, 7152, 7153","EndTime, PostcodeGroupId",No
+AKL > Masterton,1,AKL > Masterton,5,"9477, 35755, 18188, 36739, 14582","10633, 10634, 10635, 10636, 10637",(name holder),Yes
+AKL > Masterton,2,AKL > Masterton #2,2,"13713, 14927","8740, 8741, 8742, 8743, 8744","EndTime, Description",Yes
+AKL > Masterton,3,AKL > Masterton #3,1,32946,"10269, 10270, 10271, 10272, 10273",CutoffHours,No
+AKL > Masterton,4,AKL > Masterton #4,1,13773,"11189, 11190, 11191, 11192, 11193","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Napier pre 10am,1,AKL > Napier pre 10am,9,"18185, 14578, 169, 16947, 32946, 9477, 35755, 18188, 14582","9253, 9254, 9255, 9256, 9257",(name holder),Yes
+AKL > Napier pre 10am,2,AKL > Napier pre 10am #2,2,"14763, 16513","9060, 9061, 9062, 9063, 9064",CutoffHours,Yes
+AKL > Napier pre 10am,3,AKL > Napier pre 10am #3,1,14927,"7089, 7090, 7091, 7092, 7093",CutoffHours,No
+AKL > Napier pre 10am,4,AKL > Napier pre 10am #4,1,13713,"7289, 7290, 7291, 7292, 7293",PickupRatingSpeed,No
+AKL > Napier pre 10am,5,AKL > Napier pre 10am #5,1,36739,"10984, 10985, 10986, 10987, 10988, 10989, 10990, 10991, 10992, 10993","EndTime, CutoffHours",No
+AKL > Napier pre 10am,6,AKL > Napier pre 10am #6,1,13773,"11199, 11200, 11201, 11202, 11203","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Napier pre 8am,1,AKL > Napier pre 8am,8,"14578, 169, 3191, 16947, 32946, 9477, 35755, 18188","9348, 9349, 9350, 9351, 9352",(name holder),Yes
+AKL > Napier pre 8am,2,AKL > Napier pre 8am #2,2,"14763, 16513","9055, 9056, 9057, 9058, 9059",CutoffHours,Yes
+AKL > Napier pre 8am,3,AKL > Napier pre 8am #3,1,14927,"7074, 7075, 7076, 7077, 7078, 9248, 9249, 9250, 9251, 9252",CutoffHours,No
+AKL > Napier pre 8am,4,AKL > Napier pre 8am #4,1,13713,"7284, 7285, 7286, 7287, 7288",PickupRatingSpeed,No
+AKL > Napier pre 8am,5,AKL > Napier pre 8am #5,1,14582,"11089, 11090, 11091, 11092, 11093",PostcodeGroupId,No
+AKL > Napier pre 8am,6,AKL > Napier pre 8am #6,1,13773,"11194, 11195, 11196, 11197, 11198","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > New Plymouth pre 10am,1,AKL > New Plymouth pre 10am,11,"14578, 169, 16947, 32946, 9477, 35755, 18188, 36739, 14582, 13713, 14927","9358, 9359, 9360, 9361, 9362",(name holder),Yes
+AKL > New Plymouth pre 10am,2,AKL > New Plymouth pre 10am #2,2,"14763, 18185","9065, 9066, 9067, 9068, 9069",CutoffHours,Yes
+AKL > New Plymouth pre 10am,3,AKL > New Plymouth pre 10am #3,1,16513,"9135, 9136, 9137, 9138, 9139","CutoffHours, Description",No
+AKL > New Plymouth pre 10am,4,AKL > New Plymouth pre 10am #4,1,3191,"9529, 9530, 9531, 9532, 9533, 9534, 9535, 9536, 9537, 9538",CutoffHours,No
+AKL > New Plymouth pre 10am,5,AKL > New Plymouth pre 10am #5,1,13773,"11204, 11205, 11206, 11207, 11208","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Palmerston North pre 10am,1,AKL > Palmerston North pre 10am,7,"18185, 14578, 169, 32946, 9477, 18188, 36739","9268, 9269, 9270, 9271, 9272",(name holder),Yes
+AKL > Palmerston North pre 10am,2,AKL > Palmerston North pre 10am #2,3,"14927, 16947, 14582","7084, 7085, 7086, 7087, 7088",Description,Yes
+AKL > Palmerston North pre 10am,3,AKL > Palmerston North pre 10am #3,2,"14763, 16513","9075, 9076, 9077, 9078, 9079",CutoffHours,Yes
+AKL > Palmerston North pre 10am,4,AKL > Palmerston North pre 10am #4,1,13713,"7279, 7280, 7281, 7282, 7283","Description, PickupRatingSpeed",No
+AKL > Palmerston North pre 10am,5,AKL > Palmerston North pre 10am #5,1,35755,"10773, 10774, 10775, 10776, 10777, 10778, 10779, 10780, 10781, 10782","EndTime, CutoffHours, Description",No
+AKL > Palmerston North pre 10am,6,AKL > Palmerston North pre 10am #6,1,13773,"11214, 11215, 11216, 11217, 11218","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Palmerston North pre 8am,1,AKL > Palmerston North pre 8am,9,"18185, 14578, 169, 16947, 32946, 9477, 18188, 36739, 14582","9263, 9264, 9265, 9266, 9267, 9288, 9289, 9290, 9291, 9292",(name holder),Yes
+AKL > Palmerston North pre 8am,2,AKL > Palmerston North pre 8am #2,2,"14763, 16513","9070, 9071, 9072, 9073, 9074",CutoffHours,Yes
+AKL > Palmerston North pre 8am,3,AKL > Palmerston North pre 8am #3,1,13713,"7274, 7275, 7276, 7277, 7278",PickupRatingSpeed,No
+AKL > Palmerston North pre 8am,4,AKL > Palmerston North pre 8am #4,1,14927,"8485, 8486, 8487, 8488, 8489",EndTime,No
+AKL > Palmerston North pre 8am,5,AKL > Palmerston North pre 8am #5,1,3191,"9539, 9540, 9541, 9542, 9543",AutoBook,No
+AKL > Palmerston North pre 8am,6,AKL > Palmerston North pre 8am #6,1,13773,"11209, 11210, 11211, 11212, 11213","PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Pukekohe Overnight Medical Run,1,AKL > Pukekohe Overnight Medical Run,15,"14927, 13713, 16947, 36820, 14578, 3191, 169, 32946, 14821, 9477, 35755, 18188, 36739, 14582, 13773","4309, 4310, 4311, 4312, 4313",(name holder),Yes
+AKL > Pukekohe Overnight Medical Run,2,AKL > Pukekohe Overnight Medical Run #2,1,18185,"9187, 9188, 9189, 9190, 9191",Description,No
+AKL > ROT Afternoon Medical Run,1,AKL > ROT Afternoon Medical Run,3,"33103, 504, 13822","2741, 2742, 2743, 2744, 2745",(name holder),Yes
+AKL > ROT Afternoon Medical Run,2,AKL > ROT Afternoon Medical Run #2,1,17122,"2873, 2874, 2875, 2876, 2877","StartTime, CutoffHours",No
+AKL > ROT Afternoon Medical Run,3,AKL > ROT Afternoon Medical Run #3,1,36672,"7154, 7155, 7156, 7157, 7158","Description, ParentSpeedId",No
+AKL > ROT Pre 10am Medical Run,1,AKL > ROT Pre 10am Medical Run,5,"9477, 14582, 16947, 18188, 18185","2526, 2527, 2528, 2529, 2530",(name holder),Yes
+AKL > ROT Pre 10am Medical Run,2,AKL > ROT Pre 10am Medical Run #2,3,"35755, 14578, 169","2641, 2642, 2643, 2644, 2645",EndTime,Yes
+AKL > ROT Pre 10am Medical Run,3,AKL > ROT Pre 10am Medical Run #3,1,14927,"2337, 2338, 2339, 2340, 2341","SpeedId, CutoffHours, Description, ParentSpeedId",No
+AKL > ROT Pre 10am Medical Run,4,AKL > ROT Pre 10am Medical Run #4,1,3191,"2451, 2452, 2453, 2454, 2455","StartTime, EndTime, CutoffHours",No
+AKL > ROT Pre 10am Medical Run,5,AKL > ROT Pre 10am Medical Run #5,1,13713,"2711, 2712, 2713, 2714, 2715",Description,No
+AKL > ROT Pre 10am Medical Run,6,AKL > ROT Pre 10am Medical Run #6,1,13773,"4882, 4883, 4884, 4885, 4886","EndTime, SpeedId, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > ROT Pre 10am Medical Run,7,AKL > ROT Pre 10am Medical Run #7,1,16513,"7033, 7034, 7035, 7036, 7037",EndTime,No
+AKL > ROT Pre 10am Medical Run,8,AKL > ROT Pre 10am Medical Run #8,1,32946,"10289, 10290, 10291, 10292, 10293","SpeedId, CutoffHours, ParentSpeedId",No
+AKL > TGA Afternoon Medical Run,1,AKL > TGA Afternoon Medical Run,3,"169, 16513, 36672","7008, 7009, 7010, 7011, 7012",(name holder),Yes
+AKL > TGA Afternoon Medical Run,2,AKL > TGA Afternoon Medical Run #2,1,3191,"2456, 2457, 2458, 2459, 2460",CutoffHours,No
+AKL > TGA Afternoon Medical Run,3,AKL > TGA Afternoon Medical Run #3,1,9477,"2531, 2532, 2533, 2534, 2535","StartTime, Description",No
+AKL > TGA Afternoon Medical Run,4,AKL > TGA Afternoon Medical Run #4,1,13713,"2716, 2717, 2718, 2719, 2720",Description,No
+AKL > TGA Afternoon Medical Run,5,AKL > TGA Afternoon Medical Run #5,1,13773,"4887, 4888, 4889, 4890, 4891","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > TGA Afternoon Medical Run 10am Collection,1,AKL > TGA Afternoon Medical Run 10am Collection,1,35755,"6318, 6319, 6320, 6321, 6322",(name holder),No
+AKL > TGA Afternoon Medical Run 10am Collection,2,AKL > TGA Afternoon Medical Run 10am Collection #2,1,14927,"7904, 7905, 7906, 7907, 7908","Description, PickupBoxDiscount",No
+AKL > TGA Afternoon Medical Run 930am Collection,1,AKL > TGA Afternoon Medical Run 930am Collection,1,14927,"2332, 2333, 2334, 2335, 2336",(name holder),No
+AKL > TGA Afternoon Medical Run 930am Collection,2,AKL > TGA Afternoon Medical Run 930am Collection #2,1,32946,"10284, 10285, 10286, 10287, 10288","CutoffHours, Description",No
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,1,AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,6,"16947, 18188, 33103, 504, 13822, 36739","2621, 2622, 2623, 2624, 2625",(name holder),Yes
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,2,AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #2,2,"17122, 18185","2883, 2884, 2885, 2886, 2887",CutoffHours,Yes
+AKL > TGA Afternoon Medical Run*15:00:00-17:00:00,3,AKL > TGA Afternoon Medical Run*15:00:00-17:00:00 #3,1,14578,"2821, 2822, 2823, 2824, 2825",StartTime,No
+AKL > TGA Pre 930am Medical Run,1,AKL > TGA Pre 930am Medical Run,6,"16947, 18188, 504, 17122, 13822, 36739","2611, 2612, 2613, 2614, 2615",(name holder),Yes
+AKL > TGA Pre 930am Medical Run,2,AKL > TGA Pre 930am Medical Run #2,4,"16513, 35755, 169, 36672","2651, 2652, 2653, 2654, 2655","EndTime, PostcodeGroupId",Yes
+AKL > TGA Pre 930am Medical Run,3,AKL > TGA Pre 930am Medical Run #3,2,"9477, 18185","2536, 2537, 2538, 2539, 2540",PostcodeGroupId,Yes
+AKL > TGA Pre 930am Medical Run,4,AKL > TGA Pre 930am Medical Run #4,1,14927,"2327, 2328, 2329, 2330, 2331","EndTime, Description, PostcodeGroupId",No
+AKL > TGA Pre 930am Medical Run,5,AKL > TGA Pre 930am Medical Run #5,1,14763,"2491, 2492, 2493, 2494, 2495, 5814, 5815, 5816, 5817, 5818","EndTime, CutoffHours, Description, PostcodeGroupId",No
+AKL > TGA Pre 930am Medical Run,6,AKL > TGA Pre 930am Medical Run #6,1,14582,"2571, 2572, 2573, 2574, 2575","CutoffHours, Description, PostcodeGroupId",No
+AKL > TGA Pre 930am Medical Run,7,AKL > TGA Pre 930am Medical Run #7,1,13713,"2721, 2722, 2723, 2724, 2725","EndTime, Description, PostcodeGroupId",No
+AKL > TGA Pre 930am Medical Run,8,AKL > TGA Pre 930am Medical Run #8,1,33103,"2756, 2757, 2758, 2759, 2760",Description,No
+AKL > TGA Pre 930am Medical Run,9,AKL > TGA Pre 930am Medical Run #9,1,14578,"2826, 2827, 2828, 2829, 2830",EndTime,No
+AKL > TGA Pre 930am Medical Run,10,AKL > TGA Pre 930am Medical Run #10,1,13773,"4892, 4893, 4894, 4895, 4896","EndTime, Description, PostcodeGroupId, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > Whanganui Pre 10am,1,AKL > Whanganui Pre 10am,11,"1088, 18185, 14578, 169, 16947, 13713, 9477, 35755, 18188, 36739, 14582","9621, 9622, 9623, 9624, 9625",(name holder),Yes
+AKL > Whanganui Pre 10am,2,AKL > Whanganui Pre 10am #2,2,"3191, 14927","9544, 9545, 9546, 9547, 9548, 9641, 9642, 9643, 9644, 9645",CutoffHours,Yes
+AKL > Whanganui Pre 10am,3,AKL > Whanganui Pre 10am #3,1,32946,"10254, 10255, 10256, 10257, 10258, 10259, 10260, 10261, 10262, 10263","CutoffHours, Description",No
+AKL > Whanganui Pre 10am,4,AKL > Whanganui Pre 10am #4,1,13773,"11219, 11220, 11221, 11222, 11223","Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > WLG Pre 10am,1,AKL > WLG Pre 10am,12,"14927, 18185, 14578, 169, 3191, 16947, 32946, 9477, 35755, 18188, 36739, 14582","7067, 12588, 12589, 12590, 12591",(name holder),Yes
+AKL > WLG Pre 10am,2,AKL > WLG Pre 10am #2,2,"14763, 16513","9080, 9081, 9082, 9083, 9084",CutoffHours,Yes
+AKL > WLG Pre 10am,3,AKL > WLG Pre 10am #3,1,13713,"7259, 7260, 7261, 7262, 7263",PickupRatingSpeed,No
+AKL > WLG Pre 10am,4,AKL > WLG Pre 10am #4,1,1088,"8098, 8099, 8100, 8101, 8102","CutoffHours, Description",No
+AKL > WLG Pre 8am,1,AKL > WLG Pre 8am,11,"18185, 14578, 169, 3191, 16947, 32946, 9477, 35755, 18188, 36739, 14582","9278, 9279, 9280, 9281, 9282",(name holder),Yes
+AKL > WLG Pre 8am,2,AKL > WLG Pre 8am #2,2,"14763, 16513","9085, 9086, 9087, 9088, 9089",CutoffHours,Yes
+AKL > WLG Pre 8am,3,AKL > WLG Pre 8am #3,1,14927,"7064, 7065, 7066, 7068, 7269, 7270, 7271, 7272, 7273",CutoffHours,No
+AKL > WLG Pre 8am,4,AKL > WLG Pre 8am #4,1,13713,"7069, 7070, 7071, 7072, 7073",PickupRatingSpeed,No
+AKL > WRG Pre 8am Medical Run,1,AKL > WRG Pre 8am Medical Run,6,"9477, 16947, 18188, 33103, 504, 13822","2541, 2542, 2543, 2544, 2545",(name holder),Yes
+AKL > WRG Pre 8am Medical Run,2,AKL > WRG Pre 8am Medical Run #2,4,"16513, 35755, 169, 36672","2656, 2657, 2658, 2659, 2660","EndTime, Description",Yes
+AKL > WRG Pre 8am Medical Run,3,AKL > WRG Pre 8am Medical Run #3,2,"17122, 18185","2893, 2894, 2895, 2896, 2897",Description,Yes
+AKL > WRG Pre 8am Medical Run,4,AKL > WRG Pre 8am Medical Run #4,1,14927,"2352, 2353, 2354, 2355, 2356","EndTime, CutoffHours, Description",No
+AKL > WRG Pre 8am Medical Run,5,AKL > WRG Pre 8am Medical Run #5,1,3191,"2466, 2467, 2468, 2469, 2470","EndTime, CutoffHours, Description",No
+AKL > WRG Pre 8am Medical Run,6,AKL > WRG Pre 8am Medical Run #6,1,14763,"2496, 2497, 2498, 2499, 2500","EndTime, Description",No
+AKL > WRG Pre 8am Medical Run,7,AKL > WRG Pre 8am Medical Run #7,1,14582,"2576, 2577, 2578, 2579, 2580","CutoffHours, Description",No
+AKL > WRG Pre 8am Medical Run,8,AKL > WRG Pre 8am Medical Run #8,1,13713,"2726, 2727, 2728, 2729, 2730",EndTime,No
+AKL > WRG Pre 8am Medical Run,9,AKL > WRG Pre 8am Medical Run #9,1,14578,"2831, 2832, 2833, 2834, 2835","EndTime, Description",No
+AKL > WRG Pre 8am Medical Run,10,AKL > WRG Pre 8am Medical Run #10,1,13773,"4897, 4898, 4899, 4900, 4901","EndTime, Description, PickupRatingSpeed, PickupBoxDiscount",No
+AKL > WRG Pre 8am Medical Run,11,AKL > WRG Pre 8am Medical Run #11,1,36739,"8715, 8716, 8717, 8718, 8719",AutoBookScanAhead,No
+AKL > WRG Pre 8am Medical Run,12,AKL > WRG Pre 8am Medical Run #12,1,32946,"10299, 10300, 10301, 10302, 10303","EndTime, CutoffHours, Description",No
+Auckland - Tauranga Chilled,1,Auckland - Tauranga Chilled,1,36249,"5420, 5421, 5422, 5423, 5424",(name holder),No
+Auckland - Tauranga Chilled,2,Auckland - Tauranga Chilled #2,1,9225,"5505, 5506, 5507, 5508, 5509","CutoffHours, StorageState, DeliveryState",No
+Auckland - Waikato Home Delivery 11am,1,Auckland - Waikato Home Delivery 11am,2,"16298, 13681","4588, 4589, 4590, 4591, 4592",(name holder),Yes
+Auckland - Waikato Home Delivery 11am,2,Auckland - Waikato Home Delivery 11am #2,1,32929,"7306, 7307, 7308, 7309, 7310","CutoffHours, BookPickup, PickupRatingSpeed, PickupBoxDiscount",No
+Auckland > Hamilton Run 1-6,1,Auckland > Hamilton Run 1-6,3,"14853, 32110, 36266","5733, 5734, 5735, 5736, 5737",(name holder),Yes
+Auckland > Hamilton Run 1-6,2,Auckland > Hamilton Run 1-6 #2,1,33014,"4431, 4432, 4433, 4434, 4435","StartTime, PickupRatingSpeed",No
+Auckland > Hamilton Run Evening Booking Delivery,1,Auckland > Hamilton Run Evening Booking Delivery,1,1088,"5860, 5861, 5862, 5863, 5864",(name holder),No
+Auckland > Hamilton Run Evening Booking Delivery,2,Auckland > Hamilton Run Evening Booking Delivery #2,1,13713,"6400, 6401, 6402, 6403, 6404","Description, PickupRatingSpeed, DropOffLocationID",No
+Auckland > Rotorua Evening Booking Delivery,1,Auckland > Rotorua Evening Booking Delivery,1,1088,"5927, 5928, 5929, 5930, 5931",(name holder),No
+Auckland > Rotorua Evening Booking Delivery,2,Auckland > Rotorua Evening Booking Delivery #2,1,13713,"6405, 6406, 6407, 6408, 6409","StartTime, EndTime, CutoffHours, Description, PickupBoxDiscount",No
+Auckland > Tauranga Evening Booking Delivery,1,Auckland > Tauranga Evening Booking Delivery,1,1088,"5897, 5898, 5899, 5900, 5901",(name holder),No
+Auckland > Tauranga Evening Booking Delivery,2,Auckland > Tauranga Evening Booking Delivery #2,1,13713,"6410, 6411, 6412, 6413, 6414",Description,No
+Auckland > Tauranga Regional Run 9-5,1,Auckland > Tauranga Regional Run 9-5,1,33014,"4466, 4467, 4468, 4469, 4470",(name holder),No
+Auckland > Tauranga Regional Run 9-5,2,Auckland > Tauranga Regional Run 9-5 #2,1,36813,"8828, 8829, 8830, 8831, 8832","CutoffHours, PickupBoxDiscount",No
+Auckland > Tauranga Regional Run 9-5 Express,1,Auckland > Tauranga Regional Run 9-5 Express,1,33014,"4471, 4472, 4473, 4474, 4475",(name holder),No
+Auckland > Tauranga Regional Run 9-5 Express,2,Auckland > Tauranga Regional Run 9-5 Express #2,1,36813,"8823, 8824, 8825, 8826, 8827","CutoffHours, PickupBoxDiscount",No
+Auckland > Tauranga Run 3-6:30pm,1,Auckland > Tauranga Run 3-6:30pm,1,33014,"4476, 4477, 4478, 4479, 4480",(name holder),No
+Auckland > Tauranga Run 3-6:30pm,2,Auckland > Tauranga Run 3-6:30pm #2,1,36813,"8838, 8839, 8840, 8841, 8842","CutoffHours, PickupBoxDiscount",No
+Auckland > Tauranga Run Express 4-6:30,1,Auckland > Tauranga Run Express 4-6:30,1,33014,"4481, 4482, 4483, 4484, 4485",(name holder),No
+Auckland > Tauranga Run Express 4-6:30,2,Auckland > Tauranga Run Express 4-6:30 #2,1,36813,"8833, 8834, 8835, 8836, 8837","CutoffHours, PickupBoxDiscount",No
+Auckland > Waikato Regional Run 1-6,1,Auckland > Waikato Regional Run 1-6,1,33014,"4451, 4452, 4453, 4454, 4455",(name holder),No
+Auckland > Waikato Regional Run 1-6,2,Auckland > Waikato Regional Run 1-6 #2,1,36266,"6247, 6248, 6249, 6250, 6251","SpeedId, ParentSpeedId",No
+Auckland > Waikato Regional Run 7-12,1,Auckland > Waikato Regional Run 7-12,1,33014,"4456, 4457, 4458, 4459, 4460",(name holder),No
+Auckland > Waikato Regional Run 7-12,2,Auckland > Waikato Regional Run 7-12 #2,1,36266,"6252, 6253, 6254, 6255, 6256","SpeedId, CutoffHours, PickupRatingSpeed, ParentSpeedId",No
+Auckland > Waikato Regional Run Express 1-6,1,Auckland > Waikato Regional Run Express 1-6,1,33014,"4461, 4462, 4463, 4464, 4465",(name holder),No
+Auckland > Waikato Regional Run Express 1-6,2,Auckland > Waikato Regional Run Express 1-6 #2,1,36266,"6257, 6258, 6259, 6260, 6261","SpeedId, ParentSpeedId",No
+BOP > Waikato Morning Run,1,BOP > Waikato Morning Run,1,9196,"7422, 7423, 7424, 7425, 7426, 7497, 7498, 7499, 7500, 7501",(name holder),No
+BOP > Waikato Morning Run,2,BOP > Waikato Morning Run #2,1,36813,"8858, 8859, 8860, 8861, 8862",CutoffHours,No
+BOP Outer > Auckland Express Run 11-1,1,BOP Outer > Auckland Express Run 11-1,1,9196,"7427, 7428, 7429, 7430, 7431, 7502, 7503, 7504, 7505, 7506",(name holder),No
+BOP Outer > Auckland Express Run 11-1,2,BOP Outer > Auckland Express Run 11-1 #2,1,36813,"8950, 8951, 8952, 8953, 8954",CutoffHours,No
+BOP Outer > Auckland Express Run 4-6,1,BOP Outer > Auckland Express Run 4-6,1,9196,"7432, 7433, 7434, 7435, 7436, 7507, 7508, 7509, 7510, 7511",(name holder),No
+BOP Outer > Auckland Express Run 4-6,2,BOP Outer > Auckland Express Run 4-6 #2,1,36813,"8955, 8956, 8957, 8958, 8959",CutoffHours,No
+BOP Outer > Auckland Run 12-5pm,1,BOP Outer > Auckland Run 12-5pm,1,9196,"7437, 7438, 7439, 7440, 7441, 7512, 7513, 7514, 7515, 7516",(name holder),No
+BOP Outer > Auckland Run 12-5pm,2,BOP Outer > Auckland Run 12-5pm #2,1,36813,"8960, 8961, 8962, 8963, 8964",CutoffHours,No
+BOP Outer > Auckland Run 6-9pm,1,BOP Outer > Auckland Run 6-9pm,1,9196,"7442, 7443, 7444, 7445, 7446, 7517, 7518, 7519, 7520, 7521",(name holder),No
+BOP Outer > Auckland Run 6-9pm,2,BOP Outer > Auckland Run 6-9pm #2,1,36813,"8965, 8966, 8967, 8968, 8969",CutoffHours,No
+BOP Regional Home Delivery 5am,1,BOP Regional Home Delivery 5am,2,"9196, 33149","7452, 7453, 7454, 7455, 7456, 7527, 7528, 7529, 7530, 7531",(name holder),Yes
+BOP Regional Home Delivery 5am,2,BOP Regional Home Delivery 5am #2,1,16298,"4598, 4599, 4600, 4601, 4602",CutoffHours,No
+Evening Home,1,Evening Home,1,32530,"100, 104, 105, 106, 107, 108",(name holder),No
+Evening Home,2,Evening Home #2,1,1815,"121, 122, 123, 124, 125","CutoffHours, Description",No
+Evening Home,3,Evening Home #3,1,32454,"155, 156, 157, 158, 159","CutoffHours, PostcodeGroupId",No
+Friday Afternoon Express,1,Friday Afternoon Express,2,"33089, 33091",880,(name holder),Yes
+Friday Afternoon Express,2,Friday Afternoon Express #2,1,32758,187,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Friday Afternoon Express,3,Friday Afternoon Express #3,1,32822,306,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Friday Afternoon Express,4,Friday Afternoon Express #4,1,33093,896,"StartTime, EndTime, CutoffHours, Description",No
+Friday Afternoon Express,5,Friday Afternoon Express #5,1,33094,901,"EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Friday Afternoon Home,1,Friday Afternoon Home,1,32429,173,(name holder),No
+Friday Afternoon Home,2,Friday Afternoon Home #2,1,32738,"179, 12932","DayOfWeek, CutoffHours, Description, PostcodeGroupId, StorageState, DeliveryState",No
+Friday Afternoon Home,3,Friday Afternoon Home #3,1,18232,204,"CutoffHours, Description",No
+Friday Afternoon Home,4,Friday Afternoon Home #4,1,32799,339,"CutoffHours, Description",No
+Friday Evening Express,1,Friday Evening Express,2,"33089, 33091",865,(name holder),Yes
+Friday Evening Express,2,Friday Evening Express #2,1,32758,192,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Friday Evening Express,3,Friday Evening Express #3,1,32822,321,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Friday Evening Express,4,Friday Evening Express #4,1,33094,906,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Friday Evening Home,1,Friday Evening Home,1,32429,178,(name holder),No
+Friday Evening Home,2,Friday Evening Home #2,1,18232,193,"CutoffHours, Description",No
+Friday Evening Home,3,Friday Evening Home #3,1,32770,207,"CutoffHours, Description",No
+Friday Evening Home,4,Friday Evening Home #4,1,32799,345,"CutoffHours, Description",No
+Friday Morning Express,1,Friday Morning Express,1,33089,875,(name holder),No
+Friday Morning Express,2,Friday Morning Express #2,1,33091,890,DayOfWeek,No
+Genus Christchurch - Monday Chilled,1,Genus Christchurch - Monday Chilled,1,36796,8501,(name holder),No
+Genus Christchurch - Monday Chilled,2,Genus Christchurch - Monday Chilled #2,1,36266,8505,CutoffHours,No
+Hamilton - Auckland Morning Chilled,1,Hamilton - Auckland Morning Chilled,1,36991,"11351, 11352, 11353, 11354, 11355",(name holder),No
+Hamilton - Auckland Morning Chilled,2,Hamilton - Auckland Morning Chilled #2,1,36745,"12064, 12065, 12066, 12067, 12068","BookPickup, PickupPostcodeGroupId",No
+Hamilton - Taupo,1,Hamilton - Taupo,6,"31458, 31504, 31944, 31476, 31465, 31501","11943, 11944, 11945",(name holder),Yes
+Hamilton - Taupo,2,Hamilton - Taupo #2,1,36813,"8876, 8877, 8878","CutoffHours, AutoBook, PickupPostcodeGroupId",No
+Hamilton - Taupo,3,Hamilton - Taupo #3,1,32587,"12061, 12062, 12063",BookPickup,No
+Hamilton - Waikato Afternoon,1,Hamilton - Waikato Afternoon,5,"31504, 31944, 31476, 31465, 31501","11959, 11960, 11961, 11962, 11963",(name holder),Yes
+Hamilton - Waikato Afternoon,2,Hamilton - Waikato Afternoon #2,2,"31796, 36813","11800, 11801, 11802, 11803, 11804",PickupPostcodeGroupId,Yes
+Hamilton - Waikato Afternoon,3,Hamilton - Waikato Afternoon #3,1,31458,"11946, 11947, 11948, 11949, 11950",CutoffHours,No
+Hamilton - Waikato Morning,1,Hamilton - Waikato Morning,5,"31504, 31944, 31476, 31465, 31501","11964, 11965, 11966, 11967, 11968",(name holder),Yes
+Hamilton - Waikato Morning,2,Hamilton - Waikato Morning #2,1,31796,"11707, 11708, 11709, 11710, 11711","StartTime, CutoffHours, PickupPostcodeGroupId",No
+Hamilton - Waikato Morning,3,Hamilton - Waikato Morning #3,1,31458,"11951, 11952, 11953, 11954, 11955, 12183, 12184, 12185, 12186, 12187",CutoffHours,No
+Hamilton - Waikato Morning,4,Hamilton - Waikato Morning #4,1,36813,"12316, 12317, 12318, 12319, 12320",PickupPostcodeGroupId,No
+Hamilton > Auckland Express 11am-1pm,1,Hamilton > Auckland Express 11am-1pm,1,9196,"7392, 7393, 7394, 7395, 7396, 7537, 7538, 7539, 7540, 7541",(name holder),No
+Hamilton > Auckland Express 11am-1pm,2,Hamilton > Auckland Express 11am-1pm #2,1,36813,"8920, 8921, 8922, 8923, 8924",CutoffHours,No
+Hamilton > Auckland Express 4pm-6pm,1,Hamilton > Auckland Express 4pm-6pm,2,"9196, 31721","7397, 7398, 7399, 7400, 7401, 7542, 7543, 7544, 7545, 7546, 7607, 7608, 7609, 7610, 7611",(name holder),Yes
+Hamilton > Auckland Express 4pm-6pm,2,Hamilton > Auckland Express 4pm-6pm #2,1,36813,"8925, 8926, 8927, 8928, 8929",CutoffHours,No
+Hamilton > BOP,1,Hamilton > BOP,6,"31458, 31504, 31944, 31476, 31465, 31501","11938, 11939, 11940, 11941, 11942",(name holder),Yes
+Hamilton > BOP,2,Hamilton > BOP #2,1,9196,"7457, 7458, 7459, 7460, 7461, 7532, 7533, 7534, 7535, 7536","Name, PickupPostcodeGroupId",No
+Hamilton > BOP,3,Hamilton > BOP #3,1,36813,"9000, 9001, 9002, 9003, 9004",PickupPostcodeGroupId,No
+Hamilton > Tauranga afternoon,1,Hamilton > Tauranga afternoon,2,"31796, 9196","5007, 5008, 5009, 5010, 5011",(name holder),Yes
+Hamilton > Tauranga afternoon,2,Hamilton > Tauranga afternoon #2,1,36813,"9010, 9011, 9012, 9013, 9014",Name,No
+Hamilton Local Chilled,1,Hamilton Local Chilled,1,36459,"6288, 6289, 6290, 6291, 6292",(name holder),No
+Hamilton Local Chilled,2,Hamilton Local Chilled #2,1,36813,"8882, 8883, 8884, 8885, 8886",CutoffHours,No
+HLZ > AKL Day Run,1,HLZ > AKL Day Run,15,"3191, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 36739","3073, 3074, 3075, 3076, 3077",(name holder),Yes
+HLZ > AKL Day Run,2,HLZ > AKL Day Run #2,2,"14582, 14578","3380, 3381, 3382, 3383, 3384",Description,Yes
+HLZ > AKL Day Run,3,HLZ > AKL Day Run #3,1,14927,"3335, 3336, 3337, 3338, 3339",Description,No
+HLZ > AKL Day Run,4,HLZ > AKL Day Run #4,1,32946,"10114, 10115, 10116, 10117, 10118",Description,No
+HLZ > AKL Next Day Run,1,HLZ > AKL Next Day Run,17,"3191, 14582, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 36739, 32946","3287, 3288, 3289, 3290, 3291",(name holder),Yes
+HLZ > AKL Next Day Run,2,HLZ > AKL Next Day Run #2,1,14927,"3340, 3341, 3342, 3343, 3344","CutoffHours, Description",No
+HLZ > AKL Next Day Run,3,HLZ > AKL Next Day Run #3,1,14578,"3700, 3701, 3702, 3703, 3704","CutoffHours, Description",No
+HLZ > AKL PM Day Run,1,HLZ > AKL PM Day Run,16,"3191, 14582, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 36739","3109, 3110, 3111, 3112, 3113",(name holder),Yes
+HLZ > AKL PM Day Run,2,HLZ > AKL PM Day Run #2,1,14927,"3345, 3346, 3347, 3348, 3349","Description, ParentSpeedId",No
+HLZ > AKL PM Day Run,3,HLZ > AKL PM Day Run #3,1,14578,"3705, 3706, 3707, 3708, 3709",Description,No
+HLZ > AKL PM Day Run,4,HLZ > AKL PM Day Run #4,1,32946,"10124, 10125, 10126, 10127, 10128",ParentSpeedId,No
+Hyper Ride 2 - 3 Hour Service 10am,1,Hyper Ride 2 - 3 Hour Service 10am,2,"15744, 32929","2983, 2984, 2986, 2987, 6781",(name holder),Yes
+Hyper Ride 2 - 3 Hour Service 10am,2,Hyper Ride 2 - 3 Hour Service 10am #2,1,17827,"2919, 2920, 2921, 2922, 6790","SpeedId, PostcodeGroupId",No
+Hyper Ride 2 - 3 Hour Service 11am,1,Hyper Ride 2 - 3 Hour Service 11am,1,17827,"2923, 2924, 2925, 2926, 6791",(name holder),No
+Hyper Ride 2 - 3 Hour Service 11am,2,Hyper Ride 2 - 3 Hour Service 11am #2,1,15744,"2978, 2979, 2980, 2982, 6782","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 12pm,1,Hyper Ride 2 - 3 Hour Service 12pm,1,17827,"2928, 2929, 2931, 2932, 6792",(name holder),No
+Hyper Ride 2 - 3 Hour Service 12pm,2,Hyper Ride 2 - 3 Hour Service 12pm #2,1,15744,"2973, 2975, 2976, 2977, 6783","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 1pm,1,Hyper Ride 2 - 3 Hour Service 1pm,1,17827,"2933, 2934, 2935, 2937, 6793",(name holder),No
+Hyper Ride 2 - 3 Hour Service 1pm,2,Hyper Ride 2 - 3 Hour Service 1pm #2,1,15744,"2968, 2969, 2970, 2972, 6784","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 2pm,1,Hyper Ride 2 - 3 Hour Service 2pm,1,17827,"2938, 2940, 2941, 2942, 6794",(name holder),No
+Hyper Ride 2 - 3 Hour Service 2pm,2,Hyper Ride 2 - 3 Hour Service 2pm #2,1,15744,"2963, 2964, 2965, 2967, 6785","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 3pm,1,Hyper Ride 2 - 3 Hour Service 3pm,1,17827,"2943, 2944, 2946, 2947, 6795",(name holder),No
+Hyper Ride 2 - 3 Hour Service 3pm,2,Hyper Ride 2 - 3 Hour Service 3pm #2,1,15744,"2958, 2959, 2960, 2962, 6786","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 4pm,1,Hyper Ride 2 - 3 Hour Service 4pm,1,17827,"2948, 2950, 2951, 2952, 6796",(name holder),No
+Hyper Ride 2 - 3 Hour Service 4pm,2,Hyper Ride 2 - 3 Hour Service 4pm #2,1,15744,"2953, 2954, 2955, 2957, 6787","SpeedId, ParentSpeedId",No
+Hyper Ride 2 - 3 Hour Service 9am,1,Hyper Ride 2 - 3 Hour Service 9am,1,15744,"2898, 2899, 2900, 2901, 6788",(name holder),No
+Hyper Ride 2 - 3 Hour Service 9am,2,Hyper Ride 2 - 3 Hour Service 9am #2,1,17827,"2903, 2904, 2905, 2907, 6797","SpeedId, ParentSpeedId",No
+IGNORE,1,IGNORE,1,33289,6726,(name holder),No
+IGNORE,2,IGNORE #2,1,33149,"9569, 9570, 9572, 9573","Name, DayOfWeek, StartTime, EndTime, Region, SpeedId, CutoffHours, Description, AutoBook, PostcodeGroupId, StorageState, DeliveryState, PickupRatingSpeed, ParentSpeedId, DropOffLocationID",No
+IGNORE,3,IGNORE #3,1,33047,"11866, 11867, 11868, 11870, 11871, 11872, 11873, 11874, 11875, 11876, 11877, 11878, 11879, 11880, 11881, 11882, 11883, 11884, 11885","Name, DayOfWeek, StartTime, EndTime, Region, SpeedId, CutoffHours, Description, AutoBook, PostcodeGroupId, BookPickup, StorageState, DeliveryState, ParentSpeedId, PickupBoxDiscount, DropOffLocationID, ApplyPickupCutoff",No
+Monday Afternoon Express,1,Monday Afternoon Express,2,"33089, 33091",876,(name holder),Yes
+Monday Afternoon Express,2,Monday Afternoon Express #2,1,32758,183,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Monday Afternoon Express,3,Monday Afternoon Express #3,1,32822,302,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Monday Afternoon Express,4,Monday Afternoon Express #4,1,33093,892,"StartTime, EndTime, CutoffHours, Description",No
+Monday Afternoon Express,5,Monday Afternoon Express #5,1,33094,897,"EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Monday Afternoon Home,1,Monday Afternoon Home,1,32429,169,(name holder),No
+Monday Afternoon Home,2,Monday Afternoon Home #2,1,18232,200,"CutoffHours, Description",No
+Monday Afternoon Home,3,Monday Afternoon Home #3,1,32799,335,"CutoffHours, Description",No
+Monday Evening Express,1,Monday Evening Express,2,"33089, 33091",861,(name holder),Yes
+Monday Evening Express,2,Monday Evening Express #2,1,32758,189,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Monday Evening Express,3,Monday Evening Express #3,1,32822,317,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Monday Evening Express,4,Monday Evening Express #4,1,33094,902,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Monday Evening Home,1,Monday Evening Home,1,32429,174,(name holder),No
+Monday Evening Home,2,Monday Evening Home #2,1,18232,194,"CutoffHours, Description",No
+Monday Evening Home,3,Monday Evening Home #3,1,32770,205,"CutoffHours, Description",No
+Monday Evening Home,4,Monday Evening Home #4,1,32799,341,"CutoffHours, Description",No
+Napier Afternoons AH,1,Napier Afternoons AH,1,16298,"4579, 4580",(name holder),No
+Napier Afternoons AH,2,Napier Afternoons AH #2,1,36698,"13050, 13051, 13052","DayOfWeek, StartTime, CutoffHours, PickupDepotId, StorageState",No
+Online Meats Wellington Express service,1,Online Meats Wellington Express service,1,17960,"7669, 7671, 7673, 13708, 13709",(name holder),No
+Online Meats Wellington Express service,2,Online Meats Wellington Express service #2,1,32929,"13704, 13705, 13706, 13707","DayOfWeek, CutoffHours, AutoBook",No
+Outer BOP > Tauranga,1,Outer BOP > Tauranga,1,32875,"12789, 12790, 12791, 12792, 12793",(name holder),No
+Outer BOP > Tauranga,2,Outer BOP > Tauranga #2,1,17272,"13759, 13760, 13761, 13762, 13763",DropOffLocationID,No
+P2P Auckland Afternoon Delivery 12pm - 5pm,1,P2P Auckland Afternoon Delivery 12pm - 5pm,1,32896,"5027, 5028, 5029, 5030, 5031",(name holder),No
+P2P Auckland Afternoon Delivery 12pm - 5pm,2,P2P Auckland Afternoon Delivery 12pm - 5pm #2,1,36834,"8785, 8786, 8787, 8788, 8789","BookPickup, ApplyPickupCutoff",No
+P2P Auckland Evening Delivery 6pm - 9pm,1,P2P Auckland Evening Delivery 6pm - 9pm,1,32896,"5166, 5167, 5168, 5169, 5170",(name holder),No
+P2P Auckland Evening Delivery 6pm - 9pm,2,P2P Auckland Evening Delivery 6pm - 9pm #2,1,36834,"8780, 8781, 8782, 8783, 8784","BookPickup, ApplyPickupCutoff",No
+Pukekohe > AKL Returns,1,Pukekohe > AKL Returns,4,"35755, 18188, 36739, 13773","10688, 10689, 10690, 10691, 10692",(name holder),Yes
+Pukekohe > AKL Returns,2,Pukekohe > AKL Returns #2,1,14582,"11029, 11030, 11031, 11032, 11033","CutoffHours, Description",No
+Pukekohe > AKL Run,1,Pukekohe > AKL Run,5,"13713, 14927, 16947, 14578, 3191","7617, 7618, 7619, 7620, 7621",(name holder),Yes
+Pukekohe > AKL Run,2,Pukekohe > AKL Run #2,4,"169, 32946, 14821, 9477","9564, 9565, 9566, 9567, 9568",CutoffHours,Yes
+Pukekohe > AKL Run,3,Pukekohe > AKL Run #3,1,36820,"8750, 8751, 8752, 8753, 8754, 8765, 8766, 8767, 8768, 8769",CutoffHours,No
+Pukekohe > AKL Run,4,Pukekohe > AKL Run #4,1,18185,"9192, 9193, 9194, 9195, 9196","CutoffHours, Description",No
+Pukekohe Afternoon Delivery,1,Pukekohe Afternoon Delivery,4,"3191, 169, 9477, 35755","9606, 9607, 9608, 9609, 9610",(name holder),Yes
+Pukekohe Afternoon Delivery,2,Pukekohe Afternoon Delivery #2,2,"18185, 16947","9596, 9597, 9598, 9599, 9600",PostcodeGroupId,Yes
+Pukekohe Afternoon Delivery,3,Pukekohe Afternoon Delivery #3,1,14578,"9601, 9602, 9603, 9604, 9605","CutoffHours, Description, PickupRatingSpeed",No
+PWL - Morning Economy,1,PWL - Morning Economy,1,36403,"6681, 6682, 6683, 6684, 6685",(name holder),No
+PWL - Morning Economy,2,PWL - Morning Economy #2,1,32929,"6697, 6698, 6699, 6700, 6701","SpeedId, ParentSpeedId",No
+RAWES - Regional Whangarei,1,RAWES - Regional Whangarei,1,17238,"782, 783, 2155, 2156, 2157",(name holder),No
+RAWES - Regional Whangarei,2,RAWES - Regional Whangarei #2,1,32929,"13748, 13749, 13750, 13751, 13752","StartTime, EndTime, CutoffHours, AutoBookScanAhead",No
+Regional Friday,1,Regional Friday,1,31563,301,(name holder),No
+Regional Friday,2,Regional Friday #2,1,32779,333,CutoffHours,No
+Regional Thursday,1,Regional Thursday,1,31563,300,(name holder),No
+Regional Thursday,2,Regional Thursday #2,1,32779,332,CutoffHours,No
+ROT > AKL Day Run,1,ROT > AKL Day Run,15,"3191, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 32946","3282, 3283, 3284, 3285, 3286",(name holder),Yes
+ROT > AKL Day Run,2,ROT > AKL Day Run #2,1,14927,"3350, 3351, 3352, 3353, 3354",Description,No
+ROT > AKL Day Run,3,ROT > AKL Day Run #3,1,14582,"3395, 3396, 3397, 3398, 3399",PickupPostcodeGroupId,No
+ROT > AKL Day Run,4,ROT > AKL Day Run #4,1,14578,"3710, 3711, 3712, 3713, 3714",Description,No
+ROT > AKL Day Run,5,ROT > AKL Day Run #5,1,36739,"8655, 8656, 8657, 8658, 8659",ParentSpeedId,No
+ROT > AKL Next Day Run,1,ROT > AKL Next Day Run,15,"3191, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 32946","3083, 3084, 3085, 3086, 3087",(name holder),Yes
+ROT > AKL Next Day Run,2,ROT > AKL Next Day Run #2,1,14927,"3355, 3356, 3357, 3358, 3359","CutoffHours, Description",No
+ROT > AKL Next Day Run,3,ROT > AKL Next Day Run #3,1,14582,"3400, 3401, 3402, 3403, 3404",PickupPostcodeGroupId,No
+ROT > AKL Next Day Run,4,ROT > AKL Next Day Run #4,1,14578,"3715, 3716, 3717, 3718, 3719",CutoffHours,No
+ROT > AKL Next Day Run,5,ROT > AKL Next Day Run #5,1,36739,"8660, 8661, 8662, 8663, 8664",ParentSpeedId,No
+Saturday 2 Hour Express (9:00-11:00am),1,Saturday 2 Hour Express (9:00-11:00am),1,33096,3327,(name holder),No
+Saturday 2 Hour Express (9:00-11:00am),2,Saturday 2 Hour Express (9:00-11:00am) #2,1,36048,4729,"SpeedId, CutoffHours, ParentSpeedId",No
+Saturday Afternoon Express,1,Saturday Afternoon Express,1,33043,709,(name holder),No
+Saturday Afternoon Express,2,Saturday Afternoon Express #2,1,33094,907,"SpeedId, CutoffHours, Description, BookPickup, ParentSpeedId",No
+Saturday Afternoon Home,1,Saturday Afternoon Home,1,32714,167,(name holder),No
+Saturday Afternoon Home,2,Saturday Afternoon Home #2,1,16298,1356,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Saturday Afternoon Home,3,Saturday Afternoon Home #3,1,32765,1499,"DayOfWeek, StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Saturday Afternoon Home,4,Saturday Afternoon Home #4,1,34381,1950,"EndTime, CutoffHours, Description, AutoBook, BookPickup",No
+SGRDL - Afternoon Home AKL,1,SGRDL - Afternoon Home AKL,1,33289,"3937, 3938, 3939, 3940, 3941",(name holder),No
+SGRDL - Afternoon Home AKL,2,SGRDL - Afternoon Home AKL #2,1,16702,"4771, 4772, 4773, 4774, 4775","BookPickup, PickupRatingSpeed, PickupPostcodeGroupId, PickupBoxDiscount, DropOffLocationID, ApplyPickupCutoff, PickupCutoff",No
+Standard Baggage Run 12 pm,1,Standard Baggage Run 12 pm,2,"16730, 16166","11380, 11381, 11382, 11383, 11384, 11385, 11386",(name holder),Yes
+Standard Baggage Run 12 pm,2,Standard Baggage Run 12 pm #2,1,37248,"13150, 13151, 13152, 13153, 13154, 13155, 13156","StartTime, StorageState, DeliveryState",No
+Standard Baggage Run 12pm,1,Standard Baggage Run 12pm,1,17326,"12268, 12269, 12270, 12271, 12272, 12273, 12274",(name holder),No
+Standard Baggage Run 12pm,2,Standard Baggage Run 12pm #2,1,37249,"13185, 13186, 13187, 13188, 13189, 13190, 13191","EndTime, Region, PostcodeGroupId, PickupDepotId, StorageState, DeliveryState",No
+Standard Baggage Run 4pm,1,Standard Baggage Run 4pm,4,"16730, 17326, 35642, 16166","11329, 11330, 11331, 11332, 11333, 11344, 11345",(name holder),Yes
+Standard Baggage Run 4pm,2,Standard Baggage Run 4pm #2,1,37248,"13157, 13158, 13159, 13160, 13161, 13162, 13163","StorageState, DeliveryState",No
+Standard Baggage Run 6pm,1,Standard Baggage Run 6pm,4,"16730, 17326, 35642, 16166","11373, 11374, 11375, 11376, 11377, 11378, 11379",(name holder),Yes
+Standard Baggage Run 6pm,2,Standard Baggage Run 6pm #2,1,37248,"13164, 13165, 13166, 13167, 13168, 13169, 13170","StorageState, DeliveryState",No
+Standard Baggage Run 6pm,3,Standard Baggage Run 6pm #3,1,37249,"13192, 13193, 13194, 13195, 13196, 13197, 13198","Region, Description, PostcodeGroupId, PickupDepotId, StorageState, DeliveryState",No
+Standard Baggage Run 9pm,1,Standard Baggage Run 9pm,3,"16730, 35642, 16166","11366, 11367, 11368, 11369, 11370, 11371, 11372",(name holder),Yes
+Standard Baggage Run 9pm,2,Standard Baggage Run 9pm #2,1,17326,"12254, 12255, 12256, 12257, 12258, 12259, 12260",StartTime,No
+Standard Baggage Run 9pm,3,Standard Baggage Run 9pm #3,1,37248,"13171, 13172, 13173, 13174, 13175, 13176, 13177","StorageState, DeliveryState",No
+Sunday Auckland Home Delivery,1,Sunday Auckland Home Delivery,2,"32853, 32854",370,(name holder),Yes
+Sunday Auckland Home Delivery,2,Sunday Auckland Home Delivery #2,1,31654,238,AutoBook,No
+Sunday Christchurch Home Delivery,1,Sunday Christchurch Home Delivery,2,"32853, 32854",369,(name holder),Yes
+Sunday Christchurch Home Delivery,2,Sunday Christchurch Home Delivery #2,1,31654,245,AutoBook,No
+Sunday Hamilton Home Delivery,1,Sunday Hamilton Home Delivery,2,"32853, 32854",371,(name holder),Yes
+Sunday Hamilton Home Delivery,2,Sunday Hamilton Home Delivery #2,1,31654,239,AutoBook,No
+Sunday Napier Home Delivery,1,Sunday Napier Home Delivery,2,"32853, 32854",372,(name holder),Yes
+Sunday Napier Home Delivery,2,Sunday Napier Home Delivery #2,1,31654,241,AutoBook,No
+Sunday Napier Home Delivery,3,Sunday Napier Home Delivery #3,1,32990,1260,"CutoffHours, Description, BookPickup",No
+Sunday Palmerston North Home Delivery,1,Sunday Palmerston North Home Delivery,2,"32853, 32854",374,(name holder),Yes
+Sunday Palmerston North Home Delivery,2,Sunday Palmerston North Home Delivery #2,1,31654,242,AutoBook,No
+Sunday Tauranga Home Delivery,1,Sunday Tauranga Home Delivery,2,"32853, 32854",373,(name holder),Yes
+Sunday Tauranga Home Delivery,2,Sunday Tauranga Home Delivery #2,1,31654,240,AutoBook,No
+Sunday Wellington Home Delivery,1,Sunday Wellington Home Delivery,2,"32853, 32854",375,(name holder),Yes
+Sunday Wellington Home Delivery,2,Sunday Wellington Home Delivery #2,1,31654,243,AutoBook,No
+Surfboards UCL AKL - WGTN*12:00:00-17:00:00,1,Surfboards UCL AKL - WGTN*12:00:00-17:00:00,1,17827,"3169, 3170, 3171, 3172, 3173",(name holder),No
+Surfboards UCL AKL - WGTN*12:00:00-17:00:00,2,Surfboards UCL AKL - WGTN*12:00:00-17:00:00 #2,1,35290,"3179, 3180, 3181, 3182, 3183","BookPickup, PickupDepotId, StorageState, DeliveryState, PickupRatingSpeed, PickupPostcodeGroupId, PickupBoxDiscount, DropOffLocationID",No
+Surfboards UCL AKL - WGTN*12:00:00-17:00:00,3,Surfboards UCL AKL - WGTN*12:00:00-17:00:00 #3,1,35306,"3184, 3185, 3186, 3187, 3188","SpeedId, BookPickup, PickupDepotId, StorageState, DeliveryState, PickupRatingSpeed, PickupPostcodeGroupId, ParentSpeedId, PickupBoxDiscount, DropOffLocationID",No
+Tauranga - Taupo Delivery,1,Tauranga - Taupo Delivery,1,36813,"8863, 8864, 8865",(name holder),No
+Tauranga - Taupo Delivery,2,Tauranga - Taupo Delivery #2,1,32943,"11757, 11758, 11759","StartTime, CutoffHours, AutoBook",No
+Tauranga > Auckland Express Run,1,Tauranga > Auckland Express Run,1,9196,"7467, 7468, 7469, 7470, 7471, 7562, 7563, 7564, 7565, 7566",(name holder),No
+Tauranga > Auckland Express Run,2,Tauranga > Auckland Express Run #2,1,36813,"8970, 8971, 8972, 8973, 8974",CutoffHours,No
+Tauranga > Auckland Express Run 4pm-6pm,1,Tauranga > Auckland Express Run 4pm-6pm,1,9196,"7472, 7473, 7474, 7475, 7476, 7567, 7568, 7569, 7570, 7571",(name holder),No
+Tauranga > Auckland Express Run 4pm-6pm,2,Tauranga > Auckland Express Run 4pm-6pm #2,1,36813,"8975, 8976, 8977, 8978, 8979",CutoffHours,No
+Tauranga > Auckland Run,1,Tauranga > Auckland Run,1,9196,"7477, 7478, 7479, 7480, 7481, 7572, 7573, 7574, 7575, 7576",(name holder),No
+Tauranga > Auckland Run,2,Tauranga > Auckland Run #2,1,36813,"8980, 8981, 8982, 8983, 8984",CutoffHours,No
+Tauranga > Auckland Run 6pm-9pm,1,Tauranga > Auckland Run 6pm-9pm,1,9196,"7482, 7483, 7484, 7485, 7486, 7577, 7578, 7579, 7580, 7581",(name holder),No
+Tauranga > Auckland Run 6pm-9pm,2,Tauranga > Auckland Run 6pm-9pm #2,1,36813,"8985, 8986, 8987, 8988, 8989",CutoffHours,No
+Tauranga > BOP Outer Run,1,Tauranga > BOP Outer Run,2,"31488, 31486","11674, 11675, 11676, 11677, 11678",(name holder),Yes
+Tauranga > BOP Outer Run,2,Tauranga > BOP Outer Run #2,1,36813,"8890, 8891, 8892, 8893, 8894",CutoffHours,No
+Tauranga > BOP Outer Run,3,Tauranga > BOP Outer Run #3,1,15608,"12069, 12070, 12071, 12072, 12073","StartTime, ApplyPickupCutoff, PickupCutoff",No
+Tauranga > Outer BOP,1,Tauranga > Outer BOP,1,32875,"12794, 12795, 12796, 12797, 12798",(name holder),No
+Tauranga > Outer BOP,2,Tauranga > Outer BOP #2,1,17272,"13754, 13755, 13756, 13757, 13758",DropOffLocationID,No
+Tauranga > Waikato Afternoon Run,1,Tauranga > Waikato Afternoon Run,1,9196,"7487, 7488, 7489, 7490, 7491, 7582, 7583, 7584, 7585, 7586",(name holder),No
+Tauranga > Waikato Afternoon Run,2,Tauranga > Waikato Afternoon Run #2,1,36813,"8866, 8867, 8868, 8869, 8870",CutoffHours,No
+Tauranga > Waikato Afternoon Run,3,Tauranga > Waikato Afternoon Run #3,1,31730,"11692, 11693, 11694, 11695, 11696",CutoffHours,No
+Tauranga > Waikato Afternoon Run,4,Tauranga > Waikato Afternoon Run #4,1,32943,"11752, 11753, 11754, 11755, 11756","StartTime, CutoffHours",No
+Tauranga > Waikato Morning Run,1,Tauranga > Waikato Morning Run,2,"9196, 31730","7492, 7493, 7494, 7495, 7496, 7587, 7588, 7589, 7590, 7591",(name holder),Yes
+Tauranga > Waikato Morning Run,2,Tauranga > Waikato Morning Run #2,1,36813,"8871, 8872, 8873, 8874, 8875",CutoffHours,No
+Tauranga > Waikato Morning Run,3,Tauranga > Waikato Morning Run #3,1,32943,"11747, 11748, 11749, 11750, 11751","StartTime, CutoffHours",No
+Tauranga > Whakatane Run,1,Tauranga > Whakatane Run,4,"32186, 32206, 32993, 35321","12118, 12119, 12120, 12121, 12122",(name holder),Yes
+Tauranga > Whakatane Run,2,Tauranga > Whakatane Run #2,2,"32767, 32246","12163, 12164, 12165, 12166, 12167","Description, ApplyPickupCutoff, PickupCutoff",Yes
+Tauranga Express,1,Tauranga Express,1,33049,654,(name holder),No
+Tauranga Express,2,Tauranga Express #2,1,32973,"1115, 1116, 1117, 1118, 1119","DayOfWeek, StartTime, EndTime, CutoffHours, Description, BookPickup, PickupDepotId",No
+Thursday Afternoon Express,1,Thursday Afternoon Express,2,"33089, 33091",879,(name holder),Yes
+Thursday Afternoon Express,2,Thursday Afternoon Express #2,1,32758,186,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Thursday Afternoon Express,3,Thursday Afternoon Express #3,1,32822,305,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Thursday Afternoon Express,4,Thursday Afternoon Express #4,1,33093,895,"StartTime, EndTime, CutoffHours, Description",No
+Thursday Afternoon Express,5,Thursday Afternoon Express #5,1,33094,900,"EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Thursday Afternoon Home,1,Thursday Afternoon Home,1,32429,172,(name holder),No
+Thursday Afternoon Home,2,Thursday Afternoon Home #2,1,18232,203,"CutoffHours, Description",No
+Thursday Afternoon Home,3,Thursday Afternoon Home #3,1,32799,338,"CutoffHours, Description",No
+Thursday Evening Express,1,Thursday Evening Express,2,"33089, 33091",864,(name holder),Yes
+Thursday Evening Express,2,Thursday Evening Express #2,1,32758,191,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Thursday Evening Express,3,Thursday Evening Express #3,1,32822,320,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Thursday Evening Express,4,Thursday Evening Express #4,1,33094,905,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Thursday Evening Home,1,Thursday Evening Home,1,32429,177,(name holder),No
+Thursday Evening Home,2,Thursday Evening Home #2,1,18232,197,"CutoffHours, Description",No
+Thursday Evening Home,3,Thursday Evening Home #3,1,32799,344,"CutoffHours, Description",No
+Thursday Evening Home,4,Thursday Evening Home #4,1,33727,1551,"CutoffHours, Description, AutoBook, BookPickup",No
+TRG > AKL Day Run,1,TRG > AKL Day Run,15,"14582, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 3191, 13822, 35755, 169, 36672, 36739","3405, 3406, 3407, 3408, 3409",(name holder),Yes
+TRG > AKL Day Run,2,TRG > AKL Day Run #2,1,14927,"3360, 3361, 3362, 3363, 3364","Description, PickupPostcodeGroupId",No
+TRG > AKL Day Run,3,TRG > AKL Day Run #3,1,14578,"3720, 3721, 3722, 3723, 3724","CutoffHours, Description",No
+TRG > AKL Day Run,4,TRG > AKL Day Run #4,1,13773,"4927, 4928, 4929, 4930, 4931",ParentSpeedId,No
+TRG > AKL Day Run,5,TRG > AKL Day Run #5,1,32946,"10139, 10140, 10141, 10142, 10143",PickupPostcodeGroupId,No
+TRG > AKL Next Day Run,1,TRG > AKL Next Day Run,15,"14582, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 3191, 13822, 35755, 169, 36672, 36739","3410, 3411, 3412, 3413, 3414",(name holder),Yes
+TRG > AKL Next Day Run,2,TRG > AKL Next Day Run #2,1,14927,"3365, 3366, 3367, 3368, 3369","EndTime, CutoffHours, Description, PickupPostcodeGroupId",No
+TRG > AKL Next Day Run,3,TRG > AKL Next Day Run #3,1,14578,"3725, 3726, 3727, 3728, 3729","CutoffHours, Description",No
+TRG > AKL Next Day Run,4,TRG > AKL Next Day Run #4,1,13773,"4932, 4933, 4934, 4935, 4936",ParentSpeedId,No
+TRG > AKL Next Day Run,5,TRG > AKL Next Day Run #5,1,32946,"10144, 10145, 10146, 10147, 10148","EndTime, PickupPostcodeGroupId",No
+Tuesday Afternoon Express,1,Tuesday Afternoon Express,2,"33089, 33091",877,(name holder),Yes
+Tuesday Afternoon Express,2,Tuesday Afternoon Express #2,1,32758,184,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Tuesday Afternoon Express,3,Tuesday Afternoon Express #3,1,32822,303,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Tuesday Afternoon Express,4,Tuesday Afternoon Express #4,1,33093,893,"StartTime, EndTime, CutoffHours, Description",No
+Tuesday Afternoon Express,5,Tuesday Afternoon Express #5,1,33094,898,"EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Tuesday Afternoon Home,1,Tuesday Afternoon Home,1,32429,170,(name holder),No
+Tuesday Afternoon Home,2,Tuesday Afternoon Home #2,1,18232,201,"CutoffHours, Description",No
+Tuesday Afternoon Home,3,Tuesday Afternoon Home #3,1,32799,336,"CutoffHours, Description",No
+Tuesday Evening Express,1,Tuesday Evening Express,2,"33089, 33091",862,(name holder),Yes
+Tuesday Evening Express,2,Tuesday Evening Express #2,1,32758,188,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Tuesday Evening Express,3,Tuesday Evening Express #3,1,32822,318,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Tuesday Evening Express,4,Tuesday Evening Express #4,1,33094,903,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Tuesday Evening Home,1,Tuesday Evening Home,1,32429,175,(name holder),No
+Tuesday Evening Home,2,Tuesday Evening Home #2,1,18232,195,"CutoffHours, Description",No
+Tuesday Evening Home,3,Tuesday Evening Home #3,1,32799,342,"CutoffHours, Description",No
+Urgent Express Delivery 12pm,1,Urgent Express Delivery 12pm,2,"32896, 32335","5266, 5267, 5268, 5269, 5270, 5271, 5272",(name holder),Yes
+Urgent Express Delivery 12pm,2,Urgent Express Delivery 12pm #2,1,32584,"464, 465, 466, 467, 468, 5120, 5121, 5156, 5157, 5160, 5161",PostcodeGroupId,No
+Urgent Express Delivery 12pm,3,Urgent Express Delivery 12pm #3,1,32893,"5336, 5337, 5338, 5339, 5340, 5341, 5342",PostcodeGroupId,No
+Urgent Express Delivery 9am,1,Urgent Express Delivery 9am,2,"32584, 32893","5139, 5140, 5141, 5142, 5143, 5150, 5151",(name holder),Yes
+Urgent Express Delivery 9am,2,Urgent Express Delivery 9am #2,1,32896,"5224, 5225, 5226, 5227, 5228, 5229, 5230","PostcodeGroupId, PickupDepotId",No
+Urgent Express Delivery 9am,3,Urgent Express Delivery 9am #3,1,32335,"5279, 5280, 5281, 5282, 5283, 5284, 5285",PostcodeGroupId,No
+Value Tyres Tauranga > Whakatane Run,1,Value Tyres Tauranga > Whakatane Run,1,32170,"11679, 11680, 11681, 11682, 11683",(name holder),No
+Value Tyres Tauranga > Whakatane Run,2,Value Tyres Tauranga > Whakatane Run #2,1,35440,"12056, 12057, 12058, 12059, 12060","StartTime, Description, BookPickup, PickupPostcodeGroupId",No
+VDAY MORNING,1,VDAY MORNING,1,17791,4527,(name holder),No
+VDAY MORNING,2,VDAY MORNING #2,1,17869,4528,CutoffHours,No
+Waikato Local > Auckland Express 11am-1pm,1,Waikato Local > Auckland Express 11am-1pm,1,36813,"8930, 8931, 8932, 8933, 8934",(name holder),No
+Waikato Local > Auckland Express 11am-1pm,2,Waikato Local > Auckland Express 11am-1pm #2,1,31504,"12051, 12052, 12053, 12054, 12055",CutoffHours,No
+Waikato Outer - Hamilton Afternoon,1,Waikato Outer - Hamilton Afternoon,1,35338,"11817, 12203, 12204, 12205, 12206",(name holder),No
+Waikato Outer - Hamilton Afternoon,2,Waikato Outer - Hamilton Afternoon #2,1,36813,"12324, 12325, 12326, 12327, 12328","CutoffHours, PickupDepotId, PickupPostcodeGroupId, ParentSpeedId",No
+Waikato Outer - Morning,1,Waikato Outer - Morning,1,31492,"12113, 12114, 12115, 12116, 12117",(name holder),No
+Waikato Outer - Morning,2,Waikato Outer - Morning #2,1,36813,"12329, 12330, 12331, 12332, 12333","ApplyPickupCutoff, PickupCutoff",No
+Waikato Outer > Auckland Express 11am-1pm,1,Waikato Outer > Auckland Express 11am-1pm,1,36813,"8940, 8941, 8942, 8943, 8944",(name holder),No
+Waikato Outer > Auckland Express 11am-1pm,2,Waikato Outer > Auckland Express 11am-1pm #2,1,34981,"12970, 12971, 12972, 12973, 12974","CutoffHours, PickupPostcodeGroupId",No
+Waikato Outer > Auckland Express 4pm-6pm,1,Waikato Outer > Auckland Express 4pm-6pm,1,36813,"8945, 8946, 8947, 8948, 8949",(name holder),No
+Waikato Outer > Auckland Express 4pm-6pm,2,Waikato Outer > Auckland Express 4pm-6pm #2,1,34981,"12965, 12966, 12967, 12968, 12969","CutoffHours, PickupPostcodeGroupId",No
+Wednesday Afternoon Express,1,Wednesday Afternoon Express,2,"33089, 33091",878,(name holder),Yes
+Wednesday Afternoon Express,2,Wednesday Afternoon Express #2,1,32758,185,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Wednesday Afternoon Express,3,Wednesday Afternoon Express #3,1,32822,304,"EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Wednesday Afternoon Express,4,Wednesday Afternoon Express #4,1,33093,894,"StartTime, EndTime, CutoffHours, Description",No
+Wednesday Afternoon Express,5,Wednesday Afternoon Express #5,1,33094,899,"EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Wednesday Afternoon Home,1,Wednesday Afternoon Home,1,32429,171,(name holder),No
+Wednesday Afternoon Home,2,Wednesday Afternoon Home #2,1,18232,202,"CutoffHours, Description",No
+Wednesday Afternoon Home,3,Wednesday Afternoon Home #3,1,32738,261,"CutoffHours, Description",No
+Wednesday Afternoon Home,4,Wednesday Afternoon Home #4,1,32799,337,"CutoffHours, Description",No
+Wednesday Evening Express,1,Wednesday Evening Express,2,"33089, 33091",863,(name holder),Yes
+Wednesday Evening Express,2,Wednesday Evening Express #2,1,32758,190,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Wednesday Evening Express,3,Wednesday Evening Express #3,1,32822,319,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, BookPickup, ParentSpeedId",No
+Wednesday Evening Express,4,Wednesday Evening Express #4,1,33094,904,"StartTime, EndTime, SpeedId, CutoffHours, Description, AutoBook, ParentSpeedId",No
+Wednesday Evening Home,1,Wednesday Evening Home,1,32429,176,(name holder),No
+Wednesday Evening Home,2,Wednesday Evening Home #2,1,18232,196,"CutoffHours, Description",No
+Wednesday Evening Home,3,Wednesday Evening Home #3,1,32770,206,"CutoffHours, Description",No
+Wednesday Evening Home,4,Wednesday Evening Home #4,1,32799,343,"CutoffHours, Description",No
+Wellington Afternoons AH,1,Wellington Afternoons AH,1,16298,"4583, 4584, 4585, 4586, 4587",(name holder),No
+Wellington Afternoons AH,2,Wellington Afternoons AH #2,1,36266,"6702, 6703, 6704, 6705, 6706","BookPickup, PickupRatingSpeed, PickupBoxDiscount",No
+Wellington Chilled,1,Wellington Chilled,1,33710,"4045, 4046, 4047, 4048, 4049",(name holder),No
+Wellington Chilled,2,Wellington Chilled #2,1,35221,"6090, 6091, 6092, 6093, 6094","StartTime, CutoffHours, Description, PickupBoxDiscount, ApplyPickupCutoff",No
+WHK > AKL Next Day Run,1,WHK > AKL Next Day Run,16,"14582, 16947, 16513, 18188, 13713, 504, 14578, 9477, 14763, 18185, 3191, 13822, 13773, 35755, 169, 36672","3415, 3416, 3417, 3418, 3419",(name holder),Yes
+WHK > AKL Next Day Run,2,WHK > AKL Next Day Run #2,1,14927,"3370, 3371, 3372, 3373, 3374","StartTime, CutoffHours, Description, PickupPostcodeGroupId",No
+WHK > AKL Next Day Run,3,WHK > AKL Next Day Run #3,1,36739,"8675, 8676, 8677, 8678, 8679",ParentSpeedId,No
+WHK > AKL Next Day Run,4,WHK > AKL Next Day Run #4,1,32946,"10149, 10150, 10151, 10152, 10153",PickupPostcodeGroupId,No
+WLG > Palmerston North,1,WLG > Palmerston North,3,"35642, 17326, 16166","13381, 13382, 13383, 13384, 13385",(name holder),Yes
+WLG > Palmerston North,2,WLG > Palmerston North #2,1,16730,"13694, 13695, 13696, 13697, 13698",ApplyPickupCutoff,No
+WLG > Whanganui (QC),1,WLG > Whanganui (QC),3,"16730, 35642, 16166","10451, 10452, 10453, 10454, 10455",(name holder),Yes
+WLG > Whanganui (QC),2,WLG > Whanganui (QC) #2,1,17326,"13582, 13583, 13584, 13585, 13586",CutoffHours,No
+Woop Napier Xmas,1,Woop Napier Xmas,1,18137,"4055, 4258",(name holder),No
+Woop Napier Xmas,2,Woop Napier Xmas #2,1,17534,4259,CutoffHours,No
+Woop PN Xmas,1,Woop PN Xmas,1,17815,4054,(name holder),No
+Woop PN Xmas,2,Woop PN Xmas #2,1,17534,4257,CutoffHours,No
+Woop Tga Xmas,1,Woop Tga Xmas,1,17535,"4052, 4053",(name holder),No
+Woop Tga Xmas,2,Woop Tga Xmas #2,1,17534,4260,CutoffHours,No
+WRE Regional Home Delivery 5am,1,WRE Regional Home Delivery 5am,1,17827,"4630, 4631, 4632, 4633, 4634",(name holder),No
+WRE Regional Home Delivery 5am,2,WRE Regional Home Delivery 5am #2,1,16298,"9897, 9898, 9899, 9900, 9901","CutoffHours, PickupDepotId, AutoBookScanAhead",No
+WRG > AKL Day Run,1,WRG > AKL Day Run,15,"14582, 16947, 16513, 18188, 13713, 504, 9477, 14763, 18185, 13822, 13773, 35755, 169, 36672, 36739","3420, 3421, 3422, 3423, 3424",(name holder),Yes
+WRG > AKL Day Run,2,WRG > AKL Day Run #2,2,"3191, 32946","2988, 2989, 2990, 2991, 2992","Description, ParentSpeedId",Yes
+WRG > AKL Day Run,3,WRG > AKL Day Run #3,1,14927,"3375, 3376, 3377, 3378, 3379","Description, ParentSpeedId",No
+WRG > AKL Day Run,4,WRG > AKL Day Run #4,1,14578,"3735, 3736, 3737, 3738, 3739",Description,No
+WRG > AKL Day Run,5,WRG > AKL Day Run #5,1,36266,"12424, 12425, 12426, 12427, 12428","Description, BookPickup, ParentSpeedId",No
+WRG > AKL Regional Run,1,WRG > AKL Regional Run,1,36266,"8420, 8421, 8422, 8423, 8424, 8425, 8426, 8427, 8428, 8429",(name holder),No
+WRG > AKL Regional Run,2,WRG > AKL Regional Run #2,1,36813,"8990, 8991, 8992, 8993, 8994","CutoffHours, BookPickup",No
