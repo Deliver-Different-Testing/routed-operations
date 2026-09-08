@@ -1,19 +1,18 @@
 Metric,Value
-Scope,merged
 Source rows (tblBulkRunSchedule),11110
-Default schedules (ClientId NULL),119
-Client-specific schedules (Name + ClientId),2606
+Schedules = ScheduleIds after migration 001,2725
+  default schedules (ClientId NULL),119
+  client-specific schedules (Name + ClientId),2606
 Names shared by 2+ clients,203
-Shared schedules created / kept,164
+Shared schedules after merge (survivors with 2+ clients),164
   of which the survivor is a default schedule,20
-Client schedules converted to link rows,626
-Client schedules still 1-1 (not converted),1980
-Link-table rows (ScheduleClient),626
-Schedule rows retired,2433
-Schedule rows remaining,8677
-Surviving client rows whose ClientId is cleared (staging only),0
-Names whose definitions differ across clients/default (variants),169
-Schedules renamed to 'Name #n',33
+Client schedules retired into a survivor,482
+Schedules remaining after merge,2243
+Client schedules that stay one-client,1980
+Link rows after merge (clients on shared schedules),626
+Day rows retired,2433
+Day rows remaining,8677
+"Names with differing definitions (variants, kept as separate ScheduleIds)",169
 Data-quality findings,168
 CreatedUtc used,2026-09-08T02:00:00Z
 CreatedBy used,steve@urgent.co.nz

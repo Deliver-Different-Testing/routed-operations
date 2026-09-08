@@ -74,93 +74,93 @@ Multiple differing rows for the same DayOfWeek,IGNORE,33047,"days 1x4, 2x4, 3x4,
 Identical duplicate day rows inside one schedule,Hamilton - Waikato Morning,31458,"5 redundant row(s); ids 11951, 11952, 11953, 11954, 11955, 12183, 12184, 12185, 12186, 12187"
 Identical duplicate day rows inside one schedule,Hamilton - Waikato Morning,31944,"5 redundant row(s); ids 11982, 11983, 11984, 11985, 11986, 11987, 11988, 11989, 11990, 11991"
 Multiple differing rows for the same DayOfWeek,Nutrifare Whangarei Regional Home Delivery 5am,17106,"days 1x2, 2x2, 3x2, 4x2, 5x2"
-Client schedule shares its name with a default schedule,Auckland > Tauranga Regional Run 9-5 Express,33014,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Tauranga Run 3-6:30pm,33014,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Tauranga Run Express 4-6:30,33014,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Napier Afternoons AH,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Wellington Afternoons AH,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Regional Home Delivery 11am,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 5am,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,17827,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Auckland > Tauranga Regional Run 9-5 Express,33014,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Tauranga Run 3-6:30pm,33014,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Tauranga Run Express 4-6:30,33014,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Napier Afternoons AH,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Wellington Afternoons AH,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Regional Home Delivery 11am,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 5am,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,17827,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > Tauranga afternoon,31796,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,36249,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,9225,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton Local Chilled,36459,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Wellington Afternoons AH,36266,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,32929,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,36249,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Tauranga Chilled,9225,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton Local Chilled,36459,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Wellington Afternoons AH,36266,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,32929,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > Auckland Express 11am-1pm,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Hamilton > Auckland Express 4pm-6pm,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Hamilton > Tauranga afternoon,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Waikato > Tauranga afternoon,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,BOP > Waikato Morning Run,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,BOP Outer > Auckland Express Run 11-1,9196,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 4-6,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Regional Home Delivery 11am,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 4-6,9196,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Regional Home Delivery 11am,9196,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,9196,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > BOP,9196,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Waikato Local & Outer > BOP,9196,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run 4pm-6pm,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,9196,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run,9196,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run 4pm-6pm,9196,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,9196,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Tauranga > Waikato Morning Run,9196,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Auckland Afternoon Chilled,9673,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,13681,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,WRG > AKL Regional Run,36266,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Waikato Afternoon Express,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Waikato Morning Express,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Waikato Morning Delivery,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Tauranga Regional Run 9-5 Express,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Tauranga Run Express 4-6:30,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland > Tauranga Run 3-6:30pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,AKL > WRG Regional Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,AKL > WRG Regional Run Express,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP > Waikato Morning Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Waikato Morning Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton Local Chilled,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Auckland - Wellington Chilled,4609,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > Auckland Express 11am-1pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > Auckland Express 4pm-6pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Waikato Local > Auckland Express 4pm-6pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 11am-1pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 4pm-6pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 11-1,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 4-6,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run 4pm-6pm,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,WRG > AKL Regional Run,36813,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Auckland Afternoon Chilled,9673,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Waikato Home Delivery 11am,13681,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,WRG > AKL Regional Run,36266,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Waikato Afternoon Express,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Waikato Morning Express,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Waikato Morning Delivery,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Tauranga Regional Run 9-5 Express,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Tauranga Run Express 4-6:30,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland > Tauranga Run 3-6:30pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,AKL > WRG Regional Run,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,AKL > WRG Regional Run Express,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP > Waikato Morning Run,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Waikato Morning Run,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton Local Chilled,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Auckland - Wellington Chilled,4609,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > Auckland Express 11am-1pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > Auckland Express 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Waikato Local > Auckland Express 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 11am-1pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 11-1,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Outer > Auckland Express Run 4-6,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Auckland Express Run 4pm-6pm,36813,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,WRG > AKL Regional Run,36813,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Waikato Local & Outer > BOP,36813,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Hamilton > BOP,36813,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Waikato > Tauranga afternoon,36813,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Hamilton > Tauranga afternoon,36813,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,16298,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,33149,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton - Auckland Afternoon Chilled,36991,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,WRE Regional Home Delivery 5am,16298,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,BOP Regional Home Delivery 5am,33149,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton - Auckland Afternoon Chilled,36991,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton - Auckland Morning Chilled,36991,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Sunday 12-6pm AKL,37006,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Sunday 12-6pm AKL,37006,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Tauranga > Waikato Morning Run,31730,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,31730,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Tauranga > Waikato Afternoon Run,31730,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > Auckland Express 4pm-6pm,31721,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Tauranga > Waikato Morning Run,32943,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Tauranga > Waikato Morning Run,32943,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Tauranga > Waikato Afternoon Run,32943,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Hamilton > BOP,31458,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > BOP,31504,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > BOP,31944,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > BOP,31476,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > BOP,31465,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton > BOP,31501,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Hamilton - Auckland Morning Chilled,36745,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Waikato Outer - Morning,31492,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Hamilton > BOP,31458,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > BOP,31504,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > BOP,31944,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > BOP,31476,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > BOP,31465,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton > BOP,31501,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Hamilton - Auckland Morning Chilled,36745,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Waikato Outer - Morning,31492,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Waikato Outer - Morning,36813,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Taupo > Tauranga,36813,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Outer BOP > Tauranga,32875,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Tauranga > Outer BOP,32875,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Outer BOP > Tauranga,32875,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Tauranga > Outer BOP,32875,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,"Waikato Outer > Taupo, Tokoroa, Putaruru",31492,client is linked to the default and its copy retired
-Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 4pm-6pm,34981,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 11am-1pm,34981,name-keyed lookup is ambiguous; renamed '#n' when converted
-Client schedule shares its name with a default schedule,Napier Afternoons AH,36698,name-keyed lookup is ambiguous; renamed '#n' when converted
+Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 4pm-6pm,34981,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Waikato Outer > Auckland Express 11am-1pm,34981,distinct ScheduleId; consider a clearer name
+Client schedule shares its name with a default schedule,Napier Afternoons AH,36698,distinct ScheduleId; consider a clearer name
 Client schedule identical to the default schedule of the same name,Hamilton > Waikato Morning,32587,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Frozen - Central Run,37022,client is linked to the default and its copy retired
 Client schedule identical to the default schedule of the same name,Frozen - North Run,37022,client is linked to the default and its copy retired
