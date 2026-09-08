@@ -145,7 +145,7 @@ shape, with a Type filter (All / First mile / Middle mile / Final mile) and
 three columns the existing page cannot show:
 
 - **Schedule(s)** — the bound schedules as clickable chips that open the
-  schedule drawer (`Routes.ScheduleId` for routes,
+  schedule modal (`Routes.ScheduleId` for routes,
   `TblBulkScheduleLinehaul.LinehaulRunId` for runs). Unbound routes show
   `Unbound`.
 - **Clients via schedule** — the union of the clients attached to those
@@ -349,7 +349,7 @@ them. New, id-keyed:
    screen is untouched. Both read the same day rows, so ops can open a schedule
    in each and compare.
 2. **Phase 1 — read-only list + modal** on the 001 tables: table with Clients
-   and Dispatch columns, nesting by `BaseScheduleId`, View-as-client, drawer
+   and Dispatch columns, nesting by `BaseScheduleId`, View-as-client, modal
    with Clients / Route / Days / Dispatch tabs read-only, plus the read-only
    Recurring Routes tab with the Schedule(s), Clients via schedule and Master
    job columns. This is enough for ops to validate
