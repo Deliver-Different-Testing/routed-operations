@@ -53,8 +53,7 @@ export function ScheduleCopyModal({ open, onClose, source, lookups, onCopied }: 
     setSaving(true);
     try {
       const res = await scheduleService.copy({
-        sourceName: source.name ?? '',
-        sourceLegacyClientId: source.legacyClientId,
+        sourceScheduleId: source.scheduleId,
         newName: newName.trim(),
         clientCodes: Array.from(targetClientCodes),
       });

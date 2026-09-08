@@ -18,6 +18,14 @@ namespace RoutedOperations.Core.Application.Dtos.Schedule;
 /// </summary>
 public class ScheduleGroupUpsertRequest
 {
+    /// <summary>
+    /// Existing header id when updating; null when creating a new group.
+    /// Introduced 2026-09-08 alongside the header table. Present = update
+    /// path (loads header, syncs day rows via header FK, renames header
+    /// Name if needed). Absent = create path (fresh IsDefault=1 header +
+    /// day rows).
+    /// </summary>
+    public int? ScheduleId { get; set; }
     [Required, StringLength(200)] public string Name { get; set; } = string.Empty;
     public string Description { get; set; }
     [Required] public int RegionId { get; set; }
@@ -63,8 +71,15 @@ public class ScheduleGroupUpsertRequest
 /// </summary>
 public class ScheduleCopyRequest
 {
-    [Required, StringLength(200)] public string SourceName { get; set; } = string.Empty;
-    /// <summary>Null = the default (junction-based) source group. Set = a legacy per-client override source.</summary>
+    /// <summary>
+    /// Preferred: source header id (from ScheduleGroupDto.ScheduleId). If set,
+    /// SourceName + SourceLegacyClientId below are ignored. Introduced
+    /// 2026-09-08 alongside the header table.
+    /// </summary>
+    public int? SourceScheduleId { get; set; }
+    /// <summary>Legacy tuple fallback (Name + LegacyClientId) - retained for one release.</summary>
+    [StringLength(200)] public string SourceName { get; set; } = string.Empty;
+    /// <summary>Null = the default source group. Set = a legacy per-client override source.</summary>
     public int? SourceLegacyClientId { get; set; }
     [Required, StringLength(200)] public string NewName { get; set; } = string.Empty;
     /// <summary>Client codes (preferred). Resolved server-side to ClientIds and bound via the junction.</summary>

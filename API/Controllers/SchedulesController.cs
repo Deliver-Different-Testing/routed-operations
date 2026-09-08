@@ -50,17 +50,27 @@ public class SchedulesController(ScheduleService svc) : BaseController
         }
     }
 
-    /// <summary>Full detail for one group. Fetched on-demand when the
-    /// operator opens the edit or copy modal - keeps the list endpoint
-    /// slim.</summary>
+    /// <summary>
+    /// Full detail for one group. Preferred call: pass `scheduleId` (from
+    /// ScheduleGroupDto.ScheduleId). Legacy tuple (`name`+`legacyClientId`)
+    /// is retained for one release as a fallback so existing callers do
+    /// not break; when both are supplied, `scheduleId` wins.
+    /// </summary>
     [HttpGet("detail")]
     public async Task<IActionResult> GetDetail(
-        [FromQuery] string name,
+        [FromQuery] int? scheduleId = null,
+        [FromQuery] string name = null,
         [FromQuery] int? legacyClientId = null)
     {
         try
         {
-            var group = await svc.GetDetailAsync(name, legacyClientId);
+            ScheduleGroupDto group;
+            if (scheduleId.HasValue && scheduleId.Value > 0)
+                group = await svc.GetDetailAsync(scheduleId.Value);
+            else if (!string.IsNullOrWhiteSpace(name))
+                group = await svc.GetDetailAsync(name, legacyClientId);
+            else
+                return BadRequest(new { message = "scheduleId or name is required." });
             return Ok(new { response = group });
         }
         catch (InvalidOperationException ex)
@@ -115,16 +125,25 @@ public class SchedulesController(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// Delete a whole schedule group. legacyClientId is required for
-    /// legacy per-client override groups (nullable = default group).
+    /// Soft-delete a whole schedule group (sets RetiredUtc on the header;
+    /// day rows + link rows survive so history is preserved). Preferred
+    /// call: `scheduleId`. Legacy tuple retained for one release.
     /// </summary>
     [HttpDelete]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> Delete([FromQuery] string name, [FromQuery] int? legacyClientId = null)
+    public async Task<IActionResult> Delete(
+        [FromQuery] int? scheduleId = null,
+        [FromQuery] string name = null,
+        [FromQuery] int? legacyClientId = null)
     {
         try
         {
-            await svc.DeleteAsync(name, legacyClientId);
+            if (scheduleId.HasValue && scheduleId.Value > 0)
+                await svc.DeleteAsync(scheduleId.Value);
+            else if (!string.IsNullOrWhiteSpace(name))
+                await svc.DeleteAsync(name, legacyClientId);
+            else
+                return BadRequest(new { message = "scheduleId or name is required." });
             return Ok(new { response = "Deleted" });
         }
         catch (InvalidOperationException ex)
@@ -156,16 +175,25 @@ public class SchedulesController(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// Toggle AutoBook across every row in a schedule group. Returns
-    /// the new value.
+    /// Toggle AutoBook across every row in a schedule group. Preferred:
+    /// `scheduleId`. Legacy tuple retained for one release.
     /// </summary>
     [HttpPost("auto-book")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> ToggleAutoBook([FromQuery] string name, [FromQuery] int? legacyClientId = null)
+    public async Task<IActionResult> ToggleAutoBook(
+        [FromQuery] int? scheduleId = null,
+        [FromQuery] string name = null,
+        [FromQuery] int? legacyClientId = null)
     {
         try
         {
-            var now = await svc.ToggleAutoBookAsync(name, legacyClientId);
+            bool now;
+            if (scheduleId.HasValue && scheduleId.Value > 0)
+                now = await svc.ToggleAutoBookAsync(scheduleId.Value);
+            else if (!string.IsNullOrWhiteSpace(name))
+                now = await svc.ToggleAutoBookAsync(name, legacyClientId);
+            else
+                return BadRequest(new { message = "scheduleId or name is required." });
             return Ok(new { response = new { autoBook = now } });
         }
         catch (InvalidOperationException ex)

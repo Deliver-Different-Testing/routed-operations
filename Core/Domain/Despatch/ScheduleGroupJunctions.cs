@@ -5,22 +5,29 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace RoutedOperations.Core.Domain.Despatch;
 
 /// <summary>
-/// Schedule ↔ Client many-to-many binding. A schedule "group" (all
-/// tblBulkRunSchedule rows sharing a Name) can attach to N clients via
-/// this junction. Distinct from the legacy tblBulkRunSchedule.ClientId
-/// column which was one-client-per-row; the junction is the new
-/// canonical pattern. Backed by migration
-/// 20260825120000_AddScheduleGroupJunctions.
+/// Schedule ↔ Client many-to-many binding. A schedule header (one row per
+/// group in tblBulkRunScheduleHeader) can attach to N clients via this
+/// junction. Reshaped 2026-09-08 by AddScheduleHeaderAndIdKeyedLinks from
+/// the earlier (ScheduleName, ClientId) shape (fragile - 164 names had
+/// multiple definitions) to (BulkRunScheduleId, ClientId) FK-referencing
+/// the header. BulkRunScheduleId here targets the header PK, NOT the
+/// day-row PK on tblBulkRunSchedule.
 /// </summary>
 [Table("tblScheduleClient")]
 public partial class ScheduleClient
 {
-    [MaxLength(200)]
-    public string ScheduleName { get; set; }
+    public int BulkRunScheduleId { get; set; }
     public int ClientId { get; set; }
     public DateTime CreatedUtc { get; set; }
     [MaxLength(100)]
     public string CreatedBy { get; set; }
+
+    /// <summary>
+    /// Nav prop to the header. Lets the service assign a new
+    /// BulkRunScheduleHeader that hasn't been saved yet - EF wires the
+    /// BulkRunScheduleId FK when SaveChanges commits both together.
+    /// </summary>
+    public virtual BulkRunScheduleHeader Header { get; set; }
 }
 
 /// <summary>

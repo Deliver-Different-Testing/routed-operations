@@ -12,6 +12,8 @@ namespace RoutedOperations.Core.Application.Dtos.Schedule;
 /// use the tblScheduleClient junction (surfaced via ClientIds).
 /// </summary>
 public record ScheduleGroupDto(
+    /// <summary>The header's BulkRunScheduleId (identity PK, one per schedule group). Introduced 2026-09-08. Frontend uses this as the schedule identity.</summary>
+    int ScheduleId,
     string Name,
     int? LegacyClientId,
     /// <summary>Client code resolved from LegacyClientId (e.g. "ACME"). Null when LegacyClientId is null. Operators identify clients by code, not id.</summary>
@@ -79,6 +81,8 @@ public record ScheduleZoneDto(
 /// fetch versus loading every schedule's zones + linehauls + junctions
 /// up-front.</summary>
 public record ScheduleGroupSummaryDto(
+    /// <summary>The header's BulkRunScheduleId (identity PK, one per schedule group). Introduced 2026-09-08. Frontend uses this as the schedule identity.</summary>
+    int ScheduleId,
     string Name,
     int? LegacyClientId,
     string LegacyClientCode,
