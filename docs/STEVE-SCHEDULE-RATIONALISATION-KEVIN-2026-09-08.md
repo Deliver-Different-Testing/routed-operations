@@ -122,7 +122,7 @@ shape (`CreatedUtc`, `CreatedBy`) is fine but incomplete. Specifically:
 
 1. **`Name` is not a key in `tblBulkRunSchedule`.** A schedule has no id of its
    own — its identity is implicit in (`Name`, `ClientId`) spread over 1..n day
-   rows. Today 158 names map to more than one definition, and 48 names are
+   rows. Today 169 names map to more than one definition, and 48 names are
    also used by a default schedule. A link row `("AKL > CHCH Pre 10am Medical",
    16947)` cannot say *which* of the six definitions it means. The `#n`
    renames in this proposal are a workaround for that, not a fix.
