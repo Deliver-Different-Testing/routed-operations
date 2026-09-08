@@ -139,9 +139,9 @@ it as is, with one row added:
    which is what links the schedule to the Recurring Routes middle-mile row and
    its master job.
 4. **Bottom tab strip** — Dane has *Schedule Config | Client Overrides*. It
-   becomes *Schedule Config | Clients (n) | Client Overrides*, with Client
-   Overrides disabled until the schedule is saved (an override needs a saved
-   base to point at).
+   becomes *Schedule Config | Clients (n) | Client Overrides | Dispatch*, with
+   Client Overrides disabled until the schedule is saved (an override needs a
+   saved base to point at).
 5. **Create** writes the header (`IsDefault` from the Clients row), one day row
    per operating day, and the link rows, then opens the schedule in the edit
    modal.
@@ -260,7 +260,53 @@ Rules for the join:
 - Clients never attach to a route or a run. They attach to schedules; the
   route's clients are derived through the binding. That keeps one truth.
 
-## 3. Where the React code is
+## 3. Built: the React module in this repo
+
+The view is coded, not just specified. It lives in this repo's Routed
+Operations frontend and runs on sample data until Kevin's API is wired in:
+
+| | |
+|---|---|
+| App | `v2/frontend` (Vite + React 18 + Tailwind, the Routed Operations shell) |
+| Route | `/schedules` — sidebar entry "Schedules NEW" (`src/App.tsx`, `src/components/Shell.tsx`) |
+| Page | `src/pages/SchedulesPage.tsx` wraps the module |
+| Dane's module, vendored | `src/schedules/` = `admin-schedules-module/src` (components, features/import-export, modules/schedules, territory types) with his tokens merged into `tailwind.config.js` and his CSS in `src/schedules/schedules.css` |
+| Run | `cd v2/frontend && npm install && npm run dev` → http://localhost:4595/routebuilder/schedules |
+| Check | `npm run build` (tsc + vite, clean) · `npm test` (vitest) |
+
+What was added on top of Dane's code, all under `src/schedules/modules/schedules/`:
+
+| File | What it does |
+|---|---|
+| `types.ts` | `Schedule.visibility` ('all' \| 'specific'), `clientIds` (link rows), `baseScheduleId`; `isOverrideOf`, `getClientIds`, `getVisibility`; table rows nest by id; `multiDayToPerDay` **never writes the one-to-one ClientId** |
+| `utils/clientLinks.ts` | The rules: resolution (override › shared › default), attach / detach / visibility, override creation moves the client's link, attach-to-group, clients-via-schedules, attach blockers |
+| `dispatch/types.ts`, `dispatch/dispatchData.ts` | Recurring routes, linehaul runs, master job, roster resolution (date override › weekly › default), joins to schedules |
+| `components/AttachClientsModal.tsx` | Search-and-tick picker with greyed-out blockers; single-pick mode for overrides |
+| `components/ClientsTab.tsx` | Who can book: visibility radio, attached list, overrides list, create override |
+| `components/DispatchTab.tsx` | Routes bound, linehaul runs, master job, seven-day roster strips |
+| `components/RecurringRoutesTab.tsx` | The Recurring Routes rows with Type filter, Schedule(s), Clients via schedule, Master job |
+| `components/ScheduleTable.tsx` | Clients and Dispatch columns, Defaults / Shared / Overrides filter, View as client, Attach action, overrides nested under their base |
+| `components/ScheduleEditForm.tsx` | CLIENTS row in the header card; tab strip Schedule Config · Clients · Client Overrides · Dispatch (overrides disabled until saved) |
+| `components/ScheduleTableView.tsx` | Controlled schedules, attach from the row, create / open override, override save moves the client off the base |
+| `components/ScheduleGroupsTab.tsx`, `SchedulesPage.tsx` | Attach clients to group; Recurring Routes tab; one schedules state shared by all tabs |
+| `api/v2.ts` | Typed client + DTOs for Kevin's ScheduleId-keyed endpoints (unused until `VITE_SCHEDULES_API` is set) |
+| `data/sampleData.ts` | Dane's samples given link rows: a default, two shared schedules, a two-client schedule, an override by id |
+
+Tests (`npm test`): new tests in `utils/clientLinks.test.ts`,
+`dispatch/dispatchData.test.ts`, `compat.test.ts` and
+`components/ClientsTab.test.tsx`. `compat.test.ts` is the compatibility suite
+against the old view: one day row per enabled day as before, no ClientId
+written on any day row, legacy rows with a ClientId still read as that
+client's schedule, and on legacy one-to-one data the new resolution rule
+returns exactly what the old rule returns (the only difference being a base
+hidden behind a client's own override).
+
+What Kevin still does: replace the sample-data sources with `api/v2.ts`
+calls (the DTOs are the contract), wire Roster / Route / Run / master-job
+deep links to the existing pages, and keep the old Schedules page alongside
+until ops sign off.
+
+## 3b. Where Dane's original React code is
 
 | Repo / path | What it is | Use it? |
 |---|---|---|
@@ -427,6 +473,15 @@ them. New, id-keyed:
 - Creating an override moves the client off the base; the base's client count
   drops by one and the override's is one.
 - The old schedules screen still lists every schedule it listed before.
+
+## 8a. The one-to-one ClientId is not exposed
+
+Steve, 2026-09-08: the new UI never shows or edits `tblBulkRunSchedule.ClientId`.
+Every client reference is a row in the schedule/client link table. The module
+enforces that in `multiDayToPerDay` (day rows go out with no ClientId) and in
+the UI (the only client controls are the CLIENTS row, the Clients tab and the
+attach picker, all of which write link rows). Kevin's migration owns clearing
+the legacy column; the view does not depend on it.
 
 ## 8b. Noted for the booking path, not this view
 
