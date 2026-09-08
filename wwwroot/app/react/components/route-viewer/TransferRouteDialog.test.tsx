@@ -49,14 +49,29 @@ describe('TransferRouteDialog', () => {
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
   });
 
-  it('proceeds to confirm step + submits transfer', async () => {
+  it('proceeds to confirm step + submits transfer with backend field names', async () => {
+    // Regression guard: the backend DTO expects `newRouteId` /
+    // `alsoTransferRecurringBooking` / `alsoTransferZipCodes` - the
+    // ergonomic props (`toRouteId` / `transferBooking` /
+    // `transferZipcodes`) live only inside the service wrapper. If
+    // they leak onto the wire the backend silently drops them +
+    // defaults NewRouteId=0 which trips the ">0" guard and 400s.
+    // Response uses TransferRouteResult shape (succeeded /
+    // bookingsAffected / zipCodesMoved).
     let sent: any = null;
     server.use(
       stubRoutes([{ routeId: 200, label: 'North' }]),
       http.post('/api/runviewer/jobs/transfer-route', async ({ request }) => {
         sent = await request.json();
         return HttpResponse.json({
-          response: { transferred: 5, bookings: 2, zipcodes: 3 },
+          response: {
+            succeeded: 5, failed: 0, rowsUpdated: 5,
+            bookingsAffected: 2, bookingRowsUpdated: 6,
+            zipCodesMoved: 3, zipMappingsInserted: 3, zipMappingsDeleted: 0,
+            zipCodes: [], families: [], errors: [],
+            newRouteId: 200, newRouteName: 'North',
+            alsoTransferredRecurringBooking: true, alsoTransferredZipCodes: true,
+          },
         });
       }),
     );
@@ -71,9 +86,16 @@ describe('TransferRouteDialog', () => {
     expect(await screen.findByText(/Run #100/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Transfer' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
-    expect(sent.toRouteId).toBe(200);
-    expect(sent.transferBooking).toBe(true);
-    expect(sent.transferZipcodes).toBe(true);
+    // Wire shape MUST match the backend DTO exactly.
+    expect(sent.newRouteId).toBe(200);
+    expect(sent.alsoTransferRecurringBooking).toBe(true);
+    expect(sent.alsoTransferZipCodes).toBe(true);
+    // Ergonomic names must NOT leak onto the wire.
+    expect(sent.toRouteId).toBeUndefined();
+    expect(sent.transferBooking).toBeUndefined();
+    expect(sent.transferZipcodes).toBeUndefined();
+    // Success rollup reads the correct TransferRouteResult fields.
+    expect(vi.mocked(props.onSuccess).mock.calls[0][0]).toMatch(/5 jobs.*2 bookings.*3 zipcodes/);
   });
 
   it('back button returns from confirm to pick step', async () => {

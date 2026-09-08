@@ -810,14 +810,46 @@ export const routeViewerService = {
     ourRef?: string;
   }) => unwrapPost<string>(`/runviewer/jobs/${bulkJobId}/text-fields`, patch),
 
+  /** Transfer a job (or set of jobs) to a different route. Payload
+   *  field names + response shape MUST match the backend
+   *  `TransferRouteRequest` / `TransferRouteResult` DTOs
+   *  (Core/Application/Dtos/RouteViewer/RouteTransferDto.cs) exactly -
+   *  ASP.NET Core does not tolerate name drift, silently drops
+   *  unknown fields, and defaults missing ints to 0 (which then
+   *  fails the `NewRouteId > 0` guard on
+   *  RunViewerRouteTransferController:56 and 400s). This wrapper
+   *  translates the caller's ergonomic `toRouteId` / `transferBooking`
+   *  / `transferZipcodes` names into the wire names the backend
+   *  actually reads. */
   transferRoute: (payload: {
     jobIds: number[];
     toRouteId: number;
     transferBooking: boolean;
     transferZipcodes: boolean;
-  }) => unwrapPost<{ transferred: number; bookings: number; zipcodes: number }>(
+  }) => unwrapPost<{
+    succeeded: number;
+    failed: number;
+    rowsUpdated: number;
+    bookingsAffected: number;
+    bookingRowsUpdated: number;
+    zipCodesMoved: number;
+    zipMappingsInserted: number;
+    zipMappingsDeleted: number;
+    zipCodes: string[];
+    families: string[];
+    errors: string[];
+    newRouteId: number | null;
+    newRouteName: string | null;
+    alsoTransferredRecurringBooking: boolean;
+    alsoTransferredZipCodes: boolean;
+  }>(
     '/runviewer/jobs/transfer-route',
-    payload,
+    {
+      jobIds: payload.jobIds,
+      newRouteId: payload.toRouteId,
+      alsoTransferRecurringBooking: payload.transferBooking,
+      alsoTransferZipCodes: payload.transferZipcodes,
+    },
   ),
 
   getTransferContext: (anchorJobId?: number) =>

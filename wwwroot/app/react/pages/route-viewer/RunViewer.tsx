@@ -649,7 +649,7 @@ export default function RunViewer() {
                       })
                         .then((res) => {
                           toast.show(
-                            `Moved ${res.transferred} job${res.transferred === 1 ? '' : 's'} to run ${toRun?.name ?? toRunId}.`,
+                            `Moved ${res.succeeded} job${res.succeeded === 1 ? '' : 's'} to run ${toRun?.name ?? toRunId}.`,
                           );
                           runsQuery.refetch();
                           if (singleRunId != null) {

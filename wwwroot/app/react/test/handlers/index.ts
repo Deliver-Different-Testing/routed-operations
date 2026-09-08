@@ -3,6 +3,7 @@
 // under wwwroot/app/react/test/handlers/<feature>.ts and re-export from
 // here as they land.
 import { http, HttpResponse, type RequestHandler } from 'msw';
+import { driverSchedulingHandlers } from './driverScheduling';
 
 export const handlers: RequestHandler[] = [
   // AuthProvider mounts a tenant-drift guard that pings /api/session/current
@@ -12,4 +13,5 @@ export const handlers: RequestHandler[] = [
   // Individual tests can override via server.use(...) to simulate drift.
   http.get('/api/session/current', () =>
     HttpResponse.json({ currentTenantId: 1, email: 'test@example.com' })),
+  ...driverSchedulingHandlers,
 ];

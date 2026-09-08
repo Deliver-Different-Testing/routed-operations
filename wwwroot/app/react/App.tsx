@@ -6,6 +6,11 @@ import Quoting from './pages/Quoting';
 import ScheduledRoutes from './pages/ScheduledRoutes';
 import RecurringRoutes from './pages/RecurringRoutes';
 import Schedules from './pages/Schedules';
+// Driver Scheduling module (2026-09-07 port from CourierManager). Sits
+// adjacent to Schedules - different domain (courier availability rosters
+// vs booking templates), different DB neighbourhood, different sidebar
+// entry.
+import DriverScheduling from './pages/DriverScheduling';
 import PolygonBuilder from './pages/PolygonBuilder';
 import AutoAssignLog from './pages/AutoAssignLog';
 import BulkImport from './pages/BulkImport';
@@ -43,6 +48,9 @@ export default function App() {
              maintenance). Separate from Recurring Routes which lives on
              the Configurator Route entity. */}
         <Route path="/schedules" element={<Schedules />} />
+        {/* Driver Scheduling module (2026-09-07) - operator-facing
+             courier availability + time slots + SMS notifications. */}
+        <Route path="/driver-scheduling" element={<DriverScheduling />} />
         <Route path="/polygon-builder" element={<PolygonBuilder />} />
         <Route path="/auto-assign-log" element={<AutoAssignLog />} />
         {/* Route Viewer module (2026-08-07). 6 sub-pages under /route-viewer/*.
