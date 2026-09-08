@@ -235,7 +235,7 @@ def write_sql(path, a, args, created_utc_s, staging):
         w("-- 5. Disable the legacy 1-1 path. LegacyClientId stays on the header for reference.")
         w(f"IF @DisableLegacyClientId = 1 UPDATE {S} SET ClientId = NULL WHERE ClientId IS NOT NULL;")
     w("")
-    w("-- 6. Result.")
+    w(f"-- {6 if staging else 5}. Result.")
     w(f"SELECT (SELECT COUNT(*) FROM #Map) AS SchedulesRetired, (SELECT COUNT(*) FROM {H} WHERE RetiredUtc IS NULL) AS LiveSchedules,")
     w(f"       (SELECT COUNT(*) FROM {S}) AS DayRows, (SELECT COUNT(*) FROM {L}) AS LinkRows;")
     w("DROP TABLE #Map; DROP TABLE #Merge;")

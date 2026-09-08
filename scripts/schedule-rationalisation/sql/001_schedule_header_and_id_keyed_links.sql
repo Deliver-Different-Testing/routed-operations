@@ -97,9 +97,9 @@ ELSE IF COL_LENGTH(@Link, 'ScheduleId') IS NULL
     EXEC(N''
     UPDATE l SET l.ScheduleId = h.ScheduleId
     FROM ' + @Link + N' l
-    CROSS APPLY (SELECT h.ScheduleId FROM dbo.tblBulkRunScheduleHeader h
+    CROSS APPLY (SELECT MIN(h.ScheduleId) AS ScheduleId FROM dbo.tblBulkRunScheduleHeader h
                  WHERE h.Name = LTRIM(RTRIM(l.ScheduleName)) AND h.IsDefault = 0 AND h.RetiredUtc IS NULL
-                 GROUP BY h.ScheduleId HAVING COUNT(*) = 1) h;
+                 HAVING COUNT(*) = 1) h;
     -- rows whose name matches several headers stay NULL and are listed by the check below
     '');
     ALTER TABLE ' + @Link + N' ADD CONSTRAINT FK_tblBulkRunScheduleClient_Header FOREIGN KEY (ScheduleId) REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId);

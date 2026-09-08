@@ -520,7 +520,7 @@ DELETE l FROM dbo.tblBulkRunScheduleClient l JOIN #Map p ON p.RetiredScheduleId 
 DELETE s FROM dbo.tblBulkRunSchedule s JOIN #Map p ON p.RetiredScheduleId = s.ScheduleId;
 UPDATE h SET RetiredUtc = '2026-09-08T02:00:00Z', RetiredBy = @By FROM dbo.tblBulkRunScheduleHeader h JOIN #Map p ON p.RetiredScheduleId = h.ScheduleId;
 
--- 6. Result.
+-- 5. Result.
 SELECT (SELECT COUNT(*) FROM #Map) AS SchedulesRetired, (SELECT COUNT(*) FROM dbo.tblBulkRunScheduleHeader WHERE RetiredUtc IS NULL) AS LiveSchedules,
        (SELECT COUNT(*) FROM dbo.tblBulkRunSchedule) AS DayRows, (SELECT COUNT(*) FROM dbo.tblBulkRunScheduleClient) AS LinkRows;
 DROP TABLE #Map; DROP TABLE #Merge;
