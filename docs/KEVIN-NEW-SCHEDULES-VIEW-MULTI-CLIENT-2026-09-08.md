@@ -28,7 +28,7 @@ until ops confirm they can do their work in the new one.
 
 - **Mockup of what to build:** https://claude.ai/code/artifact/e90fe293-31f1-4238-93bf-c54001ca7419 (interactive; attach clients, create an
   override, view as a client, open a group, open the Dispatch tab, switch to
-  the Recurring Routes and Linehaul Runs tabs). Source file:
+  the Recurring Routes tab). Source file:
   `docs/mockup-schedules-multi-client.html` in this repo.
 - **Look and feel:** Steve's call (2026-09-08) is to keep it looking like
   Dane's live prototype at
