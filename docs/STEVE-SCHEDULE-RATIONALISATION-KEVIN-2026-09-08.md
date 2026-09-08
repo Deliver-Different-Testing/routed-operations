@@ -87,7 +87,7 @@ Relaxing the rule further would merge more, but that is a business call:
 |---|---|---|---|---|
 | Strict (every column) | 164 | 626 | 482 | 2,433 |
 | **Ignore `Description` (as generated)** | 179 | 678 | 522 | 2,606 |
-| Ignore `Description` + `CutoffHours` | 208 | 798 | 574 | 3,004 |
+| Ignore `Description` + `CutoffHours` | 208 | 798 | 624 | 3,004 |
 
 Of the 40 groups whose copies disagreed on description, most differ by an
 appended note ("NO DGs allowed") or a wrong town/time ("delivered before 8am"
