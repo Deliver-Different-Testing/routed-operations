@@ -25,9 +25,19 @@ const stubAgents = (
     },
   );
 
+// AssignRouteDialog now fetches the run's jobs at submit time so it can
+// send the explicit JobIds the backend requires. Tests that click
+// "Assign" need this stub or the submit path stalls. Default = one
+// assignable job (bulkJobId=42) so onSuccess fires.
+const stubRunJobs = (jobs: Array<{ bulkJobId: number }> = [{ bulkJobId: 42 }]) =>
+  http.get('/api/runviewer/runs/:runId/jobs', () =>
+    HttpResponse.json({ response: jobs }),
+  );
+
 function renderDlg(props: Partial<Parameters<typeof AssignRouteDialog>[0]> = {}) {
   const defaults = {
     runId: 5,
+    runDate: '2026-09-08',
     onClose: vi.fn(),
     onSuccess: vi.fn(),
   };
@@ -44,6 +54,7 @@ describe('AssignRouteDialog', () => {
     };
     server.use(stubCouriers([]));
     server.use(stubAgents([]));
+    server.use(stubRunJobs());
   });
 
   it('renders "Assign route" title for admin', () => {
@@ -262,5 +273,43 @@ describe('AssignRouteDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
     expect(assignPayload).toMatchObject({ npAgentId: 88 });
+  });
+
+  // Regression guard: the assign endpoint requires an explicit JobIds
+  // list and rejects empty with `JobIds is required.`. The dialog
+  // fetches the run's jobs at submit time to resolve them, filtering
+  // synthetic-route rows (bulkJobId=0) which aren't assignable.
+  it('sends the resolved bulkJobIds from the fetched run jobs', async () => {
+    let assignPayload: any = null;
+    server.use(
+      stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
+      // Two real bulk jobs + one synthetic (bulkJobId=0) - only the
+      // reals should reach the assign payload.
+      stubRunJobs([{ bulkJobId: 100 }, { bulkJobId: 200 }, { bulkJobId: 0 }]),
+      http.post('/api/runviewer/jobs/assign', async ({ request }) => {
+        assignPayload = await request.json();
+        return HttpResponse.json({ response: { assigned: 2 } });
+      }),
+    );
+    const props = renderDlg();
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
+    await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(assignPayload).toMatchObject({ courierId: 1, jobIds: [100, 200] });
+  });
+
+  it('surfaces an error when the run has no assignable jobs', async () => {
+    server.use(
+      stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
+      stubRunJobs([{ bulkJobId: 0 }, { bulkJobId: 0 }]),   // synthetic-only run
+    );
+    renderDlg();
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
+    await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    expect(await screen.findByText(/no assignable jobs/i)).toBeInTheDocument();
   });
 });

@@ -30,6 +30,10 @@ import { routeViewerService } from '../../services/routeViewerService';
 
 interface Props {
   runId: number;
+  /** Date the run is on. Needed so the dialog can resolve the run's
+   *  bulk job ids at submit time - the assign endpoint requires
+   *  JobIds and does NOT resolve them from runId + date server-side. */
+  runDate: string;
   /** Optional anchor job id used by the Agent + NP search endpoint's
    *  NP scope guard. Callers with a selected job (job context menu)
    *  should pass it; run-scoped callers can omit and we default to 0. */
@@ -46,7 +50,7 @@ interface PickerRow {
   subtitle?: string;
 }
 
-export function AssignRouteDialog({ runId, anchorJobId, onClose, onSuccess }: Props) {
+export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSuccess }: Props) {
   const user = useAuth();
   const [bucket, setBucket] = useState<Bucket>('courier');
   const [query, setQuery] = useState('');
@@ -115,15 +119,23 @@ export function AssignRouteDialog({ runId, anchorJobId, onClose, onSuccess }: Pr
     setSubmitting(true);
     setError(null);
     try {
+      // The assign endpoint (POST /api/runviewer/jobs/assign) requires
+      // an explicit JobIds list; it does NOT resolve them from runId +
+      // runDate server-side. Fetch the run's jobs now, keep only rows
+      // with a real bulk job id (synthetic Route rows come back with
+      // bulkJobId=0 and are not assignable). Legacy runViewer resolved
+      // this via a per-run job cache on the client too.
+      const jobs = await routeViewerService.getRunJobs(runId, runDate, { group: 'Combined' });
+      const jobIds = jobs.map((j) => j.bulkJobId).filter((id) => id > 0);
+      if (jobIds.length === 0) {
+        setError('This run has no assignable jobs (synthetic Route runs have no tblBulkJob rows).');
+        return;
+      }
       const payload = bucket === 'courier'
-        ? { jobIds: [], courierId: picked.id }
+        ? { jobIds, courierId: picked.id }
         : bucket === 'agent'
-          ? { jobIds: [], agentId: picked.id }
-          : { jobIds: [], npAgentId: picked.id };
-      // Run-scoped assign uses the run's job set on the server; pass an
-      // empty jobIds array + let the endpoint resolve. If the endpoint
-      // needs the ids explicitly, the caller passes them in via
-      // additional props (P6b when the run-scoped variant lands).
+          ? { jobIds, agentId: picked.id }
+          : { jobIds, npAgentId: picked.id };
       const result = await routeViewerService.assignRoute(payload);
       const label = bucket === 'courier' ? 'courier' : bucket === 'agent' ? 'agent' : 'network partner';
       onSuccess(`Assigned ${picked.label} as ${label} to run #${runId} (${result.assigned} jobs).`);

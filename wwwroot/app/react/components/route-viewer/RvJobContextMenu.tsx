@@ -244,6 +244,7 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
       {assignOpen && (
         <AssignRouteDialog
           runId={primary.bulkRunId ?? 0}
+          runDate={runDate ?? new Date().toISOString().slice(0, 10)}
           anchorJobId={primary.jobId}
           onClose={() => { setAssignOpen(false); onClose(); }}
           onSuccess={(msg) => { setAssignOpen(false); onClose(); toast.show(msg, 'success'); onDone(); }}

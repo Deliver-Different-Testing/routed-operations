@@ -109,9 +109,13 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
         transferBooking,
         transferZipcodes,
       });
-      const bits: string[] = [`${result.transferred} jobs`];
-      if (transferBooking && result.bookings > 0) bits.push(`${result.bookings} bookings`);
-      if (transferZipcodes && result.zipcodes > 0) bits.push(`${result.zipcodes} zipcodes`);
+      // Response field names come from the backend TransferRouteResult
+      // (RouteTransferDto.cs:55): `succeeded` = jobs moved,
+      // `bookingsAffected` = recurring templates re-stamped,
+      // `zipCodesMoved` = zips moved with the cascade opt-in.
+      const bits: string[] = [`${result.succeeded} jobs`];
+      if (transferBooking && result.bookingsAffected > 0) bits.push(`${result.bookingsAffected} bookings`);
+      if (transferZipcodes && result.zipCodesMoved > 0) bits.push(`${result.zipCodesMoved} zipcodes`);
       onSuccess(`Transferred ${bits.join(', ')} from run #${runId} to ${toRoute.label}.`);
     } catch (e) {
       setError((e as Error).message);

@@ -14,8 +14,9 @@ Reference implementation for the stack + conventions: `C:\Gitlab\Configurator_Ro
 
 **Session handover docs** (start here when resuming, latest first):
 
-1. `C:\Gitlab\.claude\sp-reference\routed-operations-handover-2026-07-16.md` - Day 3: feature-parity gap fill (map right-click, JobDetail editing, Fix GPS, multibox expansion, sort/filter, group bulk-move, send-selected, layout save/load). Also carries the explicitly-not-migrated list (prebook + filter-by-time - do not re-add).
-2. `C:\Gitlab\.claude\sp-reference\routed-operations-handover-2026-07-14.md` - Day 1: scaffolding + auth + cockpit + HERE Maps + Delivery Window feature. Original 9 cross-tenant gotchas glossary still lives here.
+1. `C:\Gitlab\.claude\sp-reference\driver-scheduling-2026-09-07.md` - CourierManager scheduler port into Routed Operations. 14 endpoints under `api/driver-scheduling`, 5 EF entities, `IPhoneNormaliser` + `IHubUrlProvider` per-tenant abstractions, DB trigger analysis + Day-1 US enablement checklist.
+2. `C:\Gitlab\.claude\sp-reference\routed-operations-handover-2026-07-16.md` - Day 3: feature-parity gap fill (map right-click, JobDetail editing, Fix GPS, multibox expansion, sort/filter, group bulk-move, send-selected, layout save/load). Also carries the explicitly-not-migrated list (prebook + filter-by-time - do not re-add).
+3. `C:\Gitlab\.claude\sp-reference\routed-operations-handover-2026-07-14.md` - Day 1: scaffolding + auth + cockpit + HERE Maps + Delivery Window feature. Original 9 cross-tenant gotchas glossary still lives here.
 
 ## Backend stack
 

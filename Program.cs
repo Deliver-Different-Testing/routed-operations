@@ -358,6 +358,16 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 // Schedules module (nightly booking templates + territory maintenance).
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
+// Driver Scheduling module (2026-09-07 port from CourierManager). Two
+// per-tenant abstractions live behind the service - PhoneNormaliser
+// reads the CountryCode auth claim, HubUrlProvider reads DriverHubUrl.
+// See plan `abundant-sniffing-sparkle.md` phase 3 for the modernise
+// rationale (NZ + US Day-1 live).
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverScheduling.IPhoneNormaliser,
+                           RoutedOperations.Core.Application.Services.DriverScheduling.PhoneNormaliser>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverScheduling.IHubUrlProvider,
+                           RoutedOperations.Core.Application.Services.DriverScheduling.HubUrlProvider>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverScheduling.DriverSchedulingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.TerritoryService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.PolygonBindingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();

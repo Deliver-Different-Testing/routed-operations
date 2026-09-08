@@ -156,6 +156,7 @@ export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Prop
       {assignOpen && (
         <AssignRouteDialog
           runId={runId}
+          runDate={runDate}
           onClose={() => { setAssignOpen(false); onClose(); }}
           onSuccess={(summary) => {
             setAssignOpen(false);

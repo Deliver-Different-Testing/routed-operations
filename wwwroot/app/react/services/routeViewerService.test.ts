@@ -509,14 +509,33 @@ describe('routeViewerService - assignment / actions', () => {
     expect(seen).toEqual({ notes: 'x' });
   });
 
-  it('transferRoute POSTs /runviewer/jobs/transfer-route', async () => {
+  it('transferRoute POSTs /runviewer/jobs/transfer-route with backend field names', async () => {
+    // The wrapper translates ergonomic prop names (`toRouteId` etc.)
+    // into the backend DTO field names (`newRouteId` /
+    // `alsoTransferRecurringBooking` / `alsoTransferZipCodes`). Full
+    // response shape mirrors TransferRouteResult - success rollup
+    // reads `succeeded` / `bookingsAffected` / `zipCodesMoved`.
     let seen: any;
-    server.use(wrapPost('/api/runviewer/jobs/transfer-route', { transferred: 1, bookings: 0, zipcodes: 0 }, (p) => (seen = p)));
+    server.use(wrapPost('/api/runviewer/jobs/transfer-route', {
+      succeeded: 1, failed: 0, rowsUpdated: 1,
+      bookingsAffected: 0, bookingRowsUpdated: 0,
+      zipCodesMoved: 0, zipMappingsInserted: 0, zipMappingsDeleted: 0,
+      zipCodes: [], families: [], errors: [],
+      newRouteId: 2, newRouteName: null,
+      alsoTransferredRecurringBooking: false, alsoTransferredZipCodes: false,
+    }, (p) => (seen = p)));
     const r = await routeViewerService.transferRoute({
-      jobIds: [1], toRouteId: 2, transferBooking: false, transferZipcodes: false,
+      jobIds: [1], toRouteId: 2, transferBooking: true, transferZipcodes: false,
     });
     expect(seen.jobIds).toEqual([1]);
-    expect(r.transferred).toBe(1);
+    expect(seen.newRouteId).toBe(2);
+    expect(seen.alsoTransferRecurringBooking).toBe(true);
+    expect(seen.alsoTransferZipCodes).toBe(false);
+    // Ergonomic names must NOT leak onto the wire.
+    expect(seen.toRouteId).toBeUndefined();
+    expect(seen.transferBooking).toBeUndefined();
+    expect(seen.transferZipcodes).toBeUndefined();
+    expect(r.succeeded).toBe(1);
   });
 
   it('getTransferContext GETs /runviewer/routes/active with optional anchor', async () => {

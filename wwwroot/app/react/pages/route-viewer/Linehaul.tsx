@@ -724,6 +724,7 @@ export default function Linehaul() {
       {assignTarget && (
         <AssignRouteDialog
           runId={assignTarget.runId}
+          runDate={runDate}
           anchorJobId={assignTarget.kind === 'job' ? assignTarget.bulkJobId : undefined}
           onClose={() => setAssignTarget(null)}
           onSuccess={(summary) => {
