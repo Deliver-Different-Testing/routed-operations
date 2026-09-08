@@ -88,8 +88,11 @@ Everything below is in the mockup. Tab names and layout follow Dane's module.
 - **Row actions** — Attach clients, Copy (new `ScheduleId`, same route, no
   clients), Retire (sets `RetiredUtc`; links and history stay).
 
-### Schedule drawer / edit form
+### Schedule modal / edit form
 
+Opening a schedule uses Dane's centred modal exactly as `ScheduleTableView.tsx`
+does today (90vw up to `max-w-6xl`, 85vh tall, dark blurred overlay, header on
+surface-light with the close X, sticky footer) — not a side drawer. Inside it,
 Dane's `ScheduleEditForm` with the **Clients tab first** and reworked:
 
 1. **Who can book this schedule** — radio: *All clients (default)* (no link
@@ -98,7 +101,7 @@ Dane's `ScheduleEditForm` with the **Clients tab first** and reworked:
    clients* opens a search-and-tick modal; a client already attached, or one
    that has its own override of this base, is shown disabled with the reason.
 3. **Client overrides** — the overrides of this base with their clients and
-   differing fields; click opens the override in the same drawer with Dane's
+   differing fields; click opens the override in the same modal with Dane's
    amber "Editing client override … based on #id" chrome and structure locked.
    *Create override for a client…* picks one client, creates a new
    `ScheduleId` with `BaseScheduleId` set, copies the base's rows, and **moves
@@ -345,7 +348,7 @@ them. New, id-keyed:
    with the label "Schedules (new)". The Configurator / ClientManager schedules
    screen is untouched. Both read the same day rows, so ops can open a schedule
    in each and compare.
-2. **Phase 1 — read-only list + drawer** on the 001 tables: table with Clients
+2. **Phase 1 — read-only list + modal** on the 001 tables: table with Clients
    and Dispatch columns, nesting by `BaseScheduleId`, View-as-client, drawer
    with Clients / Route / Days / Dispatch tabs read-only, plus the read-only
    Recurring Routes tab with the Schedule(s), Clients via schedule and Master

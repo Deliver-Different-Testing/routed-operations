@@ -171,12 +171,15 @@ tr:hover .rowact{opacity:1}
 .gsum{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12.5px;color:var(--text-secondary)}
 
 /* drawer */
-.overlay{position:fixed;inset:0;background:var(--overlay);display:none;z-index:20}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(2px);display:none;z-index:20}
 .overlay.open{display:block}
-.drawer{position:fixed;top:0;right:0;bottom:0;width:min(660px,100%);background:var(--surface-white);box-shadow:var(--shadow-xl);transform:translateX(100%);transition:transform .2s ease;z-index:21;display:flex;flex-direction:column}
-.drawer.open{transform:none}
-@media (prefers-reduced-motion:reduce){.drawer{transition:none}}
-.dhead{padding:20px 24px 0;border-bottom:1px solid var(--border)}
+.drawer{position:fixed;inset:0;z-index:21;display:none;align-items:center;justify-content:center;padding:16px}
+.drawer.open{display:flex}
+.dbox{width:min(1152px,90vw);height:85vh;background:var(--surface-white);border-radius:12px;box-shadow:var(--shadow-xl);display:flex;flex-direction:column;overflow:hidden;opacity:0;transition:opacity .2s}
+.drawer.open .dbox{opacity:1}
+@media (prefers-reduced-motion:reduce){.dbox{transition:none}}
+.dhead{padding:16px 24px 0;border-bottom:1px solid var(--border);position:relative;background:var(--surface-light)}
+.dhead .x{position:absolute;top:16px;right:16px}
 .dhead .eyebrow{font-size:12px;color:var(--text-muted)}
 .dhead h2{font-size:20px;font-weight:600;margin:2px 0 2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dhead p{margin:0 0 12px;color:var(--text-secondary);font-size:13px}
@@ -185,7 +188,8 @@ tr:hover .rowact{opacity:1}
 .dtabs button.on{color:var(--brand-dark);border-color:var(--brand-cyan)}
 :root[data-theme="dark"] .dtabs button.on{color:var(--text-primary)}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .dtabs button.on{color:var(--text-primary)}}
-.dbody{padding:20px 24px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:20px}
+.dbody{padding:20px 24px;overflow:auto;flex:1;display:grid;grid-template-columns:1fr;gap:20px;align-content:start}
+@media (min-width:900px){.dbody.two{grid-template-columns:1fr 1fr}.dbody .span{grid-column:1/-1}}
 .dfoot{padding:12px 24px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end}
 .ovbar{background:var(--warning-bg);border:1px solid var(--warning);color:var(--orange-text);padding:8px 12px;border-radius:8px;font-size:13px}
 .sect h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-weight:600;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
@@ -304,9 +308,11 @@ tr:hover .rowact{opacity:1}
 </div>
 </div>
 
-<div class="overlay" id="overlay" onclick="closeDrawer()"></div>
-<aside class="drawer" id="drawer" aria-label="Schedule detail">
+<div class="overlay" id="overlay"></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Schedule detail" onclick="if(event.target===this)closeDrawer()">
+  <div class="dbox">
   <div class="dhead">
+    <button class="icobtn x" aria-label="Close" onclick="closeDrawer()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
     <div class="eyebrow" id="d-eyebrow"></div>
     <h2 id="d-title"></h2>
     <p id="d-sub"></p>
@@ -318,8 +324,9 @@ tr:hover .rowact{opacity:1}
     </div>
   </div>
   <div class="dbody" id="dbody"></div>
-  <div class="dfoot"><button class="btn ghost" onclick="closeDrawer()">Close</button><button class="btn primary" onclick="toast('Saved (mockup)');closeDrawer()">Save</button></div>
-</aside>
+  <div class="dfoot"><button class="btn" onclick="closeDrawer()">Cancel</button><button class="btn primary" onclick="toast('Saved (mockup)');closeDrawer()">Save</button></div>
+  </div>
+</div>
 
 <div class="modal" id="modal" role="dialog" aria-modal="true">
   <div class="mbox">
@@ -497,7 +504,7 @@ function renderDrawer(){
   ['clients','route','days','dispatch'].forEach(t=>document.getElementById('dt-'+t).classList.toggle('on',dtab===t));
   const overrides=schedules.filter(o=>o.base===s.id);
   let h='';
-  if(isOv) h+=`<div class="ovbar">Editing client override · ${s.clients.map(id=>esc(C[id].name)).join(', ')||'no clients yet'} · based on <b>${esc(base.name)}</b> #${base.id}. Structure is locked; only the override fields differ: ${s.diff.map(esc).join('; ')}.</div>`;
+  if(isOv) h+=`<div class="ovbar span">Editing client override · ${s.clients.map(id=>esc(C[id].name)).join(', ')||'no clients yet'} · based on <b>${esc(base.name)}</b> #${base.id}. Structure is locked; only the override fields differ: ${s.diff.map(esc).join('; ')}.</div>`;
   if(dtab==='clients'){
     h+=`<div class="sect"><h3>Who can book this schedule</h3><div class="radio">
         <label class="${s.visibility==='all'?'on':''}"><input type="radio" name="vis" ${s.visibility==='all'?'checked':''} ${isOv?'disabled':''} onchange="setVis(${s.id},'all')"><span><b>All clients (default)</b><span>Available to every client with no schedule of its own for this run. No link rows.</span></span></label>
@@ -521,7 +528,7 @@ function renderDrawer(){
       <p class="note" style="margin-top:10px">Each enabled day is one <code>tblBulkRunSchedule</code> row carrying ScheduleId #${s.id}.</p></div>`;
   } else {
     const rts=routesFor(s.id); const lhs=lhFor(s);
-    h+=`<div class="callout"><b>Dispatch view.</b> The schedule owns the time window, days and cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk leg and its <b>master job</b>, the one booking a linehaul driver picks up so every item on the run is marked picked up together. All of it is read from the Recurring Routes tables and edited there.</div>`;
+    h+=`<div class="callout span"><b>Dispatch view.</b> The schedule owns the time window, days and cut-off. Recurring routes own the pickup or delivery geography and who runs it; a middle-mile run owns the trunk leg and its <b>master job</b>, the one booking a linehaul driver picks up so every item on the run is marked picked up together. All of it is read from the Recurring Routes tables and edited there.</div>`;
     h+=`<div class="sect"><h3>Recurring routes bound to this schedule <span class="hint">${rts.length} route${rts.length===1?'':'s'}</span></h3>
       ${rts.length?rts.map(r=>`<div class="rcard"><div class="rh"><b>${esc(r.name)}</b><span class="badge blue">${r.area}</span>${r.scheduleIds.length>1?`<span class="badge purple" title="Also bound to ${r.scheduleIds.filter(x=>x!==s.id).map(x=>'#'+x).join(', ')}">shared by ${r.scheduleIds.length} schedules</span>`:''}${r.active?'':'<span class="badge sys">Inactive</span>'}<span class="sp" style="flex:1"></span><button class="btn ghost sm" onclick="toast('Opens Route Roster for #${r.id} (Configurator page)')">Roster ${I.ext}</button></div>
         <div class="rm"><span><span class="num">${r.zips}</span> zips</span><span><span class="num">${r.stops}</span> mapped stops</span><span>Default: ${esc(r.target.name)} <span class="badge sys sm">${r.target.type}</span></span></div>${weekStrip(r,false)}</div>`).join(''):'<div class="empty">No recurring route is bound to this schedule. Pickups are matched from bookings, not a rostered run.</div>'}
@@ -531,9 +538,9 @@ function renderDrawer(){
         <div class="rm"><span>Despatch <span class="num">${l.despatch}</span> · depart <span class="num">${l.depart}</span></span><span>Default: ${esc(l.courier)} <span class="badge sys sm">${l.target}</span></span><span>Speed: ${esc(l.speed)}</span><span>Used by ${schedules.filter(x=>lhFor(x).includes(l)).length} schedules</span></div>
         <div class="rm">${l.master?`<span><b style="font-weight:500">Master job</b> <span class="badge purple" style="cursor:pointer" onclick="toast('Opens master job ${l.master.job} in Route Viewer')">${l.master.job}</span> <span class="sec">${esc(l.master.today)}</span></span>`:`<span class="badge red">No master job</span> <span class="sec">the driver will see every item as its own job</span>`}</div>${weekStrip(l,true)}</div>`).join('')}
       </div>`;
-    h+=`<p class="note">Binding today is one schedule per route (<code>Routes.ScheduleId</code>). Routes shown as "shared by n schedules" illustrate the multi-binding proposal of 2026-08-03; the effective window is the tightest across the bound schedules.</p>`;
+    h+=`<p class="note span">Binding today is one schedule per route (<code>Routes.ScheduleId</code>). Routes shown as "shared by n schedules" illustrate the multi-binding proposal of 2026-08-03; the effective window is the tightest across the bound schedules.</p>`;
   }
-  document.getElementById('dbody').innerHTML=h;
+  const body=document.getElementById('dbody'); body.innerHTML=h; body.classList.toggle('two', dtab==='clients'||dtab==='dispatch');
 }
 function setVis(id,v){ const s=S()[id]; s.visibility=v; if(v==='all') s.clients=[]; renderDrawer(); render(); toast(v==='all'?'Now a default: link rows removed':'Now specific: attach clients'); }
 function detach(sid,cid){ const s=S()[sid]; s.clients=s.clients.filter(x=>x!==cid); renderDrawer(); render(); renderRoutes(); toast(`${C[cid].name} removed from #${sid}`); }
@@ -629,5 +636,6 @@ function renderRoutes(){
   }).join('')||'<tr><td colspan="10"><div class="empty">Nothing matches.</div></td></tr>';
 }
 
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(modal) closeModal(); else if(sel!=null) closeDrawer(); } });
 render(); renderGroups(); renderRoutes();
 </script>
