@@ -1,7 +1,7 @@
 ---
 title: Regression review — Kevin's schedule/client link rollout
 date: 2026-09-09
-revised: 2026-09-09 (v3 — reconciled against two independent source reviews)
+revised: 2026-09-09 (v4 — Kerran's final analysis folded in)
 audience: Steve, George, Kevin, Kerran
 status: Findings verified against source; 4 live defects, 1 product decision
 reviews: KEVIN-SCHEDULE-CLIENT-LINK-BY-SCHEDULE-ID-2026-09-08.md
@@ -18,27 +18,32 @@ data profile.
 
 **v2** incorporated Kerran's source review.
 
-**v3** reconciles Kerran's review with Kevin's independent source review. The two
-**disagree on findings 3 and 4a** — resolved below, in both cases because they
+**v3** reconciled Kerran's review with Kevin's independent source review. The two
+**disagreed on findings 3 and 4a** — resolved below, in both cases because they
 checked different layers. Kevin also ran the DB query finding 4b needed, closing
-it, and turned up **two defects neither v1 nor Kerran caught**, one of which is
-silent data loss.
+it, and turned up **two defects neither v1 nor Kerran caught**.
+
+**v4** folds in Kerran's final analysis. He confirms findings 6 and 7 against
+source with line numbers, and independently reaches Kevin's postcode/polygon
+finding — but with a sharper reading that **escalates it**. Finding A is now the
+most consequential item on this list, and the cheap fix for it is unsafe on this
+data. See finding A.
 
 Net: **four live defects**, one product decision, three latent hazards, one
 closed.
 
 | # | Finding | Verdict | Severity now |
 |---|---|---|---|
-| 6 | New day rows write `ClientId = null` | **CONFIRMED LIVE BUG** | **CRITICAL** |
-| A | Postcode/polygon junctions orphaned on rename | **NEW — CONFIRMED LIVE** | **HIGH** |
-| B | Migration step 4d wipes multi-client bindings | **NEW — SILENT DATA LOSS** | **HIGH** |
+| 6 | New day rows write `ClientId = null` | **CONFIRMED ×2** | **CRITICAL** |
+| A | Postcode/polygon bindings never id-keyed | **CONFIRMED ×2 — escalated** | **CRITICAL** |
+| B | Migration step 4d wipes multi-client bindings | **CONFIRMED — data loss** | **HIGH** |
 | 8 | `uspPrebookSet` resolves schedule-active by name | **CONFIRMED** (Kerran) | **HIGH** |
 | 3 | Legacy tuple silently picks on ambiguity | **REINSTATED** — real in C# | **HIGH** |
 | 1 | UNION vs the brief's ELSE | **CONFIRMED — deliberate** | Product decision |
 | 2 | `BulkRunScheduleId` name collision | Latent, not live (both agree) | MEDIUM |
 | 4a | NZ/US zone-layer difference | By design; latent if US enables | LOW |
 | 5 | `RetiredUtc IS NULL` on reads | Correct today; codify the rule | LOW |
-| 7 | Filter control inversion | By design | Release note |
+| 7 | Filter control inversion | **CONFIRMED** — by design | Release note |
 | 4b | Renamed migration re-run risk | **CLOSED — safe** | — |
 
 **Correction to v2:** v2 marked finding 3 refuted on Kerran's evidence. That was
@@ -72,8 +77,15 @@ Data profile (current production export):
 
 ## 6. CRITICAL — new day rows are written with `ClientId = null`
 
-**Confirmed by Kevin in source.** `ScheduleService.UpsertAsync` line 542 and
-`CopyAsync` line 727 both set `ClientId = null` when creating day rows.
+**Confirmed independently by Kevin and Kerran.** `ScheduleService.UpsertAsync`
+lines 539-545 and `CopyAsync` line 727 set `ClientId = null` on every new day
+row, **unconditionally** — regardless of `req.ClientIds` / `req.ClientCodes`.
+
+Kerran traced where those resolved client ids actually go: into
+`SyncClientsAsync` → the new `tblScheduleClient` junction (line 589), and
+nowhere else. They never flow back onto `TblBulkRunSchedule.ClientId`. So this
+is not a missed edge case — the legacy column was simply dropped from the write
+path.
 
 Brief §5 is explicit:
 
@@ -95,29 +107,63 @@ tblBulkRunSchedule` for the new rows. Must be populated. Repeat for copy.
 
 ---
 
-## A. HIGH (NEW) — postcode and polygon junctions are silently orphaned on rename
+## A. CRITICAL — postcode and polygon bindings were never id-keyed at all
 
-**Found by Kevin. Neither v1 nor Kerran caught this.**
+**Found by Kevin, then independently by Kerran with a sharper reading that
+escalates it.** Neither v1 nor v2 caught this.
 
-`ScheduleService.SyncPostcodesAsync(header.Name, …)` line 838 and
-`SyncPolygonsAsync(header.Name, …)` line 855 both key on the **current** header
-name. Rename a schedule `Foo` → `Bar` and `SyncPostcodesAsync("Bar", …)` never
-sees the `ScheduleName = 'Foo'` rows. The existing bindings are orphaned, the
-caller is handed a "fresh" empty list, and everything gets re-added under the
-new name.
+`SyncPostcodesAsync` / `SyncPolygonsAsync` (`ScheduleService.cs:838-869`) and
+**their read sites** key strictly on the name:
 
-This is the exact failure mode the brief exists to eliminate — a name used as a
-key, silently detaching dependants on rename (brief §2) — surviving in two
-junctions that were out of scope for the id re-shape (brief §1). It also
-undercuts brief §6's rename-safety acceptance criterion in spirit, even though
-that criterion is worded about client links.
+```csharp
+Context.SchedulePostcodes.Where(x => x.ScheduleName == name)
+```
 
-**Fix:** either cascade the rename (`UPDATE ScheduleName` old → new before the
-sync) or port both junctions to `BulkRunScheduleId` in a follow-up MR. The
-cascade is the smaller change; the port is the correct one.
+The underlying domain models `SchedulePostcode` / `SchedulePolygon`
+(`ScheduleGroupJunctions.cs`) are **untouched by this migration**.
+
+So the rollout id-keyed **one of the four binding types**. The client link was
+fixed; postcode and polygon were left on the string key that the entire brief
+exists to eliminate. That is the headline: this is not a bug inside the new
+design, it is the new design not having been applied.
+
+Three consequences, in increasing order of nastiness.
+
+**A1 — rename orphans the bindings (live today).** `UpsertAsync` permits
+renaming a header (lines 493-494, cascading to day rows) and then calls both
+syncs with the **new** name. `SyncPostcodesAsync("Bar", …)` never sees the
+`ScheduleName = 'Foo'` rows. The old bindings are stranded under the old name,
+the caller is handed a "fresh" empty list, and the desired set is re-added under
+the new name. Operator work silently lost.
+
+**A2 — a later rename can attach the *wrong* set (Kerran).** The stranded `Foo`
+rows are still in the table. Production has **164 names mapping to multiple
+definitions**. The day any schedule is renamed *to* `Foo` — or a new one is
+created with that name — it silently inherits the orphaned postcode/polygon set
+belonging to a completely different schedule. Not lost data: **wrong data**,
+presented as correct. This is precisely the ambiguity class the migration was
+written to close, left open on two of four binding types.
+
+**A3 — same-named schedules may already share bindings today.** *Inference from
+the code Kerran quoted, needs confirming.* If the junction predicate really is
+`ScheduleName == name` with no client or id discriminator, then any two
+schedules sharing a name already read each other's postcode and polygon rows —
+before any rename, today, in production. With **203 names used by 2+ clients**,
+that would not be a rare corner. **Kevin / Kerran: does `SchedulePostcode` carry
+any second discriminator?** If not, A3 is a live data-correctness problem
+independent of the rollout, and the most urgent thing on this page.
+
+**The cheap fix is unsafe on this data.** A rename cascade
+(`UPDATE ScheduleName` old → new before the sync) fixes A1 but *worsens* A2: if
+a schedule legitimately named `Bar` already exists — and with 48 names shared
+between a default and client schedules, it will — the cascade merges two
+schedules' postcode sets into one. **Do not ship the cascade alone.** The
+correct fix is to port both junctions to `BulkRunScheduleId`, the same re-shape
+already done for the client link.
 
 **Test:** create a schedule with postcodes 1000 + 1001. Rename it. Edit again.
-Expected: postcodes still bound. Actual today: bindings lost, list empty.
+Expected: still bound. Actual today: lost. Then create a second schedule under
+the original name and confirm it does **not** inherit the stranded set.
 
 ---
 
@@ -317,10 +363,23 @@ records*.
 
 ## 7. Release note — the Schedules tab filter inversion
 
-"Include client-specific" now means per-client only when ticked, excluding
-defaults; renamed "Client-specific only". Kevin's explicit call, documented.
-Release-note line: an operator who ticked that box to *widen* the list now
-*narrows* it.
+**Confirmed by Kerran against the `SchedulesTab.tsx` diff**, exactly as
+reported. Same `includeClientSpecific` state variable, same checkbox — only the
+meaning changed:
+
+- **Old tooltip:** "Include schedules bound to a specific client… off by default
+  because the widened set can be much larger" → ticking **widens**.
+- **New tooltip:** "Tick to switch the browse to per-client… only. Off = default
+  schedules only" → ticking **narrows**.
+
+Kevin's explicit call and documented. Two notes:
+
+- There is **no migration path for an operator's existing habit** — the control
+  looks identical and does the opposite. Needs a release-note line, and it is
+  worth telling the ops team directly rather than relying on them reading it.
+- The state variable is still named `includeClientSpecific`, which now means the
+  opposite of what it says. Rename it while the change is fresh, or it will
+  mislead the next reader.
 
 ---
 
@@ -346,12 +405,20 @@ Phase 1 staging is due **2026-09-14** — five days.
    tenant, and add the step 4d assertion. This is the only irreversible item on
    the list.
 
+**Answer first, because it changes the plan:**
+
+2. **A3** — does `SchedulePostcode` / `SchedulePolygon` carry any discriminator
+   beyond `ScheduleName`? If not, same-named schedules are already sharing
+   bindings in production today, and that outranks everything else here.
+
 **Blockers for Phase 1:**
 
-2. **6** — one-line fix at two sites (`ClientId = header.LegacyClientId`).
-3. **A** — rename cascade for the postcode/polygon junctions.
-4. **8** — pending Kevin's confirmation; if confirmed, a re-do of `120001`.
-5. **1** — Steve's decision. If reverting to ELSE, it lands in the same pass as 8.
+3. **6** — one-line fix at two sites (`ClientId = header.LegacyClientId`).
+4. **A** — port both junctions to `BulkRunScheduleId`. **Not** the rename
+   cascade on its own: on data with 48 shared names it merges two schedules'
+   postcode sets.
+5. **8** — pending Kevin's confirmation; if confirmed, a re-do of `120001`.
+6. **1** — Steve's decision. If reverting to ELSE, it lands in the same pass as 8.
 
 **Fast-follow:**
 
@@ -416,7 +483,13 @@ Phase 1 staging is due **2026-09-14** — five days.
 
 ## Open items
 
+- **Kevin or Kerran** — finding **A3**: does `SchedulePostcode` /
+  `SchedulePolygon` carry a discriminator beyond `ScheduleName`? This is the
+  one open question that could reorder the whole list.
 - **Kevin** to confirm or refute finding 8's six line numbers in `120001`.
 - **Steve** to call finding 1 (UNION vs ELSE).
-- Findings 5 and 7 were verified by Kevin against source; findings 2 and 4a are
-  agreed by both reviewers. No item now rests on the report alone.
+
+Every finding on this page has now been checked against source by at least one
+of Kevin or Kerran; findings 6, 7 and A by both, independently. Nothing rests on
+the rollout report alone. A3 is the only inference not yet verified, and it is
+marked as such.
