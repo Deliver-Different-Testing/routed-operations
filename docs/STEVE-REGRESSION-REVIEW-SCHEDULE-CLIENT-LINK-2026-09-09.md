@@ -1,9 +1,9 @@
 ---
 title: Regression review — Kevin's schedule/client link rollout
 date: 2026-09-09
-revised: 2026-09-09 (v4 — Kerran's final analysis folded in)
+revised: 2026-09-09 (v5 — A3 confirmed and promoted; Kerran signed off on ranking)
 audience: Steve, George, Kevin, Kerran
-status: Findings verified against source; 4 live defects, 1 product decision
+status: Findings verified against source; 5 live defects, 1 product decision
 reviews: KEVIN-SCHEDULE-CLIENT-LINK-BY-SCHEDULE-ID-2026-09-08.md
 baseline_migration: scripts/schedule-rationalisation/sql/001_schedule_header_and_id_keyed_links.sql
 ---
@@ -23,28 +23,32 @@ data profile.
 checked different layers. Kevin also ran the DB query finding 4b needed, closing
 it, and turned up **two defects neither v1 nor Kerran caught**.
 
-**v4** folds in Kerran's final analysis. He confirms findings 6 and 7 against
-source with line numbers, and independently reaches Kevin's postcode/polygon
-finding — but with a sharper reading that **escalates it**. Finding A is now the
-most consequential item on this list, and the cheap fix for it is unsafe on this
-data. See finding A.
+**v4** folded in Kerran's final analysis, escalating the postcode/polygon finding
+and raising **A3** as an unverified inference.
 
-Net: **four live defects**, one product decision, three latent hazards, one
-closed.
+**v5** — Kerran confirmed A3 from the EF model, and it is **worse than v4
+framed it**. It is not a risk that same-named schedules *might* share bindings:
+the composite primary key makes them **the same row**. It is true in production
+today, needs no rename and no further migration to trigger, and it is now the
+top item. Kerran has signed off on this ranking. v5 also corrects v4's
+overstatement that finding 4b is fully closed.
+
+Net: **five live defects**, one product decision, three latent hazards.
 
 | # | Finding | Verdict | Severity now |
 |---|---|---|---|
+| A3 | Postcode/polygon PK is `(ScheduleName, …)` | **CONFIRMED — true today** | **CRITICAL** |
 | 6 | New day rows write `ClientId = null` | **CONFIRMED ×2** | **CRITICAL** |
-| A | Postcode/polygon bindings never id-keyed | **CONFIRMED ×2 — escalated** | **CRITICAL** |
-| B | Migration step 4d wipes multi-client bindings | **CONFIRMED — data loss** | **HIGH** |
+| A1/A2 | Rename orphans / mis-attaches bindings | **CONFIRMED ×2** | **CRITICAL** |
+| B | Migration step 4d wipes multi-client bindings | **CONFIRMED ×2 — data loss** | **HIGH** |
 | 8 | `uspPrebookSet` resolves schedule-active by name | **CONFIRMED** (Kerran) | **HIGH** |
-| 3 | Legacy tuple silently picks on ambiguity | **REINSTATED** — real in C# | **HIGH** |
+| 3 | Legacy tuple silently picks on ambiguity | **CONFIRMED — API-reachable** | **HIGH** |
 | 1 | UNION vs the brief's ELSE | **CONFIRMED — deliberate** | Product decision |
 | 2 | `BulkRunScheduleId` name collision | Latent, not live (both agree) | MEDIUM |
 | 4a | NZ/US zone-layer difference | By design; latent if US enables | LOW |
 | 5 | `RetiredUtc IS NULL` on reads | Correct today; codify the rule | LOW |
 | 7 | Filter control inversion | **CONFIRMED** — by design | Release note |
-| 4b | Renamed migration re-run risk | **CLOSED — safe** | — |
+| 4b | Renamed migration re-run risk | Git half confirmed; DB half single-sourced | LOW |
 
 **Correction to v2:** v2 marked finding 3 refuted on Kerran's evidence. That was
 a layer error — Kerran checked SQL, where there is indeed no fallback; Kevin
@@ -74,6 +78,55 @@ Data profile (current production export):
 ---
 
 # Live defects
+
+## A3. CRITICAL — same-named schedules share one postcode/polygon set, by primary key
+
+**Confirmed by Kerran from the EF model.** v4 raised this as an inference to
+check. It is confirmed, and the mechanism is more absolute than v4 suggested.
+
+`DespatchContext.cs:249-256`:
+
+```csharp
+// Postcode + polygon junctions still keyed on ScheduleName (out of scope for this MR)
+modelBuilder.Entity<SchedulePostcode>(entity => { entity.HasKey(e => new { e.ScheduleName, e.PostCode }); });
+modelBuilder.Entity<SchedulePolygon>(entity => { entity.HasKey(e => new { e.ScheduleName, e.PolygonId }); });
+```
+
+There is **no client column and no schedule-id column on either table.**
+
+So this is not "two same-named schedules might read each other's rows". The
+primary key is `(ScheduleName, PostCode)`. Two schedules sharing a name
+**structurally cannot hold different postcode sets — they are the same row.**
+
+Against production data: **164 names map to multiple definitions** and **48
+names are shared between a default and client schedules**. Every one of those
+groups is currently sharing a single postcode and polygon binding across
+schedules that are, operationally, different schedules.
+
+**This is present tense.** It needs no rename, no further migration, and no
+future trigger. It is true in production right now. That is why it sits above
+finding B: B is damage the *next* apply would do; A3 is damage already done.
+
+**In fairness to the rollout:** the code comment says "out of scope for this
+MR", and brief §1 does place these junctions out of scope. This is not something
+Kevin broke. But the brief's entire thesis is that `ScheduleName` cannot carry
+identity — and the id re-shape was applied to one of four binding types while
+two others sit on a primary key that makes the ambiguity structural. Leaving
+them was a reasonable scope call for the MR; leaving them *and* shipping is not.
+
+**The hard part of the fix.** Porting these junctions to `BulkRunScheduleId` is
+not a mechanical re-key. For the 164 duplicate-name groups **the data to
+disambiguate does not exist** — the rows were never stored separately, so
+nothing records which schedule owned which postcode. Re-keying will need, per
+collision, either an operator decision or a rule (e.g. copy the shared set to
+every schedule in the group, then let ops prune). Budget for that; it is not a
+one-day task, and it gets more expensive as more schedules are created.
+
+**Test:** find two live schedules sharing a name with different definitions.
+Open both in the UI and compare their postcode lists. Expected today: identical,
+because it is one row. Change one; the other changes too.
+
+---
 
 ## 6. CRITICAL — new day rows are written with `ClientId = null`
 
@@ -144,22 +197,19 @@ belonging to a completely different schedule. Not lost data: **wrong data**,
 presented as correct. This is precisely the ambiguity class the migration was
 written to close, left open on two of four binding types.
 
-**A3 — same-named schedules may already share bindings today.** *Inference from
-the code Kerran quoted, needs confirming.* If the junction predicate really is
-`ScheduleName == name` with no client or id discriminator, then any two
-schedules sharing a name already read each other's postcode and polygon rows —
-before any rename, today, in production. With **203 names used by 2+ clients**,
-that would not be a rare corner. **Kevin / Kerran: does `SchedulePostcode` carry
-any second discriminator?** If not, A3 is a live data-correctness problem
-independent of the rollout, and the most urgent thing on this page.
+**A3 — same-named schedules already share one binding set.** Confirmed and
+promoted to its own finding above; it is the root cause of A1 and A2 rather than
+a consequence of them.
 
 **The cheap fix is unsafe on this data.** A rename cascade
-(`UPDATE ScheduleName` old → new before the sync) fixes A1 but *worsens* A2: if
-a schedule legitimately named `Bar` already exists — and with 48 names shared
-between a default and client schedules, it will — the cascade merges two
-schedules' postcode sets into one. **Do not ship the cascade alone.** The
-correct fix is to port both junctions to `BulkRunScheduleId`, the same re-shape
-already done for the client link.
+(`UPDATE ScheduleName` old → new before the sync) fixes A1 but *worsens* A2 —
+and given A3's composite primary key it does not merely produce wrong data, it
+collides on the key itself: if a schedule named `Bar` already has postcode 1000,
+cascading `Foo` → `Bar` hits an existing `(Bar, 1000)` row. With 48 names shared
+between a default and client schedules, that will happen. **Do not ship the
+cascade alone.** The correct fix is to port both junctions to
+`BulkRunScheduleId` — with the caveat under A3 that the disambiguating data does
+not exist for the 164 duplicate-name groups.
 
 **Test:** create a schedule with postcodes 1000 + 1001. Rename it. Edit again.
 Expected: still bound. Actual today: lost. Then create a second schedule under
@@ -169,11 +219,15 @@ the original name and confirm it does **not** inherit the stranded set.
 
 ## B. HIGH (NEW) — migration step 4d silently discards multi-client bindings
 
-**Found by Kevin. Raised here one level above his MEDIUM — see below.**
+**Found by Kevin, mechanism independently confirmed by Kerran from the migration
+file. Raised here one level above Kevin's MEDIUM — see below.**
 
-`20260908120000_AddScheduleHeaderAndIdKeyedLinks.sql` step 4d runs an
-**unconditional `DELETE FROM tblScheduleClient`** on fresh apply, then
-repopulates one row per header where `LegacyClientId IS NOT NULL`.
+`20260908120000_AddScheduleHeaderAndIdKeyedLinks.sql` step 4d runs
+`DELETE FROM tblScheduleClient`, guarded on `BulkRunScheduleId` still being
+nullable — which is true on fresh apply, so on a fresh apply it always fires.
+The repopulate step then inserts **one row per header from `LegacyClientId`**,
+and only that. It has no mechanism to recover a second client bound through the
+UI.
 
 Any multi-client binding the Routed Operations UI wrote to `tblScheduleClient`
 between **2026-08-25** (when the junction was created) and the apply date is
@@ -254,11 +308,23 @@ All three:
 .FirstOrDefaultAsync(h => h.Name == trimmed && h.LegacyClientId == legacyClientId && …)
 ```
 
+Kerran's line references: `613, 619` (Delete), `794, 800` (ToggleAutoBook),
+`650-654` (Copy).
+
 `FirstOrDefault` on an ambiguous key: **silently picks one, no log, no throw.**
 With 164 names mapping to multiple definitions in production, this fires
 precisely when the tuple is ambiguous — and the operations are `Delete`, `Copy`
 and `ToggleAutoBook`. A silent wrong pick on `DeleteAsync` retires the wrong
 schedule.
+
+**How exposed is it?** `SchedulesController.cs:132-153` wires both the
+`scheduleId` path and the name/`legacyClientId` fallback to the same DELETE
+route, commented "Preferred call: scheduleId. Legacy tuple retained for one
+release." The current `SchedulesTab.tsx` always sends `scheduleId`, so Routed
+Operations' own UI will not hit it. But the route still accepts and silently
+resolves the ambiguous tuple for **anything else that calls it** — a stale
+cached frontend, a script, another integration. Narrower than "everyday path",
+but reachable from outside the app, which is the part that matters.
 
 **Fix:** hard-fail on more than one match rather than picking; log every use of
 the legacy path. Then check the log before the release that removes it — if it
@@ -385,13 +451,32 @@ Kevin's explicit call and documented. Two notes:
 
 # Closed
 
-## 4b. CLOSED — the `120002` → `180000` rename is safe
+## 4b. LOW — the `120002` → `180000` rename: git half confirmed, DB half single-sourced
 
-Kevin ran the check. `git log --all -- …20260908120002_*` returns nothing — the
-file was never committed under the old name. `SchemaVersions` on `urgent-staging`
-and US has zero rows referencing `120002`, `ScheduleIdKeyed` or
-`AddScheduleHeader`. The rename happened pre-first-CI; no tenant ever saw the old
-name. No risk.
+**Correcting v4, which marked this fully closed.**
+
+**Confirmed independently.** Kerran re-ran `git log --all -- "*20260908120002*"`
+in `dbmigrationsv2` himself: zero hits. The file genuinely never existed under
+the old name in that repo's history. Two reviewers, same result — solid.
+
+**Not independently confirmed.** The `SchemaVersions` journal check on
+`urgent-staging` and US is Kevin's claim, and Kerran could not verify it without
+a DB connection. It is almost certainly right — a file never committed under the
+old name is unlikely to have been journalled under it — but it rests on one
+source.
+
+Cheap to close properly. SELECT only:
+
+```sql
+SELECT ScriptName, Applied
+FROM dbo.SchemaVersions
+WHERE ScriptName LIKE '%2026090812000%'
+   OR ScriptName LIKE '%20260908180000%'
+ORDER BY Applied;
+```
+
+Worth running on each tenant during the Phase 1 checks rather than leaving it on
+one person's word.
 
 ---
 
@@ -405,18 +490,20 @@ Phase 1 staging is due **2026-09-14** — five days.
    tenant, and add the step 4d assertion. This is the only irreversible item on
    the list.
 
-**Answer first, because it changes the plan:**
+**Scope first, because it is already true and it sizes the release:**
 
-2. **A3** — does `SchedulePostcode` / `SchedulePolygon` carry any discriminator
-   beyond `ScheduleName`? If not, same-named schedules are already sharing
-   bindings in production today, and that outranks everything else here.
+2. **A3** — confirmed. Two schedules sharing a name share one postcode/polygon
+   row, in production, now. Decide whether Phase 1 ships with that standing.
+   The re-key needs a disambiguation rule for the 164 duplicate-name groups
+   (the data to resolve them does not exist), so this is a scoping decision
+   before it is an engineering task.
 
 **Blockers for Phase 1:**
 
 3. **6** — one-line fix at two sites (`ClientId = header.LegacyClientId`).
-4. **A** — port both junctions to `BulkRunScheduleId`. **Not** the rename
-   cascade on its own: on data with 48 shared names it merges two schedules'
-   postcode sets.
+4. **A1/A2** — port both junctions to `BulkRunScheduleId`. **Not** the rename
+   cascade on its own: on data with 48 shared names it collides on the
+   `(ScheduleName, PostCode)` key.
 5. **8** — pending Kevin's confirmation; if confirmed, a re-do of `120001`.
 6. **1** — Steve's decision. If reverting to ELSE, it lands in the same pass as 8.
 
@@ -464,32 +551,47 @@ Phase 1 staging is due **2026-09-14** — five days.
     Expected to pass today (finding 5) — this is the guard test for later.
 13. **Zone/linehaul offsets** still resolve.
 
+## Postcode / polygon bindings
+
+14. **Shared-name binding check (A3)** — find two live schedules sharing a name
+    with different definitions. Compare their postcode lists. Expected today:
+    identical, because it is one row. Edit one, confirm the other changes.
+    *Fails today, by primary key.*
+15. **Rename retains bindings (A1)** — schedule with postcodes 1000 + 1001,
+    rename, re-edit. Expected: still bound. *Fails today.*
+16. **Rename onto a stranded name (A2)** — after 15, create a schedule under the
+    original name. Must **not** inherit the stranded set.
+
 ## Migration
 
-14. **Multi-client binding preservation** — seed `tblScheduleClient` with a
+17. **Multi-client binding preservation** — seed `tblScheduleClient` with a
     genuine second-client row, apply, confirm it survives (finding B).
     *Fails today.*
-15. Staging with `@Commit = 0` first. Counts: 2,725 headers / 119 defaults /
+18. Staging with `@Commit = 0` first. Counts: 2,725 headers / 119 defaults /
     11,110 day rows.
-16. Both checks empty: link rows without an id, client schedules without a link
+19. Both checks empty: link rows without an id, client schedules without a link
     row.
-17. **Idempotency** — re-run on a migrated database; no duplicate headers or
+20. **Idempotency** — re-run on a migrated database; no duplicate headers or
     link rows.
-18. **Partial-failure retry** — kill mid-run, re-run, confirm clean.
-19. **Confirm the two competing migrations cannot both apply** (finding 2,
+21. **Partial-failure retry** — kill mid-run, re-run, confirm clean.
+22. **Confirm the two competing migrations cannot both apply** (finding 2,
     second-order).
 
 ---
 
 ## Open items
 
-- **Kevin or Kerran** — finding **A3**: does `SchedulePostcode` /
-  `SchedulePolygon` carry a discriminator beyond `ScheduleName`? This is the
-  one open question that could reorder the whole list.
-- **Kevin** to confirm or refute finding 8's six line numbers in `120001`.
-- **Steve** to call finding 1 (UNION vs ELSE).
+- **Kevin** to confirm or refute finding 8's six line numbers in `120001` — the
+  last finding resting on a single reviewer.
+- **Steve** to call finding 1 (UNION vs ELSE), and to scope A3 in or out of
+  Phase 1.
+- **Anyone with a DB connection** to run the `SchemaVersions` query under 4b, so
+  that finding is closed on evidence rather than on one person's word.
 
-Every finding on this page has now been checked against source by at least one
-of Kevin or Kerran; findings 6, 7 and A by both, independently. Nothing rests on
-the rollout report alone. A3 is the only inference not yet verified, and it is
-marked as such.
+Every finding on this page has been checked against source. Findings 6, 7, A,
+A3, 3, B and 4b (git half) were verified by both Kevin and Kerran
+independently; 2 and 4a are agreed by both; 5 was verified by Kevin. Nothing
+rests on the rollout report alone, and the one remaining inference from v4 — A3
+— is now confirmed from the EF model.
+
+Kerran has signed off on this ranking.
