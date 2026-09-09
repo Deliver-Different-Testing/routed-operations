@@ -530,6 +530,13 @@ shape, not patches to apply blind. Column naming follows Kevin's convention
 
 Ordered easiest-first within each severity band.
 
+> **The SQL fixes now exist as runnable scripts** in
+> [`scripts/schedule-link-fixes/`](../scripts/schedule-link-fixes/) — capture and
+> guard for finding B, the day-row back-fill for 6, a read-only survey for A3,
+> and the junction port for A1/A2/A3. Same house convention as the
+> rationalisation scripts: `@Commit = 0` by default. Still proposals; nothing has
+> been run. The C# fixes below remain sketches — that code is in GitLab.
+
 ---
 
 ## Fix 6 — day-row `ClientId` (smallest fix on the list)
@@ -776,7 +783,18 @@ ALTER TABLE dbo.SchedulePostcode ADD BulkRunScheduleId int NULL;
 ALTER TABLE dbo.SchedulePolygon  ADD BulkRunScheduleId int NULL;
 ```
 
-**Step 2 — fan out.** The disambiguating data does not exist, so the only safe
+**Step 2 — back-fill one id per existing row**, the lowest header id for its
+name. One row, one id.
+
+**Step 2b — quarantine stranded rows** whose `ScheduleName` matches no live
+header. They cannot be given an id, and left in place they are exactly what a
+future rename would inherit (A2).
+
+**Step 2c — drop the old primary key.** *This must precede the fan-out.* The
+existing PK is `(ScheduleName, PostCode)`; copying a shared set to a second
+header writes a duplicate of that pair, which the old key forbids.
+
+**Step 2d — fan out.** The disambiguating data does not exist, so the only safe
 rule is *copy the shared set to every schedule that shares the name*, then let
 ops prune. This preserves current behaviour exactly — nobody loses a binding —
 and converts a structural problem into a tidy-up queue:
