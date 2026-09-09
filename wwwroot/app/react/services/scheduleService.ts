@@ -68,6 +68,11 @@ export interface ScheduleGroupSummary {
   polygonCount: number;
   autoBook: boolean | null;
   hasActiveLinehaul: boolean;
+  /** Up to 3 currently-linked client codes (alphabetical) for the row
+   *  chip strip. Full count is `clientCount`; row renders "+N more" if
+   *  `clientCount > linkedClientCodes.length`. Empty on default
+   *  schedules that no client has been explicitly bound to. */
+  linkedClientCodes: string[];
 }
 
 export interface ScheduleGroup {
@@ -193,10 +198,15 @@ export interface ScheduleGroupUpsertBody {
     fromClientAddress: boolean | null;
     dropOffLocationId: number | null;
   }>;
-  /** Legacy id-based path. Prefer clientCodes on write. */
+  /** Legacy id-based fallback. Only used when `clientCodes` is absent
+   *  from the request body (e.g. API callers that don't have code
+   *  strings). Operator writes always send `clientCodes` and this
+   *  array is ignored. */
   clientIds: number[];
-  /** Preferred operator-facing path. Backend resolves each code -> id
-   *  and merges with `clientIds`. Unknown codes throw. */
+  /** Operator-facing path AND authoritative desired set. When present
+   *  (even as an empty array) it REPLACES the client link set wholesale
+   *  - anything not in this array is unbound. Chip picker toggles by
+   *  code. Unknown codes throw. */
   clientCodes: string[];
   postcodeIds: number[];
   polygonIds: number[];

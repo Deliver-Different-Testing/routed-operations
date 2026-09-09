@@ -6,22 +6,21 @@ namespace RoutedOperations.Core.Domain.Despatch;
 
 /// <summary>
 /// Schedule "group" identity row (one per schedule). Introduced 2026-09-08
-/// by AddScheduleHeaderAndIdKeyedLinks. Day rows in tblBulkRunSchedule
-/// reference the header via BulkRunScheduleGroupId; link rows in
-/// tblScheduleClient reference it via BulkRunScheduleId (matches this
-/// PK name because same semantic).
+/// by AddScheduleHeaderAndIdKeyedLinks; PK column renamed from
+/// BulkRunScheduleId to ScheduleId on 2026-09-09 by RenameScheduleId
+/// ToClarifyKeySpace so it no longer collides with tblBulkRunSchedule.
+/// BulkRunScheduleId (the day-row PK).
 ///
-/// Naming quirk: two columns named BulkRunScheduleId exist in the schema.
-/// The one here is the header PK (identity, one per schedule group). The
-/// one on tblBulkRunSchedule is the day-row PK (one per day-of-week
-/// variant). They are NOT the same value; day rows join to headers via
-/// tblBulkRunSchedule.BulkRunScheduleGroupId = BulkRunScheduleHeader.BulkRunScheduleId.
+/// Naming (post-2026-09-09):
+///   tblBulkRunScheduleHeader.ScheduleId     - PK, this class
+///   tblBulkRunSchedule.ScheduleId           - FK to header (day-row -> header)
+///   tblBulkRunSchedule.BulkRunScheduleId    - day-row PK (legacy, unchanged)
+///   tblScheduleClient.ScheduleId            - FK to header
 /// </summary>
 [Table("tblBulkRunScheduleHeader")]
 public partial class BulkRunScheduleHeader
 {
-    [Column("BulkRunScheduleId")]
-    public int BulkRunScheduleId { get; set; }
+    public int ScheduleId { get; set; }
 
     [MaxLength(200)]
     public string Name { get; set; }
