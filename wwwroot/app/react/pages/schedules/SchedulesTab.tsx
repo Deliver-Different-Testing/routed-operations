@@ -181,17 +181,36 @@ export function SchedulesTab() {
     {
       key: 'name', label: 'Name', sortable: true,
       sortValue: (g) => g.name ?? '',
-      render: (g) => (
-        <span className="font-medium text-text-primary">
-          {g.name}
-          {g.legacyClientId != null && (
-            <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-orange/15 text-brand-orange"
-              title={`Legacy per-client override (client id ${g.legacyClientId})`}>
-              {g.legacyClientCode ?? `#${g.legacyClientId}`}
-            </span>
-          )}
-        </span>
-      ),
+      render: (g) => {
+        const linked = g.linkedClientCodes ?? [];
+        const extra = Math.max(0, (g.clientCount ?? 0) - linked.length);
+        return (
+          <span className="font-medium text-text-primary">
+            {g.name}
+            {linked.length > 0 && (
+              <span className="ml-2 inline-flex flex-wrap items-center gap-1 align-middle">
+                {linked.map((code) => (
+                  <span
+                    key={code}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-orange/15 text-brand-orange"
+                    title={`Client bound to this schedule: ${code}`}
+                  >
+                    {code}
+                  </span>
+                ))}
+                {extra > 0 && (
+                  <span
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-neutral-200 text-neutral-700"
+                    title={`${extra} more client${extra === 1 ? '' : 's'} bound (open the edit modal to see the full list)`}
+                  >
+                    +{extra} more
+                  </span>
+                )}
+              </span>
+            )}
+          </span>
+        );
+      },
     },
     { key: 'region', label: 'Destination', sortable: true, sortValue: (g) => g.regionName ?? '',
       render: (g) => <span className="text-text-secondary">{g.regionName ?? '-'}</span> },
@@ -378,5 +397,11 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     polygonCount: g.polygonIds.length,
     autoBook: g.autoBook,
     hasActiveLinehaul: g.linehauls.some((l) => l.active === true),
+    // Row chip strip: alphabetically top 3 of the freshly-saved link
+    // set. Matches ListSummaryAsync's projection so the row rerenders
+    // consistently after an in-place splice.
+    linkedClientCodes: [...g.clientCodes]
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      .slice(0, 3),
   };
 }

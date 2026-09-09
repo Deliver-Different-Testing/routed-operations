@@ -46,13 +46,20 @@ public class ScheduleGroupUpsertRequest
     public List<DayWindowUpsertRequest> DayWindows { get; set; } = new();
     public List<ScheduleZoneUpsertRequest> Zones { get; set; } = new();
     public List<ScheduleLinehaulUpsertRequest> Linehauls { get; set; } = new();
-    /// <summary>Clients this schedule applies to (M:N via tblScheduleClient).
-    /// Preferred path: pass ClientCodes below. If both are provided,
-    /// ClientCodes wins after server-side resolve.</summary>
-    public List<int> ClientIds { get; set; } = new();
-    /// <summary>Client codes (operator-facing, e.g. "ACME"). Resolved to
-    /// ClientIds server-side and merged in. Unknown codes throw.</summary>
-    public List<string> ClientCodes { get; set; } = new();
+    /// <summary>Legacy id-based fallback. Only consulted when ClientCodes
+    /// is absent (null) from the request payload - i.e. an API caller that
+    /// does not have code strings handy. Operator writes from the React UI
+    /// always send ClientCodes and this field is ignored.
+    /// Nullable so binding an absent JSON field stays null (fall-through
+    /// to this path); an explicit empty array reads as "no clients".</summary>
+    public List<int>? ClientIds { get; set; }
+    /// <summary>Operator-facing path AND authoritative desired set. When
+    /// present in the payload (non-null, even as an empty array) this
+    /// REPLACES the client link set wholesale - anything not in this array
+    /// is unbound. Chip picker toggles by code. Unknown codes throw.
+    /// Nullable so an absent JSON field remains null and the ClientIds
+    /// fallback fires; explicit empty means "no clients".</summary>
+    public List<string>? ClientCodes { get; set; }
     /// <summary>Individual postcodes bound to this schedule (M:N via tblSchedulePostcode).</summary>
     public List<int> PostcodeIds { get; set; } = new();
     /// <summary>Coverage polygons bound to this schedule (M:N via tblSchedulePolygon).</summary>
@@ -82,9 +89,14 @@ public class ScheduleCopyRequest
     /// <summary>Null = the default source group. Set = a legacy per-client override source.</summary>
     public int? SourceLegacyClientId { get; set; }
     [Required, StringLength(200)] public string NewName { get; set; } = string.Empty;
-    /// <summary>Client codes (preferred). Resolved server-side to ClientIds and bound via the junction.</summary>
+    /// <summary>Client codes for the copy's new client link set. Empty
+    /// AND ClientIds empty = inherit source's junction (per CopyAsync's
+    /// three-tier resolver). Non-empty resolves each code -> id, throws on
+    /// unknown.</summary>
     public List<string> ClientCodes { get; set; } = new();
-    /// <summary>Legacy id-based path. If ClientCodes is non-empty, it wins.</summary>
+    /// <summary>Client ids for the copy. Empty AND ClientCodes empty =
+    /// inherit source's junction. Non-empty takes priority over the
+    /// inherit branch when ClientCodes is empty.</summary>
     public List<int> ClientIds { get; set; } = new();
 }
 

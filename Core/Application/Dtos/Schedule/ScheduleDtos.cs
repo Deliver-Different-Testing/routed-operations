@@ -99,7 +99,14 @@ public record ScheduleGroupSummaryDto(
     int PostcodeCount,
     int PolygonCount,
     bool? AutoBook,
-    bool HasActiveLinehaul);
+    bool HasActiveLinehaul,
+    /// <summary>Up to 3 currently-linked client codes (sorted alphabetically)
+    /// for the Schedules list row chip strip. Full count is `ClientCount`;
+    /// if it exceeds 3 the row renders a `+N more` marker for the tail.
+    /// Capped at 3 to keep payload small on default schedules that many
+    /// clients bind to. LegacyClientCode is deliberately NOT shown by the
+    /// row - kept on the DTO for backend reference only.</summary>
+    string[] LinkedClientCodes);
 
 public record ScheduleLinehaulDto(
     int Id,

@@ -218,31 +218,32 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
 
         // Schedules module tables.
         // Header (2026-09-08 AddScheduleHeaderAndIdKeyedLinks): one row
-        // per schedule group. PK column is BulkRunScheduleId (identity)
-        // - shares a NAME with tblBulkRunSchedule.BulkRunScheduleId but
-        // NOT a value.
+        // per schedule group. PK column renamed 2026-09-09 from
+        // BulkRunScheduleId to ScheduleId to remove the collision with
+        // tblBulkRunSchedule.BulkRunScheduleId (day-row PK).
         modelBuilder.Entity<BulkRunScheduleHeader>(entity =>
         {
-            entity.HasKey(e => e.BulkRunScheduleId);
+            entity.HasKey(e => e.ScheduleId);
         });
-        // Day rows link to header via BulkRunScheduleGroupId. HasPrincipalKey
-        // makes the FK explicit against header.BulkRunScheduleId.
+        // Day rows link to header via ScheduleId (day-row FK column,
+        // renamed from BulkRunScheduleGroupId on 2026-09-09). Not to be
+        // confused with the day-row's own BulkRunScheduleId PK.
         modelBuilder.Entity<TblBulkRunSchedule>(entity =>
         {
             entity.HasOne(e => e.Header)
                   .WithMany()
-                  .HasForeignKey(e => e.BulkRunScheduleGroupId)
-                  .HasPrincipalKey(h => h.BulkRunScheduleId);
+                  .HasForeignKey(e => e.ScheduleId)
+                  .HasPrincipalKey(h => h.ScheduleId);
         });
-        // Client link (reshaped 2026-09-08 from ScheduleName to
-        // BulkRunScheduleId FK-referencing the header).
+        // Client link. Reshaped 2026-09-08 from ScheduleName to
+        // BulkRunScheduleId; renamed to ScheduleId on 2026-09-09.
         modelBuilder.Entity<ScheduleClient>(entity =>
         {
-            entity.HasKey(e => new { e.BulkRunScheduleId, e.ClientId });
+            entity.HasKey(e => new { e.ScheduleId, e.ClientId });
             entity.HasOne(e => e.Header)
                   .WithMany()
-                  .HasForeignKey(e => e.BulkRunScheduleId)
-                  .HasPrincipalKey(h => h.BulkRunScheduleId);
+                  .HasForeignKey(e => e.ScheduleId)
+                  .HasPrincipalKey(h => h.ScheduleId);
         });
         // Postcode + polygon junctions still keyed on ScheduleName (out
         // of scope for this MR).

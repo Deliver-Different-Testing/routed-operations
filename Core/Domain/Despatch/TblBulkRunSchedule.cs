@@ -15,16 +15,14 @@ public partial class TblBulkRunSchedule
     public int BulkRunScheduleId { get; set; }
 
     /// <summary>
-    /// FK to tblBulkRunScheduleHeader.BulkRunScheduleId (the header PK).
-    /// One header groups N day rows (one per DayOfWeek + Speed + Region
-    /// variant). Added 2026-09-08 by AddScheduleHeaderAndIdKeyedLinks.
-    /// Note: the header PK column shares this column's NAME
-    /// (BulkRunScheduleId) but on a different table with a different
-    /// value - the FK column here is deliberately called
-    /// BulkRunScheduleGroupId to avoid a collision with the day-row PK
-    /// on this same entity.
+    /// FK to tblBulkRunScheduleHeader.ScheduleId. One header groups
+    /// N day rows (one per DayOfWeek + Speed + Region variant). Added
+    /// 2026-09-08 by AddScheduleHeaderAndIdKeyedLinks; column renamed
+    /// from BulkRunScheduleGroupId to ScheduleId on 2026-09-09 by
+    /// RenameScheduleIdToClarifyKeySpace. Distinct from this entity's
+    /// own BulkRunScheduleId PK above (day-row PK, legacy, unchanged).
     /// </summary>
-    public int BulkRunScheduleGroupId { get; set; }
+    public int ScheduleId { get; set; }
 
     /// <summary>
     /// Nav prop to the schedule header. Left optional so EF isn't forced
