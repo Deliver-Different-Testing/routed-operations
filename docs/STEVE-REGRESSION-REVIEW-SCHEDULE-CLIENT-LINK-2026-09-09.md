@@ -1,9 +1,10 @@
 ---
 title: Regression review — Kevin's schedule/client link rollout
 date: 2026-09-09
-revised: 2026-09-09 (v5 — A3 confirmed and promoted; Kerran signed off on ranking)
+revised: 2026-09-09 (v6 — suggested fixes added)
 audience: Steve, George, Kevin, Kerran
 status: Findings verified against source; 5 live defects, 1 product decision
+contents: findings → suggested fixes → regression test set
 reviews: KEVIN-SCHEDULE-CLIENT-LINK-BY-SCHEDULE-ID-2026-09-08.md
 baseline_migration: scripts/schedule-rationalisation/sql/001_schedule_header_and_id_keyed_links.sql
 ---
@@ -32,6 +33,10 @@ the composite primary key makes them **the same row**. It is true in production
 today, needs no rename and no further migration to trigger, and it is now the
 top item. Kerran has signed off on this ranking. v5 also corrects v4's
 overstatement that finding 4b is fully closed.
+
+**v6** adds a **Suggested fixes** section — concrete C# and SQL for every live
+defect, sketched against the signatures and line references the reviewers quoted.
+Not compiled; shape, not patches.
 
 Net: **five live defects**, one product decision, three latent hazards.
 
@@ -513,6 +518,356 @@ Phase 1 staging is due **2026-09-14** — five days.
 7. **2** — rename decision, and retire one of the two competing migrations.
 8. **4a, 5** — sp-reference doc notes.
 9. **7** — release note.
+
+---
+
+# Suggested fixes
+
+Written against the signatures, line references and column names quoted by Kevin
+and Kerran — **not compiled or run**. Treat as sketches that show the intended
+shape, not patches to apply blind. Column naming follows Kevin's convention
+(header PK `BulkRunScheduleId`, day-row FK `BulkRunScheduleGroupId`).
+
+Ordered easiest-first within each severity band.
+
+---
+
+## Fix 6 — day-row `ClientId` (smallest fix on the list)
+
+`ScheduleService.UpsertAsync` ~539-545 and `CopyAsync` ~727:
+
+```csharp
+var row = new TblBulkRunSchedule
+{
+    // …
+    BulkRunScheduleGroupId = header.BulkRunScheduleId,
+    ClientId               = header.LegacyClientId,   // was: null
+};
+```
+
+`LegacyClientId` is null on default headers, which is correct — defaults always
+carried a null `ClientId`. So this is a straight assignment, no branch.
+
+**Also back-fill.** The bug is live, so any schedule created since deploy already
+has null day rows:
+
+```sql
+UPDATE s
+SET    s.ClientId = h.LegacyClientId
+FROM   dbo.tblBulkRunSchedule s
+JOIN   dbo.tblBulkRunScheduleHeader h
+       ON h.BulkRunScheduleId = s.BulkRunScheduleGroupId
+WHERE  s.ClientId IS NULL
+  AND  h.LegacyClientId IS NOT NULL;
+```
+
+Run the SELECT form first to see how many rows are affected — that number is
+also your answer to "how long has this been broken".
+
+---
+
+## Fix 1 — UNION back to the brief's ELSE
+
+**Only if Steve calls it that way** (see finding 1). Two forms.
+
+Branching, closest to the brief's wording:
+
+```sql
+IF EXISTS (SELECT 1 FROM dbo.tblScheduleClient WHERE ClientId = @ClientId)
+    SELECT … FROM dbo.tblBulkRunScheduleHeader h
+    WHERE  h.RetiredUtc IS NULL
+      AND  EXISTS (SELECT 1 FROM dbo.tblScheduleClient sc
+                   WHERE sc.BulkRunScheduleId = h.BulkRunScheduleId
+                     AND sc.ClientId = @ClientId);
+ELSE
+    SELECT … FROM dbo.tblBulkRunScheduleHeader h
+    WHERE  h.RetiredUtc IS NULL AND h.IsDefault = 1;
+```
+
+Single-statement, if duplicating the projection is unwelcome:
+
+```sql
+WITH linked AS (
+    SELECT h.*
+    FROM   dbo.tblBulkRunScheduleHeader h
+    WHERE  h.RetiredUtc IS NULL
+      AND  EXISTS (SELECT 1 FROM dbo.tblScheduleClient sc
+                   WHERE sc.BulkRunScheduleId = h.BulkRunScheduleId
+                     AND sc.ClientId = @ClientId)
+)
+SELECT * FROM linked
+UNION ALL
+SELECT h.*
+FROM   dbo.tblBulkRunScheduleHeader h
+WHERE  h.RetiredUtc IS NULL
+  AND  h.IsDefault = 1
+  AND  NOT EXISTS (SELECT 1 FROM linked);      -- the ELSE, expressed set-wise
+```
+
+Three sites: `uspPrebookSet`, `UTL_fncJob_…`, `DD_fncJob_…`.
+
+And `ScheduleService.ListSummaryAsync:169`, which does the same thing in memory:
+
+```csharp
+var linked  = headers.Where(h => linkedHeaderIds.Contains(h.BulkRunScheduleId)).ToList();
+var visible = linked.Count > 0
+    ? linked
+    : headers.Where(h => h.IsDefault).ToList();   // was: linked || IsDefault
+```
+
+The safety-net rows stay deleted either way — they were never needed for the
+ELSE rule.
+
+---
+
+## Fix 3 — legacy tuple: resolve once, refuse ambiguity
+
+Replace the three `FirstOrDefaultAsync` sites (`613/619` Delete, `794/800`
+ToggleAutoBook, `650-654` Copy) with one resolver:
+
+```csharp
+private async Task<BulkRunScheduleHeader?> ResolveLegacyTupleAsync(
+    string name, int? legacyClientId, CancellationToken ct)
+{
+    var trimmed = name?.Trim();
+
+    // Take(2) is enough to detect ambiguity without loading the whole group.
+    var matches = await Context.BulkRunScheduleHeaders
+        .Where(h => h.Name == trimmed
+                 && h.LegacyClientId == legacyClientId
+                 && h.RetiredUtc == null)
+        .Take(2)
+        .ToListAsync(ct);
+
+    if (matches.Count == 0) return null;
+
+    if (matches.Count > 1)
+    {
+        Logger.LogError(
+            "Legacy tuple ({Name}, {ClientId}) resolved to multiple live headers; refusing.",
+            trimmed, legacyClientId);
+        throw new AmbiguousScheduleException(trimmed, legacyClientId);
+    }
+
+    Logger.LogWarning(
+        "Legacy tuple path used for ({Name}, {ClientId}); caller should send scheduleId.",
+        trimmed, legacyClientId);
+    return matches[0];
+}
+```
+
+Map `AmbiguousScheduleException` to **409 Conflict** in
+`SchedulesController.cs:132-153`, not 500 — the caller sent a request that
+cannot be honoured, which is their problem to fix by sending `scheduleId`.
+
+The `LogWarning` on every legacy use is the part that earns its keep: before the
+release that deletes this path, check whether it ever fired. If it never did,
+removal is free.
+
+---
+
+## Fix B — migration step 4d: capture, then assert
+
+Two changes to `20260908120000_AddScheduleHeaderAndIdKeyedLinks.sql`.
+
+**1. Capture before the DELETE — a real table, not a saved query result:**
+
+```sql
+IF OBJECT_ID('dbo.tblScheduleClient_PreMigration', 'U') IS NULL
+    SELECT * INTO dbo.tblScheduleClient_PreMigration FROM dbo.tblScheduleClient;
+```
+
+Idempotent, survives a rollback, and gives anyone reconciling later something to
+join against.
+
+**2. Refuse to discard bindings that cannot be reconstructed.** Pre-migration
+the table is name-keyed, so a genuine multi-client binding is one with no
+matching 1:1 day-row relationship:
+
+```sql
+IF EXISTS (
+    SELECT 1
+    FROM   dbo.tblScheduleClient sc
+    WHERE  NOT EXISTS (SELECT 1 FROM dbo.tblBulkRunSchedule s
+                       WHERE s.Name = sc.ScheduleName
+                         AND s.ClientId = sc.ClientId))
+    THROW 50010,
+      'tblScheduleClient holds bindings not reproducible from the day rows. These are operator-created multi-client links and step 4d would discard them. Reconcile from dbo.tblScheduleClient_PreMigration before re-running.', 1;
+```
+
+This is the assertion the migration is missing: today a wiped binding passes both
+existing checks and the count print, because the post-state is internally
+consistent.
+
+**For tenants already migrated**, the equivalent detection is a diff against the
+pre-migration backup — there is nothing in the live database that records what
+was removed.
+
+---
+
+## Fix 8 — `uspPrebookSet`: resolve once at the top, use the id at all six sites
+
+*Pending Kevin confirming the six line numbers.*
+
+Rather than editing six predicates, resolve once and let the sites use the id:
+
+```sql
+-- after @CurScheduleID / @CurScheduleName are populated
+IF ISNULL(@CurScheduleID, 0) = 0 AND @CurScheduleName IS NOT NULL
+BEGIN
+    DECLARE @Candidates int;
+
+    SELECT @Candidates = COUNT(*), @CurScheduleID = MIN(h.BulkRunScheduleId)
+    FROM   dbo.tblBulkRunScheduleHeader h
+    WHERE  h.Name = @CurScheduleName
+      AND  h.RetiredUtc IS NULL;
+
+    IF @Candidates > 1
+    BEGIN
+        -- 164 names in production resolve to more than one definition.
+        SET @CurScheduleID = NULL;
+        THROW 50020, 'Schedule name is ambiguous and no ScheduleId was supplied', 1;
+    END
+END
+```
+
+Then each of the six sites becomes:
+
+```sql
+WHERE h.BulkRunScheduleId = @CurScheduleID     -- was: h.Name = @CurScheduleName
+```
+
+If throwing is too aggressive for the prebook path, log and skip the schedule
+rather than silently picking `MIN` — a wrong schedule on a re-book is worse than
+a missed one.
+
+Rename the migration too. `uspPrebookSetScheduleIdKeyed` currently asserts the
+opposite of what the file does.
+
+---
+
+## Fix A — port the postcode/polygon junctions to `BulkRunScheduleId`
+
+The largest item, and the one that needs a decision before code. Staged so each
+step is separately shippable.
+
+**Step 0 — size it.** Run before deciding anything:
+
+```sql
+SELECT sp.ScheduleName,
+       COUNT(DISTINCT h.BulkRunScheduleId) AS SchedulesSharingName,
+       COUNT(*)                            AS PostcodeRows
+FROM   dbo.SchedulePostcode sp
+JOIN   dbo.tblBulkRunScheduleHeader h
+       ON h.Name = sp.ScheduleName AND h.RetiredUtc IS NULL
+GROUP  BY sp.ScheduleName
+HAVING COUNT(DISTINCT h.BulkRunScheduleId) > 1
+ORDER  BY PostcodeRows DESC;
+```
+
+Every row is a group where one postcode set is currently doing duty for several
+schedules. The row count is the size of the operator problem; `PostcodeRows` is
+the size of the data problem. Repeat for `SchedulePolygon`.
+
+**Step 1 — additive column, no behaviour change:**
+
+```sql
+ALTER TABLE dbo.SchedulePostcode ADD BulkRunScheduleId int NULL;
+ALTER TABLE dbo.SchedulePolygon  ADD BulkRunScheduleId int NULL;
+```
+
+**Step 2 — fan out.** The disambiguating data does not exist, so the only safe
+rule is *copy the shared set to every schedule that shares the name*, then let
+ops prune. This preserves current behaviour exactly — nobody loses a binding —
+and converts a structural problem into a tidy-up queue:
+
+```sql
+INSERT INTO dbo.SchedulePostcode (BulkRunScheduleId, ScheduleName, PostCode)
+SELECT h.BulkRunScheduleId, sp.ScheduleName, sp.PostCode
+FROM   dbo.SchedulePostcode sp
+JOIN   dbo.tblBulkRunScheduleHeader h
+       ON h.Name = sp.ScheduleName AND h.RetiredUtc IS NULL
+WHERE  sp.BulkRunScheduleId IS NULL
+  AND  NOT EXISTS (SELECT 1 FROM dbo.SchedulePostcode x
+                   WHERE x.BulkRunScheduleId = h.BulkRunScheduleId
+                     AND x.PostCode = sp.PostCode);
+```
+
+Emit the step 0 query as a report alongside it — that is the prune list.
+
+**Step 3 — re-key, once every row has an id:**
+
+```sql
+ALTER TABLE dbo.SchedulePostcode ALTER COLUMN BulkRunScheduleId int NOT NULL;
+ALTER TABLE dbo.SchedulePostcode DROP CONSTRAINT PK_SchedulePostcode;
+ALTER TABLE dbo.SchedulePostcode ADD CONSTRAINT PK_SchedulePostcode
+    PRIMARY KEY (BulkRunScheduleId, PostCode);
+ALTER TABLE dbo.SchedulePostcode ADD CONSTRAINT FK_SchedulePostcode_Header
+    FOREIGN KEY (BulkRunScheduleId) REFERENCES dbo.tblBulkRunScheduleHeader (BulkRunScheduleId);
+-- ScheduleName kept for one release, then dropped
+```
+
+**Step 4 — code.** `DespatchContext.cs:249-256`:
+
+```csharp
+modelBuilder.Entity<SchedulePostcode>(e => e.HasKey(x => new { x.BulkRunScheduleId, x.PostCode }));
+modelBuilder.Entity<SchedulePolygon>(e  => e.HasKey(x => new { x.BulkRunScheduleId, x.PolygonId }));
+```
+
+And `ScheduleService.cs:838-869` — both syncs and their read sites take the id:
+
+```csharp
+// was: SyncPostcodesAsync(header.Name, …)  →  Where(x => x.ScheduleName == name)
+private async Task SyncPostcodesAsync(int scheduleId, IEnumerable<string> postcodes, CancellationToken ct)
+{
+    var existing = await Context.SchedulePostcodes
+        .Where(x => x.BulkRunScheduleId == scheduleId)
+        .ToListAsync(ct);
+    // …
+}
+```
+
+Once keyed on the id, `UpsertAsync`'s rename path (493-494) needs no cascade —
+the bindings follow the id and the rename becomes a pure display change, which
+is the entire point of the brief.
+
+**Do not ship the rename cascade as an interim fix.** With the current
+`(ScheduleName, PostCode)` primary key, cascading `Foo` → `Bar` collides on the
+key whenever `Bar` already holds that postcode. Steps 1-2 are additive and safe;
+the cascade is not.
+
+---
+
+## Fix 2 — the naming collision
+
+Mechanical, do it while the surface is small. Header PK `BulkRunScheduleId` →
+`ScheduleId`; day-row FK `BulkRunScheduleGroupId` → `ScheduleId`; link table
+`tblScheduleClient` → `tblBulkRunScheduleClient`. That matches the brief and
+frees `BulkRunScheduleId` to mean only "day row", as it did before.
+
+If the rename is rejected, then at minimum retire one of the two competing
+migrations before either reaches an environment that has seen the other —
+`001_schedule_header_and_id_keyed_links.sql` will otherwise build a parallel
+second structure.
+
+---
+
+## Fixes 5 and 7 — documentation and naming
+
+**5** — add to `sp-reference/schedule-id-migration-2026-09-08.md`: *filter
+`RetiredUtc IS NULL` on selection paths (what can I book / attach); never on
+display of existing records.* Correct today; this stops the next person breaking
+it once 522 schedules go retired.
+
+**7** — rename the state variable. `includeClientSpecific` now means the
+opposite of its name:
+
+```tsx
+const [clientSpecificOnly, setClientSpecificOnly] = useState(false);
+```
+
+Plus a release-note line, and tell the ops team directly — the control looks
+identical and does the opposite.
 
 ---
 
