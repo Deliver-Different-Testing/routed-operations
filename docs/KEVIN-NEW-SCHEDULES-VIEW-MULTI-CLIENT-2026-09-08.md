@@ -55,7 +55,9 @@ until ops confirm they can do their work in the new one.
   `BaseScheduleId` on the header and two small group tables (section 5).
 - **Booking window:** the look-ahead moves from `Show Days in Future` in Admin
   Manager to *show the next n schedules* on the schedule itself, per Marcus's
-  ticket (section 5b). Phase 1 ships the count only.
+  ticket (section 5b). Phase 1 ships the count only, and counting schedules
+  means the booking path must read the holidays table to know it has bookable
+  dates to return.
 
 ## 1. Why
 
@@ -487,6 +489,11 @@ matter for a low-frequency schedule, the backstop to add later is
 `MaxDaysAhead` on the header, applied as *whichever limit is smaller*. It is
 not needed to make Marcus's change work, and it is not in Phase 1.
 
+Do not confuse that with the horizon that stops the forward walk looping
+(next section). The horizon is a code guard rail with a tenant constant behind
+it; `MaxDaysAhead` would be an ops-facing limit on a schedule. Only the second
+one is a decision anyone gets to make in this view, and it is deferred.
+
 ### What counts as one occurrence
 
 Being precise here is what makes the number predictable. An occurrence is a
@@ -494,25 +501,62 @@ date this schedule runs where all of the following hold, tested **in this
 order**:
 
 1. the day is enabled on the schedule (a day row exists for it);
-2. the date is not suppressed or shifted by the public-holiday calendar;
+2. the date is not a non-operating day in the holidays table;
 3. the cut-off for that date has not passed (cut-off is per day);
 4. the daily limit for that date is not already reached (`NoS Daily Limit`).
 
-Then take the first `ShowNextSchedules` of what survives. Counting **before**
-those filters returns a list of slots nobody can book, which is the same
-complaint in a new shape.
+The generator does not scan a fixed window and filter it. It **walks forward
+from today, one candidate date at a time, and keeps going until it has
+collected `ShowNextSchedules` dates that pass all four tests**. That is the
+whole point of counting schedules rather than days: the walk cannot run out of
+window, so a holiday simply pushes the last occurrence further out instead of
+dropping it off the end.
 
-### The holiday calendar is the real Friday-for-Tuesday fix
+Counting **before** those filters returns a list of slots nobody can book,
+which is the same complaint in a new shape.
 
-Step 2 is the dependency, and it is the part that is missing. The behaviour
-Marcus describes is consistent with the holiday adjustment being applied
-*after* the look-ahead filter, so the shifted date falls outside the window.
-Counting occurrences only fixes that if the generator knows about the holiday
-**before** it counts. Nothing in the schedules module has any concept of a
-public holiday today — `CutoffException` in `types.ts` is a per-weekday
-cut-off rule, not a calendar. Tell me where the tenant's holiday calendar
-lives, or that there isn't one, before this is built. Without it the setting
-still shortens the list, but the Friday-for-Tuesday case stays manual.
+Bound the walk so it terminates. A schedule with every day disabled, or one
+sitting behind a long shutdown, must not spin: stop after a fixed horizon
+(a tenant constant, not a per-schedule setting) and return however many
+occurrences were found, with the UI saying the horizon was reached. This is a
+guard rail in code, not the calendar-day control that Phase 1 leaves out.
+
+### Reading the holidays table is mandatory, not optional
+
+Steve, 2026-09-10: because the setting counts **schedules** rather than days,
+the generator has to read the holidays table to be sure it actually has
+bookable schedules to return.
+
+This is the part that changes with the new unit. A day window is allowed to
+come back short: ask for three days, get whatever falls inside them, possibly
+nothing. A count is a **promise to return that many bookable occurrences**, so
+the walk has to know which dates are non-operating before it can decide
+whether it has finished. Skip the holidays table and the count silently
+over-promises: the list shows occurrences on days nothing runs, and the client
+books into a closed day.
+
+It also makes Marcus's Friday-for-Tuesday case fall out for free. With Monday
+a holiday, the walk skips Monday and takes Tuesday as the next occurrence, so
+asking for two schedules still returns two bookable ones. No widening, and no
+extra rows on ordinary days. The behaviour he reports today is consistent with
+the holiday adjustment being applied *after* the look-ahead filter, so the
+shifted date lands outside the window; walking with the calendar in hand
+removes that ordering entirely.
+
+Nothing in the schedules module has any concept of a public holiday today.
+`CutoffException` in `types.ts` is a per-weekday cut-off rule, not a calendar,
+so this is new wiring in the booking path rather than a switch to flip. Two
+things I need from you (section 9): the name of the holidays table, and
+whether it is regional.
+
+**Regional holidays matter here.** New Zealand anniversary days are provincial,
+so a date can be a holiday at one end of a linehaul and an ordinary working day
+at the other. Suggested rule unless you tell me otherwise: the **pickup**
+region's calendar decides whether collection and cut-off can happen, and the
+**destination** region's calendar (`tblBulkRunSchedule.Region`) decides whether
+delivery can. An occurrence is offered only if both ends are operating. Where
+the tenant keeps a single national calendar this collapses to one lookup and
+costs nothing.
 
 ### Per schedule, or one number for the client's whole list?
 
@@ -668,6 +712,10 @@ Phase 1 so the list and modal can show the value.
 - The Booking Tester, run for a client on a schedule, lists exactly the
   occurrences the resolved number allows, skips dates whose cut-off has
   passed, and never returns a date the day rows do not cover.
+- With a public holiday on the next operating day, the same schedule still
+  returns the full count, with the last occurrence pushed further out rather
+  than the list coming back short. This is the Friday-for-Tuesday case, and it
+  is the check that proves the holidays table is being read.
 
 ## 8a. The one-to-one ClientId is not exposed
 
@@ -705,9 +753,10 @@ day-of-week or start time as the parent job's time.
 - The name of the link table you created, so 001 and this brief match it.
 - Whether the new view lives at `/schedules` in Routed Operations or somewhere
   else in the shell.
-- Where the tenant's public-holiday calendar lives, or confirmation that there
-  isn't one (section 5b — it decides whether the Friday-for-Tuesday case is
-  actually fixed or only made easier to configure).
+- The name of the holidays table, and whether it carries a region or depot
+  dimension for provincial anniversary days (section 5b). Counting schedules
+  ahead means the booking path must read it to know it has real bookable dates
+  to return, so this is a Phase 2 dependency rather than a detail.
 - Confirmation from Marcus that his ticket means *four days ahead*, not four
   schedules: the field he is looking at is labelled in days, so the wording
   reads both ways.
