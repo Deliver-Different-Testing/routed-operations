@@ -53,6 +53,9 @@ until ops confirm they can do their work in the new one.
 - **React code to lift:** section 3.
 - **Data model:** the header + link tables from migration 001, plus
   `BaseScheduleId` on the header and two small group tables (section 5).
+- **Booking window:** the look-ahead moves from `Show Days in Future` in Admin
+  Manager to *show the next n schedules* on the schedule itself, per Marcus's
+  ticket (section 5b). Phase 1 ships the count only.
 
 ## 1. Why
 
@@ -112,6 +115,14 @@ Dane's `ScheduleEditForm` with the **Clients tab first** and reworked:
 Route and Operating days tabs are Dane's, unchanged (per-day cut-off shown on
 each day cell). An override can have **several clients** (Gisborne pre 10am in
 the mockup: two clients share the Monday-60h variant).
+
+4. **Booking window** — a row under Clients in the header card: *show the next
+   `n` schedules*. This is Marcus's look-ahead, moved off the Admin Manager
+   speeds grid and onto the schedule, with a per-client value available on the
+   link row. Section 5b has the model, the rules and what it depends on.
+
+The header row on this modal, like the table's column headers, stays anchored
+while the body scrolls.
 
 ### Creating a schedule (Dane's New Schedule modal, plus a Clients row)
 
@@ -366,6 +377,7 @@ clients: { clientId: number; code: string; name: string; attachedUtc: string }[]
 baseScheduleId: number | null;      // override → its base; replaces baseScheduleName
 isOverride: boolean;                // derived: baseScheduleId != null
 overriddenFields: string[];         // computed by diffing against the base
+showNextSchedules: number | null;   // booking look-ahead, header-level (section 5b); null = tenant default
 // remove: clientId, clientIds, clientVisibility, baseScheduleName
 ```
 
@@ -402,6 +414,11 @@ CREATE TABLE dbo.tblBulkRunScheduleGroupMember (
   GroupId int NOT NULL REFERENCES dbo.tblBulkRunScheduleGroup (GroupId),
   ScheduleId int NOT NULL REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
   PRIMARY KEY (GroupId, ScheduleId));
+
+-- booking look-ahead (section 5b): how many upcoming occurrences of this schedule to offer.
+-- NULL on both = fall back to the tenant default. Do not back-fill from Show Days in Future.
+ALTER TABLE dbo.tblBulkRunScheduleHeader ADD ShowNextSchedules int NULL;
+ALTER TABLE dbo.tblBulkRunScheduleClient ADD ShowNextSchedules int NULL;  -- per-client value, beats the header
 ```
 
 Attaching a client to a group writes link rows; the group is a convenience,
@@ -428,6 +445,152 @@ SELECT h.ScheduleId, 'default' FROM tblBulkRunScheduleHeader h
                    WHERE o.BaseScheduleId = h.ScheduleId AND l.ClientId = @c);
 ```
 
+## 5b. Booking window — count schedules ahead, not days ahead
+
+Marcus Pouwels-Strang asked for the booking look-ahead to be expressed as a
+**number of upcoming schedules** rather than a number of calendar days
+([Monday 10720956793](https://exsalerate.monday.com/boards/6935564321/pulses/10720956793),
+raised 2025-12-07). His words: *"If we can change to show number of schedules
+in the future it will be easier to keep to a low number of schedules returning
+and manage Friday for Tuesday on public holidays without needing at least 4
+schedules ahead."*
+
+The ticket was written against Admin Manager's client *available speeds* grid,
+where the field is `Show Days in Future`, sitting beside `NoS Daily Limit`.
+That grid is no longer the home of this information; the schedule is. Steve's
+call (2026-09-10): **build the setting here, in the new Schedules view, and
+leave the Admin Manager grid alone.**
+
+### Why days is the wrong unit
+
+A day window is a proxy for the thing actually being capped, which is the
+length of the list the booking screen returns. Its yield swings with each
+schedule's own day pattern: three days ahead is three bookable dates on a
+weekday schedule and none at all on a Tuesday-only one. Marcus's case is the
+public-holiday one — to let a Friday booking reach the following Tuesday
+across a Monday holiday, the day value has to be widened, which then floods
+the list on every ordinary day. A count of occurrences is invariant to those
+gaps, which is exactly the property he is asking for.
+
+### Phase 1 is the count, and only the count
+
+Steve, 2026-09-10: ship `ShowNextSchedules` on its own and leave the calendar
+day value out of the new UI for Phase 1. Whoever sets a schedule up knows its
+cadence and can pick a number that covers the days they need, so a second
+control earns nothing yet.
+
+Worth knowing what the day value was quietly doing, so the decision is
+deliberate: it also capped **how far out** a booking could land. A count alone
+does not. A weekly schedule set to show three occurrences accepts bookings
+three weeks out, where three days ahead never could. If that turns out to
+matter for a low-frequency schedule, the backstop to add later is
+`MaxDaysAhead` on the header, applied as *whichever limit is smaller*. It is
+not needed to make Marcus's change work, and it is not in Phase 1.
+
+### What counts as one occurrence
+
+Being precise here is what makes the number predictable. An occurrence is a
+date this schedule runs where all of the following hold, tested **in this
+order**:
+
+1. the day is enabled on the schedule (a day row exists for it);
+2. the date is not suppressed or shifted by the public-holiday calendar;
+3. the cut-off for that date has not passed (cut-off is per day);
+4. the daily limit for that date is not already reached (`NoS Daily Limit`).
+
+Then take the first `ShowNextSchedules` of what survives. Counting **before**
+those filters returns a list of slots nobody can book, which is the same
+complaint in a new shape.
+
+### The holiday calendar is the real Friday-for-Tuesday fix
+
+Step 2 is the dependency, and it is the part that is missing. The behaviour
+Marcus describes is consistent with the holiday adjustment being applied
+*after* the look-ahead filter, so the shifted date falls outside the window.
+Counting occurrences only fixes that if the generator knows about the holiday
+**before** it counts. Nothing in the schedules module has any concept of a
+public holiday today — `CutoffException` in `types.ts` is a per-weekday
+cut-off rule, not a calendar. Tell me where the tenant's holiday calendar
+lives, or that there isn't one, before this is built. Without it the setting
+still shortens the list, but the Friday-for-Tuesday case stays manual.
+
+### Per schedule, or one number for the client's whole list?
+
+Open question for Steve and Marcus, and the only real fork here.
+
+- **Per schedule** (what this section specifies). Faithful to what Marcus
+  configures today: his grid already carries different values per service
+  (`90minSchedule` at 3, `Afternoon Home` at 9), and a service maps to a
+  schedule, so per-schedule keeps that ability. The tenant default does the
+  work for the majority and ops only touch the outliers.
+- **Per client, across the whole list.** Steve's example (2026-09-10) points
+  at this reading: *"If they have 5 schedules a day, then they might need to
+  put 20 or 30 into the future."* Five schedules a day, twenty offered, is
+  four days of coverage across all of them. One schedule runs at most once a
+  day in this model (one day row per day-of-week), so a number in the twenties
+  only makes sense as a total across schedules.
+
+They answer different questions and are not mutually exclusive: per schedule
+stops one dense schedule flooding the list, per client keeps the total list
+short. Build per schedule first, because that is the field being replaced and
+it lives naturally in this view. If the total is what ops actually want to
+control, that is a client-level number with no home in these tables yet, and
+it needs a client settings row rather than the link table. Confirm before
+Phase 2.
+
+### Where the value lives
+
+On the **header**, with a per-client value on the **link row**. Resolution,
+mirroring the schedule resolution rule above:
+
+1. `ShowNextSchedules` on the client's link row, if set;
+2. `ShowNextSchedules` on the schedule header, if set;
+3. the tenant default.
+
+Per-client variation goes on the link row, **not** into a new override
+schedule. Spawning an override to change one number would rebuild exactly the
+per-client copy sprawl this workstream is retiring (522 copies), and an
+override also drags along its own day rows and route. An override that exists
+for other reasons carries its own value on its own header, as any schedule
+does.
+
+```sql
+-- effective booking window for client @c on schedule @s
+SELECT COALESCE(l.ShowNextSchedules, h.ShowNextSchedules, @TenantShowNextSchedules) AS ShowNextSchedules
+FROM dbo.tblBulkRunScheduleHeader h
+LEFT JOIN dbo.tblBulkRunScheduleClient l ON l.ScheduleId = h.ScheduleId AND l.ClientId = @c
+WHERE h.ScheduleId = @s;
+```
+
+### Where it appears in the UI
+
+| Place | What goes there |
+|---|---|
+| `ScheduleEditForm.tsx` | a **Booking window** row in the form's header card, directly under the CLIENTS row (both are schedule-level, not per-day): *Show the next `[n]` schedules* |
+| `ClientsTab.tsx` | the effective number for each attached client, with an inline edit that writes the link row — so a client needing to see further ahead never needs its own schedule |
+| `ScheduleTable.tsx` | an **Ahead** column, so ops can spot the schedules returning long lists |
+| `BookingSimulator.tsx` | the Booking Tester lists the occurrences the booking screen would return for the chosen client and date — this is how the holiday case gets demonstrated without touching the booking path |
+| `types.ts` | `showNextSchedules` on `Schedule` (header-level) and on the link row |
+| `utils/clientLinks.ts` | the resolution helper beside `effectiveSchedulesForClient`, with unit tests |
+
+Same rule as the one-to-one `ClientId` (section 8a): this field is
+header-level and must **never** be written onto day rows by
+`multiDayToPerDay`.
+
+### Enforcement and migration
+
+- **The UI setting is not the enforcement.** The booking path has to apply the
+  cap when it builds the list of offered dates. That is backend work in the
+  same booking procedures noted in section 8b, and it is where the ordering in
+  *What counts as one occurrence* has to be implemented.
+- **Do not convert the existing day values into occurrence counts.** Leave
+  `ShowNextSchedules` null on migration so every schedule falls back to the
+  tenant default, and let ops set the outliers in this view. The old value is
+  per client **per speed**, and a schedule is not a speed, so there is no
+  reliable arithmetic from one to the other.
+- `Show Days in Future` stays where it is in Admin Manager and keeps working
+  until the booking path reads the new setting. Nothing in this view writes it.
+
 ## 6. API for the new view (Routed Operations backend)
 
 Leave the legacy `API/Schedules/*` endpoints alone; the old screen keeps using
@@ -442,6 +605,7 @@ them. New, id-keyed:
 | POST | `/api/v2/schedules/{id}/copy` | New `ScheduleId`, same rows, no clients. |
 | PUT | `/api/v2/schedules/{id}/clients` | Body `{ clientIds: [] }` — full replace of the link rows; 409 if a client is on an override of this base. |
 | DELETE | `/api/v2/schedules/{id}/clients/{clientId}` | Remove one link. |
+| PUT | `/api/v2/schedules/{id}/clients/{clientId}` | Body `{ showNextSchedules }` — the per-client booking window on the link row (section 5b); `null` clears it back to the header value. |
 | POST | `/api/v2/schedules/{id}/overrides` | Body `{ clientId }` → creates the override, moves the link, returns the new schedule. |
 | GET | `/api/v2/clients/{clientId}/schedules` | Resolution rule above, with `source`. |
 | GET / POST / PUT / DELETE | `/api/v2/schedule-groups` | Groups + members. |
@@ -449,7 +613,10 @@ them. New, id-keyed:
 | GET | `/api/v2/recurring-routes?type=first\|middle\|final&q=` | The existing Recurring Routes rows (routes and runs) plus `scheduleIds[]`, `clientsViaSchedule[]`, and for runs `mode`, `speed`, `masterJob { jobNumber, materialisedUtc, itemsLinked }`. Writes stay on the existing Recurring Routes API. |
 | POST | `/api/v2/schedule-groups/{id}/clients` | Body `{ clientIds: [] }` → link rows on every non-default member. |
 
-`CreatedBy` on link rows is the logged-in user.
+`CreatedBy` on link rows is the logged-in user. The schedule payload carries
+`showNextSchedules` on the header and on each link row, and
+`/api/v2/clients/{clientId}/schedules` returns the **effective** value per
+schedule (link row › header › tenant default) so the UI never re-derives it.
 
 ## 7. How to build it in Routed Operations
 
@@ -471,6 +638,12 @@ them. New, id-keyed:
    silent-loss fixes.
 7. Only after ops sign off does the old screen get retired. Not this brief.
 
+The booking window (section 5b) rides along rather than forming its own phase:
+the value is **displayed** in Phase 1, **editable** in Phase 2 with the other
+link-row writes, and **enforced** in the booking path separately, on the
+backend, alongside the section 8b work. The two columns need to exist before
+Phase 1 so the list and modal can show the value.
+
 ## 8. Acceptance (against the staging data after migration 001)
 
 - "AKL > CHCH Pre 8am Medical" shows once with its 11 clients; its Rangitoto
@@ -489,6 +662,12 @@ them. New, id-keyed:
 - A schedule group created in the new view survives a refresh, and attaching a
   client to it writes the link rows on its non-default members (the group
   tables and API exist — see the launch blocker in section 3).
+- A schedule with no booking window set shows the tenant default, and setting
+  a value on one client's link row changes that client's number without
+  creating an override or touching any other client.
+- The Booking Tester, run for a client on a schedule, lists exactly the
+  occurrences the resolved number allows, skips dates whose cut-off has
+  passed, and never returns a date the day rows do not cover.
 
 ## 8a. The one-to-one ClientId is not exposed
 
@@ -526,4 +705,10 @@ day-of-week or start time as the parent job's time.
 - The name of the link table you created, so 001 and this brief match it.
 - Whether the new view lives at `/schedules` in Routed Operations or somewhere
   else in the shell.
+- Where the tenant's public-holiday calendar lives, or confirmation that there
+  isn't one (section 5b — it decides whether the Friday-for-Tuesday case is
+  actually fixed or only made easier to configure).
+- Confirmation from Marcus that his ticket means *four days ahead*, not four
+  schedules: the field he is looking at is labelled in days, so the wording
+  reads both ways.
 - Phase 1 is due in tenant staging on **2026-09-14** (on the dashboard card).
