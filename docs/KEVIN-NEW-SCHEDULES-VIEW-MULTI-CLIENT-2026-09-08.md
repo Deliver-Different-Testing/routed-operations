@@ -501,7 +501,8 @@ date this schedule runs where all of the following hold, tested **in this
 order**:
 
 1. the day is enabled on the schedule (a day row exists for it);
-2. the date is not a non-operating day in the holidays table;
+2. the date is not a holiday for any site the occurrence touches (holidays
+   are held per region — see below);
 3. the cut-off for that date has not passed (cut-off is per day);
 4. the daily limit for that date is not already reached (`NoS Daily Limit`).
 
@@ -545,18 +546,36 @@ removes that ordering entirely.
 
 Nothing in the schedules module has any concept of a public holiday today.
 `CutoffException` in `types.ts` is a per-weekday cut-off rule, not a calendar,
-so this is new wiring in the booking path rather than a switch to flip. Two
-things I need from you (section 9): the name of the holidays table, and
-whether it is regional.
+so this is new wiring in the booking path rather than a switch to flip.
 
-**Regional holidays matter here.** New Zealand anniversary days are provincial,
-so a date can be a holiday at one end of a linehaul and an ordinary working day
-at the other. Suggested rule unless you tell me otherwise: the **pickup**
-region's calendar decides whether collection and cut-off can happen, and the
-**destination** region's calendar (`tblBulkRunSchedule.Region`) decides whether
-delivery can. An occurrence is offered only if both ends are operating. Where
-the tenant keeps a single national calendar this collapses to one lookup and
-costs nothing.
+### Holidays are held per region, so the lookup is per site
+
+Steve, 2026-09-10: holidays are recorded **by region**, with a site / region /
+state on each holiday row. That matters more here than it looks, because
+anniversary days are provincial: a date can be a holiday at one end of a
+linehaul and an ordinary working day at the other. A single national lookup
+would suppress bookable occurrences in regions that are working, which is the
+same over-restriction Marcus is complaining about, just in a different place.
+
+The rule the walk should apply:
+
+- **Every site the occurrence touches must be operating on its own date.**
+  The leg chain already names them: the collection site, the depots on a
+  linehaul leg (`fromDepotId` / `toDepotId`), and the destination region
+  (`tblBulkRunSchedule.Region`). A depot closed for its anniversary day cannot
+  tranship, so a trunk leg through it is not bookable that day.
+- **Pickup region governs collection and cut-off; destination region governs
+  delivery.** The two ends are on different dates whenever the schedule spans
+  days, so each is tested against its own date, not against the booking date.
+- **Resolve a holiday row to the most specific match, then widen.** A date is
+  non-operating for a site if a row matches that site, or its region, or its
+  state. That way a national holiday needs one row and a local anniversary
+  needs one row, with no duplication per site.
+
+What I still need (section 9) is the table name and how a schedule's region and
+depots key into its site / region / state columns. `Region` on the day row is a
+`BulkRegion` and the legs carry depot ids, so unless those are the same
+identifiers the holidays table uses, there is a small mapping to agree on.
 
 ### Per schedule, or one number for the client's whole list?
 
@@ -716,6 +735,11 @@ Phase 1 so the list and modal can show the value.
   returns the full count, with the last occurrence pushed further out rather
   than the list coming back short. This is the Friday-for-Tuesday case, and it
   is the check that proves the holidays table is being read.
+- On a provincial anniversary day, only the schedules touching that region lose
+  the date. A schedule running wholly in another region returns its usual
+  occurrences, and a linehaul between the two is suppressed for whichever end
+  is closed. This is the check that proves the lookup is per region rather than
+  national.
 
 ## 8a. The one-to-one ClientId is not exposed
 
@@ -753,10 +777,12 @@ day-of-week or start time as the parent job's time.
 - The name of the link table you created, so 001 and this brief match it.
 - Whether the new view lives at `/schedules` in Routed Operations or somewhere
   else in the shell.
-- The name of the holidays table, and whether it carries a region or depot
-  dimension for provincial anniversary days (section 5b). Counting schedules
-  ahead means the booking path must read it to know it has real bookable dates
-  to return, so this is a Phase 2 dependency rather than a detail.
+- The name of the holidays table, and how a schedule keys into its site /
+  region / state columns (section 5b). Holidays are per region, and a schedule
+  carries a `BulkRegion` on the day row plus depot ids on its legs, so I need
+  to know whether those are the same identifiers or need a mapping. Counting
+  schedules ahead means the booking path must read this table to know it has
+  real bookable dates to return, so it is a Phase 2 dependency, not a detail.
 - Confirmation from Marcus that his ticket means *four days ahead*, not four
   schedules: the field he is looking at is labelled in days, so the wording
   reads both ways.
