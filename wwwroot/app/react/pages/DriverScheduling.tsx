@@ -17,7 +17,7 @@
 // React Query cache via useInvalidateDriverScheduling so the UI
 // refetches without operator intervention.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { tenantTodayYmd } from '../lib/tenantDate';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -25,18 +25,22 @@ import { useConfirm } from '../context/ConfirmContext';
 import {
   driverSchedulingService,
   type CourierBySchedule,
+  type Schedule,
   type ScheduleSummary,
   type TimeSlotVehicle,
 } from '../services/driverSchedulingService';
 import {
   useDriverSchedulingCouriers,
+  useDriverSchedulingLocations,
   useDriverSchedulingNotifications,
   useDriverSchedulingSummaries,
+  useDriverSchedulingVehicleTypes,
   useInvalidateDriverScheduling,
 } from '../hooks/queries/useDriverScheduling';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
+import { MultiSelect } from '../components/common/MultiSelect';
 
 export default function DriverScheduling() {
   const user = useAuth();
@@ -55,6 +59,7 @@ export default function DriverScheduling() {
 
   const [newScheduleOpen, setNewScheduleOpen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [notifyPickerOpen, setNotifyPickerOpen] = useState(false);
   const [addTimeSlotOpen, setAddTimeSlotOpen] = useState(false);
   /** When set, the AssignSlotModal opens with this courier response
    *  targeted. The modal fetches the available time slots for the
@@ -69,6 +74,17 @@ export default function DriverScheduling() {
 
   const summariesQuery = useDriverSchedulingSummaries(bookDate);
   const summaries = summariesQuery.data ?? [];
+
+  // Clear location/schedule selection when the operator picks a new
+  // date. Without this, a stale `selectedLocation` from the previous
+  // date would prevent the auto-pick-first-location fallback from
+  // running when the new date has a different set of locations, and a
+  // stale `selectedScheduleId` would keep the courier panel loading a
+  // schedule that isn't visible on the new date.
+  useEffect(() => {
+    setSelectedLocation(null);
+    setSelectedScheduleId(null);
+  }, [bookDate]);
 
   // "Notify all pending" - reads GET /notifications (which returns
   // every un-notified schedule from today onwards, tenant-wide) and
@@ -117,9 +133,20 @@ export default function DriverScheduling() {
   };
 
   const doRemind = async (s: ScheduleSummary) => {
+    // Matches legacy CourierManager schedulerControl.js confirmation
+    // step: reminders re-SMS every Available courier. A misclick sends
+    // a batch of texts that can't be recalled, so require an explicit
+    // confirm every time.
+    const ok = await askConfirm({
+      title: 'Send reminders?',
+      message: `Send reminder SMS to every Available courier on "${s.name}"? This will re-notify anyone who has already confirmed. Cannot be undone.`,
+      confirmLabel: 'Send reminders',
+    });
+    if (!ok) return;
     try {
       await driverSchedulingService.sendReminders(s.id);
       toast.show(`Reminders sent for "${s.name}"`, 'success');
+      invalidate();
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
@@ -150,21 +177,28 @@ export default function DriverScheduling() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
-  const doBulkNotify = async () => {
+  // Legacy CourierManager had a full "Notify" modal that showed every
+  // pending schedule as a removable row - operators could take some
+  // out of the batch before firing. Port had regressed to a single
+  // "Notify all" button. Restored via NotifyPendingModal below.
+  const openBulkNotify = () => {
     if (pendingNotifications.length === 0) {
       toast.show('No pending schedules to notify.', 'error');
       return;
     }
-    const ok = await askConfirm({
-      title: 'Send notifications',
-      message: `Notify every courier on ${pendingNotifications.length} pending schedule${pendingNotifications.length === 1 ? '' : 's'}? Each courier in the target regions will receive an SMS. This action cannot be undone.`,
-      confirmLabel: 'Notify',
-    });
-    if (!ok) return;
+    setNotifyPickerOpen(true);
+  };
+
+  const submitBulkNotify = async (ids: number[]) => {
+    if (ids.length === 0) {
+      toast.show('Select at least one schedule to notify.', 'error');
+      return;
+    }
     try {
-      await driverSchedulingService.sendNotifications(pendingNotifications.map((n) => n.id));
-      toast.show(`Notifications sent for ${pendingNotifications.length} schedule${pendingNotifications.length === 1 ? '' : 's'}.`, 'success');
+      await driverSchedulingService.sendNotifications(ids);
+      toast.show(`Notifications sent for ${ids.length} schedule${ids.length === 1 ? '' : 's'}.`, 'success');
       invalidate();
+      setNotifyPickerOpen(false);
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
@@ -186,13 +220,13 @@ export default function DriverScheduling() {
         <Button
           variant="neutral"
           size="sm"
-          onClick={() => void doBulkNotify()}
+          onClick={openBulkNotify}
           disabled={pendingNotifications.length === 0}
           title={pendingNotifications.length === 0
             ? 'No pending-notification schedules'
-            : `Send notifications for ${pendingNotifications.length} pending schedule${pendingNotifications.length === 1 ? '' : 's'}`}
+            : `Review ${pendingNotifications.length} pending schedule${pendingNotifications.length === 1 ? '' : 's'} before sending`}
         >
-          Notify all pending ({pendingNotifications.length})
+          Notify pending ({pendingNotifications.length})
         </Button>
         <Button variant="neutral" size="sm" onClick={() => summariesQuery.refetch()}>
           {summariesQuery.isFetching ? 'Refreshing...' : 'Refresh'}
@@ -452,7 +486,6 @@ export default function DriverScheduling() {
       {newScheduleOpen && (
         <NewScheduleModal
           bookDate={bookDate}
-          locations={Array.from(new Set(summaries.map((s) => s.location))).filter((l) => l !== 'Unassigned')}
           onClose={() => setNewScheduleOpen(false)}
           onCreated={() => { setNewScheduleOpen(false); invalidate(); toast.show('Schedule created', 'success'); }}
         />
@@ -462,6 +495,13 @@ export default function DriverScheduling() {
           bookDate={bookDate}
           onClose={() => setCopyOpen(false)}
           onCopied={() => { setCopyOpen(false); invalidate(); toast.show('Schedules copied', 'success'); }}
+        />
+      )}
+      {notifyPickerOpen && (
+        <NotifyPendingModal
+          pending={pendingNotifications}
+          onClose={() => setNotifyPickerOpen(false)}
+          onSubmit={(ids) => void submitBulkNotify(ids)}
         />
       )}
       {addTimeSlotOpen && effectiveLocation && (
@@ -495,15 +535,21 @@ export default function DriverScheduling() {
 // ─── Modals ─────────────────────────────────────────────────────────
 
 function NewScheduleModal({
-  bookDate, locations, onClose, onCreated,
+  bookDate, onClose, onCreated,
 }: {
   bookDate: string;
-  locations: string[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const toast = useToast();
-  const [location, setLocation] = useState(locations[0] ?? '');
+  // Locations come from /api/driver-scheduling/locations - every
+  // active bulk region. Legacy CourierManager had the same shape;
+  // port had regressed to auto-completing from the current day's
+  // summaries, which meant a fresh date with no schedules yet had an
+  // empty datalist.
+  const locationsQuery = useDriverSchedulingLocations();
+  const locations = locationsQuery.data ?? [];
+  const [location, setLocation] = useState('');
   const [name, setName] = useState('');
   const [startTime, setStartTime] = useState('08:00');
   const [endTime, setEndTime] = useState('17:00');
@@ -511,8 +557,19 @@ function NewScheduleModal({
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
+    // Field-level validations lifted from the legacy AngularJS
+    // schedulerControl.js so operators get feedback before hitting
+    // the server. Matches CourierManager UX byte-for-byte.
     if (!location.trim() || !name.trim()) {
       toast.show('Location and name are required.', 'error');
+      return;
+    }
+    if (startTime >= endTime) {
+      toast.show('Start time must be before end time.', 'error');
+      return;
+    }
+    if (!Number.isFinite(wanted) || wanted < 1) {
+      toast.show('Wanted (headcount) must be at least 1.', 'error');
       return;
     }
     setSubmitting(true);
@@ -537,11 +594,16 @@ function NewScheduleModal({
     >
       <div className="grid grid-cols-1 gap-3 p-4 text-xs">
         <label className="flex flex-col gap-1">
-          <span>Location (must exist as a depot region)</span>
-          <input value={location} onChange={(e) => setLocation(e.target.value)} className="border border-border rounded px-2 py-1" list="ds-location-list" />
-          <datalist id="ds-location-list">
-            {locations.map((l) => <option key={l} value={l} />)}
-          </datalist>
+          <span>Location</span>
+          <select
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            className="border border-border rounded px-2 py-1 bg-surface-white"
+            disabled={locationsQuery.isLoading}
+          >
+            <option value="">{locationsQuery.isLoading ? 'Loading...' : 'Select a location...'}</option>
+            {locations.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+          </select>
         </label>
         <label className="flex flex-col gap-1">
           <span>Name</span>
@@ -564,6 +626,108 @@ function NewScheduleModal({
         <div className="text-[11px] text-text-muted">
           Book date: {bookDate} - use the top-bar date picker to change.
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+function NotifyPendingModal({
+  pending, onClose, onSubmit,
+}: {
+  pending: Schedule[];
+  onClose: () => void;
+  onSubmit: (ids: number[]) => void;
+}) {
+  // Legacy CourierManager showed every un-notified schedule in a table
+  // with a "remove from batch" affordance so operators could hold back
+  // a schedule they weren't ready to send yet. This modal restores
+  // that: start with everything selected, click × to remove specific
+  // rows, then submit only what's left.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set(pending.map((p) => p.id)));
+
+  const rows = pending.slice().sort((a, b) => {
+    if (a.bookDate !== b.bookDate) return a.bookDate < b.bookDate ? -1 : 1;
+    if (a.location !== b.location) return a.location < b.location ? -1 : 1;
+    return a.name < b.name ? -1 : 1;
+  });
+
+  const toggle = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedCount = selectedIds.size;
+
+  return (
+    <Modal open onClose={onClose} title="Notify pending schedules" size="lg"
+      footer={
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-[11px] text-text-muted">
+            {selectedCount} of {rows.length} selected. Each courier in the target regions receives an SMS.
+          </span>
+          <div className="flex gap-2">
+            <Button variant="neutral" size="sm" onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onSubmit(Array.from(selectedIds))}
+              disabled={selectedCount === 0}
+            >
+              Send ({selectedCount})
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <div className="p-4 text-xs">
+        {rows.length === 0 && (
+          <div className="text-text-muted text-center py-6">No pending schedules.</div>
+        )}
+        {rows.length > 0 && (
+          <table className="w-full">
+            <thead className="bg-surface-cream text-left text-text-muted">
+              <tr>
+                <th className="px-2 py-1 w-8"></th>
+                <th className="px-2 py-1">Date</th>
+                <th className="px-2 py-1">Location</th>
+                <th className="px-2 py-1">Name</th>
+                <th className="px-2 py-1">Window</th>
+                <th className="px-2 py-1 text-right">Wanted</th>
+                <th className="px-2 py-1 w-8"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => {
+                const included = selectedIds.has(s.id);
+                return (
+                  <tr key={s.id} className={`border-b border-border/40 ${included ? '' : 'opacity-50'}`}>
+                    <td className="px-2 py-1">
+                      <input type="checkbox" checked={included} onChange={() => toggle(s.id)} />
+                    </td>
+                    <td className="px-2 py-1 font-mono">{s.bookDate.slice(0, 10)}</td>
+                    <td className="px-2 py-1">{s.location}</td>
+                    <td className="px-2 py-1">{s.name}</td>
+                    <td className="px-2 py-1 font-mono text-text-muted">{s.startTime.slice(0, 5)} - {s.endTime.slice(0, 5)}</td>
+                    <td className="px-2 py-1 text-right">{s.wanted}</td>
+                    <td className="px-2 py-1">
+                      <button
+                        type="button"
+                        onClick={() => toggle(s.id)}
+                        className="text-text-muted hover:text-error"
+                        title={included ? 'Remove from batch' : 'Add back to batch'}
+                      >
+                        {included ? '×' : '+'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </Modal>
   );
@@ -804,9 +968,16 @@ function AddTimeSlotModal({
   onCreated: () => void;
 }) {
   const toast = useToast();
+  // Vehicle types come from /api/driver-scheduling/vehicle-types (the
+  // VehicleType lookup table). Legacy CourierManager had a dropdown
+  // seeded from `Vehicles/Types`; port had regressed to a comma-
+  // separated free-text field which meant a typo like "Cars" got
+  // rejected server-side at save time.
+  const vehicleTypesQuery = useDriverSchedulingVehicleTypes();
+  const vehicleTypes = vehicleTypesQuery.data ?? [];
   const [time, setTime] = useState('12:00');
   const [wanted, setWanted] = useState<number | ''>('');
-  const [vehicleTypesInput, setVehicleTypesInput] = useState('');
+  const [selectedVehicleTypes, setSelectedVehicleTypes] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
@@ -816,7 +987,8 @@ function AddTimeSlotModal({
         bookDateTime: `${bookDate}T${time}:00`,
         location,
         wanted: wanted === '' ? null : Number(wanted),
-        vehicleTypes: vehicleTypesInput.split(',').map((s) => s.trim()).filter(Boolean),
+        // Empty selection = "any vehicle" (matches legacy semantics).
+        vehicleTypes: selectedVehicleTypes,
       });
       onCreated();
     } catch (e) { toast.show((e as Error).message, 'error'); }
@@ -842,10 +1014,16 @@ function AddTimeSlotModal({
           <span>Wanted (leave blank for no cap)</span>
           <input type="number" min={1} value={wanted} onChange={(e) => setWanted(e.target.value === '' ? '' : Number(e.target.value))} className="border border-border rounded px-2 py-1" />
         </label>
-        <label className="flex flex-col gap-1">
-          <span>Vehicle types (comma-separated, blank = any)</span>
-          <input value={vehicleTypesInput} onChange={(e) => setVehicleTypesInput(e.target.value)} placeholder="Car, Van" className="border border-border rounded px-2 py-1" />
-        </label>
+        <div className="flex flex-col gap-1">
+          <span>Vehicle types (leave empty for any)</span>
+          <MultiSelect
+            label="Vehicle types"
+            options={vehicleTypes.map((v) => ({ value: v.name, label: v.name }))}
+            selected={selectedVehicleTypes}
+            onChange={setSelectedVehicleTypes}
+            minWidth="12rem"
+          />
+        </div>
       </div>
     </Modal>
   );

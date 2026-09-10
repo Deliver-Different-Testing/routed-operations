@@ -76,6 +76,28 @@ public class DriverSchedulingController(DriverSchedulingService svc) : BaseContr
         return Ok(new { response = rows });
     }
 
+    /// <summary>GET /api/driver-scheduling/locations - active bulk
+    /// regions the operator can pick when creating a schedule. Fuels
+    /// the New Schedule modal's location dropdown.</summary>
+    [HttpGet("locations")]
+    [Authorize(Policy = "RouteBuilder.Read")]
+    public async Task<IActionResult> GetLocations()
+    {
+        var rows = await svc.GetLocationsAsync();
+        return Ok(new { response = rows });
+    }
+
+    /// <summary>GET /api/driver-scheduling/vehicle-types - vehicle
+    /// types the operator can attach to a time slot. Fuels the Add
+    /// Time Slot modal's vehicle-types picker (multi-select).</summary>
+    [HttpGet("vehicle-types")]
+    [Authorize(Policy = "RouteBuilder.Read")]
+    public async Task<IActionResult> GetVehicleTypes()
+    {
+        var rows = await svc.GetVehicleTypesAsync();
+        return Ok(new { response = rows });
+    }
+
     // ─── Writes: schedules ─────────────────────────────────────────
 
     /// <summary>POST /api/driver-scheduling - batch-create

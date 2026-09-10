@@ -93,6 +93,13 @@ export interface Schedule {
   wanted: number;
 }
 
+/** Lookup row for the location + vehicle-type dropdowns. Same shape
+ *  covers both endpoints (`GET /locations`, `GET /vehicle-types`). */
+export interface LookupItem {
+  id: number;
+  name: string;
+}
+
 // ─── Request payloads ───────────────────────────────────────────────
 
 export interface SchedulesCreateItem {
@@ -148,6 +155,18 @@ export const driverSchedulingService = {
 
   getCouriersByResponseStatus: (statusId: number) =>
     unwrap<CourierDetails[]>(`${BASE}/responses/statuses/${statusId}/couriers`),
+
+  /** Active bulk regions. Populates the New Schedule modal's location
+   *  dropdown so operators pick a valid region up-front rather than
+   *  typing a name and finding out at save time. */
+  getLocations: () =>
+    unwrap<LookupItem[]>(`${BASE}/locations`),
+
+  /** VehicleType lookup. Populates the Add Time Slot modal's
+   *  multi-select so a picked list survives the backend's exact-name
+   *  match against `tblVehicleType.Name`. */
+  getVehicleTypes: () =>
+    unwrap<LookupItem[]>(`${BASE}/vehicle-types`),
 
   // Writes: schedules
   createSchedules: (schedules: SchedulesCreateItem[]) =>

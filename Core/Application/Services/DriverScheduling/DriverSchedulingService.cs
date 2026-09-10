@@ -45,7 +45,11 @@ public class DriverSchedulingService(
     /// book date. Fuels the main Driver Scheduling page.</summary>
     public async Task<List<LocationSummaryDto>> GetSummariesByBookDateAsync(DateTime bookDate)
     {
-        var date = ToTenantTime(bookDate).Date;
+        // Route param `/summaries/{bookDate}` is the operator's tenant-
+        // local calendar date. Take the .Date component as-is; do NOT
+        // send through ConvertToTenantTime (which treats Unspecified as
+        // UTC and can shift the day by tenant offset).
+        var date = bookDate.Date;
 
         var schedules = await Context.CourierSchedules
             .Include(s => s.Location)
@@ -225,6 +229,31 @@ public class DriverSchedulingService(
             .ToList();
     }
 
+    /// <summary>Lookup: active bulk regions the operator can pick when
+    /// creating a schedule. Matches the legacy CourierManager `Locations`
+    /// endpoint used by its scheduler dropdown - port had regressed to a
+    /// free-text input which meant typos landed as 400 on save.</summary>
+    public async Task<List<LookupItemDto>> GetLocationsAsync()
+    {
+        return await Context.TblBulkRegions
+            .Where(r => r.Active == true)
+            .OrderBy(r => r.Name)
+            .Select(r => new LookupItemDto { Id = r.BulkRegionId, Name = r.Name })
+            .ToListAsync();
+    }
+
+    /// <summary>Lookup: vehicle types the operator can attach to a time
+    /// slot. Matches the legacy CourierManager `Vehicles/Types` endpoint.
+    /// Port had regressed to a comma-separated free-text field which
+    /// meant "Car" vs "car" typos rejected at save time.</summary>
+    public async Task<List<LookupItemDto>> GetVehicleTypesAsync()
+    {
+        return await Context.VehicleTypes
+            .OrderBy(v => v.Name)
+            .Select(v => new LookupItemDto { Id = v.Id, Name = v.Name })
+            .ToListAsync();
+    }
+
     // ─── Writes: schedules ─────────────────────────────────────────
 
     /// <summary>Batch-create schedules. Rejects the whole batch if any
@@ -233,6 +262,16 @@ public class DriverSchedulingService(
     public async Task<List<ScheduleDto>> CreateAsync(SchedulesCreateRequest request)
     {
         if (request.Schedules.Count == 0) return new List<ScheduleDto>();
+
+        // Defensive server-side validation. Frontend NewScheduleModal
+        // catches these before submit, but API callers (or a bad-actor
+        // request) bypass the modal - and the legacy CourierManager port
+        // accepted wanted=-5 and startTime>=endTime silently, producing
+        // schedules that no time slot could fit.
+        if (request.Schedules.Any(s => s.Wanted < 1))
+            throw new InvalidOperationException("Wanted (target headcount) must be at least 1.");
+        if (request.Schedules.Any(s => s.StartTime >= s.EndTime))
+            throw new InvalidOperationException("Start time must be before end time.");
 
         var bookDates = request.Schedules.Select(x => x.BookDate.Date).ToList();
         var existing = await Context.CourierSchedules
@@ -400,8 +439,10 @@ public class DriverSchedulingService(
     /// same-Name schedule already exists on DestinationDate.</summary>
     public async Task CopyAsync(ScheduleCopyRequest request)
     {
-        var sourceDate = ToTenantTime(request.SourceDate).Date;
-        var destinationDate = ToTenantTime(request.DestinationDate).Date;
+        // Operator-supplied tenant-local dates (see TimeSlotCreateAsync
+        // for the ToTenantTime pitfall). Take the calendar date as-is.
+        var sourceDate = request.SourceDate.Date;
+        var destinationDate = request.DestinationDate.Date;
 
         var schedules = await Context.CourierSchedules
             .Include(s => s.Location)
@@ -465,7 +506,12 @@ public class DriverSchedulingService(
     /// Rejects same-time + overlapping-vehicle slots as conflicts.</summary>
     public async Task<TimeSlotVehicleDto> TimeSlotCreateAsync(TimeSlotCreateRequest request)
     {
-        var bookDateTime = ToTenantTime(request.BookDateTime);
+        // Operator picks tenant-local time on the calendar (e.g. "14:00
+        // on 2026-09-10"). The frontend serialises that as an unspecified
+        // ISO string. TimeZoneUtility.ConvertToTenantTime treats
+        // Unspecified as UTC (line 78-81) which shifts by tenant offset
+        // and lands the slot on the wrong day. Take the value as-is.
+        var bookDateTime = request.BookDateTime;
 
         var schedules = await Context.CourierSchedules
             .Include(s => s.Location)
@@ -526,7 +572,9 @@ public class DriverSchedulingService(
     /// conflicting slots.</summary>
     public async Task<TimeSlotVehicleDto> TimeSlotUpdateAsync(TimeSlotUpdateRequest request)
     {
-        var bookDateTime = ToTenantTime(request.BookDateTime);
+        // Operator-supplied tenant-local time (see TimeSlotCreateAsync
+        // for the ToTenantTime pitfall). Use as-is.
+        var bookDateTime = request.BookDateTime;
 
         var timeSlot = await Context.CourierScheduleTimeSlots
             .Include(t => t.Location)
@@ -548,10 +596,16 @@ public class DriverSchedulingService(
             return MapTimeSlot(timeSlot);
         }
 
-        if (!await Context.CourierSchedules.AnyAsync(s =>
-            s.BookDate.Date == bookDateTime.Date
-            && s.LocationId == timeSlot.LocationId
-            && s.StartTime.ToTimeSpan() <= bookDateTime.TimeOfDay
+        // EF Core can't translate TimeOnly.ToTimeSpan() to SQL, so pull
+        // the candidate schedules server-side (filter by date + location
+        // in SQL, cheap) then check the time-window fit in memory.
+        // Matches the TimeSlotCreateAsync pattern above.
+        var candidateSchedules = await Context.CourierSchedules
+            .Where(s => s.BookDate.Date == bookDateTime.Date && s.LocationId == timeSlot.LocationId)
+            .Select(s => new { s.StartTime, s.EndTime })
+            .ToListAsync();
+        if (!candidateSchedules.Any(s =>
+            s.StartTime.ToTimeSpan() <= bookDateTime.TimeOfDay
             && s.EndTime.ToTimeSpan() > bookDateTime.TimeOfDay))
         {
             throw new InvalidOperationException("No schedules found at this time slot.");
@@ -591,6 +645,11 @@ public class DriverSchedulingService(
         if (messages.Count > 0) Context.TucManualMessages.AddRange(messages);
 
         timeSlot.BookDateTime = bookDateTime;
+        // Frontend Edit Time Slot modal exposes Wanted; port had the
+        // legacy CourierManager oversight of ignoring it here so
+        // operator edits to Wanted silently vanished on save. Persist
+        // it now.
+        timeSlot.Wanted = request.Wanted;
         await Context.SaveChangesAsync();
 
         return MapTimeSlot(timeSlot);
@@ -744,11 +803,31 @@ public class DriverSchedulingService(
 
         if (request.StatusId == 1)
         {
+            // Detect batch-internal conflicts too. If an operator flips
+            // (courierX, schedA) and (courierX, schedB) to Available in a
+            // single call and A overlaps B, the "currently Available"
+            // snapshot has neither of them yet, so the legacy per-row
+            // check would let both through and double-book the courier.
+            // Build a per-courier map of "will-be-Available" schedule ids
+            // from the batch itself, then check overlaps against the
+            // union of (existing Available on tenant) + (batch peers).
+            var batchByCourier = scheduleResponsesToUpdate
+                .Where(r => r.StatusId != 1)
+                .GroupBy(r => r.CourierId)
+                .ToDictionary(g => g.Key, g => g.Select(r => r.Schedule).ToList());
+
             var conflicting = scheduleResponsesToUpdate
-                .Where(r => DriverSchedulingUtility.HasConflictingSchedule(
-                    r.Schedule,
-                    schedules.Where(s => s.NotificationSent.HasValue
-                        && s.CourierScheduleResponses.Any(x => x.CourierId == r.CourierId && x.StatusId == 1))))
+                .Where(r => r.StatusId != 1)
+                .Where(r =>
+                {
+                    var existingAvailable = schedules.Where(s => s.NotificationSent.HasValue
+                        && s.CourierScheduleResponses.Any(x => x.CourierId == r.CourierId && x.StatusId == 1));
+                    var batchPeers = (batchByCourier.TryGetValue(r.CourierId, out var peers) ? peers : new List<CourierSchedule>())
+                        .Where(s => s.Id != r.Schedule.Id);
+                    return DriverSchedulingUtility.HasConflictingSchedule(
+                        r.Schedule,
+                        existingAvailable.Concat(batchPeers));
+                })
                 .ToList();
 
             if (conflicting.Count > 0)

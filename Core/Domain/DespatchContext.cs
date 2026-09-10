@@ -125,6 +125,25 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.HasKey(e => e.BulkJobId);
         });
 
+        // Driver Scheduling triggers (see audit 2026-09-10):
+        //  - tucManualMessage_Insert : WOOP-spam filter, deletes msg body
+        //      that matches "which has been dispatched to Courier"
+        //  - TR_CourierScheduleResponse_Insert/_Update : overbooking guard,
+        //      RAISERROR('Time Slot has already been filled.') when
+        //      Wanted <= count(Available responses on slot).
+        // Both must be declared so EF Core 10's MERGE + OUTPUT batching
+        // falls back to the trigger-safe path or SaveChanges throws:
+        // "The target table ... cannot have any enabled triggers if the
+        // statement contains an OUTPUT clause without INTO clause".
+        modelBuilder.Entity<TucManualMessage>(entity =>
+        {
+            entity.ToTable("tucManualMessage", t => t.HasTrigger("legacy_trigger"));
+        });
+        modelBuilder.Entity<CourierScheduleResponse>(entity =>
+        {
+            entity.ToTable("CourierScheduleResponse", t => t.HasTrigger("legacy_trigger"));
+        });
+
         modelBuilder.Entity<TblBulkRun>(entity =>
         {
             entity.ToTable("tblBulkRun", t => t.HasTrigger("legacy_trigger"));
