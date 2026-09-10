@@ -159,3 +159,15 @@ public class ScheduleResponseDto
     public string Status { get; set; }
     public TimeSlotDto TimeSlot { get; set; }
 }
+
+// Lookup row for the two frontend dropdowns the operator needs when
+// creating schedules + time slots (locations = active bulk regions,
+// vehicleTypes = the VehicleType lookup table). Kept as a plain
+// {Id,Name} pair so the same shape covers both endpoints - the legacy
+// CourierManager UI had two separate services for these and the port
+// was silently regressing to free-text inputs.
+public class LookupItemDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; }
+}

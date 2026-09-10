@@ -40,6 +40,28 @@ export function useDriverSchedulingNotifications() {
   });
 }
 
+/** Bulk-region lookup for the New Schedule modal. Cached long -
+ *  region list barely changes during an operator session. */
+export function useDriverSchedulingLocations() {
+  const user = useAuth();
+  return useQuery({
+    queryKey: ['ds-locations', user.currentTenantId ?? 0],
+    queryFn: () => driverSchedulingService.getLocations(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** VehicleType lookup for the Add Time Slot modal. Cached long -
+ *  taxonomy is basically static per tenant. */
+export function useDriverSchedulingVehicleTypes() {
+  const user = useAuth();
+  return useQuery({
+    queryKey: ['ds-vehicle-types', user.currentTenantId ?? 0],
+    queryFn: () => driverSchedulingService.getVehicleTypes(),
+    staleTime: 5 * 60_000,
+  });
+}
+
 /** Convenience: invalidate every Driver Scheduling query after a
  *  write. Cheaper than tracking individual query keys at each
  *  mutation site. */
