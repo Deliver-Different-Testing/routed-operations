@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
 import PolygonBuilder from './pages/PolygonBuilder';
+import SchedulesPage from './pages/SchedulesPage';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="scheduled-routes" element={<Navigate to="/routes?mode=dynamic" replace />} />
         <Route path="auto-build" element={<Navigate to="/routes?mode=dynamic" replace />} />
         <Route path="polygons" element={<PolygonBuilder />} />
+        <Route path="schedules" element={<SchedulesPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

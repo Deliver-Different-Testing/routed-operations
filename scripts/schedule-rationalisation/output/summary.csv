@@ -1,0 +1,21 @@
+Metric,Value
+Columns ignored when comparing schedules,Description
+Source rows (tblBulkRunSchedule),11110
+Schedules = ScheduleIds after migration 001,2725
+  default schedules (ClientId NULL),119
+  client-specific schedules (Name + ClientId),2606
+Names shared by 2+ clients,203
+Shared schedules after merge (survivors with 2+ clients),179
+  of which the survivor is a default schedule,23
+Client schedules retired into a survivor,522
+Schedules remaining after merge,2203
+Client schedules that stay one-client,1928
+Link rows after merge (clients on shared schedules),678
+Day rows retired,2606
+Day rows remaining,8504
+"Names with differing definitions (variants, kept as separate ScheduleIds)",164
+Data-quality findings,168
+Groups that would also merge if CutoffHours were ignored,82
+  schedules in those groups,422
+CreatedUtc used,2026-09-08T02:00:00Z
+CreatedBy used,steve@urgent.co.nz
