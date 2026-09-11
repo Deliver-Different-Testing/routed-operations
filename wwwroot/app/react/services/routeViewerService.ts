@@ -353,12 +353,16 @@ export const routeViewerService = {
   // Couriers
   // -----------------------------------------------------------------
   getActiveCouriers: (runDate: string) =>
-    unwrap<Array<{ courierId: number; code: string; name: string }>>(
+    unwrap<Array<{ courierId: number; code: string | null; name: string }>>(
       `/runviewer/couriers${buildQuery({ runDate })}`,
     ),
 
+  // Backend CourierDto.Code is `string?` - some tenants have couriers
+  // with a null tucCourier.Code (medical-prod dev / test rows). The
+  // AssignRouteDialog picker guards on this to avoid rendering
+  // "Name (null)".
   searchCouriers: (q: string) =>
-    unwrap<Array<{ courierId: number; code: string; name: string }>>(
+    unwrap<Array<{ courierId: number; code: string | null; name: string }>>(
       `/runviewer/couriers/search${buildQuery({ q })}`,
     ),
 
