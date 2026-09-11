@@ -85,7 +85,10 @@ export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSucc
         if (tokenRef.current !== token) return;
         nextRows = results.map((c) => ({
           id: c.courierId,
-          label: `${c.name} (${c.code})`,
+          // Legacy tenants (medical-prod in particular) have couriers
+          // with a null tucCourier.Code - render just the name so we
+          // don't emit "George Test (null)" in the picker.
+          label: c.code ? `${c.name} (${c.code})` : c.name,
         }));
       } else {
         // Agent + NP share one endpoint distinguished by the
@@ -121,14 +124,16 @@ export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSucc
     try {
       // The assign endpoint (POST /api/runviewer/jobs/assign) requires
       // an explicit JobIds list; it does NOT resolve them from runId +
-      // runDate server-side. Fetch the run's jobs now, keep only rows
-      // with a real bulk job id (synthetic Route rows come back with
-      // bulkJobId=0 and are not assignable). Legacy runViewer resolved
-      // this via a per-run job cache on the client too.
+      // runDate server-side. The backend AssignAsync treats those ids
+      // as tucJob.UcjbId (per-job scope guard + DES_stpJob_AutoDespatch
+      // SPs both key off ucjbID), so we send `jobId` NOT `bulkJobId` -
+      // matches legacy homeControl.js:2196 (`j.jobID`) and keeps
+      // synthetic Recurring Route runs assignable (they carry real
+      // tucJob rows even though tblBulkJob is empty).
       const jobs = await routeViewerService.getRunJobs(runId, runDate, { group: 'Combined' });
-      const jobIds = jobs.map((j) => j.bulkJobId).filter((id) => id > 0);
+      const jobIds = jobs.map((j) => j.jobId).filter((id) => id > 0);
       if (jobIds.length === 0) {
-        setError('This run has no assignable jobs (synthetic Route runs have no tblBulkJob rows).');
+        setError('This run has no jobs to assign yet.');
         return;
       }
       const payload = bucket === 'courier'

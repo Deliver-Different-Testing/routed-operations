@@ -6,7 +6,7 @@ import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { AssignRouteDialog } from './AssignRouteDialog';
 
-const stubCouriers = (rows: Array<{ courierId: number; code: string; name: string }>) =>
+const stubCouriers = (rows: Array<{ courierId: number; code: string | null; name: string }>) =>
   http.get('/api/runviewer/couriers/search', () =>
     HttpResponse.json({ response: rows }),
   );
@@ -28,8 +28,12 @@ const stubAgents = (
 // AssignRouteDialog now fetches the run's jobs at submit time so it can
 // send the explicit JobIds the backend requires. Tests that click
 // "Assign" need this stub or the submit path stalls. Default = one
-// assignable job (bulkJobId=42) so onSuccess fires.
-const stubRunJobs = (jobs: Array<{ bulkJobId: number }> = [{ bulkJobId: 42 }]) =>
+// assignable job (jobId=42) so onSuccess fires. The backend AssignAsync
+// treats JobIds as tucJob.UcjbId, so `jobId` is what we send - NOT
+// bulkJobId. Synthetic Recurring Route runs carry real tucJob rows
+// even when tblBulkJob is empty, so filtering on jobId keeps them
+// assignable (matches legacy runViewer parity).
+const stubRunJobs = (jobs: Array<{ jobId: number; bulkJobId?: number }> = [{ jobId: 42 }]) =>
   http.get('/api/runviewer/runs/:runId/jobs', () =>
     HttpResponse.json({ response: jobs }),
   );
@@ -88,6 +92,25 @@ describe('AssignRouteDialog', () => {
     await user.type(screen.getByPlaceholderText(/Search couriers/), 'e');
     expect(await screen.findByRole('button', { name: /Ace \(ACE\)/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Kev \(KEV\)/ })).toBeInTheDocument();
+  });
+
+  it('renders just the name when the courier row has no code', async () => {
+    // Regression guard for medical-prod - some tenants have couriers
+    // with tucCourier.Code = NULL; the label used to render as
+    // "George Test (null)" from a naive `${name} (${code})` template.
+    server.use(
+      stubCouriers([
+        { courierId: 555, code: null, name: 'George Test' },
+        { courierId: 556, code: null, name: 'George Test2' },
+      ]),
+    );
+    renderDlg();
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/Search couriers/), 'george');
+    expect(await screen.findByRole('button', { name: 'George Test' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'George Test2' })).toBeInTheDocument();
+    // Explicit anti-regression on the literal "null" substring.
+    expect(screen.queryByText(/\(null\)/)).toBeNull();
   });
 
   it('picks a courier + assigns + calls onSuccess', async () => {
@@ -276,16 +299,26 @@ describe('AssignRouteDialog', () => {
   });
 
   // Regression guard: the assign endpoint requires an explicit JobIds
-  // list and rejects empty with `JobIds is required.`. The dialog
-  // fetches the run's jobs at submit time to resolve them, filtering
-  // synthetic-route rows (bulkJobId=0) which aren't assignable.
-  it('sends the resolved bulkJobIds from the fetched run jobs', async () => {
+  // list (rejects empty with "JobIds is required.") AND expects tucJob
+  // ids, not tblBulkJob ids. The dialog fetches the run's jobs at
+  // submit time, keeps rows with jobId > 0. This is what makes
+  // synthetic Recurring Route runs assignable: they carry real tucJob
+  // rows (jobId > 0) even though tblBulkJob is empty (bulkJobId = 0).
+  // Matches legacy runViewer homeControl.js:2196 which also uses
+  // `j.jobID`.
+  it('sends the resolved tucJob ids from the fetched run jobs', async () => {
     let assignPayload: any = null;
     server.use(
       stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
-      // Two real bulk jobs + one synthetic (bulkJobId=0) - only the
-      // reals should reach the assign payload.
-      stubRunJobs([{ bulkJobId: 100 }, { bulkJobId: 200 }, { bulkJobId: 0 }]),
+      // Two real tucJob rows + one unmaterialised (jobId=0) - only the
+      // reals should reach the assign payload. bulkJobId is deliberately
+      // varied (0 on the first row) to prove we do NOT gate on it -
+      // synthetic Route runs come back with bulkJobId=0 across the board.
+      stubRunJobs([
+        { jobId: 100, bulkJobId: 0 },
+        { jobId: 200, bulkJobId: 500 },
+        { jobId: 0, bulkJobId: 0 },
+      ]),
       http.post('/api/runviewer/jobs/assign', async ({ request }) => {
         assignPayload = await request.json();
         return HttpResponse.json({ response: { assigned: 2 } });
@@ -300,16 +333,16 @@ describe('AssignRouteDialog', () => {
     expect(assignPayload).toMatchObject({ courierId: 1, jobIds: [100, 200] });
   });
 
-  it('surfaces an error when the run has no assignable jobs', async () => {
+  it('surfaces an error when the run has no jobs to assign', async () => {
     server.use(
       stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
-      stubRunJobs([{ bulkJobId: 0 }, { bulkJobId: 0 }]),   // synthetic-only run
+      stubRunJobs([{ jobId: 0 }, { jobId: 0 }]),   // no materialised tucJob rows
     );
     renderDlg();
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
     await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
     await user.click(screen.getByRole('button', { name: 'Assign' }));
-    expect(await screen.findByText(/no assignable jobs/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no jobs to assign/i)).toBeInTheDocument();
   });
 });
