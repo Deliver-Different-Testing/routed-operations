@@ -106,7 +106,69 @@ public record ScheduleGroupSummaryDto(
     /// Capped at 3 to keep payload small on default schedules that many
     /// clients bind to. LegacyClientCode is deliberately NOT shown by the
     /// row - kept on the DTO for backend reference only.</summary>
-    string[] LinkedClientCodes);
+    string[] LinkedClientCodes,
+    /// <summary>Self-FK from tblBulkRunScheduleHeader. Non-null on
+    /// override headers, pointing at the base they refine. NULL on
+    /// default and shared headers. The Schedules NEW view nests
+    /// override rows under their base by grouping on this. Ships as
+    /// null on every row until the 20260914140000 migration applies;
+    /// legacy consumers keep working because they never read the
+    /// field.</summary>
+    int? BaseScheduleId,
+    /// <summary>Free-text description carried on any day row of the
+    /// group. Rendered as the small-print subtitle under Name.</summary>
+    string Description,
+    /// <summary>Origin depot id (from tblBulkRunSchedule.PickupDepotId).
+    /// Null = pickup from client address.</summary>
+    int? PickupDepotId,
+    /// <summary>Origin depot name resolved from tblBulkRegion. Null
+    /// when PickupDepotId is null (rendered as "Client address").</summary>
+    string PickupDepotName,
+    /// <summary>Window start time in "HH:mm" - lowest StartTime across
+    /// all day rows.</summary>
+    string WindowStart,
+    /// <summary>Window end time in "HH:mm" - highest EndTime across
+    /// all day rows.</summary>
+    string WindowEnd,
+    /// <summary>Monday cut-off hours (day-of-week = 1). Null if the
+    /// schedule doesn't run on Monday.</summary>
+    int? MonCutoffHours,
+    /// <summary>Cut-off for the other operating days (Tue-Sun). Set to
+    /// the mode of the non-Monday cutoffs so Steve's "65/17h" split
+    /// renders cleanly. Null when the schedule only runs on Monday
+    /// or every day has the same cutoff as Monday.</summary>
+    int? OtherCutoffHours,
+    /// <summary>Count of override headers pointing at this ScheduleId.
+    /// Rendered inline with Name as "+N" when > 0.</summary>
+    int OverrideCount,
+    /// <summary>Recurring routes bound to any day row of this group
+    /// via tblRouteSchedule. Rendered as a blue "N routes" chip when
+    /// > 0.</summary>
+    int RouteCount,
+    /// <summary>Compact linehaul summary. Example "LH AUC-CHR 21:30".
+    /// Null when the schedule has no active linehaul leg. Picks the
+    /// first active linehaul row for stable display.</summary>
+    string LinehaulHint);
+
+/// <summary>
+/// One schedule group (Dane's bundle-of-schedules concept). Row shape
+/// for the Schedules NEW Groups tab. Client counts are aggregated
+/// across every non-default member schedule so operators see the
+/// "total clients this bundle touches" chip up front.
+/// Added 2026-09-14 alongside AddBaseScheduleIdAndScheduleGroupTables.
+/// </summary>
+public record ScheduleGroupBundleDto(
+    int GroupId,
+    string Name,
+    string Description,
+    bool IsActive,
+    int ScheduleCount,
+    int ClientCount,
+    /// <summary>ScheduleIds of the group's members in ID order.</summary>
+    int[] ScheduleIds,
+    /// <summary>Names of the group's members in ID order. Same length as
+    /// ScheduleIds. Useful for the Groups tab expanded-row chips.</summary>
+    string[] ScheduleNames);
 
 public record ScheduleLinehaulDto(
     int Id,

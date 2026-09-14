@@ -5,6 +5,10 @@ import { useAuth } from '../../context/AuthContext';
 interface NavItem {
   to: string;
   label: string;
+  /** Small pill rendered inline after the label. Used to flag preview
+   *  or NEW modules (e.g. the id-keyed Schedules NEW view sitting
+   *  alongside the legacy tuple-keyed Schedules page). */
+  badge?: string;
   /** When set, the item renders as a collapsible group header.
    *  Auto-expanded when any child's route matches the current path. */
   children?: NavItem[];
@@ -32,6 +36,12 @@ const items: NavItem[] = [
   { to: '/quoting', label: 'Quoting' },
   { to: '/recurring-routes', label: 'Recurring Routes' },
   { to: '/schedules', label: 'Schedules' },
+  // Steve's 2026-09-08 brief: the id-keyed multi-client schedules view
+  // sits alongside the legacy tuple-keyed Schedules page until ops sign
+  // off on the new one. Both read the same day rows; the new one lifts
+  // Dane's visual builder + client link tables + BaseScheduleId
+  // overrides. Both stay live throughout Phase 1..5 of the workstream.
+  { to: '/schedules-new', label: 'Schedules', badge: 'NEW' },
   // Driver Scheduling module (2026-09-07 port from CourierManager).
   // Distinct from Schedules above - that's booking / prebook
   // templates, this is courier availability rosters + time slots +
@@ -114,14 +124,32 @@ export function Sidebar() {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `px-3 py-2 rounded text-sm transition-colors ${
+                  `px-3 py-2 rounded text-sm transition-colors flex items-center gap-2 ${
                     isActive
                       ? 'bg-brand-cyan text-brand-dark font-medium'
                       : 'text-white/80 hover:bg-white/10'
                   }`
                 }
               >
-                {item.label}
+                {({ isActive }) => (
+                  <>
+                    <span>{item.label}</span>
+                    {item.badge && (
+                      // Badge swaps to a dark pill on the active
+                      // (cyan) background so it stays legible. Idle
+                      // state uses the cyan-tinted pill Kevin drew.
+                      <span
+                        className={`text-[10px] font-semibold tracking-wide rounded px-1.5 py-0.5 leading-none ${
+                          isActive
+                            ? 'bg-brand-dark text-brand-cyan border border-brand-dark'
+                            : 'bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/40'
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </>
+                )}
               </NavLink>
             );
           }

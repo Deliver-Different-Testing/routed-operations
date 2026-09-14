@@ -73,6 +73,33 @@ export interface ScheduleGroupSummary {
    *  `clientCount > linkedClientCodes.length`. Empty on default
    *  schedules that no client has been explicitly bound to. */
   linkedClientCodes: string[];
+  /** Self-FK from tblBulkRunScheduleHeader.BaseScheduleId. Non-null on
+   *  override headers, pointing at the base they refine. NULL on base
+   *  headers. The Schedules NEW view nests overrides under their base
+   *  by grouping on this. Ships as null on every row until the
+   *  20260914140000 migration applies. */
+  baseScheduleId: number | null;
+  // Steve's 2026-09-08 Schedules NEW view extras. Populated by
+  // /api/v2/schedules. Legacy /api/schedules returns them nulled /
+  // zero so existing consumers are unaffected.
+  description: string | null;
+  pickupDepotId: number | null;
+  pickupDepotName: string | null;
+  /** "HH:mm" - earliest StartTime across day rows. */
+  windowStart: string | null;
+  /** "HH:mm" - latest EndTime across day rows. */
+  windowEnd: string | null;
+  /** Monday cut-off hours. Null if the schedule doesn't run Mon. */
+  monCutoffHours: number | null;
+  /** Other-days cut-off. Null when identical to Monday's value. */
+  otherCutoffHours: number | null;
+  /** Overrides bound to this ScheduleId. Rendered as "+N" next to Name. */
+  overrideCount: number;
+  /** Recurring routes bound to any day row. Rendered as "N routes" blue chip. */
+  routeCount: number;
+  /** Compact linehaul chip, e.g. "LH AUC-CHR 21:30". Null when no
+   *  active linehaul leg. */
+  linehaulHint: string | null;
 }
 
 export interface ScheduleGroup {

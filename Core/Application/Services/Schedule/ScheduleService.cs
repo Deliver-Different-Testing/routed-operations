@@ -48,7 +48,7 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
     ///     Schedules tab search box so operators can find a per-client
     ///     schedule by name without knowing the client code up front.
     /// </summary>
-    public async Task<List<ScheduleGroupSummaryDto>> ListSummaryAsync(int? clientId, bool includeClientSpecific = false)
+    public async Task<List<ScheduleGroupSummaryDto>> ListSummaryAsync(int? clientId, bool includeClientSpecific = false, bool includeAllLive = false)
     {
         var depotNames = await Context.TblBulkRegions.AsNoTracking()
             .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
@@ -95,22 +95,85 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                 s.SpeedId,
                 s.DayOfWeek,
                 s.AutoBook,
+                s.PickupDepotId,
+                s.StartTime,
+                s.EndTime,
+                s.CutoffHours,
+                s.Description,
             })
             .ToListAsync();
 
         var allScheduleIds = rowBases.Select(r => r.BulkRunScheduleId).ToHashSet();
 
-        var zoneCountByScheduleId = await Context.BulkZoneSchedules.AsNoTracking()
-            .Where(z => z.Active == true && z.ScheduleId.HasValue && allScheduleIds.Contains(z.ScheduleId.Value))
-            .GroupBy(z => z.ScheduleId!.Value)
-            .Select(g => new { ScheduleId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.ScheduleId, x => x.Count);
+        // NOTE on scale: previously used `.Where(z => allScheduleIds.Contains(z.ScheduleId))`
+        // which EF Core translates as `WHERE Id IN (@p1..@pN)`. On a tenant with 2000+
+        // schedules that expands past SQL Server's 2100-parameter limit and the query
+        // either crashes or plans a monster IN list that runs for minutes. Fetch the
+        // whole (small) table and filter in memory instead - way faster overall.
+        var zoneCountByScheduleId = (await Context.BulkZoneSchedules.AsNoTracking()
+            .Where(z => z.Active == true && z.ScheduleId.HasValue)
+            .Select(z => new { ScheduleId = z.ScheduleId!.Value })
+            .ToListAsync())
+            .Where(z => allScheduleIds.Contains(z.ScheduleId))
+            .GroupBy(z => z.ScheduleId)
+            .ToDictionary(g => g.Key, g => g.Count());
 
-        var scheduleIdsWithActiveLinehaul = (await Context.TblBulkScheduleLinehauls.AsNoTracking()
-            .Where(l => l.Active == true && l.BulkRunScheduleId.HasValue && allScheduleIds.Contains(l.BulkRunScheduleId.Value))
+        var activeLinehaulLegs = (await Context.TblBulkScheduleLinehauls.AsNoTracking()
+            .Where(l => l.Active == true && l.BulkRunScheduleId.HasValue)
+            .Select(l => new { l.BulkRunScheduleId, l.LinehaulRunId })
+            .ToListAsync())
+            .Where(l => allScheduleIds.Contains(l.BulkRunScheduleId!.Value))
+            .ToList();
+        var scheduleIdsWithActiveLinehaul = activeLinehaulLegs
             .Select(l => l.BulkRunScheduleId!.Value)
             .Distinct()
-            .ToListAsync()).ToHashSet();
+            .ToHashSet();
+
+        // Linehaul run info for the compact "LH AUC-CHR 21:30" chip in
+        // the Roster column. Fetched only for runs actually referenced
+        // by a live schedule's linehaul legs to keep the payload small.
+        var referencedRunIds = activeLinehaulLegs
+            .Where(l => l.LinehaulRunId.HasValue)
+            .Select(l => l.LinehaulRunId!.Value)
+            .Distinct()
+            .ToList();
+        var linehaulRuns = referencedRunIds.Count == 0
+            ? new Dictionary<int, (int FromDepotId, int ToDepotId, TimeOnly? StartTime)>()
+            : (await Context.TblbulkLinehaulRuns.AsNoTracking()
+                .Where(r => referencedRunIds.Contains(r.Id))
+                .Select(r => new { r.Id, r.FromDepotId, r.ToDepotId, r.StartTime })
+                .ToListAsync())
+                .ToDictionary(r => r.Id, r => (r.FromDepotId, r.ToDepotId, r.StartTime));
+
+        // Recurring routes bound to any day row of a header. Junction
+        // "ScheduleId" here means the day-row BulkRunScheduleId - legacy
+        // naming from before the 2026-09-08 rename. We fold to header
+        // and count distinct RouteIds.
+        var dayRowToHeader = rowBases.ToDictionary(r => r.BulkRunScheduleId, r => r.ScheduleId);
+        // Same story as zoneCountByScheduleId + activeLinehaulLegs above:
+        // the WHERE ... IN (@p1..@pN) blows the SQL parameter cap on
+        // tenants with >2000 schedules. Fetch the whole (small)
+        // junction and filter client-side.
+        var routeJunctionRows = (await Context.Set<Dictionary<string, object>>("RouteSchedule")
+            .Select(rs => new
+            {
+                RouteId = EF.Property<int>(rs, "RouteId"),
+                BulkRunScheduleId = EF.Property<int>(rs, "ScheduleId"),
+            })
+            .ToListAsync())
+            .Where(rs => allScheduleIds.Contains(rs.BulkRunScheduleId))
+            .ToList();
+        var routeCountByHeaderId = routeJunctionRows
+            .GroupBy(rs => dayRowToHeader.TryGetValue(rs.BulkRunScheduleId, out var h) ? h : 0)
+            .Where(g => g.Key != 0)
+            .ToDictionary(g => g.Key, g => g.Select(rs => rs.RouteId).Distinct().Count());
+
+        // Override count per base header. Steve's mockup renders "+N"
+        // next to a base schedule's Name when N overrides exist.
+        var overrideCountByBaseId = headers
+            .Where(h => h.BaseScheduleId.HasValue && liveHeaderIds.Contains(h.BaseScheduleId.Value))
+            .GroupBy(h => h.BaseScheduleId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         var legacyClientIds = headers
             .Where(h => h.LegacyClientId.HasValue)
@@ -157,6 +220,69 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                     .Select(x => zoneCountByScheduleId.TryGetValue(x.BulkRunScheduleId, out var c) ? c : 0)
                     .DefaultIfEmpty(0).Max();
                 var hasLh = g.Any(x => scheduleIdsWithActiveLinehaul.Contains(x.BulkRunScheduleId));
+
+                // Origin depot: first non-null PickupDepotId across day
+                // rows. Null = pickup from client address (rendered by
+                // the frontend as "Client address").
+                var pickupDepotId = g.FirstOrDefault(x => x.PickupDepotId.HasValue)?.PickupDepotId;
+                var pickupDepotName = pickupDepotId.HasValue && depotNames.TryGetValue(pickupDepotId.Value, out var pdn)
+                    ? pdn : null;
+
+                // Window: earliest StartTime to latest EndTime across
+                // day rows. Formatted as "HH:mm" to match Steve's
+                // "08:00-10:00" copy.
+                var startTimes = g.Where(x => x.StartTime.HasValue).Select(x => x.StartTime!.Value).ToArray();
+                var endTimes = g.Where(x => x.EndTime.HasValue).Select(x => x.EndTime!.Value).ToArray();
+                var windowStart = startTimes.Length > 0
+                    ? startTimes.Min().ToString(@"hh\:mm")
+                    : null;
+                var windowEnd = endTimes.Length > 0
+                    ? endTimes.Max().ToString(@"hh\:mm")
+                    : null;
+
+                // Cut-off split: Monday's value + the most common
+                // non-Monday value so Steve's "65/17h" chip renders.
+                var monRow = g.FirstOrDefault(x => x.DayOfWeek == 1);
+                var monCutoff = monRow?.CutoffHours;
+                var otherCutoffs = g
+                    .Where(x => x.DayOfWeek != 1 && x.DayOfWeek.HasValue)
+                    .Select(x => (int?)x.CutoffHours)
+                    .ToArray();
+                int? otherCutoff = otherCutoffs.Length == 0
+                    ? null
+                    : otherCutoffs
+                        .GroupBy(v => v)
+                        .OrderByDescending(gg => gg.Count())
+                        .First().Key;
+                // Collapse "65/65h" to a single value in the frontend
+                // by nulling OtherCutoff when it matches Mon.
+                if (monCutoff.HasValue && otherCutoff.HasValue && monCutoff.Value == otherCutoff.Value)
+                    otherCutoff = null;
+
+                var description = g.Select(x => x.Description).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+
+                var overrideCount = overrideCountByBaseId.TryGetValue(header.ScheduleId, out var oc) ? oc : 0;
+                var routeCount = routeCountByHeaderId.TryGetValue(header.ScheduleId, out var rc) ? rc : 0;
+
+                // Linehaul hint: first active linehaul leg's run, in
+                // Steve's "LH AUC-CHR 21:30" compact form. Depot codes
+                // are the first 3 letters of the depot name, upper-
+                // cased - matches the tenant's own convention where
+                // depot names are already short single words.
+                string linehaulHint = null;
+                var firstLhLeg = activeLinehaulLegs
+                    .FirstOrDefault(l => l.LinehaulRunId.HasValue && l.BulkRunScheduleId.HasValue
+                        && g.Any(x => x.BulkRunScheduleId == l.BulkRunScheduleId!.Value));
+                if (firstLhLeg?.LinehaulRunId is int runId
+                    && linehaulRuns.TryGetValue(runId, out var run))
+                {
+                    var fromCode = depotNames.TryGetValue(run.FromDepotId, out var fn) && fn?.Length >= 3
+                        ? fn.Substring(0, 3).ToUpperInvariant() : $"#{run.FromDepotId}";
+                    var toCode = depotNames.TryGetValue(run.ToDepotId, out var tn) && tn?.Length >= 3
+                        ? tn.Substring(0, 3).ToUpperInvariant() : $"#{run.ToDepotId}";
+                    var time = run.StartTime?.ToString(@"HH\:mm") ?? "--:--";
+                    linehaulHint = $"LH {fromCode}-{toCode} {time}";
+                }
                 var clientCount = linkClientsByHeaderId.TryGetValue(header.ScheduleId, out var ids) ? ids.Count : 0;
                 var postcodeCount = postcodeCountByName.TryGetValue(header.Name, out var pc) ? pc : 0;
                 var polygonCount = polygonCountByName.TryGetValue(header.Name, out var poc) ? poc : 0;
@@ -185,8 +311,28 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                     activeZones,
                     clientCount, postcodeCount, polygonCount,
                     first.AutoBook, hasLh,
-                    linkedClientCodes);
+                    linkedClientCodes,
+                    header.BaseScheduleId,
+                    description,
+                    pickupDepotId,
+                    pickupDepotName,
+                    windowStart,
+                    windowEnd,
+                    monCutoff,
+                    otherCutoff,
+                    overrideCount,
+                    routeCount,
+                    linehaulHint);
             });
+
+        // "All live headers" mode. Used by /api/v2/schedules (Steve's
+        // 2026-09-08 id-keyed view) which surfaces defaults + shared +
+        // per-client together and does its own `type=` narrowing at the
+        // controller. Skip both client-scope and default-only filters.
+        if (includeAllLive)
+        {
+            return summaries.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
 
         // Apply UNION resolution rule when filtering by clientId: a client
         // sees every header it has a link row for, plus every live default
@@ -218,6 +364,83 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
         }
 
         return summaries.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Read-only list of schedule bundles (Dane's Schedule Groups).
+    /// Aggregates member schedule count + total unique clients bound
+    /// across the members' link rows. Only surfaces active groups
+    /// (IsActive = 1). Sorted alphabetically by name for a stable
+    /// browse experience.
+    ///
+    /// Ships empty until the 20260914140000 migration applies (the
+    /// tblBulkRunScheduleGroup + tblBulkRunScheduleGroupMember tables
+    /// don't exist pre-migration). EF Core handles the empty DbSet
+    /// gracefully; no code branch needed.
+    /// </summary>
+    public async Task<List<ScheduleGroupBundleDto>> ListScheduleGroupsAsync()
+    {
+        // OrderBy with a StringComparer cannot translate to SQL - EF Core
+        // throws `The LINQ expression ... could not be translated`. Fetch
+        // the rows first, then sort with the case-insensitive ordinal
+        // comparer client-side. Matches the pattern already used at the
+        // end of ListSummaryAsync (line ~229) and by every other .OrderBy
+        // (StringComparer) call in this service.
+        var groups = (await Context.BulkRunScheduleGroups.AsNoTracking()
+            .Where(g => g.IsActive)
+            .ToListAsync())
+            .OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (groups.Count == 0) return new List<ScheduleGroupBundleDto>();
+
+        var groupIds = groups.Select(g => g.GroupId).ToList();
+        var memberRows = await Context.BulkRunScheduleGroupMembers.AsNoTracking()
+            .Where(m => groupIds.Contains(m.GroupId))
+            .ToListAsync();
+        var scheduleIds = memberRows.Select(m => m.ScheduleId).Distinct().ToList();
+
+        var headers = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => scheduleIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
+            .ToListAsync();
+        var headersById = headers.ToDictionary(h => h.ScheduleId);
+
+        // Client count = union of link rows across every non-default
+        // member. Default headers do not carry link rows so they add
+        // zero to the client count, matching Steve's brief section 2
+        // Schedule Groups tab semantics ("Attach clients to group -
+        // one link row per client per member; members that are
+        // defaults are skipped").
+        var nonDefaultMemberIds = headers
+            .Where(h => !h.IsDefault)
+            .Select(h => h.ScheduleId)
+            .ToHashSet();
+        var linkRows = nonDefaultMemberIds.Count == 0
+            ? new List<(int ScheduleId, int ClientId)>()
+            : (await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => nonDefaultMemberIds.Contains(sc.ScheduleId))
+                .Select(sc => new { sc.ScheduleId, sc.ClientId })
+                .ToListAsync())
+                .Select(x => (x.ScheduleId, x.ClientId))
+                .ToList();
+        var membersByGroup = memberRows.GroupBy(m => m.GroupId)
+            .ToDictionary(g => g.Key, g => g.Select(m => m.ScheduleId).ToArray());
+
+        return groups.Select(g =>
+        {
+            var members = membersByGroup.TryGetValue(g.GroupId, out var ms) ? ms : Array.Empty<int>();
+            var liveMembers = members.Where(id => headersById.ContainsKey(id)).ToArray();
+            var uniqueClients = liveMembers
+                .Where(id => nonDefaultMemberIds.Contains(id))
+                .SelectMany(id => linkRows.Where(l => l.ScheduleId == id).Select(l => l.ClientId))
+                .Distinct()
+                .Count();
+            var names = liveMembers
+                .Select(id => headersById.TryGetValue(id, out var h) ? h.Name : $"#{id}")
+                .ToArray();
+            return new ScheduleGroupBundleDto(
+                g.GroupId, g.Name, g.Description, g.IsActive,
+                liveMembers.Length, uniqueClients, liveMembers, names);
+        }).ToList();
     }
 
     /// <summary>Full detail for one group by ScheduleId (preferred).</summary>
