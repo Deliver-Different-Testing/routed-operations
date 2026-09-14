@@ -38,4 +38,14 @@ public partial class BulkRunScheduleHeader
 
     [MaxLength(100)]
     public string RetiredBy { get; set; }
+
+    /// <summary>
+    /// Self-FK. On an override header, points at the base header this
+    /// override refines. NULL on default and shared headers. Added
+    /// 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables (Steve's
+    /// KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08 section 5).
+    /// Renaming a schedule no longer breaks the override link because
+    /// the base is resolved by id, not by name.
+    /// </summary>
+    public int? BaseScheduleId { get; set; }
 }

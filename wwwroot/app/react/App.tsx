@@ -6,6 +6,10 @@ import Quoting from './pages/Quoting';
 import ScheduledRoutes from './pages/ScheduledRoutes';
 import RecurringRoutes from './pages/RecurringRoutes';
 import Schedules from './pages/Schedules';
+// Steve's 2026-09-08 brief: id-keyed multi-client Schedules view. Sits
+// alongside the legacy tuple-keyed Schedules page above until ops sign
+// off. Both routes read the same tblBulkRunSchedule day rows.
+import SchedulesNew from './pages/SchedulesNew';
 // Driver Scheduling module (2026-09-07 port from CourierManager). Sits
 // adjacent to Schedules - different domain (courier availability rosters
 // vs booking templates), different DB neighbourhood, different sidebar
@@ -48,6 +52,12 @@ export default function App() {
              maintenance). Separate from Recurring Routes which lives on
              the Configurator Route entity. */}
         <Route path="/schedules" element={<Schedules />} />
+        {/* Schedules NEW (2026-09-14 phase 1 target): id-keyed
+             multi-client view. Sits alongside /schedules; both read the
+             same day rows. Phase 1 shell today; wiring lands as the
+             backend service + dbmigrationsv2 header + junction tables
+             are added. */}
+        <Route path="/schedules-new" element={<SchedulesNew />} />
         {/* Driver Scheduling module (2026-09-07) - operator-facing
              courier availability + time slots + SMS notifications. */}
         <Route path="/driver-scheduling" element={<DriverScheduling />} />

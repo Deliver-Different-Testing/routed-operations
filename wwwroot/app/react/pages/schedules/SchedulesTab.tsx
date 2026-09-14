@@ -403,5 +403,20 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     linkedClientCodes: [...g.clientCodes]
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
       .slice(0, 3),
+    // Legacy Schedules page does not surface overrides so this stays
+    // null. Override nesting lives on the Schedules NEW page only.
+    baseScheduleId: null,
+    // Steve's 2026-09-08 v2 summary extras. Legacy page does not
+    // render these columns; only /api/v2/schedules populates them.
+    description: null,
+    pickupDepotId: null,
+    pickupDepotName: null,
+    windowStart: null,
+    windowEnd: null,
+    monCutoffHours: null,
+    otherCutoffHours: null,
+    overrideCount: 0,
+    routeCount: 0,
+    linehaulHint: null,
   };
 }
