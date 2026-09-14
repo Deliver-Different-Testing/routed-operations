@@ -37,6 +37,13 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<ScheduleClient> ScheduleClients { get; set; }
     public virtual DbSet<SchedulePostcode> SchedulePostcodes { get; set; }
     public virtual DbSet<SchedulePolygon> SchedulePolygons { get; set; }
+    // Schedule Groups (Dane's bundle-of-schedules concept). Added
+    // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables. The link
+    // table (ScheduleClients) stays the sole record of who uses what;
+    // attaching a client to a group writes one link row per non-default
+    // member schedule.
+    public virtual DbSet<BulkRunScheduleGroup> BulkRunScheduleGroups { get; set; }
+    public virtual DbSet<BulkRunScheduleGroupMember> BulkRunScheduleGroupMembers { get; set; }
     // Route module (Stage 2 - C.1'/C.2'). Shared with Configurator - same
     // Route / ZipPolygon / Dispatch_RouteRoster tables; RouteZipcodes is an
     // implicit many-to-many junction configured in OnModelCreating below.
@@ -273,6 +280,18 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<SchedulePolygon>(entity =>
         {
             entity.HasKey(e => new { e.ScheduleName, e.PolygonId });
+        });
+        // Schedule Groups (Dane's bundle-of-schedules concept, added
+        // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables). Group
+        // header has an IDENTITY PK; member table is a composite
+        // (GroupId, ScheduleId).
+        modelBuilder.Entity<BulkRunScheduleGroup>(entity =>
+        {
+            entity.HasKey(e => e.GroupId);
+        });
+        modelBuilder.Entity<BulkRunScheduleGroupMember>(entity =>
+        {
+            entity.HasKey(e => new { e.GroupId, e.ScheduleId });
         });
 
         modelBuilder.Entity<TblBulkJobItems>(entity =>
