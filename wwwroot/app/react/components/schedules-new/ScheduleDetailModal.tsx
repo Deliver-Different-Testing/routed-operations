@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
+import { schedulesV2Service } from '../../services/schedulesV2Service';
 import type { ScheduleGroup } from '../../services/scheduleService';
 
 // Read-only edit modal for the Schedules NEW page (Steve's 2026-09-08
@@ -107,7 +109,16 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
 // ─── Tabs ───────────────────────────────────────────────────────────
 
 function ClientsTab({ data }: { data: ScheduleGroup }) {
+  const qc = useQueryClient();
   const isDefault = data.legacyClientId == null && data.clientIds.length === 0;
+  const detachMut = useMutation({
+    mutationFn: (clientId: number) =>
+      schedulesV2Service.detachClient(data.scheduleId, clientId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', data.scheduleId] });
+    },
+  });
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
       <section>
@@ -161,11 +172,15 @@ function ClientsTab({ data }: { data: ScheduleGroup }) {
               </span>
               <button
                 type="button"
-                disabled
-                className="text-xs text-text-muted cursor-not-allowed"
-                title="Phase 1 is read-only."
+                onClick={() => {
+                  const clientId = data.clientIds[i];
+                  if (clientId) detachMut.mutate(clientId);
+                }}
+                disabled={detachMut.isPending}
+                className="text-xs text-error hover:text-error-dark hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Detach this client from the schedule."
               >
-                Remove
+                {detachMut.isPending ? 'Removing...' : 'Remove'}
               </button>
             </li>
           ))}

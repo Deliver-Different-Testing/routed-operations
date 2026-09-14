@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   useSchedulesV2Groups,
   useSchedulesV2List,
 } from '../hooks/queries/useSchedulesV2';
 import { useAuth } from '../context/AuthContext';
-import type {
-  ScheduleGroupBundle,
-  SchedulesV2Type,
+import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
+import {
+  schedulesV2Service,
+  type ScheduleGroupBundle,
+  type SchedulesV2Type,
 } from '../services/schedulesV2Service';
 import {
   scheduleService,
@@ -133,6 +136,29 @@ function SchedulesTab({
     q: q.trim() || undefined,
     clientIds: viewAsClientIds.length > 0 ? viewAsClientIds : undefined,
   });
+  const qc = useQueryClient();
+  const toast = useToast();
+  const confirm = useConfirm();
+
+  const retireMut = useMutation({
+    mutationFn: (id: number) => schedulesV2Service.retire(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      toast.show('Schedule retired.', 'success');
+    },
+    onError: (e: Error) => toast.show(`Retire failed: ${e.message}`, 'error'),
+  });
+
+  const handleRetire = async (row: ScheduleGroupSummary) => {
+    const ok = await confirm({
+      title: 'Retire schedule?',
+      message: `Retire "${row.name}" (#${row.scheduleId})? Sets RetiredUtc on the header - existing bookings + history stay; the schedule stops appearing on live paths immediately.`,
+      confirmLabel: 'Retire',
+      danger: true,
+    });
+    if (!ok) return;
+    retireMut.mutate(row.scheduleId);
+  };
 
   // Depot options - unique origin depot + destination region names
   // seen across the loaded set.
@@ -243,6 +269,7 @@ function SchedulesTab({
             rows={pageRows}
             onRowClick={onRowClick}
             onAttachClients={onAttachClients}
+            onRetire={handleRetire}
           />
           <Pager
             page={boundedPage}
@@ -351,10 +378,12 @@ function SchedulesTable({
   rows,
   onRowClick,
   onAttachClients,
+  onRetire,
 }: {
   rows: NestedRow[];
   onRowClick: (id: number) => void;
   onAttachClients: (id: number) => void;
+  onRetire: (row: ScheduleGroupSummary) => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -381,6 +410,7 @@ function SchedulesTable({
               isOverride={isOverride}
               onOpen={onRowClick}
               onAttachClients={onAttachClients}
+              onRetire={onRetire}
             />
           ))}
         </tbody>
@@ -394,11 +424,13 @@ function ScheduleRow({
   isOverride,
   onOpen,
   onAttachClients,
+  onRetire,
 }: {
   row: ScheduleGroupSummary;
   isOverride: boolean;
   onOpen: (id: number) => void;
   onAttachClients: (id: number) => void;
+  onRetire: (row: ScheduleGroupSummary) => void;
 }) {
   const window = s.windowStart && s.windowEnd ? `${s.windowStart}-${s.windowEnd}` : '-';
   const cutoff = formatCutoff(s.monCutoffHours, s.otherCutoffHours);
@@ -463,7 +495,11 @@ function ScheduleRow({
             onClick={() => onAttachClients(s.scheduleId)}
           />
           <ActionIcon label="Copy schedule" icon="copy" />
-          <ActionIcon label="Retire schedule" icon="trash" />
+          <ActionIcon
+            label="Retire schedule"
+            icon="trash"
+            onClick={() => onRetire(s)}
+          />
         </div>
       </td>
     </tr>

@@ -68,4 +68,48 @@ export const schedulesV2Service = {
     request<{ response: ScheduleGroup }>(
       `/v2/schedules/${scheduleId}`,
     ).then((r) => r.response),
+
+  /** GET /api/v2/schedules/{id}/overrides - lightweight list of the
+   *  overrides pointing at this base + the client each owns. Powers
+   *  the AttachClientsModal's "has own override #<id>" hint. */
+  listOverrides: (scheduleId: number) =>
+    request<{ response: OverrideRef[] }>(
+      `/v2/schedules/${scheduleId}/overrides`,
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/clients - attach one or more clients. */
+  attachClients: (scheduleId: number, clientIds: number[]) =>
+    request<{ response: { added: number } }>(
+      `/v2/schedules/${scheduleId}/clients`,
+      { method: 'POST', body: JSON.stringify({ clientIds }) },
+    ).then((r) => r.response),
+
+  /** DELETE /api/v2/schedules/{id}/clients/{clientId} - detach one client. */
+  detachClient: (scheduleId: number, clientId: number) =>
+    request<{ response: { removed: number } }>(
+      `/v2/schedules/${scheduleId}/clients/${clientId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/overrides - create a client override. */
+  createOverride: (scheduleId: number, clientId: number) =>
+    request<{ response: { scheduleId: number } }>(
+      `/v2/schedules/${scheduleId}/overrides`,
+      { method: 'POST', body: JSON.stringify({ clientId }) },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/retire - soft-delete the schedule. */
+  retire: (scheduleId: number) =>
+    request<{ response: string }>(
+      `/v2/schedules/${scheduleId}/retire`,
+      { method: 'POST' },
+    ).then((r) => r.response),
 };
+
+/** Shape of one override reference returned by
+ *  GET /v2/schedules/{id}/overrides. */
+export interface OverrideRef {
+  scheduleId: number;
+  clientId: number;
+  clientCode: string | null;
+}

@@ -1352,4 +1352,215 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
         if (TimeSpan.TryParse(hhmm, out var ts)) return ts;
         throw new InvalidOperationException($"Invalid time format: '{hhmm}'. Use HH:mm.");
     }
+
+    // ─── v2 write endpoints (Steve's 2026-09-08 KEVIN-NEW-SCHEDULES-VIEW ──
+    // brief Phase 3). Kept dedicated (not routed through UpsertAsync) so
+    // the audit trail on link rows carries the exact operator action -
+    // "attach" vs "detach" vs "override create" is a different CreatedBy
+    // string than "upsert-form-submit" and dispatchers rely on that
+    // distinction when reconciling drift.
+
+    /// <summary>
+    /// Attach one or more clients to a schedule via the link table.
+    /// Idempotent: already-attached client ids are silently skipped.
+    /// Blocks attaching a client that has its own override of this base
+    /// (Steve's brief section 5 "a client is on the base OR on one
+    /// override, never both").
+    /// </summary>
+    public async Task<int> AttachClientsAsync(int scheduleId, IEnumerable<int> clientIds)
+    {
+        var ids = (clientIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
+        if (ids.Count == 0) return 0;
+
+        var header = await Context.BulkRunScheduleHeaders
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
+            ?? throw new InvalidOperationException($"Schedule id {scheduleId} not found or retired.");
+
+        // Skip already-attached rows.
+        var existing = await Context.ScheduleClients.AsNoTracking()
+            .Where(sc => sc.ScheduleId == scheduleId && ids.Contains(sc.ClientId))
+            .Select(sc => sc.ClientId)
+            .ToListAsync();
+        var already = new HashSet<int>(existing);
+
+        // Block ids that own an override of this base (their link row
+        // lives on the override, not the base).
+        var overrideOwners = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => h.BaseScheduleId == scheduleId && h.RetiredUtc == null)
+            .Select(h => h.ScheduleId)
+            .ToListAsync();
+        var overrideClientIds = new HashSet<int>();
+        if (overrideOwners.Count > 0)
+        {
+            var list = await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => overrideOwners.Contains(sc.ScheduleId) && ids.Contains(sc.ClientId))
+                .Select(sc => sc.ClientId)
+                .ToListAsync();
+            overrideClientIds = new HashSet<int>(list);
+        }
+
+        var now = DateTime.UtcNow;
+        var toAdd = ids
+            .Where(id => !already.Contains(id) && !overrideClientIds.Contains(id))
+            .Select(id => new ScheduleClient
+            {
+                ScheduleId = scheduleId,
+                ClientId = id,
+                CreatedUtc = now,
+                CreatedBy = "RoutedOps:attach",
+            })
+            .ToList();
+        if (toAdd.Count == 0) return 0;
+
+        Context.ScheduleClients.AddRange(toAdd);
+        await Context.SaveChangesAsync();
+        return toAdd.Count;
+    }
+
+    /// <summary>
+    /// Detach one client from a schedule. Idempotent - detaching a
+    /// non-attached client is a no-op (returns 0).
+    /// </summary>
+    public async Task<int> DetachClientAsync(int scheduleId, int clientId)
+    {
+        var row = await Context.ScheduleClients
+            .FirstOrDefaultAsync(sc => sc.ScheduleId == scheduleId && sc.ClientId == clientId);
+        if (row == null) return 0;
+        Context.ScheduleClients.Remove(row);
+        await Context.SaveChangesAsync();
+        return 1;
+    }
+
+    /// <summary>
+    /// Create an override header pointing at the base. Copies the base's
+    /// day rows verbatim; the client's link row moves from the base to
+    /// the override (Steve's brief section 5 invariant).
+    /// </summary>
+    public async Task<int> CreateOverrideAsync(int baseScheduleId, int clientId)
+    {
+        var baseHeader = await Context.BulkRunScheduleHeaders
+            .FirstOrDefaultAsync(h => h.ScheduleId == baseScheduleId && h.RetiredUtc == null)
+            ?? throw new InvalidOperationException($"Base schedule {baseScheduleId} not found or retired.");
+        if (baseHeader.BaseScheduleId != null)
+            throw new InvalidOperationException("Cannot create an override on top of an override. Pick the base schedule.");
+
+        var alreadyOverrides = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => h.BaseScheduleId == baseScheduleId && h.RetiredUtc == null)
+            .Select(h => h.ScheduleId)
+            .ToListAsync();
+        if (alreadyOverrides.Count > 0)
+        {
+            var owned = await Context.ScheduleClients.AsNoTracking()
+                .AnyAsync(sc => alreadyOverrides.Contains(sc.ScheduleId) && sc.ClientId == clientId);
+            if (owned)
+                throw new InvalidOperationException(
+                    $"Client {clientId} already owns an override of schedule {baseScheduleId}.");
+        }
+
+        // Fresh override header (BaseScheduleId set; IsDefault stays
+        // false; LegacyClientId null - the link table owns the truth).
+        var now = DateTime.UtcNow;
+        var overrideHeader = new BulkRunScheduleHeader
+        {
+            Name = baseHeader.Name,
+            IsDefault = false,
+            LegacyClientId = null,
+            BaseScheduleId = baseScheduleId,
+            CreatedUtc = now,
+            CreatedBy = "RoutedOps:override-create",
+        };
+        Context.BulkRunScheduleHeaders.Add(overrideHeader);
+        await Context.SaveChangesAsync(); // realise the id
+
+        // Clone the base's day rows (Include the same nav-heavy rows so
+        // we get zones + linehauls too when the operator opens the edit
+        // modal on the fresh override).
+        var baseRows = await Context.TblBulkRunSchedules
+            .Where(s => s.ScheduleId == baseScheduleId)
+            .ToListAsync();
+        foreach (var src in baseRows)
+        {
+            var copy = new TblBulkRunSchedule
+            {
+                ScheduleId = overrideHeader.ScheduleId,
+                Name = src.Name,
+                DayOfWeek = src.DayOfWeek,
+                ClientId = src.ClientId,
+                SpeedId = src.SpeedId,
+                Region = src.Region,
+                StartTime = src.StartTime,
+                EndTime = src.EndTime,
+                AutoBook = src.AutoBook,
+                ApplyPickupCutoff = src.ApplyPickupCutoff,
+                PickupCutoff = src.PickupCutoff,
+                BookPickup = src.BookPickup,
+                PickupDepotId = src.PickupDepotId,
+                CutoffHours = src.CutoffHours,
+                Description = src.Description,
+                MaxJobs = src.MaxJobs,
+                PickupRatingSpeed = src.PickupRatingSpeed,
+                PickupPostcodeGroupId = src.PickupPostcodeGroupId,
+                ParentSpeedId = src.ParentSpeedId,
+                PickupBoxDiscount = src.PickupBoxDiscount,
+                PostcodeGroupId = src.PostcodeGroupId,
+                StorageState = src.StorageState,
+                DeliveryState = src.DeliveryState,
+                DropOffLocationId = src.DropOffLocationId,
+            };
+            Context.TblBulkRunSchedules.Add(copy);
+        }
+
+        // Move the client's link row from base to override. If the
+        // client isn't on the base's link table (edge case - they were
+        // relying on the default fallback), just create the link on the
+        // override.
+        var baseLink = await Context.ScheduleClients
+            .FirstOrDefaultAsync(sc => sc.ScheduleId == baseScheduleId && sc.ClientId == clientId);
+        if (baseLink != null) Context.ScheduleClients.Remove(baseLink);
+        Context.ScheduleClients.Add(new ScheduleClient
+        {
+            ScheduleId = overrideHeader.ScheduleId,
+            ClientId = clientId,
+            CreatedUtc = now,
+            CreatedBy = "RoutedOps:override-create",
+        });
+
+        await Context.SaveChangesAsync();
+        return overrideHeader.ScheduleId;
+    }
+
+    /// <summary>
+    /// List overrides of a base header + the client each override owns.
+    /// Used by the AttachClientsModal's "has own override #id" hint so
+    /// operators can see which candidate clients are unavailable to
+    /// attach directly to the base.
+    /// </summary>
+    public async Task<List<OverrideRefDto>> ListOverridesAsync(int baseScheduleId)
+    {
+        var overrideHeaders = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => h.BaseScheduleId == baseScheduleId && h.RetiredUtc == null)
+            .Select(h => new { h.ScheduleId, h.Name })
+            .ToListAsync();
+        if (overrideHeaders.Count == 0) return new List<OverrideRefDto>();
+
+        var overrideIds = overrideHeaders.Select(o => o.ScheduleId).ToList();
+        var links = await Context.ScheduleClients.AsNoTracking()
+            .Where(sc => overrideIds.Contains(sc.ScheduleId))
+            .Select(sc => new { sc.ScheduleId, sc.ClientId })
+            .ToListAsync();
+
+        var clientIds = links.Select(l => l.ClientId).Distinct().ToList();
+        var codes = clientIds.Count == 0
+            ? new Dictionary<int, string>()
+            : await Context.TucClients.AsNoTracking()
+                .Where(c => clientIds.Contains(c.UcclId) && c.UcclCode != null)
+                .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
+
+        return links
+            .Select(l => new OverrideRefDto(
+                l.ScheduleId,
+                l.ClientId,
+                codes.TryGetValue(l.ClientId, out var code) ? code : null))
+            .ToList();
+    }
 }

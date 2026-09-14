@@ -151,6 +151,114 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
+    /// GET /api/v2/schedules/{id}/overrides - lightweight list of the
+    /// overrides pointing at this base + the client each owns. Used by
+    /// the AttachClientsModal to render the "has own override #id"
+    /// indicator so operators can see which candidate clients are
+    /// unavailable to attach directly to the base.
+    /// </summary>
+    [HttpGet("{scheduleId:int}/overrides")]
+    public async Task<IActionResult> ListOverrides(int scheduleId)
+    {
+        try
+        {
+            var list = await svc.ListOverridesAsync(scheduleId);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    // ─── Writes (Phase 3) ──────────────────────────────────────────
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/clients - attach one or more clients
+    /// to the schedule. Body `{ clientIds: int[] }`. Idempotent -
+    /// already-attached client ids are silently skipped. Blocks
+    /// attaching a client that has its own override of this base per
+    /// Steve's section 5 invariant.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/clients")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AttachClients(int scheduleId, [FromBody] AttachClientsRequest req)
+    {
+        try
+        {
+            var added = await svc.AttachClientsAsync(scheduleId, req?.ClientIds ?? Array.Empty<int>());
+            return Ok(new { response = new { added } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/v2/schedules/{id}/clients/{clientId} - detach one
+    /// client from the schedule.
+    /// </summary>
+    [HttpDelete("{scheduleId:int}/clients/{clientId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DetachClient(int scheduleId, int clientId)
+    {
+        try
+        {
+            var removed = await svc.DetachClientAsync(scheduleId, clientId);
+            return Ok(new { response = new { removed } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/overrides - create a client override
+    /// of this base schedule. Body `{ clientId: int }`. Copies the
+    /// base's day rows verbatim; the client's link row moves from base
+    /// to override so the client is never on both.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/overrides")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> CreateOverride(int scheduleId, [FromBody] CreateOverrideRequest req)
+    {
+        try
+        {
+            if (req == null || req.ClientId <= 0)
+                return BadRequest(new { message = "clientId is required." });
+            var newId = await svc.CreateOverrideAsync(scheduleId, req.ClientId);
+            return Ok(new { response = new { scheduleId = newId } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/retire - soft-delete the schedule
+    /// header (sets RetiredUtc). Bookings + history preserved; live
+    /// paths stop returning the schedule immediately. Wraps the
+    /// existing ScheduleService.DeleteAsync retire path.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/retire")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> Retire(int scheduleId)
+    {
+        try
+        {
+            await svc.DeleteAsync(scheduleId);
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// GET /api/v2/schedule-groups - Dane's Schedule Groups bundles.
     /// Read-only for Phase 1; POST /PUT /DELETE + client-attach land
     /// in Phase 3. Returns empty until migration 20260914140000
@@ -169,4 +277,14 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
             return BadRequest(new { message = ex.Message });
         }
     }
+}
+
+public class AttachClientsRequest
+{
+    public int[] ClientIds { get; set; } = Array.Empty<int>();
+}
+
+public class CreateOverrideRequest
+{
+    public int ClientId { get; set; }
 }

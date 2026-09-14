@@ -151,6 +151,13 @@ public record ScheduleGroupSummaryDto(
     string LinehaulHint);
 
 /// <summary>
+/// Override row reference. Non-view-model - just enough for the
+/// AttachClientsModal's "has own override #id" indicator. Emitted by
+/// GET /api/v2/schedules/{id}/overrides.
+/// </summary>
+public record OverrideRefDto(int ScheduleId, int ClientId, string ClientCode);
+
+/// <summary>
 /// One schedule group (Dane's bundle-of-schedules concept). Row shape
 /// for the Schedules NEW Groups tab. Client counts are aggregated
 /// across every non-default member schedule so operators see the

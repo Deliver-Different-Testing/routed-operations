@@ -196,6 +196,36 @@ async function stubApis(page: import('@playwright/test').Page) {
       body: JSON.stringify({ response: rows }),
     });
   });
+  // GET /overrides must be routed BEFORE the generic /schedules/{id}
+  // match or the wildcard catch-all short-circuits it.
+  await page.route('**/api/v2/schedules/*/overrides', (route: Route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        response: [
+          // Steve's mockup: HRAD (client 300) owns override #1051 of
+          // base #1050. Seeded here so the AttachClientsModal renders
+          // "has own override #1051" on the HRAD row.
+          { scheduleId: 1051, clientId: 300, clientCode: 'HRAD' },
+        ],
+      }),
+    });
+  });
+  await page.route('**/api/v2/schedules/*/clients', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ response: { added: 1 } }),
+    }),
+  );
+  await page.route('**/api/v2/schedules/*/retire', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ response: 'ok' }),
+    }),
+  );
   await page.route('**/api/v2/schedules/*', (route: Route) => {
     return route.fulfill({
       status: 200,
@@ -224,6 +254,9 @@ async function stubApis(page: import('@playwright/test').Page) {
       { id: 100, name: 'MedLab Central (MLC)' },
       { id: 200, name: 'Pathway Diagnostics (PATH)' },
       { id: 300, name: 'Harbour Radiology (HRAD)' },
+      // NOT in V2_DETAIL.clientIds - used by the attach-wire test as
+      // the "picked client" so the row is actually tickable.
+      { id: 1001, name: 'Fresh Attach Test (FAT)' },
     ];
     const hits = q ? clients.filter((c) => c.name.toLowerCase().includes(q)) : clients;
     return route.fulfill({
@@ -408,12 +441,89 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     // renders "already attached" and is not toggleable.
     await expect(page.getByText('already attached').first()).toBeVisible();
 
-    // Attach button is Phase-1 disabled. Use exact: true to
-    // disambiguate from the row-level "Attach clients" icon buttons.
+    // Attach button starts disabled with nothing selected. Use
+    // exact: true to disambiguate from the row-level icon buttons.
     await expect(page.getByRole('button', { name: 'Attach', exact: true })).toBeDisabled();
 
     // Cancel closes the modal.
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByRole('heading', { name: /Attach clients to #/ })).toHaveCount(0);
+  });
+
+  test('Attach clients wire submits selection + closes modal on success', async ({ page }) => {
+    let attachPayload: any = null;
+    await stubApis(page);
+    // Capture the POST body to verify the wire hit /clients with the
+    // ticked ids.
+    await page.route('**/api/v2/schedules/1042/clients', async (route) => {
+      if (route.request().method() === 'POST') {
+        attachPayload = await route.request().postDataJSON();
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ response: { added: 1 } }),
+        });
+      }
+      return route.fallback();
+    });
+    await page.goto('/schedules-new');
+
+    await page.getByTitle('Attach clients').first().click();
+    await expect(page.getByRole('heading', { name: /Attach clients to #1042/ })).toBeVisible();
+
+    // Pathway Diagnostics (PATH, id 200) is NOT in the mocked schedule's
+    // clientIds so it's tickable. Wait for the initial client list load
+    // so the checkboxes are all in the DOM.
+    const searchBox = page.getByPlaceholder('Search clients by name or code...');
+    await searchBox.fill('fresh');
+    // Client 1001 (FAT) is NOT in V2_DETAIL.clientIds so the row is
+    // tickable. Click the label (checkbox wrapper), which is
+    // interactive; the inner span alone is not.
+    const label = page.locator('label').filter({ hasText: 'Fresh Attach Test (FAT)' });
+    await expect(label).toBeVisible();
+    await label.click();
+
+    // Attach button enables + submits.
+    const attachBtn = page.getByRole('button', { name: 'Attach', exact: true });
+    await expect(attachBtn).toBeEnabled();
+    await attachBtn.click();
+
+    // Modal closes on success + the payload includes the tick.
+    await expect(page.getByRole('heading', { name: /Attach clients to #/ })).toHaveCount(0);
+    expect(attachPayload).toMatchObject({ clientIds: [1001] });
+  });
+
+  test('Retire schedule confirm + wire hits retire endpoint', async ({ page }) => {
+    let retireHit = false;
+    await stubApis(page);
+    await page.route('**/api/v2/schedules/1042/retire', async (route) => {
+      if (route.request().method() === 'POST') {
+        retireHit = true;
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ response: 'ok' }),
+        });
+      }
+      return route.fallback();
+    });
+    await page.goto('/schedules-new');
+
+    // Row #1042 -> Retire icon. Trigger confirm dialog. Playwright's
+    // headless browser accepts native confirm() prompts via a listener;
+    // RoutedOps ConfirmContext renders a modal so we click the button.
+    // Retire icon is the 3rd action on the row (Attach / Copy / Retire).
+    await page.getByTitle(/Retire schedule/).first().click();
+    // Confirm modal appears with the danger label. Its "Retire"
+    // button has accessible name "Retire" exactly; the row-icon
+    // buttons all read "Retire schedule".
+    await expect(page.getByRole('heading', { name: 'Retire schedule?' })).toBeVisible();
+    await page.getByRole('button', { name: 'Retire', exact: true }).click();
+
+    // Confirm modal should close on accept. Polling until it goes;
+    // avoids a hang if waitForRequest doesn't match the URL exactly.
+    await expect(page.getByRole('heading', { name: 'Retire schedule?' })).toHaveCount(0);
+    // Then the POST fires in the mutation. Give it a beat.
+    await expect.poll(() => retireHit, { timeout: 5000 }).toBe(true);
   });
 });

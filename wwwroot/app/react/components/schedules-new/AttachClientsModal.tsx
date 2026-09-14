@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
@@ -8,14 +8,17 @@ import { schedulesV2Service } from '../../services/schedulesV2Service';
 // 2026-09-14 review). Opened from the "attach clients" action icon
 // on a Schedules row.
 //
-// Phase 1 read-only: the modal opens, lets the operator tick candidate
-// clients, but the Attach button is disabled. Writes land in Phase 3.
+// Wired end-to-end (2026-09-15): the Attach button now POSTs to
+// /api/v2/schedules/{id}/clients and invalidates the list + detail
+// queries so the row re-renders with the new client chips.
 //
 // Per-row status semantics:
 //   - "already attached"  = client is in this schedule's clientIds.
 //     Checkbox is pre-checked and disabled (they're already on it).
 //   - "has own override #<id>" = client owns an override of this
-//     schedule. Attaching would be ambiguous. Disabled.
+//     base schedule. Attaching would break Steve's section 5
+//     invariant (client on base OR one override, never both) so the
+//     row is disabled.
 //   - otherwise attachable - checkbox available.
 
 interface Props {
@@ -24,9 +27,11 @@ interface Props {
 }
 
 export function AttachClientsModal({ scheduleId, onClose }: Props) {
+  const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   // Reset the selection each time the modal opens for a different
   // schedule so leftovers don't leak between rows.
@@ -34,6 +39,7 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     setSelected([]);
     setSearch('');
     setDebounced('');
+    setError(null);
   }, [scheduleId]);
 
   useEffect(() => {
@@ -52,6 +58,17 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     retry: false,
   });
 
+  // Overrides of this base (2026-09-15 wire) so we can render "has
+  // own override #<id>" on the correct client rows and block them
+  // from being attached to the base.
+  const overridesQuery = useQuery({
+    queryKey: ['schedules-v2-overrides-of', scheduleId ?? 0],
+    queryFn: () => schedulesV2Service.listOverrides(scheduleId!),
+    enabled: scheduleId != null && scheduleId > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   // Client search - 50 rows per response, live server-side match.
   const clientsQuery = useQuery({
     queryKey: ['schedules-v2-attach-search', debounced],
@@ -65,19 +82,40 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     [detailQuery.data],
   );
 
-  // For Phase 1 we don't yet know which clients have overrides of the
-  // current base (needs a new endpoint). We render the field as a
-  // placeholder so Steve can see the intent; when the "list clients
-  // with override of base X" endpoint lands it drops in.
-  const overrideByClient = new Map<number, string>();
+  const overrideByClient = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const o of overridesQuery.data ?? []) {
+      map.set(o.clientId, `#${o.scheduleId}`);
+    }
+    return map;
+  }, [overridesQuery.data]);
+
+  const attachMut = useMutation({
+    mutationFn: (payload: { scheduleId: number; clientIds: number[] }) =>
+      schedulesV2Service.attachClients(payload.scheduleId, payload.clientIds),
+    onSuccess: () => {
+      // Invalidate every list variant + the detail so the row
+      // re-renders with the fresh client set.
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', scheduleId ?? 0] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
 
   const options = clientsQuery.data ?? [];
   const selectedSet = new Set(selected);
   const toggle = (id: number) => {
-    if (attachedIds.has(id)) return; // already-attached rows are non-toggleable
+    if (attachedIds.has(id)) return;
     if (overrideByClient.has(id)) return;
     if (selectedSet.has(id)) setSelected(selected.filter((v) => v !== id));
     else setSelected([...selected, id]);
+  };
+
+  const submit = () => {
+    if (scheduleId == null || selected.length === 0) return;
+    setError(null);
+    attachMut.mutate({ scheduleId, clientIds: selected });
   };
 
   const title = detailQuery.data
@@ -93,8 +131,10 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
       onClose={onClose}
       title={title}
       size="lg"
-      loading={detailQuery.isLoading}
-      loadingMessage="Loading schedule..."
+      loading={detailQuery.isLoading || attachMut.isPending}
+      loadingMessage={
+        attachMut.isPending ? 'Attaching...' : 'Loading schedule...'
+      }
       footer={
         <div className="flex items-center justify-between">
           <span className="text-xs text-text-muted">
@@ -110,8 +150,8 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
             </button>
             <button
               type="button"
-              disabled
-              title="Phase 1 is read-only. Write lands in Phase 3 (POST /api/v2/schedules/{id}/clients)."
+              disabled={selected.length === 0 || attachMut.isPending}
+              onClick={submit}
               className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
             >
               Attach
@@ -122,6 +162,11 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     >
       {subtitle && (
         <p className="text-xs text-text-secondary mb-3">{subtitle}</p>
+      )}
+      {error && (
+        <div className="mb-3 text-xs text-error border border-error/30 bg-error-bg/40 rounded px-3 py-2">
+          {error}
+        </div>
       )}
 
       <div className="mb-2">
