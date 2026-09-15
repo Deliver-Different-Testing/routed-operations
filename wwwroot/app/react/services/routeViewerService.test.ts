@@ -318,12 +318,25 @@ describe('routeViewerService - scans / events', () => {
 });
 
 describe('routeViewerService - assignment / actions', () => {
-  it('assignRoute POSTs /runviewer/jobs/assign', async () => {
+  it('assignRoute POSTs /runviewer/jobs/assign with targetType + targetId', async () => {
+    // Regression guard: the backend BulkAssignRequest DTO binds
+    // TargetType + TargetId. Sending courierId / agentId / npAgentId
+    // instead (the pre-2026-09-15 shape) silently dropped the id and
+    // triggered FK_tucJob_Courier violations because @CourierID
+    // defaulted to 0 on the SP call.
     let seen: unknown;
-    server.use(wrapPost('/api/runviewer/jobs/assign', { assigned: 3 }, (p) => (seen = p)));
-    const r = await routeViewerService.assignRoute({ jobIds: [1, 2, 3], courierId: 5 });
-    expect(seen).toEqual({ jobIds: [1, 2, 3], courierId: 5 });
-    expect(r.assigned).toBe(3);
+    server.use(
+      wrapPost(
+        '/api/runviewer/jobs/assign',
+        { succeeded: 3, failed: 0, errors: [], targetType: 'Courier', targetId: 5, displayName: null },
+        (p) => (seen = p),
+      ),
+    );
+    const r = await routeViewerService.assignRoute({
+      jobIds: [1, 2, 3], targetType: 'Courier', targetId: 5,
+    });
+    expect(seen).toEqual({ jobIds: [1, 2, 3], targetType: 'Courier', targetId: 5 });
+    expect(r.succeeded).toBe(3);
   });
 
   it('getLinehaulOverview GETs /runviewer/runs/linehaul/overview', async () => {

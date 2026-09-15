@@ -135,4 +135,6 @@ public class ScheduleLinehaulUpsertRequest
     public int? DepartureAdvanceDays { get; set; }
     public bool? FromClientAddress { get; set; }
     public int? DropOffLocationId { get; set; }
+    /// <summary>Per-leg service class override. Null = inherit from run / schedule.</summary>
+    public int? SpeedId { get; set; }
 }

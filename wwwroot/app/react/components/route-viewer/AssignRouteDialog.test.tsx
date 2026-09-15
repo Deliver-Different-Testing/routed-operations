@@ -117,7 +117,7 @@ describe('AssignRouteDialog', () => {
     server.use(
       stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
       http.post('/api/runviewer/jobs/assign', () =>
-        HttpResponse.json({ response: { assigned: 3 } }),
+        HttpResponse.json({ response: { succeeded: 3, failed: 0, errors: [], targetType: 'Courier', targetId: 1, displayName: 'Ace' } }),
       ),
     );
     const props = renderDlg();
@@ -266,7 +266,7 @@ describe('AssignRouteDialog', () => {
       stubAgents([{ id: 77, name: 'Northshore', hint: null }]),
       http.post('/api/runviewer/jobs/assign', async ({ request }) => {
         assignPayload = await request.json();
-        return HttpResponse.json({ response: { assigned: 2 } });
+        return HttpResponse.json({ response: { succeeded: 2, failed: 0, errors: [], targetType: 'Agent', targetId: 77, displayName: 'Northshore' } });
       }),
     );
     const props = renderDlg({ anchorJobId: 1 });
@@ -276,7 +276,7 @@ describe('AssignRouteDialog', () => {
     await user.click(await screen.findByRole('button', { name: /Northshore/ }));
     await user.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
-    expect(assignPayload).toMatchObject({ agentId: 77 });
+    expect(assignPayload).toMatchObject({ targetType: 'Agent', targetId: 77 });
   });
 
   it('picking an NP + assigning sends npAgentId in the payload', async () => {
@@ -285,7 +285,7 @@ describe('AssignRouteDialog', () => {
       stubAgents([{ id: 88, name: 'Regional NP', hint: null }]),
       http.post('/api/runviewer/jobs/assign', async ({ request }) => {
         assignPayload = await request.json();
-        return HttpResponse.json({ response: { assigned: 1 } });
+        return HttpResponse.json({ response: { succeeded: 1, failed: 0, errors: [], targetType: 'NetworkPartner', targetId: 88, displayName: 'Regional NP' } });
       }),
     );
     const props = renderDlg({ anchorJobId: 1 });
@@ -295,7 +295,7 @@ describe('AssignRouteDialog', () => {
     await user.click(await screen.findByRole('button', { name: /Regional NP/ }));
     await user.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
-    expect(assignPayload).toMatchObject({ npAgentId: 88 });
+    expect(assignPayload).toMatchObject({ targetType: 'NetworkPartner', targetId: 88 });
   });
 
   // Regression guard: the assign endpoint requires an explicit JobIds
@@ -321,7 +321,7 @@ describe('AssignRouteDialog', () => {
       ]),
       http.post('/api/runviewer/jobs/assign', async ({ request }) => {
         assignPayload = await request.json();
-        return HttpResponse.json({ response: { assigned: 2 } });
+        return HttpResponse.json({ response: { succeeded: 2, failed: 0, errors: [], targetType: 'Agent', targetId: 77, displayName: 'Northshore' } });
       }),
     );
     const props = renderDlg();
@@ -330,7 +330,7 @@ describe('AssignRouteDialog', () => {
     await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
     await user.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
-    expect(assignPayload).toMatchObject({ courierId: 1, jobIds: [100, 200] });
+    expect(assignPayload).toMatchObject({ targetType: 'Courier', targetId: 1, jobIds: [100, 200] });
   });
 
   it('surfaces an error when the run has no jobs to assign', async () => {

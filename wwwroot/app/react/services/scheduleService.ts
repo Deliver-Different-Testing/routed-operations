@@ -41,6 +41,10 @@ export interface ScheduleLinehaul {
   departureAdvanceDays: number | null;
   fromClientAddress: boolean | null;
   dropOffLocationId: number | null;
+  /** Per-leg service class override id. Null = inherit run / schedule speed. */
+  speedId: number | null;
+  /** Resolved speed name for display. Null when speedId is null. */
+  speedName: string | null;
 }
 
 /** Slim projection returned by GET /schedules for the list table.
@@ -224,6 +228,8 @@ export interface ScheduleGroupUpsertBody {
     departureAdvanceDays: number | null;
     fromClientAddress: boolean | null;
     dropOffLocationId: number | null;
+    /** Per-leg service class override. Null = inherit. */
+    speedId: number | null;
   }>;
   /** Legacy id-based fallback. Only used when `clientCodes` is absent
    *  from the request body (e.g. API callers that don't have code

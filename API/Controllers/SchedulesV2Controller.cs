@@ -50,7 +50,9 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         [FromQuery] string type = "all",
         [FromQuery] string q = null,
         [FromQuery] int? clientId = null,
-        [FromQuery] string clientIds = null)
+        [FromQuery] string clientIds = null,
+        [FromQuery] int page = 0,
+        [FromQuery] int pageSize = 0)
     {
         try
         {
@@ -106,7 +108,24 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
                     s.Name.Contains(needle, StringComparison.OrdinalIgnoreCase));
             }
 
-            return Ok(new { response = filtered.ToList() });
+            // Server-side pagination. `pageSize <= 0` means "return
+            // everything" (back-compat with the pre-2026-09-15 shape:
+            // the SchedulesTable will page client-side across the full
+            // set). `pageSize > 0` triggers the paged shape which the
+            // frontend now consumes so tenants with 10k+ schedules do
+            // not fetch the whole list on every filter change.
+            var full = filtered.ToList();
+            var total = full.Count;
+            var pageRows = pageSize <= 0
+                ? full
+                : full.Skip(Math.Max(0, page) * pageSize).Take(pageSize).ToList();
+            return Ok(new { response = new
+            {
+                rows = pageRows,
+                total,
+                page = Math.Max(0, page),
+                pageSize,
+            }});
         }
         catch (InvalidOperationException ex)
         {
@@ -151,6 +170,144 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
+    /// GET /api/v2/schedules/{id}/overrides - lightweight list of the
+    /// overrides pointing at this base + the client each owns. Used by
+    /// the AttachClientsModal to render the "has own override #id"
+    /// indicator so operators can see which candidate clients are
+    /// unavailable to attach directly to the base.
+    /// </summary>
+    [HttpGet("{scheduleId:int}/overrides")]
+    public async Task<IActionResult> ListOverrides(int scheduleId)
+    {
+        try
+        {
+            var list = await svc.ListOverridesAsync(scheduleId);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    // ─── Writes (Phase 3) ──────────────────────────────────────────
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/clients - attach one or more clients
+    /// to the schedule. Body `{ clientIds: int[] }`. Idempotent -
+    /// already-attached client ids are silently skipped. Blocks
+    /// attaching a client that has its own override of this base per
+    /// Steve's section 5 invariant.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/clients")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AttachClients(int scheduleId, [FromBody] AttachClientsRequest req)
+    {
+        try
+        {
+            var added = await svc.AttachClientsAsync(scheduleId, req?.ClientIds ?? Array.Empty<int>());
+            return Ok(new { response = new { added } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/v2/schedules/{id}/clients/{clientId} - detach one
+    /// client from the schedule.
+    /// </summary>
+    [HttpDelete("{scheduleId:int}/clients/{clientId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DetachClient(int scheduleId, int clientId)
+    {
+        try
+        {
+            var removed = await svc.DetachClientAsync(scheduleId, clientId);
+            return Ok(new { response = new { removed } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/overrides - create a client override
+    /// of this base schedule. Body `{ clientId: int }`. Copies the
+    /// base's day rows verbatim; the client's link row moves from base
+    /// to override so the client is never on both.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/overrides")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> CreateOverride(int scheduleId, [FromBody] CreateOverrideRequest req)
+    {
+        try
+        {
+            if (req == null || req.ClientId <= 0)
+                return BadRequest(new { message = "clientId is required." });
+            var newId = await svc.CreateOverrideAsync(scheduleId, req.ClientId);
+            return Ok(new { response = new { scheduleId = newId } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/retire - soft-delete the schedule
+    /// header (sets RetiredUtc). Bookings + history preserved; live
+    /// paths stop returning the schedule immediately. Wraps the
+    /// existing ScheduleService.DeleteAsync retire path.
+    /// </summary>
+    [HttpPost("{scheduleId:int}/retire")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> Retire(int scheduleId)
+    {
+        try
+        {
+            await svc.DeleteAsync(scheduleId);
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules/{id}/copy - clone a schedule under a new
+    /// name. Body `{ newName, clientIds? }`. Wraps
+    /// ScheduleService.CopyAsync. Copy carries the source's day rows +
+    /// zones + polygons; client link rows are set to `clientIds` (or
+    /// empty for a "default" copy).
+    /// </summary>
+    [HttpPost("{scheduleId:int}/copy")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> Copy(int scheduleId, [FromBody] CopyScheduleRequest req)
+    {
+        try
+        {
+            if (req == null || string.IsNullOrWhiteSpace(req.NewName))
+                return BadRequest(new { message = "newName is required." });
+            var group = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = scheduleId,
+                NewName = req.NewName,
+                ClientCodes = new List<string>(),   // link-row semantics: copy uses ClientIds directly.
+                ClientIds = (req.ClientIds ?? Array.Empty<int>()).ToList(),
+            });
+            return Ok(new { response = new { scheduleId = group.ScheduleId } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// GET /api/v2/schedule-groups - Dane's Schedule Groups bundles.
     /// Read-only for Phase 1; POST /PUT /DELETE + client-attach land
     /// in Phase 3. Returns empty until migration 20260914140000
@@ -169,4 +326,142 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
             return BadRequest(new { message = ex.Message });
         }
     }
+
+    /// <summary>
+    /// POST /api/v2/schedule-groups - create a Schedule Group with an
+    /// initial member list. Body `{ name, description, scheduleIds[] }`.
+    /// Returns the new groupId.
+    /// </summary>
+    [HttpPost("/api/v2/schedule-groups")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> CreateGroup([FromBody] CreateGroupRequest req)
+    {
+        try
+        {
+            if (req == null) return BadRequest(new { message = "Body is required." });
+            var id = await svc.CreateGroupAsync(req.Name, req.Description, req.ScheduleIds ?? Array.Empty<int>());
+            return Ok(new { response = new { groupId = id } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>PUT /api/v2/schedule-groups/{groupId} - rename / redescribe.</summary>
+    [HttpPut("/api/v2/schedule-groups/{groupId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> UpdateGroup(int groupId, [FromBody] CreateGroupRequest req)
+    {
+        try
+        {
+            if (req == null) return BadRequest(new { message = "Body is required." });
+            await svc.UpdateGroupAsync(groupId, req.Name, req.Description);
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedule-groups/{groupId}/members - add schedules
+    /// to a group. Body `{ scheduleIds: int[] }`. Idempotent.
+    /// </summary>
+    [HttpPost("/api/v2/schedule-groups/{groupId:int}/members")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AddGroupMembers(int groupId, [FromBody] AddGroupMembersRequest req)
+    {
+        try
+        {
+            var added = await svc.AddGroupMembersAsync(groupId, req?.ScheduleIds ?? Array.Empty<int>());
+            return Ok(new { response = new { added } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>DELETE /api/v2/schedule-groups/{groupId}/members/{scheduleId}.</summary>
+    [HttpDelete("/api/v2/schedule-groups/{groupId:int}/members/{scheduleId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> RemoveGroupMember(int groupId, int scheduleId)
+    {
+        try
+        {
+            var removed = await svc.RemoveGroupMemberAsync(groupId, scheduleId);
+            return Ok(new { response = new { removed } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>DELETE /api/v2/schedule-groups/{groupId} - hard-delete.</summary>
+    [HttpDelete("/api/v2/schedule-groups/{groupId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DeleteGroup(int groupId)
+    {
+        try
+        {
+            await svc.DeleteGroupAsync(groupId);
+            return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedule-groups/{groupId}/clients - attach clients
+    /// to every non-default member schedule of the group. Body
+    /// `{ clientIds: int[] }`. Idempotent (already-attached pairs
+    /// skipped). Returns the total number of link rows added.
+    /// </summary>
+    [HttpPost("/api/v2/schedule-groups/{groupId:int}/clients")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AttachClientsToGroup(int groupId, [FromBody] AttachClientsRequest req)
+    {
+        try
+        {
+            var added = await svc.AttachClientsToGroupAsync(groupId, req?.ClientIds ?? Array.Empty<int>());
+            return Ok(new { response = new { added } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+}
+
+public class AttachClientsRequest
+{
+    public int[] ClientIds { get; set; } = Array.Empty<int>();
+}
+
+public class CreateOverrideRequest
+{
+    public int ClientId { get; set; }
+}
+
+public class CreateGroupRequest
+{
+    public string Name { get; set; }
+    public string Description { get; set; }
+    public int[] ScheduleIds { get; set; } = Array.Empty<int>();
+}
+
+public class AddGroupMembersRequest
+{
+    public int[] ScheduleIds { get; set; } = Array.Empty<int>();
+}
+
+public class CopyScheduleRequest
+{
+    public string NewName { get; set; }
+    public int[] ClientIds { get; set; } = Array.Empty<int>();
 }

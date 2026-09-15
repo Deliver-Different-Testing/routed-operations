@@ -170,6 +170,18 @@ public record ScheduleGroupBundleDto(
     /// ScheduleIds. Useful for the Groups tab expanded-row chips.</summary>
     string[] ScheduleNames);
 
+/// <summary>
+/// Compact row for the /api/v2/schedules/{id}/overrides read path.
+/// One entry per client that owns an override of the given base
+/// schedule. Feeds the "has own override #123" hint in the Attach
+/// Clients modal so operators do not double-bind a client that already
+/// has a client-specific variant.
+/// </summary>
+public record OverrideRefDto(
+    int ScheduleId,
+    int ClientId,
+    string ClientCode);
+
 public record ScheduleLinehaulDto(
     int Id,
     string Name,
@@ -186,7 +198,9 @@ public record ScheduleLinehaulDto(
     int[] WeekDay,
     int? DepartureAdvanceDays,
     bool? FromClientAddress,
-    int? DropOffLocationId);
+    int? DropOffLocationId,
+    int? SpeedId,
+    string SpeedName);
 
 /// <summary>
 /// Bundled lookup payload for the schedule edit modal. One roundtrip

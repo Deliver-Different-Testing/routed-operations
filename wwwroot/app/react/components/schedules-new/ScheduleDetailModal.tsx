@@ -1,21 +1,88 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
-import type { ScheduleGroup } from '../../services/scheduleService';
+import { schedulesV2Service } from '../../services/schedulesV2Service';
+import { scheduleService, type ScheduleGroup, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
+import { recurringRouteService } from '../../services/recurringRouteService';
+import { ChainBuilder, type Leg } from './ChainBuilder';
 
-// Read-only edit modal for the Schedules NEW page (Steve's 2026-09-08
-// brief section 2, Schedule modal). 4 tabs matching Dane's live
-// prototype: Clients / Route / Operating days / Roster. Every control
-// is disabled for Phase 1; writes land in Phase 3 alongside the
-// BaseScheduleId + client-attach endpoints.
-//
-// Reuses ScheduleGroup DTO from scheduleService.ts because the shape
-// is identical to the legacy /api/schedules/detail response - the v2
-// controller wraps the same ScheduleService.GetDetailAsync.
+// Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
+// section 2). 4 tabs: Clients / Route / Operating days / Roster.
+// Name + Description + Active + Route + Operating days are editable
+// in place; Save PUTs a ScheduleGroupUpsertBody via
+// scheduleService.upsert with the current scheduleId. Clients tab
+// still uses the dedicated /api/v2 attach/detach endpoints so the
+// audit trail on link rows carries "attach"/"detach" verbs; Roster
+// tab is display-only (linehauls are edited on the Route tab as
+// LINEHAUL legs; recurring routes are edited on the Recurring Routes
+// page).
 
 type ModalTab = 'clients' | 'route' | 'days' | 'roster';
 
 const DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+interface DayForm {
+  id: number | null;
+  enabled: boolean;
+  startTime: string;
+  endTime: string;
+  cutoffHours: number;
+}
+
+const EMPTY_DAY: Omit<DayForm, 'enabled'> = {
+  id: null,
+  startTime: '08:00',
+  endTime: '17:00',
+  cutoffHours: 2,
+};
+
+function seedDaysFromDto(dtoDays: ScheduleGroup['dayWindows']): DayForm[] {
+  const byDay = new Map(dtoDays.map((d) => [d.dayOfWeek, d]));
+  return [1, 2, 3, 4, 5, 6, 7].map((n) => {
+    const d = byDay.get(n);
+    return d
+      ? { id: d.id, enabled: true, startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours }
+      : { ...EMPTY_DAY, enabled: false };
+  });
+}
+
+function seedLegsFromDto(d: ScheduleGroup): Leg[] {
+  const legs: Leg[] = [];
+  legs.push({
+    type: 'collection',
+    pickupSource: d.pickupDepotId ? 'depot' : 'client_address',
+    pickupDepotId: d.pickupDepotId ?? null,
+    speedId: d.pickupRatingSpeed ?? null,
+  });
+  if (d.pickupDepotName) {
+    legs.push({ type: 'depot', depotId: d.pickupDepotId ?? null, storageState: d.storageState });
+  }
+  for (const lh of d.linehauls) {
+    legs.push({
+      type: 'linehaul',
+      linehaulRunId: lh.linehaulRunId ?? null,
+      fromDepotId: lh.fromDepotId ?? null,
+      toDepotId: lh.toDepotId ?? null,
+      dayOffset: lh.departureAdvanceDays ?? 0,
+      transitMinutes: lh.minutes ?? 0,
+      speedId: lh.speedId ?? null,
+      amount: lh.amount ?? null,
+      amountPercentage: lh.amountPercentage ?? null,
+      insertToBulk: lh.insertToBulk ?? null,
+      applyDiscount: lh.applyDiscount ?? null,
+      applyAddOnPercentage: lh.applyAddOnPercentage ?? null,
+    });
+  }
+  legs.push({
+    type: 'delivery',
+    regionId: d.regionId,
+    speedId: d.speedId,
+    postcodeGroupId: d.postcodeGroupId,
+    zones: (d.zones ?? []).filter((z) => z.active !== false).map((z) => z.zone),
+  });
+  return legs;
+}
 
 interface Props {
   scheduleId: number | null;
@@ -26,6 +93,183 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
   const [tab, setTab] = useState<ModalTab>('clients');
   const query = useSchedulesV2Detail(scheduleId);
   const data = query.data;
+  const qc = useQueryClient();
+
+  const [formName, setFormName] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [formActive, setFormActive] = useState(true);
+  const [formLegs, setFormLegs] = useState<Leg[]>([]);
+  const [formDays, setFormDays] = useState<DayForm[]>(() => seedDaysFromDto([]));
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [seededForId, setSeededForId] = useState<number | null>(null);
+  // Snapshot of the seeded form state for dirty-state tracking.
+  // A no-op Save on a legacy per-client schedule would still trigger
+  // the "migration to a link row happens on next save" side effect,
+  // so we gate Save on the form actually differing from the seed.
+  const [initialSnapshot, setInitialSnapshot] = useState<string>('');
+
+  const currentSnapshot = useMemo(
+    () => JSON.stringify({
+      name: formName, description: formDescription, active: formActive,
+      legs: formLegs, days: formDays,
+    }),
+    [formName, formDescription, formActive, formLegs, formDays],
+  );
+  const isDirty = initialSnapshot !== '' && currentSnapshot !== initialSnapshot;
+
+  // Seed form state once per scheduleId. Deliberately NOT keyed on
+  // `data` reference: React Query invalidations after attach/detach
+  // return a fresh reference and would otherwise blow away mid-edit
+  // state. Close+reopen (scheduleId changes back through null) is the
+  // signal to reseed.
+  useEffect(() => {
+    if (!data) return;
+    if (seededForId === data.scheduleId) return;
+    const seedName = data.name ?? '';
+    const seedDescription = data.description ?? '';
+    const seedActive = data.autoBook ?? true;
+    const seedLegs = seedLegsFromDto(data);
+    const seedDays = seedDaysFromDto(data.dayWindows);
+    setFormName(seedName);
+    setFormDescription(seedDescription);
+    setFormActive(seedActive);
+    setFormLegs(seedLegs);
+    setFormDays(seedDays);
+    setSaveError(null);
+    setSeededForId(data.scheduleId);
+    setInitialSnapshot(JSON.stringify({
+      name: seedName, description: seedDescription, active: seedActive,
+      legs: seedLegs, days: seedDays,
+    }));
+  }, [data, seededForId]);
+
+  // Reset the seed key on close so reopening the same scheduleId
+  // reseeds from the (possibly refetched) data.
+  useEffect(() => {
+    if (scheduleId == null) {
+      setSeededForId(null);
+      setInitialSnapshot('');
+    }
+  }, [scheduleId]);
+
+  const lookupsQuery = useQuery({
+    queryKey: ['schedules-v2-lookups'],
+    queryFn: () => scheduleService.lookups().then((r) => r.response),
+    staleTime: 5 * 60_000,
+  });
+  const lookups = useMemo(
+    () => ({
+      depots: lookupsQuery.data?.depots ?? [],
+      speeds: lookupsQuery.data?.speeds ?? [],
+      postcodeGroups: (lookupsQuery.data?.postcodeGroups ?? []).map((g) => ({ id: g.id, name: g.name })),
+      storageStates: lookupsQuery.data?.storageStates ?? [],
+      linehaulRuns: (lookupsQuery.data?.linehaulRuns ?? []).map((r) => ({
+        id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
+      })),
+      zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+    }),
+    [lookupsQuery.data],
+  );
+
+  // Walk the leg chain to pull the flat fields the backend upsert
+  // needs. Same rules as NewScheduleModal.derived.
+  const derived = useMemo(() => {
+    let pickupDepotId: number | null = null;
+    let pickupRatingSpeed: number | null = null;
+    let regionId = 0;
+    let speedId: number | null = null;
+    let postcodeGroupId: number | null = null;
+    let storageState: number | null = null;
+    const linehauls: ScheduleGroupUpsertBody['linehauls'] = [];
+    const zones: number[] = [];
+    for (const leg of formLegs) {
+      if (leg.type === 'collection') {
+        pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+        pickupRatingSpeed = leg.speedId;
+      } else if (leg.type === 'depot') {
+        storageState = leg.storageState;
+      } else if (leg.type === 'linehaul') {
+        linehauls.push({
+          name: null, active: true,
+          amount: leg.amount, amountPercentage: leg.amountPercentage,
+          fromDepotId: leg.fromDepotId, toDepotId: leg.toDepotId,
+          minutes: leg.transitMinutes || null,
+          linehaulRunId: leg.linehaulRunId,
+          insertToBulk: leg.insertToBulk, applyDiscount: leg.applyDiscount,
+          applyAddOnPercentage: leg.applyAddOnPercentage,
+          weekDay: formDays.map((d) => (d.enabled ? 1 : 0)),
+          departureAdvanceDays: leg.dayOffset,
+          fromClientAddress: null, dropOffLocationId: null,
+          speedId: leg.speedId,
+        });
+      } else if (leg.type === 'delivery') {
+        regionId = leg.regionId;
+        speedId = leg.speedId;
+        postcodeGroupId = leg.postcodeGroupId;
+        for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
+      }
+    }
+    zones.sort((a, b) => a - b);
+    return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
+  }, [formLegs, formDays]);
+
+  const saveMut = useMutation({
+    mutationFn: (body: ScheduleGroupUpsertBody) => scheduleService.upsert(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', data?.scheduleId] });
+      onClose();
+    },
+    onError: (e: Error) => setSaveError(e.message),
+  });
+
+  const submit = () => {
+    if (!data) return;
+    if (!formName.trim()) { setSaveError('Name is required.'); return; }
+    if (!derived.regionId || derived.regionId <= 0) {
+      setSaveError('Add a Delivery leg with a region to set the destination.'); return;
+    }
+    const enabledDays = formDays.filter((d) => d.enabled);
+    if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
+    setSaveError(null);
+
+    const body: ScheduleGroupUpsertBody = {
+      scheduleId: data.scheduleId,
+      name: formName.trim(),
+      description: formDescription.trim() || null,
+      regionId: derived.regionId,
+      pickupDepotId: derived.pickupDepotId,
+      speedId: derived.speedId,
+      parentSpeedId: data.parentSpeedId ?? null,
+      autoBook: formActive,
+      bookPickup: data.bookPickup ?? null,
+      applyPickupCutoff: data.applyPickupCutoff ?? null,
+      pickupCutoff: data.pickupCutoff ?? null,
+      postcodeGroupId: derived.postcodeGroupId,
+      pickupPostcodeGroupId: data.pickupPostcodeGroupId ?? null,
+      pickupRatingSpeed: derived.pickupRatingSpeed,
+      storageState: derived.storageState,
+      deliveryState: data.deliveryState ?? null,
+      pickupBoxDiscount: data.pickupBoxDiscount ?? null,
+      dropOffLocationId: data.dropOffLocationId ?? null,
+      dayWindows: formDays
+        .map((d, i) => ({
+          id: d.id, dayOfWeek: i + 1,
+          startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours,
+        }))
+        .filter((_d, i) => formDays[i].enabled),
+      zones: derived.zones.map((z) => ({ zone: z, active: true })),
+      linehauls: derived.linehauls,
+      // Client link rows are managed via the Clients tab attach/detach
+      // endpoints, not upsert. Preserve the current set so the backend
+      // does not clear links on an unrelated route/days save.
+      clientIds: [...data.clientIds],
+      clientCodes: [...data.clientCodes],
+      postcodeIds: [...data.postcodeIds],
+      polygonIds: [...data.polygonIds],
+    };
+    saveMut.mutate(body);
+  };
 
   const title = data
     ? data.name ?? `Schedule #${data.scheduleId}`
@@ -37,10 +281,13 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
       onClose={onClose}
       title={title}
       size="6xl"
-      loading={query.isLoading}
-      loadingMessage="Loading schedule detail..."
+      loading={query.isLoading || saveMut.isPending}
+      loadingMessage={saveMut.isPending ? 'Saving schedule...' : 'Loading schedule detail...'}
       footer={
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2 w-full">
+          {saveError && (
+            <span className="text-xs text-error mr-auto">{saveError}</span>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -50,9 +297,16 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
           </button>
           <button
             type="button"
-            disabled
-            title="Phase 1 is read-only. Writes land in Phase 3 per Steve's brief section 7."
-            className="px-4 py-2 text-sm rounded bg-brand-cyan/40 text-brand-dark/60 cursor-not-allowed"
+            onClick={submit}
+            disabled={!data || saveMut.isPending || !isDirty}
+            title={
+              !data
+                ? 'Loading schedule...'
+                : !isDirty
+                  ? 'No changes to save.'
+                  : 'Save changes.'
+            }
+            className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
           >
             Save
           </button>
@@ -76,6 +330,36 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
             )}
           </div>
 
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <label className="block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">Name</span>
+              <input
+                type="text"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+              />
+            </label>
+            <label className="flex items-center gap-3 mt-6">
+              <input
+                type="checkbox"
+                checked={formActive}
+                onChange={(e) => setFormActive(e.target.checked)}
+                className="accent-brand-cyan"
+              />
+              <span className="text-sm">Active (auto-book on)</span>
+            </label>
+            <label className="col-span-2 block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">Description</span>
+              <input
+                type="text"
+                value={formDescription}
+                onChange={(e) => setFormDescription(e.target.value)}
+                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+              />
+            </label>
+          </div>
+
           <nav
             className="flex gap-6 -mb-px border-b border-border mb-4"
             aria-label="Schedule detail tabs"
@@ -95,8 +379,10 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
           </nav>
 
           {tab === 'clients' && <ClientsTab data={data} />}
-          {tab === 'route' && <RouteTab data={data} />}
-          {tab === 'days' && <DaysTab data={data} />}
+          {tab === 'route' && (
+            <RouteTab data={data} legs={formLegs} onLegsChange={setFormLegs} lookups={lookups} />
+          )}
+          {tab === 'days' && <DaysTab days={formDays} onChange={setFormDays} scheduleId={data.scheduleId} />}
           {tab === 'roster' && <RosterTab data={data} />}
         </>
       )}
@@ -107,7 +393,16 @@ export function ScheduleDetailModal({ scheduleId, onClose }: Props) {
 // ─── Tabs ───────────────────────────────────────────────────────────
 
 function ClientsTab({ data }: { data: ScheduleGroup }) {
+  const qc = useQueryClient();
   const isDefault = data.legacyClientId == null && data.clientIds.length === 0;
+  const detachMut = useMutation({
+    mutationFn: (clientId: number) =>
+      schedulesV2Service.detachClient(data.scheduleId, clientId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', data.scheduleId] });
+    },
+  });
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
       <section>
@@ -161,106 +456,85 @@ function ClientsTab({ data }: { data: ScheduleGroup }) {
               </span>
               <button
                 type="button"
-                disabled
-                className="text-xs text-text-muted cursor-not-allowed"
-                title="Phase 1 is read-only."
+                onClick={() => {
+                  const clientId = data.clientIds[i];
+                  if (clientId) detachMut.mutate(clientId);
+                }}
+                disabled={detachMut.isPending}
+                className="text-xs text-error hover:text-error-dark hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Detach this client from the schedule."
               >
-                Remove
+                {detachMut.isPending ? 'Removing...' : 'Remove'}
               </button>
             </li>
           ))}
         </ul>
-        <button
-          type="button"
-          disabled
-          className="mt-3 text-sm text-text-muted cursor-not-allowed"
-          title="Phase 1 is read-only. Attach lands in Phase 3."
-        >
-          + Attach clients
-        </button>
+        <p className="mt-3 text-xs text-text-muted italic">
+          To attach clients, use the row action icon on the Schedules list.
+        </p>
       </section>
     </div>
   );
 }
 
-function RouteTab({ data }: { data: ScheduleGroup }) {
-  const legs: Array<{
-    type: 'collection' | 'depot' | 'linehaul' | 'delivery';
-    title: string;
-    subtitle: string;
-  }> = [];
+interface RouteTabProps {
+  data: ScheduleGroup;
+  legs: Leg[];
+  onLegsChange: (legs: Leg[]) => void;
+  lookups: {
+    depots: { id: number; name: string }[];
+    speeds: { id: number; name: string }[];
+    postcodeGroups: { id: number; name: string }[];
+    storageStates: { id: number; label: string }[];
+    linehaulRuns: { id: number; runName: string; fromDepotId: number | null; toDepotId: number | null }[];
+    zoneNumbers: number[];
+  };
+}
 
-  // Pickup source. Steve's spec §A4: pickup source lives on the
-  // Collection leg. If PickupDepotId is set, pickup is from that
-  // depot; otherwise it's from the client's address.
-  legs.push({
-    type: 'collection',
-    title: data.pickupDepotName ?? 'Collect from client address',
-    subtitle: `Pickup speed ${data.pickupRatingSpeed ?? '-'}`,
-  });
-
-  if (data.pickupDepotName) {
-    legs.push({
-      type: 'depot',
-      title: `${data.pickupDepotName} (region ${data.pickupDepotId})`,
-      subtitle: temperatureLabel(data.storageState) ?? '-',
-    });
-  }
-
-  for (const lh of data.linehauls) {
-    legs.push({
-      type: 'linehaul',
-      title: lh.name ?? `Linehaul run ${lh.linehaulRunId ?? '?'}`,
-      subtitle: `run ${lh.linehaulRunId ?? '?'}`,
-    });
-  }
-
-  legs.push({
-    type: 'delivery',
-    title: `Deliver in ${data.regionName ?? `region ${data.regionId}`}`,
-    subtitle: `Speed ${data.speedId ?? '-'} · zone group ${data.postcodeGroupId ?? '-'}`,
-  });
-
+function RouteTab({ data, legs, onLegsChange, lookups }: RouteTabProps) {
+  const hasSecondaryFields =
+    data.deliveryState != null || (data.applyPickupCutoff && data.pickupCutoff != null);
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-text-primary">Route</h3>
         <span className="text-xs text-text-muted italic">
-          Dane's vertical leg builder - read-only here
+          Dane's vertical leg builder - edit inline; Save persists via /api/schedules
         </span>
       </div>
-      <div className="space-y-2">
-        {legs.map((leg, i) => (
-          <LegCard key={i} type={leg.type} title={leg.title} subtitle={leg.subtitle} />
-        ))}
-      </div>
+      <ChainBuilder legs={legs} onChange={onLegsChange} lookups={lookups} />
 
-      <section className="pt-6 border-t border-border">
-        <h4 className="text-xs uppercase tracking-wide text-text-muted mb-3">
-          Production fields
-        </h4>
-        <dl className="grid grid-cols-2 gap-y-2 gap-x-8 text-sm">
-          <ProdRow label="Origin depot" value={data.pickupDepotName ?? 'Client address'} />
-          <ProdRow label="Destination region" value={data.regionName ?? `#${data.regionId}`} />
-          <ProdRow label="Auto-book" value={data.autoBook ? 'On' : 'Off'} />
-          <ProdRow label="Storage state" value={temperatureLabel(data.storageState) ?? '-'} />
-          <ProdRow label="Delivery state" value={temperatureLabel(data.deliveryState) ?? '-'} />
-          <ProdRow
-            label="Pickup cutoff"
-            value={
-              data.applyPickupCutoff && data.pickupCutoff != null
-                ? `${data.pickupCutoff}h`
-                : 'Off'
-            }
-          />
-        </dl>
-      </section>
+      {hasSecondaryFields && (
+        <section className="pt-6 border-t border-border">
+          <h4 className="text-xs uppercase tracking-wide text-text-muted mb-3">
+            Other fields (not editable here)
+          </h4>
+          <dl className="grid grid-cols-2 gap-y-2 gap-x-8 text-sm">
+            {data.deliveryState != null && (
+              <ProdRow label="Delivery state" value={temperatureLabel(data.deliveryState) ?? '-'} />
+            )}
+            {data.applyPickupCutoff && data.pickupCutoff != null && (
+              <ProdRow label="Pickup cutoff" value={`${data.pickupCutoff}h`} />
+            )}
+          </dl>
+        </section>
+      )}
     </div>
   );
 }
 
-function DaysTab({ data }: { data: ScheduleGroup }) {
-  const byDay = new Map(data.dayWindows.map((d) => [d.dayOfWeek, d]));
+interface DaysTabProps {
+  days: DayForm[];
+  onChange: (days: DayForm[]) => void;
+  scheduleId: number;
+}
+
+function DaysTab({ days, onChange, scheduleId }: DaysTabProps) {
+  const toggle = (i: number) =>
+    onChange(days.map((d, idx) => (idx === i ? { ...d, enabled: !d.enabled } : d)));
+  const patch = (i: number, p: Partial<DayForm>) =>
+    onChange(days.map((d, idx) => (idx === i ? { ...d, ...p } : d)));
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -271,44 +545,177 @@ function DaysTab({ data }: { data: ScheduleGroup }) {
       </div>
       <div className="grid grid-cols-7 gap-2">
         {[1, 2, 3, 4, 5, 6, 7].map((n) => {
-          const d = byDay.get(n);
-          if (!d) {
-            return (
-              <div
-                key={n}
-                className="border border-border rounded p-3 text-center bg-surface-light"
-              >
-                <div className="text-xs font-medium text-text-muted mb-1">{DAY_NAMES[n]}</div>
-                <div className="text-xs text-text-muted">-</div>
-              </div>
-            );
-          }
+          const i = n - 1;
+          const d = days[i];
           return (
-            <div key={n} className="border border-brand-cyan/40 rounded p-3 text-center">
-              <div className="text-xs font-medium text-text-primary mb-1">{DAY_NAMES[n]}</div>
-              <div className="text-xs text-text-secondary">{d.startTime}</div>
-              <div className="text-xs text-text-secondary">{d.endTime}</div>
-              <div className="text-[10px] text-text-muted mt-1">cut-off {d.cutoffHours}h</div>
+            <div
+              key={n}
+              className={`border rounded p-2 text-center ${
+                d.enabled ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border bg-surface-light'
+              }`}
+            >
+              <label className="flex items-center gap-1 text-xs font-medium justify-center">
+                <input
+                  type="checkbox"
+                  checked={d.enabled}
+                  onChange={() => toggle(i)}
+                  className="accent-brand-cyan"
+                />
+                {DAY_NAMES[n]}
+              </label>
+              {d.enabled && (
+                <div className="mt-1 space-y-1">
+                  <input
+                    type="time"
+                    value={d.startTime}
+                    onChange={(e) => patch(i, { startTime: e.target.value })}
+                    className="w-full text-xs border border-border rounded px-1"
+                  />
+                  <input
+                    type="time"
+                    value={d.endTime}
+                    onChange={(e) => patch(i, { endTime: e.target.value })}
+                    className="w-full text-xs border border-border rounded px-1"
+                  />
+                  <div className="flex items-center gap-1 text-xs">
+                    <input
+                      type="number"
+                      min={0}
+                      value={d.cutoffHours}
+                      onChange={(e) => patch(i, { cutoffHours: Number(e.target.value) })}
+                      className="w-12 border border-border rounded px-1"
+                    />
+                    <span>h</span>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
       <p className="text-xs text-text-muted italic">
-        Each enabled day is one tblBulkRunSchedule row carrying ScheduleId #{data.scheduleId}.
+        Each enabled day is one tblBulkRunSchedule row carrying ScheduleId #{scheduleId}.
       </p>
     </div>
   );
 }
 
 function RosterTab({ data }: { data: ScheduleGroup }) {
+  // Sum up weekly runs so the summary row shows total dispatches per
+  // week. lh.weekDay is a 7-entry array of 1/0 (Mon-Sun) per Steve's
+  // section 2 semantics.
+  const activeLegs = data.linehauls.filter((l) => l.active !== false);
+  const totalWeeklyDispatches = activeLegs.reduce((sum, l) => {
+    return sum + (l.weekDay ?? []).reduce((n, v) => n + (v ? 1 : 0), 0);
+  }, 0);
+
+  const routesQuery = useQuery({
+    queryKey: ['schedules-v2-recurring-routes-for-schedule', data.scheduleId],
+    queryFn: () => recurringRouteService.list().then((r) => r.response),
+    staleTime: 30_000,
+  });
+  const boundRoutes = (routesQuery.data ?? []).filter((r) =>
+    r.schedules.some((s) => s.scheduleId === data.scheduleId),
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-text-primary">Roster</h3>
         <span className="text-xs text-text-muted italic">
-          Linehaul legs bound to this schedule
+          Recurring routes + linehaul legs bound to this schedule
         </span>
       </div>
+
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs uppercase tracking-wide text-text-muted">
+            Recurring routes
+          </h4>
+          {routesQuery.data && (
+            <span className="text-xs text-text-muted">
+              {boundRoutes.length} bound
+            </span>
+          )}
+        </div>
+        {routesQuery.isLoading && (
+          <div className="text-xs text-text-muted italic">Loading routes...</div>
+        )}
+        {routesQuery.isError && (
+          <div className="text-xs text-error italic">
+            Failed to load routes: {(routesQuery.error as Error).message}
+          </div>
+        )}
+        {!routesQuery.isLoading && boundRoutes.length === 0 && (
+          <div className="border border-border rounded p-4 text-center text-xs text-text-muted">
+            No recurring routes bound to this schedule.
+          </div>
+        )}
+        {boundRoutes.length > 0 && (
+          <div className="space-y-2">
+            {boundRoutes.map((r) => {
+              const ref = r.schedules.find((s) => s.scheduleId === data.scheduleId);
+              return (
+                <div key={r.routeId} className="border border-border rounded p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1 flex-1">
+                      <div className="text-sm font-medium text-text-primary flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-sm bg-blue-500 inline-block" />
+                        {r.name}
+                        {!r.active && (
+                          <span className="text-xs text-warning">(inactive)</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-text-muted">
+                        Area <span className="text-text-primary">{r.area || '-'}</span>
+                        {' · '}
+                        Target{' '}
+                        <span className="text-text-primary">
+                          {r.defaultTargetName || 'unassigned'}
+                        </span>
+                        {ref?.window && <> · window {ref.window}</>}
+                      </div>
+                    </div>
+                    <div className="text-xs text-right space-y-0.5">
+                      <div>
+                        <span className="text-text-primary font-medium">
+                          {r.bookingCount}
+                        </span>{' '}
+                        <span className="text-text-muted">bookings</span>
+                      </div>
+                      <div>
+                        <span className="text-text-primary font-medium">
+                          {r.mappedStopsCount}
+                        </span>{' '}
+                        <span className="text-text-muted">stops</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <div className="border-t border-border pt-4">
+        <h4 className="text-xs uppercase tracking-wide text-text-muted mb-2">
+          Linehaul legs
+        </h4>
+      </div>
+
+      {activeLegs.length > 0 && (
+        <div className="flex items-center gap-4 text-xs text-text-muted border-b border-border pb-3">
+          <span>
+            <strong className="text-text-primary">{activeLegs.length}</strong>{' '}
+            active leg{activeLegs.length === 1 ? '' : 's'}
+          </span>
+          <span>
+            <strong className="text-text-primary">{totalWeeklyDispatches}</strong>{' '}
+            weekly dispatch{totalWeeklyDispatches === 1 ? '' : 'es'}
+          </span>
+        </div>
+      )}
 
       {data.linehauls.length === 0 ? (
         <div className="border border-border rounded p-6 text-center text-sm text-text-muted">
@@ -319,34 +726,66 @@ function RosterTab({ data }: { data: ScheduleGroup }) {
           {data.linehauls.map((lh) => (
             <div
               key={lh.id}
-              className="border border-border rounded p-4 flex items-start justify-between"
+              className={`border rounded p-4 ${
+                lh.active === false ? 'border-border bg-surface-light' : 'border-border'
+              }`}
             >
-              <div className="space-y-1">
-                <div className="text-sm font-medium text-text-primary">
-                  {lh.name ?? `Linehaul run ${lh.linehaulRunId ?? '?'}`}
-                  {lh.active === false && (
-                    <span className="ml-2 text-xs text-warning">(inactive)</span>
-                  )}
+              <div className="flex items-start justify-between">
+                <div className="space-y-1 flex-1">
+                  <div className="text-sm font-medium text-text-primary flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-sm bg-orange-500 inline-block" />
+                    {lh.name ?? `Linehaul run ${lh.linehaulRunId ?? '?'}`}
+                    {lh.active === false && (
+                      <span className="text-xs text-warning">(inactive)</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-text-muted">
+                    Run <span className="font-mono">#{lh.linehaulRunId ?? '?'}</span>{' '}
+                    · depart offset {lh.departureAdvanceDays ?? 0}d
+                    {lh.minutes != null && (
+                      <> · transit {Math.floor(lh.minutes / 60)}h{lh.minutes % 60 > 0 ? ` ${lh.minutes % 60}m` : ''}</>
+                    )}
+                  </div>
                 </div>
-                <div className="text-xs text-text-muted">
-                  Run #{lh.linehaulRunId ?? '?'} · depart offset {lh.departureAdvanceDays ?? 0}d ·{' '}
-                  {lh.minutes ?? '?'} min
-                </div>
-                {lh.weekDay.length > 0 && (
-                  <div className="text-xs text-text-secondary">
-                    Days: {lh.weekDay.map((n) => DAY_NAMES[n]).join(' ')}
+                {(lh.amount != null || lh.amountPercentage != null) && (
+                  <div className="text-xs text-right">
+                    {lh.amount != null && <div className="text-text-primary">${lh.amount.toFixed(2)}</div>}
+                    {lh.amountPercentage != null && lh.amountPercentage !== 0 && (
+                      <div className="text-text-muted">{lh.amountPercentage}%</div>
+                    )}
                   </div>
                 )}
               </div>
+
+              {/* Day-of-week strip. lh.weekDay is a 7-entry array of
+                  1/0 (Mon..Sun) - render the active days as filled
+                  pills so operators can spot uneven-week schedules. */}
+              {lh.weekDay.length > 0 && (
+                <div className="flex gap-1 mt-3 items-center text-[10px]">
+                  <span className="text-text-muted uppercase tracking-wide mr-1">Days</span>
+                  {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, i) => (
+                    <span
+                      key={i}
+                      className={`w-5 h-5 rounded flex items-center justify-center font-semibold border ${
+                        lh.weekDay[i] === 1
+                          ? 'bg-orange-100 border-orange-300 text-orange-800'
+                          : 'bg-surface-light border-border text-text-muted'
+                      }`}
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
 
       <p className="text-xs text-text-muted italic max-w-2xl">
-        Recurring routes bound to this schedule land once the v2 Recurring Routes read path
-        adds the schedule-via-route join. Until then, jump to the Recurring Routes tab for the
-        full route roster + master-job view.
+        Recurring routes are joined via the /api/recurring-routes read path: any route with
+        this schedule in its bound list shows up above. Linehaul legs come from the schedule
+        itself via tblBulkScheduleLinehaul.
       </p>
     </div>
   );
@@ -448,5 +887,5 @@ function ProdRow({ label, value }: { label: string; value: string }) {
 
 function temperatureLabel(v: number | null | undefined): string | null {
   if (v == null) return null;
-  return v === 1 ? 'Ambient' : v === 2 ? 'Chilled' : v === 3 ? 'Frozen' : `#${v}`;
+  return v === 1 ? 'Frozen' : v === 2 ? 'Chilled' : v === 3 ? 'Ambient' : `#${v}`;
 }
