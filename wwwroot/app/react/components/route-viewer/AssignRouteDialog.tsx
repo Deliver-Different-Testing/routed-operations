@@ -136,14 +136,25 @@ export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSucc
         setError('This run has no jobs to assign yet.');
         return;
       }
-      const payload = bucket === 'courier'
-        ? { jobIds, courierId: picked.id }
+      const targetType = bucket === 'courier'
+        ? 'Courier' as const
         : bucket === 'agent'
-          ? { jobIds, agentId: picked.id }
-          : { jobIds, npAgentId: picked.id };
-      const result = await routeViewerService.assignRoute(payload);
+          ? 'Agent' as const
+          : 'NetworkPartner' as const;
+      const result = await routeViewerService.assignRoute({
+        jobIds, targetType, targetId: picked.id,
+      });
       const label = bucket === 'courier' ? 'courier' : bucket === 'agent' ? 'agent' : 'network partner';
-      onSuccess(`Assigned ${picked.label} as ${label} to run #${runId} (${result.assigned} jobs).`);
+      if (result.failed > 0 && result.succeeded === 0) {
+        // Every job failed - surface the first error verbatim so the
+        // operator can act (FK violations, scope guard rejects, etc.).
+        setError(result.errors[0] ?? `All ${result.failed} jobs failed to assign.`);
+        return;
+      }
+      const summary = result.failed > 0
+        ? `Assigned ${picked.label} as ${label} to ${result.succeeded} of ${jobIds.length} jobs on run #${runId} (${result.failed} failed).`
+        : `Assigned ${picked.label} as ${label} to run #${runId} (${result.succeeded} jobs).`;
+      onSuccess(summary);
     } catch (e) {
       setError((e as Error).message);
     } finally {

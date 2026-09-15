@@ -28,6 +28,7 @@ const emptyLinehaul = (): LinehaulDraft => ({
   insertToBulk: true, applyDiscount: false, applyAddOnPercentage: false,
   weekDay: [0, 0, 0, 0, 0, 0, 0],
   departureAdvanceDays: null, fromClientAddress: false, dropOffLocationId: null,
+  speedId: null,
 });
 
 // ─── props ─────────────────────────────────────────────────────────────────
@@ -754,6 +755,7 @@ function toForm(g: ScheduleGroup | null): ScheduleGroupUpsertBody {
       applyDiscount: l.applyDiscount, applyAddOnPercentage: l.applyAddOnPercentage,
       weekDay: l.weekDay, departureAdvanceDays: l.departureAdvanceDays,
       fromClientAddress: l.fromClientAddress, dropOffLocationId: l.dropOffLocationId,
+      speedId: l.speedId,
     })),
     // On write we prefer clientCodes (operator-facing). Ids kept for
     // internal consistency but the picker toggles by code.

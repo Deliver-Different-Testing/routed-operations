@@ -599,12 +599,24 @@ export const routeViewerService = {
   // -----------------------------------------------------------------
   // Assignment (P6)
   // -----------------------------------------------------------------
+  /** POST /api/runviewer/jobs/assign - shape matches the backend
+   *  BulkAssignRequest DTO exactly: `targetType` is one of "Courier" |
+   *  "Agent" | "NetworkPartner"; `targetId` is the corresponding
+   *  tucCourier.uccrID or tucAgents.UcagId. Backend returns
+   *  BulkAssignmentResult { succeeded, failed, errors, targetType,
+   *  targetId, displayName }. */
   assignRoute: (payload: {
     jobIds: number[];
-    courierId?: number | null;
-    agentId?: number | null;
-    npAgentId?: number | null;
-  }) => unwrapPost<{ assigned: number }>('/runviewer/jobs/assign', payload),
+    targetType: 'Courier' | 'Agent' | 'NetworkPartner';
+    targetId: number;
+  }) => unwrapPost<{
+    succeeded: number;
+    failed: number;
+    errors: string[];
+    targetType: string;
+    targetId: number;
+    displayName: string | null;
+  }>('/runviewer/jobs/assign', payload),
 
   /** Linehaul region overview roll-up. Wraps
    *  `RVW_stpLinehaulOverview` (has Pallet column absent from the Home

@@ -21,6 +21,20 @@ export interface SchedulesV2Filters {
    *  set - a schedule is bookable if it's bookable for ANY of the
    *  selected clients. Sent as CSV. */
   clientIds?: number[];
+  /** 0-indexed page number. Only applies when `pageSize > 0`. */
+  page?: number;
+  /** Server-side pagination window. `0` = return everything (back-
+   *  compat pre-2026-09-15). Setting a positive number switches the
+   *  backend to the paged envelope. */
+  pageSize?: number;
+}
+
+/** Server-paginated envelope returned by /api/v2/schedules?pageSize=. */
+export interface SchedulesV2Page {
+  rows: ScheduleGroupSummary[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 /** Bundle row for the Schedule Groups tab. Shape mirrors
@@ -42,7 +56,7 @@ export const schedulesV2Service = {
    *  has not shipped yet and the controller short-circuits so the UI
    *  can render an empty state rather than a schema error. */
   list: (filters?: SchedulesV2Filters) =>
-    request<{ response: ScheduleGroupSummary[] }>(
+    request<{ response: SchedulesV2Page }>(
       `/v2/schedules${buildQuery({
         type: filters?.type ?? 'all',
         q: filters?.q,
@@ -50,6 +64,8 @@ export const schedulesV2Service = {
         clientIds: filters?.clientIds && filters.clientIds.length > 0
           ? filters.clientIds.join(',')
           : undefined,
+        page: filters?.page ?? undefined,
+        pageSize: filters?.pageSize ?? undefined,
       })}`,
     ).then((r) => r.response),
 
@@ -68,4 +84,98 @@ export const schedulesV2Service = {
     request<{ response: ScheduleGroup }>(
       `/v2/schedules/${scheduleId}`,
     ).then((r) => r.response),
+
+  /** GET /api/v2/schedules/{id}/overrides - lightweight list of the
+   *  overrides pointing at this base + the client each owns. Powers
+   *  the AttachClientsModal's "has own override #<id>" hint. */
+  listOverrides: (scheduleId: number) =>
+    request<{ response: OverrideRef[] }>(
+      `/v2/schedules/${scheduleId}/overrides`,
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/clients - attach one or more clients. */
+  attachClients: (scheduleId: number, clientIds: number[]) =>
+    request<{ response: { added: number } }>(
+      `/v2/schedules/${scheduleId}/clients`,
+      { method: 'POST', body: JSON.stringify({ clientIds }) },
+    ).then((r) => r.response),
+
+  /** DELETE /api/v2/schedules/{id}/clients/{clientId} - detach one client. */
+  detachClient: (scheduleId: number, clientId: number) =>
+    request<{ response: { removed: number } }>(
+      `/v2/schedules/${scheduleId}/clients/${clientId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/overrides - create a client override. */
+  createOverride: (scheduleId: number, clientId: number) =>
+    request<{ response: { scheduleId: number } }>(
+      `/v2/schedules/${scheduleId}/overrides`,
+      { method: 'POST', body: JSON.stringify({ clientId }) },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/retire - soft-delete the schedule. */
+  retire: (scheduleId: number) =>
+    request<{ response: string }>(
+      `/v2/schedules/${scheduleId}/retire`,
+      { method: 'POST' },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedule-groups - create a Schedule Group. */
+  createGroup: (body: { name: string; description?: string; scheduleIds: number[] }) =>
+    request<{ response: { groupId: number } }>(
+      '/v2/schedule-groups',
+      { method: 'POST', body: JSON.stringify(body) },
+    ).then((r) => r.response),
+
+  /** DELETE /api/v2/schedule-groups/{id} - hard-delete. */
+  deleteGroup: (groupId: number) =>
+    request<{ response: string }>(
+      `/v2/schedule-groups/${groupId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedule-groups/{id}/clients - attach clients to
+   *  every non-default member schedule of the group. */
+  attachClientsToGroup: (groupId: number, clientIds: number[]) =>
+    request<{ response: { added: number } }>(
+      `/v2/schedule-groups/${groupId}/clients`,
+      { method: 'POST', body: JSON.stringify({ clientIds }) },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedules/{id}/copy - clone a schedule. */
+  copy: (scheduleId: number, newName: string, clientIds: number[] = []) =>
+    request<{ response: { scheduleId: number } }>(
+      `/v2/schedules/${scheduleId}/copy`,
+      { method: 'POST', body: JSON.stringify({ newName, clientIds }) },
+    ).then((r) => r.response),
+
+  /** PUT /api/v2/schedule-groups/{id} - rename / redescribe. */
+  updateGroup: (groupId: number, body: { name: string; description?: string }) =>
+    request<{ response: string }>(
+      `/v2/schedule-groups/${groupId}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedule-groups/{id}/members - add schedules. */
+  addGroupMembers: (groupId: number, scheduleIds: number[]) =>
+    request<{ response: { added: number } }>(
+      `/v2/schedule-groups/${groupId}/members`,
+      { method: 'POST', body: JSON.stringify({ scheduleIds }) },
+    ).then((r) => r.response),
+
+  /** DELETE /api/v2/schedule-groups/{id}/members/{scheduleId}. */
+  removeGroupMember: (groupId: number, scheduleId: number) =>
+    request<{ response: { removed: number } }>(
+      `/v2/schedule-groups/${groupId}/members/${scheduleId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
 };
+
+/** Shape of one override reference returned by
+ *  GET /v2/schedules/{id}/overrides. */
+export interface OverrideRef {
+  scheduleId: number;
+  clientId: number;
+  clientCode: string | null;
+}
