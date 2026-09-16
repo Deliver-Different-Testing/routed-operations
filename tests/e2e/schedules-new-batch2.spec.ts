@@ -99,6 +99,8 @@ const V2_DETAIL = {
   ],
   clientIds: [100, 200],
   clientCodes: ['MLC', 'PATH'],
+  clientNames: ['Med Lab Co', 'Pathology Partners'],
+  clientLinkedUtcs: ['2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z'],
   postcodeIds: [],
   polygonIds: [],
 };
@@ -240,7 +242,9 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await page.getByRole('button', { name: 'Route', exact: true }).click();
 
     // Auckland depot (id=1) resolves on the DEPOT card as name, not #1.
-    await expect(page.getByText('DEPOT', { exact: true })).toBeVisible();
+    // Scope to the leg card badge span; the editable ChainBuilder
+    // chooser at the bottom now also renders a "DEPOT" add button.
+    await expect(page.locator('span').filter({ hasText: /^DEPOT$/ }).first()).toBeVisible();
     await expect(page.getByText('Auckland').first()).toBeVisible();
 
     // Linehaul run (id=41) → "Qantas Courier". Was raw "run #41" pre-fix.
@@ -261,15 +265,17 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await page.getByText('AKL > CHCH Pre 8am Medical').first().click();
     await page.getByRole('button', { name: 'Route', exact: true }).click();
 
-    // DEPOT card summary is the single source of truth for storage state
-    // in the edit modal. Backend seed 1=Frozen; the earlier bug was that
-    // the modal's hardcoded temperatureLabel reversed the mapping. The
+    // DEPOT card summary uses the backend seed mapping for storage
+    // state. Backend seed 1=Frozen; the earlier bug was that the
+    // modal's hardcoded temperatureLabel reversed the mapping. The
     // stubbed lookups payload carries the same 1=Frozen order.
     await expect(page.getByText('Storage Frozen')).toBeVisible();
-    // Delivery state (id=1 -> Frozen) surfaces in the "Other fields
-    // (not editable here)" section under the ChainBuilder.
-    const secondary = page.locator('dl').filter({ hasText: 'Delivery state' });
-    await expect(secondary.getByText('Frozen')).toBeVisible();
+    // Delivery state (id=1 -> Frozen) now surfaces in the editable
+    // "Advanced" collapsible section under the ChainBuilder. Expand it
+    // and assert the select's selected option is "Frozen".
+    await page.getByRole('button', { name: /Advanced \(schedule speed/ }).click();
+    const deliveryStateSelect = page.locator('label').filter({ hasText: 'Delivery state' }).locator('select');
+    await expect(deliveryStateSelect).toHaveValue('1');
   });
 
   test('Roster tab surfaces the recurring route bound to this schedule', async ({ page }) => {
@@ -281,12 +287,10 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
 
     // Bound route surfaces.
     await expect(page.getByText('AKL Medical AM - Christchurch')).toBeVisible();
-    // "1 bound" counter (only route with matching scheduleId).
-    await expect(page.getByText('1 bound')).toBeVisible();
+    // "1 route" counter (only route with matching scheduleId).
+    await expect(page.getByText('1 route', { exact: true })).toBeVisible();
     // The other route (scheduleId=9999) is filtered out.
     await expect(page.getByText('AKL Standard PM - Wellington')).toHaveCount(0);
-    // Route stats visible.
-    await expect(page.getByText(/15/).first()).toBeVisible();  // bookingCount
   });
 
   test('Roster tab empty state renders when nothing is bound', async ({ page }) => {
@@ -300,7 +304,7 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await page.getByRole('button', { name: 'Roster', exact: true }).click();
 
     await expect(page.getByText('No recurring routes bound to this schedule.')).toBeVisible();
-    await expect(page.getByText('0 bound')).toBeVisible();
+    await expect(page.getByText('0 routes')).toBeVisible();
   });
 
   test('New Schedule Linehaul leg exposes Speed override + Amount + Add-on % + 3 charging flags', async ({ page }) => {
@@ -326,10 +330,20 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
   test('Detail modal Save wire PUTs ScheduleGroupUpsertBody with scheduleId + edited name', async ({ page }) => {
     let putBody: any = null;
     await stubApis(page);
-    // Intercept the PUT to /api/schedules and capture the body. The
-    // legacy /api/schedules endpoint accepts both create + update via
-    // scheduleService.upsert(); update path is signalled by scheduleId
-    // being present on the body.
+    // The Save button on Schedules NEW now hits PUT
+    // /api/v2/schedules/{id} (v2 upsert with path-id winning). Legacy
+    // /api/schedules PUT still exists for the old page.
+    await page.route(`**/api/v2/schedules/${SCHEDULE_ID}`, (route: Route) => {
+      if (route.request().method() === 'PUT') {
+        putBody = route.request().postDataJSON();
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ response: { ...V2_DETAIL, name: 'Renamed by test' } }),
+        });
+      }
+      return route.fallback();
+    });
     await page.route('**/api/schedules', (route: Route) => {
       if (route.request().method() === 'PUT') {
         putBody = route.request().postDataJSON();

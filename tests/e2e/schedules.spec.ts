@@ -38,45 +38,79 @@ const LOOKUPS = {
   pickupBoxDiscounts: [{ id: 0, label: 'None' }],
 };
 
+// Full DETAIL shape - returned from /api/schedules/detail on row click.
+const SAMPLE_GROUP_DETAIL = {
+  scheduleId: 1,
+  name: 'NZ Standard',
+  legacyClientId: null,
+  legacyClientCode: null,
+  regionId: 1, regionName: 'Auckland',
+  pickupDepotId: 1, pickupDepotName: 'Auckland',
+  speedId: 1, speedName: 'Standard',
+  parentSpeedId: null, parentSpeedName: null,
+  postcodeGroupId: 10, postcodeGroupName: 'Metro AKL',
+  pickupPostcodeGroupId: null, pickupPostcodeGroupName: null,
+  pickupRatingSpeed: null,
+  autoBook: true, bookPickup: true, applyPickupCutoff: false, pickupCutoff: null,
+  storageState: null, deliveryState: null, pickupBoxDiscount: null,
+  dropOffLocationId: null, dropOffLocationName: null,
+  description: 'Nationwide overnight',
+  // Five day-windows with per-day cutoff (matches real staging shape).
+  dayWindows: [
+    { id: 1, dayOfWeek: 1, startTime: '08:00', endTime: '17:00', cutoffHours: 2 },
+    { id: 2, dayOfWeek: 2, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
+    { id: 3, dayOfWeek: 3, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
+    { id: 4, dayOfWeek: 4, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
+    { id: 5, dayOfWeek: 5, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
+  ],
+  zones: [
+    { id: 1, scheduleId: 1, zone: 1, active: true },
+    { id: 2, scheduleId: 1, zone: 2, active: true },
+  ],
+  linehauls: [{
+    id: 1, name: 'AKL-WLG', active: true, amount: 25, amountPercentage: 0,
+    fromDepotId: 1, toDepotId: 2, minutes: 600, linehaulRunId: 100,
+    insertToBulk: true, applyDiscount: false, applyAddOnPercentage: false,
+    weekDay: [1, 1, 1, 1, 1, 0, 0], departureAdvanceDays: 0,
+    fromClientAddress: false, dropOffLocationId: null, speedId: null, speedName: null,
+  }],
+  clientIds: [100, 200],
+  clientCodes: ['ACME', 'BETA'],  // resolved client codes for display
+  clientNames: ['Acme Logistics Ltd', 'Beta Freight Co'],
+  clientLinkedUtcs: ['2026-09-01T00:00:00Z', '2026-09-05T00:00:00Z'],
+  postcodeIds: [1010, 6011],
+  polygonIds: [500],
+};
+
+// SUMMARY shape - what /api/schedules returns. SchedulesTab consumes
+// this list; its `clientCount`, `postcodeCount`, `polygonCount`, and
+// `activeDays`/`activeZonesCount` render on the row.
 const SAMPLE_GROUPS = [
   {
+    scheduleId: 1,
     name: 'NZ Standard',
     legacyClientId: null,
     legacyClientCode: null,
     regionId: 1, regionName: 'Auckland',
     pickupDepotId: 1, pickupDepotName: 'Auckland',
     speedId: 1, speedName: 'Standard',
-    parentSpeedId: null, parentSpeedName: null,
-    postcodeGroupId: 10, postcodeGroupName: 'Metro AKL',
-    pickupPostcodeGroupId: null, pickupPostcodeGroupName: null,
-    pickupRatingSpeed: null,
-    autoBook: true, bookPickup: true, applyPickupCutoff: false, pickupCutoff: null,
-    storageState: null, deliveryState: null, pickupBoxDiscount: null,
-    dropOffLocationId: null, dropOffLocationName: null,
+    activeDays: [1, 2, 3, 4, 5],
+    activeZonesCount: 2,
+    clientCount: 2,
+    postcodeCount: 2,
+    polygonCount: 1,
+    autoBook: true,
+    hasActiveLinehaul: true,
+    linkedClientCodes: ['ACME', 'BETA'],
+    baseScheduleId: null,
     description: 'Nationwide overnight',
-    // Five day-windows with per-day cutoff (matches real staging shape).
-    dayWindows: [
-      { id: 1, dayOfWeek: 1, startTime: '08:00', endTime: '17:00', cutoffHours: 2 },
-      { id: 2, dayOfWeek: 2, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-      { id: 3, dayOfWeek: 3, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-      { id: 4, dayOfWeek: 4, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-      { id: 5, dayOfWeek: 5, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-    ],
-    zones: [
-      { id: 1, scheduleId: 1, zone: 1, active: true },
-      { id: 2, scheduleId: 1, zone: 2, active: true },
-    ],
-    linehauls: [{
-      id: 1, name: 'AKL-WLG', active: true, amount: 25, amountPercentage: 0,
-      fromDepotId: 1, toDepotId: 2, minutes: 600, linehaulRunId: 100,
-      insertToBulk: true, applyDiscount: false, applyAddOnPercentage: false,
-      weekDay: [1, 1, 1, 1, 1, 0, 0], departureAdvanceDays: 0,
-      fromClientAddress: false, dropOffLocationId: null,
-    }],
-    clientIds: [100, 200],
-    clientCodes: ['ACME', 'BETA'],  // resolved client codes for display
-    postcodeIds: [1010, 6011],
-    polygonIds: [500],
+    windowStart: '08:00',
+    windowEnd: '17:00',
+    monCutoffHours: 2,
+    otherCutoffHours: 13,
+    overrideCount: 0,
+    routeCount: 0,
+    linehaulHint: null,
   },
 ];
 
@@ -129,6 +163,12 @@ async function stubApis(page: import('@playwright/test').Page, opts: {
       body: JSON.stringify({ response: opts.groups ?? SAMPLE_GROUPS }) });
   await page.route('**/api/schedules', scheduleHandler);
   await page.route('**/api/schedules?**', scheduleHandler);
+  // Row-click + Copy... both call scheduleService.detail(scheduleId)
+  // which hits GET /api/schedules/detail?scheduleId=1. Serve the DETAIL
+  // shape so the edit / copy modal receives dayWindows + linehauls etc.
+  await page.route('**/api/schedules/detail**', (route: Route) =>
+    route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ response: SAMPLE_GROUP_DETAIL }) }));
   await page.route('**/api/schedules/lookups', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ response: LOOKUPS }) }));
@@ -270,7 +310,7 @@ test.describe('Schedules module - group-shaped model + junctions', () => {
     await stubApis(page);
     // Mock the copy endpoint - returns a modified copy of the seed group.
     await page.route('**/api/schedules/copy', (route: Route) => {
-      const copyOfSample = { ...SAMPLE_GROUPS[0], name: 'NZ Standard (copy)' };
+      const copyOfSample = { ...SAMPLE_GROUP_DETAIL, name: 'NZ Standard (copy)' };
       return route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify({ response: copyOfSample }) });
     });
@@ -309,6 +349,8 @@ test.describe('Schedules module - group-shaped model + junctions', () => {
     await expect(page.getByRole('cell', { name: 'Christchurch' })).toBeVisible();
     await expect(page.getByText('Inactive', { exact: true })).toBeVisible();
 
-    await expect(page.getByText(/read-only here/i)).toBeVisible();
+    // Depots tab now inlines the on/off toggle; full CRUD still lives
+    // in AdminManager. Assertion matches the current footnote copy.
+    await expect(page.getByText(/stays in the AdminManager/i)).toBeVisible();
   });
 });

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -31,9 +32,13 @@ namespace RoutedOperations.Core.Application.Services.Schedule;
 ///   If it has none, its schedules are the live headers with
 ///   IsDefault = 1.
 /// </summary>
-public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class ScheduleService(
+    IDbContextFactory<DynamicDespatchDbContext> contextFactory,
+    ILogger<ScheduleService> logger)
     : BaseService(contextFactory)
 {
+    private readonly ILogger<ScheduleService> _logger = logger;
+
     // ─── READS ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -201,6 +206,42 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                 .Where(c => allLinkedClientIds.Contains(c.UcclId) && c.UcclCode != null)
                 .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
 
+        // Base-template lookup for override rows. Steve's brief §2 says
+        // an override row must render "differs on: <field list>". We
+        // diff the override's own template (region / origin depot / speed
+        // / window / Monday cutoff / other cutoff / active days) against
+        // its base's template and emit the field names that differ.
+        var templateByHeaderId = rowBases
+            .GroupBy(r => r.ScheduleId)
+            .Where(g => headersById.ContainsKey(g.Key))
+            .ToDictionary(g => g.Key, g =>
+            {
+                var first = g.First();
+                var starts = g.Where(x => x.StartTime.HasValue).Select(x => x.StartTime!.Value).ToArray();
+                var ends = g.Where(x => x.EndTime.HasValue).Select(x => x.EndTime!.Value).ToArray();
+                var days = g.Select(x => (int)(x.DayOfWeek ?? 0))
+                    .Where(d => d > 0).Distinct().OrderBy(d => d).ToArray();
+                var monRow = g.FirstOrDefault(x => x.DayOfWeek == 1);
+                var otherCutoffs = g
+                    .Where(x => x.DayOfWeek != 1 && x.DayOfWeek.HasValue)
+                    .Select(x => (int?)x.CutoffHours)
+                    .ToArray();
+                int? otherC = otherCutoffs.Length == 0
+                    ? null
+                    : otherCutoffs.GroupBy(v => v).OrderByDescending(gg => gg.Count()).First().Key;
+                return new
+                {
+                    RegionId = first.Region,
+                    PickupDepotId = g.FirstOrDefault(x => x.PickupDepotId.HasValue)?.PickupDepotId,
+                    SpeedId = first.SpeedId,
+                    WindowStart = starts.Length > 0 ? starts.Min().ToString(@"hh\:mm") : null,
+                    WindowEnd = ends.Length > 0 ? ends.Max().ToString(@"hh\:mm") : null,
+                    MonCutoff = monRow?.CutoffHours,
+                    OtherCutoff = otherC,
+                    ActiveDays = days,
+                };
+            });
+
         // Group day rows by ScheduleId (their header FK).
         // Each header emits one summary row.
         var summaries = rowBases
@@ -286,6 +327,26 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                 var clientCount = linkClientsByHeaderId.TryGetValue(header.ScheduleId, out var ids) ? ids.Count : 0;
                 var postcodeCount = postcodeCountByName.TryGetValue(header.Name, out var pc) ? pc : 0;
                 var polygonCount = polygonCountByName.TryGetValue(header.Name, out var poc) ? poc : 0;
+
+                // Compute overriddenFields when this row is an override
+                // (has a BaseScheduleId that points to a live header we
+                // have a template for). Compare field-by-field against the
+                // base's template using the operator's own labels so the
+                // hint reads naturally: "differs on: Cut-off, Speed".
+                string[] overriddenFields = Array.Empty<string>();
+                if (header.BaseScheduleId.HasValue
+                    && templateByHeaderId.TryGetValue(header.BaseScheduleId.Value, out var baseTpl))
+                {
+                    var diffs = new List<string>();
+                    if (first.Region != baseTpl.RegionId) diffs.Add("Destination depot");
+                    if ((g.FirstOrDefault(x => x.PickupDepotId.HasValue)?.PickupDepotId) != baseTpl.PickupDepotId) diffs.Add("Origin depot");
+                    if (first.SpeedId != baseTpl.SpeedId) diffs.Add("Speed");
+                    if (windowStart != baseTpl.WindowStart || windowEnd != baseTpl.WindowEnd) diffs.Add("Window");
+                    if (monCutoff != baseTpl.MonCutoff || otherCutoff != baseTpl.OtherCutoff) diffs.Add("Cut-off");
+                    if (!activeDays.SequenceEqual(baseTpl.ActiveDays)) diffs.Add("Days");
+                    overriddenFields = diffs.ToArray();
+                }
+
                 var legacyCode = header.LegacyClientId.HasValue
                     && legacyClientCodes.TryGetValue(header.LegacyClientId.Value, out var code)
                     ? code : null;
@@ -322,7 +383,8 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                     otherCutoff,
                     overrideCount,
                     routeCount,
-                    linehaulHint);
+                    linehaulHint,
+                    overriddenFields);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -455,18 +517,11 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
 
     /// <summary>Legacy (Name, LegacyClientId) overload. Resolves via header
     /// and delegates; preserved for one release so existing consumers do
-    /// not break.</summary>
+    /// not break. Routes through ResolveHeaderByTupleAsync so ambiguous
+    /// names hard-fail instead of silently returning the first match.</summary>
     public async Task<ScheduleGroupDto> GetDetailAsync(string name, int? legacyClientId)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new InvalidOperationException("Schedule name is required.");
-        var trimmed = name.Trim();
-        var header = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .FirstOrDefaultAsync(h => h.Name == trimmed
-                && h.LegacyClientId == legacyClientId
-                && h.RetiredUtc == null);
-        if (header == null)
-            throw new InvalidOperationException($"Schedule group '{trimmed}' not found.");
+        var header = await ResolveHeaderByTupleAsync(name, legacyClientId, asNoTracking: true);
         return await GetDetailByHeaderAsync(header);
     }
 
@@ -487,11 +542,18 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             .ToListAsync();
         var neededClientIds = junctionClientIds.ToHashSet();
         if (header.LegacyClientId.HasValue) neededClientIds.Add(header.LegacyClientId.Value);
-        var clientCodes = neededClientIds.Count == 0
-            ? new Dictionary<int, string>()
+        var clientLookup = neededClientIds.Count == 0
+            ? new List<TucClientNameCode>()
             : await Context.TucClients.AsNoTracking()
-                .Where(c => neededClientIds.Contains(c.UcclId) && c.UcclCode != null)
-                .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
+                .Where(c => neededClientIds.Contains(c.UcclId))
+                .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
+                .ToListAsync();
+        var clientCodes = clientLookup
+            .Where(c => c.Code != null)
+            .ToDictionary(c => c.Id, c => c.Code);
+        var clientNames = clientLookup
+            .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+            .ToDictionary(c => c.Id, c => c.Name);
 
         var clientJunctions = await Context.ScheduleClients.AsNoTracking()
             .Where(x => x.ScheduleId == header.ScheduleId)
@@ -513,7 +575,55 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             throw new InvalidOperationException($"Schedule group '{header.Name}' has no day rows.");
 
         return MapGroup(header, rows, clientJunctions, postcodeJunctions, polygonJunctions,
-            depotNames, speedNames, groupNames, dropOffNames, clientCodes);
+            depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
+    }
+
+    /// <summary>
+    /// Per-client "what can this client book" resolver per Steve's brief §5
+    /// SQL. Returns one row per live header the client can actually book,
+    /// tagged with why:
+    ///   - "override": the client owns this override header (BaseScheduleId != null + link row).
+    ///   - "shared":   the client is linked to a shared header (BaseScheduleId == null + link row).
+    ///   - "default":  the client has no link row for any override of a
+    ///                  default header, so the default falls through.
+    /// The "default" branch is suppressed when the client already owns an
+    /// override of that specific base (§5 SQL NOT EXISTS clause) so the
+    /// operator only sees one entry per bookable base.
+    /// </summary>
+    public async Task<List<ClientScheduleDto>> GetSchedulesForClientAsync(int clientId)
+    {
+        var headers = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => h.RetiredUtc == null)
+            .Select(h => new { h.ScheduleId, h.Name, h.IsDefault, h.BaseScheduleId })
+            .ToListAsync();
+
+        var linkedIds = await Context.ScheduleClients.AsNoTracking()
+            .Where(sc => sc.ClientId == clientId)
+            .Select(sc => sc.ScheduleId)
+            .ToListAsync();
+        var linkedSet = new HashSet<int>(linkedIds);
+
+        // Overrides: headers with a link row AND BaseScheduleId set.
+        var results = new List<ClientScheduleDto>();
+        var suppressBaseIds = new HashSet<int>();
+        foreach (var h in headers.Where(h => linkedSet.Contains(h.ScheduleId) && h.BaseScheduleId.HasValue))
+        {
+            results.Add(new ClientScheduleDto(h.ScheduleId, h.Name, "override"));
+            suppressBaseIds.Add(h.BaseScheduleId!.Value);
+        }
+        // Shared: link row + no BaseScheduleId.
+        foreach (var h in headers.Where(h => linkedSet.Contains(h.ScheduleId) && !h.BaseScheduleId.HasValue))
+        {
+            results.Add(new ClientScheduleDto(h.ScheduleId, h.Name, "shared"));
+        }
+        // Default: IsDefault + not already covered by an override the client owns.
+        foreach (var h in headers.Where(h => h.IsDefault && !linkedSet.Contains(h.ScheduleId) && !suppressBaseIds.Contains(h.ScheduleId)))
+        {
+            results.Add(new ClientScheduleDto(h.ScheduleId, h.Name, "default"));
+        }
+        return results
+            .OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     /// <summary>
@@ -531,10 +641,17 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             .ToDictionaryAsync(g => g.Id, g => g.Name);
         var dropOffNames = await Context.TblDropOffLocations.AsNoTracking()
             .ToDictionaryAsync(d => d.DropOffLocationId, d => d.Name);
-        var clientCodes = await Context.TucClients.AsNoTracking()
-            .Where(c => c.UcclCode != null)
+        var clientLookupAll = await Context.TucClients.AsNoTracking()
+            .Where(c => c.UcclCode != null || c.UcclName != null)
+            .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
             .Take(50000)
-            .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
+            .ToListAsync();
+        var clientCodes = clientLookupAll
+            .Where(c => c.Code != null)
+            .ToDictionary(c => c.Id, c => c.Code);
+        var clientNames = clientLookupAll
+            .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+            .ToDictionary(c => c.Id, c => c.Name);
 
         var headers = await Context.BulkRunScheduleHeaders.AsNoTracking()
             .Where(h => h.RetiredUtc == null)
@@ -564,7 +681,7 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
                 var header = headersById[g.Key];
                 var scoped = clientJunctions.Where(cj => cj.ScheduleId == header.ScheduleId).ToList();
                 return MapGroup(header, g.ToList(), scoped, postcodeJunctions, polygonJunctions,
-                    depotNames, speedNames, groupNames, dropOffNames, clientCodes);
+                    depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
             })
             .ToList();
 
@@ -1106,6 +1223,9 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             throw new InvalidOperationException(
                 $"Schedule tuple is ambiguous: name='{trimmed}', legacyClientId={legacyClientId?.ToString() ?? "null"} " +
                 "matches more than one live header. Pass scheduleId (from ScheduleGroup.scheduleId) instead.");
+        _logger.LogWarning(
+            "Legacy schedule tuple resolved: name='{Name}' legacyClientId={LegacyClientId} -> scheduleId={ScheduleId}. Callers should pass scheduleId directly; this fallback is scheduled for removal next release.",
+            trimmed, legacyClientId, candidates[0].ScheduleId);
         return candidates[0];
     }
 
@@ -1204,22 +1324,29 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
         Dictionary<int, string> speedNames,
         Dictionary<int, string> groupNames,
         Dictionary<int, string> dropOffNames,
-        Dictionary<int, string> clientCodes)
+        Dictionary<int, string> clientCodes,
+        Dictionary<int, string> clientNames)
     {
         string LookupClientCode(int id) =>
             clientCodes.TryGetValue(id, out var c) && !string.IsNullOrWhiteSpace(c) ? c : $"#{id}";
+        string LookupClientName(int id) =>
+            clientNames.TryGetValue(id, out var n) && !string.IsNullOrWhiteSpace(n) ? n : null;
         var t = rows[0];
         string LookupDepot(int? id) => id.HasValue && depotNames.TryGetValue(id.Value, out var n) ? n : null;
         string LookupSpeed(int? id) => id.HasValue && speedNames.TryGetValue(id.Value, out var n) ? n : null;
         string LookupGroup(int? id) => id.HasValue && groupNames.TryGetValue(id.Value, out var n) ? n : null;
         string LookupDropOff(int? id) => id.HasValue && dropOffNames.TryGetValue(id.Value, out var n) ? n : null;
 
-        var clientIds = clientJunctions
+        var linksForHeader = clientJunctions
             .Where(x => x.ScheduleId == header.ScheduleId)
-            .Select(x => x.ClientId)
-            .OrderBy(x => x)
+            .OrderBy(x => x.ClientId)
             .ToList();
+        var clientIds = linksForHeader.Select(x => x.ClientId).ToList();
         var clientCodesForGroup = clientIds.Select(LookupClientCode).ToList();
+        var clientNamesForGroup = clientIds.Select(LookupClientName).ToList();
+        var clientLinkedUtcs = linksForHeader
+            .Select(x => (DateTime?)x.CreatedUtc)
+            .ToList();
         var legacyClientCode = header.LegacyClientId.HasValue ? LookupClientCode(header.LegacyClientId.Value) : null;
         var postcodeIds = postcodeJunctions
             .Where(x => x.ScheduleName == header.Name)
@@ -1273,7 +1400,8 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             t.DropOffLocationId, LookupDropOff(t.DropOffLocationId),
             t.Description,
             dayWindows, zones, linehauls,
-            clientIds, clientCodesForGroup, postcodeIds, polygonIds);
+            clientIds, clientCodesForGroup, postcodeIds, polygonIds,
+            clientLinkedUtcs, clientNamesForGroup);
     }
 
     private static string FormatTime(TimeSpan? t) =>
@@ -1378,6 +1506,20 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
             ?? throw new InvalidOperationException($"Schedule id {scheduleId} not found or retired.");
 
+        // Defensive: verify every id resolves to a real client before we
+        // attempt the insert. Without this, a stale UI picker sending a
+        // deleted client id would surface as an FK violation - the
+        // controller catches DbUpdateException but the error message
+        // ("...conflicted with FOREIGN KEY constraint...") is opaque.
+        var existingIds = await Context.TucClients.AsNoTracking()
+            .Where(c => ids.Contains(c.UcclId))
+            .Select(c => c.UcclId)
+            .ToListAsync();
+        var missing = ids.Except(existingIds).ToList();
+        if (missing.Count > 0)
+            throw new InvalidOperationException(
+                $"Client id(s) {string.Join(", ", missing)} do not exist. Refresh and try again.");
+
         // Skip already-attached rows.
         var existing = await Context.ScheduleClients.AsNoTracking()
             .Where(sc => sc.ScheduleId == scheduleId && ids.Contains(sc.ClientId))
@@ -1417,6 +1559,74 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
         Context.ScheduleClients.AddRange(toAdd);
         await Context.SaveChangesAsync();
         return toAdd.Count;
+    }
+
+    /// <summary>
+    /// Full replace of a schedule's link rows. Adds every id not already
+    /// linked; removes every current link not in the new set. Skips
+    /// clients that own an override of this base (Steve section 5).
+    /// </summary>
+    public async Task<(int Added, int Removed)> ReplaceClientsAsync(int scheduleId, IEnumerable<int> clientIds)
+    {
+        var desired = (clientIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
+
+        var header = await Context.BulkRunScheduleHeaders
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
+            ?? throw new InvalidOperationException($"Schedule id {scheduleId} not found or retired.");
+
+        if (desired.Count > 0)
+        {
+            var existingIds = await Context.TucClients.AsNoTracking()
+                .Where(c => desired.Contains(c.UcclId))
+                .Select(c => c.UcclId)
+                .ToListAsync();
+            var missing = desired.Except(existingIds).ToList();
+            if (missing.Count > 0)
+                throw new InvalidOperationException(
+                    $"Client id(s) {string.Join(", ", missing)} do not exist. Refresh and try again.");
+
+            var overrideOwners = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => h.BaseScheduleId == scheduleId && h.RetiredUtc == null)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            if (overrideOwners.Count > 0)
+            {
+                var blocked = await Context.ScheduleClients.AsNoTracking()
+                    .Where(sc => overrideOwners.Contains(sc.ScheduleId) && desired.Contains(sc.ClientId))
+                    .Select(sc => sc.ClientId)
+                    .ToListAsync();
+                if (blocked.Count > 0)
+                    throw new InvalidOperationException(
+                        $"Client id(s) {string.Join(", ", blocked)} own an override of this base and cannot be attached to the base as well.");
+            }
+        }
+
+        var current = await Context.ScheduleClients
+            .Where(sc => sc.ScheduleId == scheduleId)
+            .ToListAsync();
+        var currentIds = new HashSet<int>(current.Select(sc => sc.ClientId));
+        var desiredSet = new HashSet<int>(desired);
+
+        var toRemove = current.Where(sc => !desiredSet.Contains(sc.ClientId)).ToList();
+        if (toRemove.Count > 0) Context.ScheduleClients.RemoveRange(toRemove);
+
+        var now = DateTime.UtcNow;
+        var toAdd = desired
+            .Where(id => !currentIds.Contains(id))
+            .Select(id => new ScheduleClient
+            {
+                ScheduleId = scheduleId,
+                ClientId = id,
+                CreatedUtc = now,
+                CreatedBy = "RoutedOps:replace",
+            })
+            .ToList();
+        if (toAdd.Count > 0) Context.ScheduleClients.AddRange(toAdd);
+
+        if (toAdd.Count > 0 || toRemove.Count > 0)
+            await Context.SaveChangesAsync();
+
+        return (toAdd.Count, toRemove.Count);
     }
 
     /// <summary>
@@ -1751,5 +1961,12 @@ public class ScheduleService(IDbContextFactory<DynamicDespatchDbContext> context
             await Context.SaveChangesAsync();
         }
         return toAdd.Count;
+    }
+
+    private sealed class TucClientNameCode
+    {
+        public int Id { get; set; }
+        public string Code { get; set; }
+        public string Name { get; set; }
     }
 }

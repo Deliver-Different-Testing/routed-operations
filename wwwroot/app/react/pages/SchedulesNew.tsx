@@ -18,6 +18,7 @@ import {
   type ScheduleGroupSummary,
 } from '../services/scheduleService';
 import { recurringRouteService, type RecurringRoute } from '../services/recurringRouteService';
+import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
 import { ScheduleDetailModal } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
@@ -80,6 +81,25 @@ export default function SchedulesNew() {
   const [attachScheduleId, setAttachScheduleId] = useState<number | null>(null);
   const [newScheduleOpen, setNewScheduleOpen] = useState(false);
 
+  // Tab count badges (Steve's mockup). Each tab shows its total row
+  // count in a pill so operators see the workload at a glance.
+  // - Schedules: total from the paginated list envelope (pageSize=1
+  //   means we don't fetch the whole list just for the count; the
+  //   Schedules tab itself has its own list query with the full
+  //   pageSize=50, so this doesn't duplicate work meaningfully).
+  // - Schedule Groups + Recurring Routes: full-list length. Both are
+  //   small enough (dozens, not thousands) that this is cheap.
+  const schedulesCountQuery = useSchedulesV2List({ page: 0, pageSize: 1 });
+  const groupsCountQuery = useSchedulesV2Groups();
+  const routesCountQuery = useQuery({
+    queryKey: ['schedules-v2-recurring-routes-count'],
+    queryFn: () => recurringRouteService.list().then((r) => r.response),
+    staleTime: 30_000,
+  });
+  const schedulesCount = schedulesCountQuery.data?.total ?? null;
+  const groupsCount = groupsCountQuery.data?.length ?? null;
+  const routesCount = routesCountQuery.data?.length ?? null;
+
   return (
     // AppLayout's <main> is `overflow-hidden` so each page owns its
     // own scroll container. Dashboard uses `h-full ... overflow-auto`;
@@ -106,13 +126,13 @@ export default function SchedulesNew() {
 
       <div className="border-b border-border">
         <nav className="flex gap-6 -mb-px" aria-label="Schedules sections">
-          <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')}>
+          <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')} count={schedulesCount}>
             Schedules
           </TabButton>
-          <TabButton active={tab === 'groups'} onClick={() => setTab('groups')}>
+          <TabButton active={tab === 'groups'} onClick={() => setTab('groups')} count={groupsCount}>
             Schedule Groups
           </TabButton>
-          <TabButton active={tab === 'routes'} onClick={() => setTab('routes')}>
+          <TabButton active={tab === 'routes'} onClick={() => setTab('routes')} count={routesCount}>
             Recurring Routes
           </TabButton>
         </nav>
@@ -130,6 +150,8 @@ export default function SchedulesNew() {
       <ScheduleDetailModal
         scheduleId={openScheduleId}
         onClose={() => setOpenScheduleId(null)}
+        onAttachClients={setAttachScheduleId}
+        onOpenSchedule={setOpenScheduleId}
       />
       <AttachClientsModal
         scheduleId={attachScheduleId}
@@ -165,6 +187,24 @@ function SchedulesTab({
     page,
     pageSize: PAGE_SIZE,
   });
+
+  // When viewing as a single client, tag each visible schedule with
+  // why it's bookable (override / shared / default) per Steve's §5
+  // resolution rule. Skip the query in multi-client mode - the source
+  // tag is ambiguous when the union of two clients produces the row.
+  const singleClientId = viewAsClientIds.length === 1 ? viewAsClientIds[0] : null;
+  const sourceQuery = useQuery({
+    queryKey: ['client-schedule-sources', singleClientId ?? 0],
+    queryFn: () =>
+      singleClientId ? schedulesV2Service.clientSchedules(singleClientId) : Promise.resolve([]),
+    enabled: singleClientId != null,
+    staleTime: 30_000,
+  });
+  const sourceByScheduleId = useMemo(() => {
+    const m = new Map<number, 'override' | 'shared' | 'default'>();
+    for (const row of sourceQuery.data ?? []) m.set(row.scheduleId, row.source);
+    return m;
+  }, [sourceQuery.data]);
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
@@ -318,6 +358,7 @@ function SchedulesTab({
         <>
           <SchedulesTable
             rows={pageRows}
+            sourceByScheduleId={singleClientId ? sourceByScheduleId : null}
             onRowClick={onRowClick}
             onAttachClients={onAttachClients}
             onRetire={handleRetire}
@@ -433,12 +474,14 @@ function nestOverrides(rows: ScheduleGroupSummary[]): NestedRow[] {
 
 function SchedulesTable({
   rows,
+  sourceByScheduleId,
   onRowClick,
   onAttachClients,
   onRetire,
   onCopy,
 }: {
   rows: NestedRow[];
+  sourceByScheduleId?: Map<number, 'override' | 'shared' | 'default'> | null;
   onRowClick: (id: number) => void;
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
@@ -467,6 +510,7 @@ function SchedulesTable({
               key={s.scheduleId}
               row={s}
               isOverride={isOverride}
+              sourceTag={sourceByScheduleId?.get(s.scheduleId) ?? null}
               onOpen={onRowClick}
               onAttachClients={onAttachClients}
               onRetire={onRetire}
@@ -482,6 +526,7 @@ function SchedulesTable({
 function ScheduleRow({
   row: s,
   isOverride,
+  sourceTag,
   onOpen,
   onAttachClients,
   onRetire,
@@ -489,6 +534,7 @@ function ScheduleRow({
 }: {
   row: ScheduleGroupSummary;
   isOverride: boolean;
+  sourceTag: 'override' | 'shared' | 'default' | null;
   onOpen: (id: number) => void;
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
@@ -522,12 +568,18 @@ function ScheduleRow({
               +{s.overrideCount}
             </span>
           )}
+          {sourceTag && <SourceTag source={sourceTag} />}
         </div>
         <div className={`text-xs mt-0.5 ${isOverride ? 'text-warning' : 'text-text-muted'}`}>
           {isOverride && s.baseScheduleId != null
             ? `Based on #${s.baseScheduleId}${s.description ? ` · ${s.description}` : ''}`
             : `#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
         </div>
+        {isOverride && s.overriddenFields && s.overriddenFields.length > 0 && (
+          <div className="text-[11px] mt-0.5 text-warning/90">
+            differs on: <span className="font-medium">{s.overriddenFields.join(', ')}</span>
+          </div>
+        )}
       </td>
       <td className="py-3 pr-3">
         {isOverride ? <span className="text-text-muted">-</span> : <DayPills active={s.activeDays} />}
@@ -596,6 +648,23 @@ function DayPills({ active }: { active: number[] }) {
         </span>
       ))}
     </div>
+  );
+}
+
+function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
+  const styles = source === 'override'
+    ? 'bg-warning-bg text-warning border-warning/30'
+    : source === 'shared'
+      ? 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/30'
+      : 'bg-success-bg text-success border-success/30';
+  const label = source === 'override' ? 'Own override' : source === 'shared' ? 'Shared' : 'Default';
+  return (
+    <span
+      title="Why this schedule is bookable for the selected client (Steve's §5 resolution rule)."
+      className={`text-[10px] font-medium border px-2 py-0.5 rounded ${styles}`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -707,22 +776,35 @@ function TabButton({
   active,
   onClick,
   children,
+  count,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  /** Row count pill rendered next to the label. Null hides the pill
+   *  entirely (e.g. while the count query is still loading). */
+  count?: number | null;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`py-2 text-sm font-medium border-b-2 transition-colors ${
+      className={`py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
         active
           ? 'text-text-primary border-brand-cyan'
           : 'text-text-secondary border-transparent hover:text-text-primary'
       }`}
     >
-      {children}
+      <span>{children}</span>
+      {count != null && (
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+          active
+            ? 'bg-brand-cyan/20 text-brand-dark'
+            : 'bg-surface-light text-text-muted'
+        }`}>
+          {count.toLocaleString()}
+        </span>
+      )}
     </button>
   );
 }
@@ -1189,7 +1271,27 @@ function GroupCard({
 
 // ─── Recurring Routes tab ───────────────────────────────────────────
 
-type RouteType = 'all' | 'first' | 'final';
+type RouteType = 'all' | 'first' | 'middle' | 'final';
+
+/** Unified row shape backing the Recurring Routes tab. Routes and
+ *  linehaul runs render into the same table with different content
+ *  in a handful of columns; using one type simplifies the table body
+ *  and lets the search / pager work uniformly. */
+interface RecurringRow {
+  key: string;
+  kind: 'first' | 'middle' | 'final';
+  name: string;
+  subtitle: string;
+  area: string;
+  defaultTargetName: string | null;
+  defaultTargetType: number | string | null;
+  schedules: { scheduleId: number | null; name: string }[];
+  zipCount: number | null;
+  active: boolean;
+  masterBookingLabel: string | null;
+  mode: 'Road' | 'Flight' | null;
+  clientCodes: string[];
+}
 
 function RecurringRoutesTab() {
   const user = useAuth();
@@ -1197,23 +1299,90 @@ function RecurringRoutesTab() {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(0);
 
-  const query = useQuery({
+  const routesQuery = useQuery({
     queryKey: ['schedules-v2-recurring-routes', user.currentTenantId ?? 0],
     queryFn: () => recurringRouteService.list().then((r) => r.response),
     staleTime: 30_000,
   });
 
+  const linehaulQuery = useQuery({
+    queryKey: ['schedules-v2-linehaul-runs', user.currentTenantId ?? 0],
+    queryFn: () => linehaulService.list(),
+    staleTime: 30_000,
+  });
+
+  // For "Clients via schedule" we need the schedule -> client list.
+  // The Schedules list summary already carries linkedClientCodes[] +
+  // clientCount; use it as the source instead of a fresh query.
+  const schedSummary = useQuery({
+    queryKey: ['schedules-v2-summary-for-routes', user.currentTenantId ?? 0],
+    queryFn: () => schedulesV2Service.list({ type: 'all', pageSize: 0 }).then((p) => p.rows ?? []),
+    staleTime: 30_000,
+  });
+
+  const codesBySched = useMemo(() => {
+    const map = new Map<number, string[]>();
+    for (const s of (schedSummary.data ?? [])) map.set(s.scheduleId, s.linkedClientCodes ?? []);
+    return map;
+  }, [schedSummary.data]);
+
+  const routeKind = (r: RecurringRoute): 'first' | 'final' => {
+    const name = `${r.name} ${r.area}`.toLowerCase();
+    return /deliver|final|pm\b|home/.test(name) ? 'final' : 'first';
+  };
+
+  const rows = useMemo<RecurringRow[]>(() => {
+    const out: RecurringRow[] = [];
+    for (const r of routesQuery.data ?? []) {
+      const kind = routeKind(r);
+      const clientCodes = Array.from(new Set(
+        r.schedules.flatMap((s) => (s.scheduleId ? codesBySched.get(s.scheduleId) ?? [] : []))
+      )).sort();
+      out.push({
+        key: `route-${r.routeId}`,
+        kind,
+        name: r.name,
+        subtitle: `#${r.routeId}`,
+        area: r.area,
+        defaultTargetName: r.defaultTargetName,
+        defaultTargetType: r.defaultTargetType,
+        schedules: r.schedules.map((s) => ({ scheduleId: s.scheduleId ?? null, name: s.name })),
+        zipCount: r.zipcodes.length,
+        active: r.active,
+        masterBookingLabel: null,
+        mode: null,
+        clientCodes,
+      });
+    }
+    for (const lh of linehaulQuery.data ?? []) {
+      out.push({
+        key: `linehaul-${lh.id}`,
+        kind: 'middle',
+        name: lh.runName,
+        subtitle: `${lh.fromDepotName} → ${lh.toDepotName}`,
+        area: `${lh.fromDepotName} → ${lh.toDepotName}`,
+        defaultTargetName: lh.defaultTargetName,
+        defaultTargetType: lh.defaultTargetType,
+        // Linehaul runs bind by LinehaulRunId on the schedule's linehaul
+        // leg. The listing does not expose that map today; render a
+        // placeholder pill so the column stays populated visually.
+        schedules: lh.usedBySchedulesCount > 0
+          ? [{ scheduleId: null, name: `${lh.usedBySchedulesCount} schedule${lh.usedBySchedulesCount === 1 ? '' : 's'}` }]
+          : [],
+        zipCount: null,
+        active: lh.active,
+        masterBookingLabel: lh.masterBookingLabel,
+        mode: lh.mode === LinehaulMode.Flight ? 'Flight' : 'Road',
+        clientCodes: [],
+      });
+    }
+    return out;
+  }, [routesQuery.data, linehaulQuery.data, codesBySched]);
+
   const filtered = useMemo(() => {
-    if (!query.data) return [];
     const needle = q.trim().toLowerCase();
-    return query.data
-      .filter((r) => {
-        if (type === 'all') return true;
-        const name = `${r.name} ${r.area}`.toLowerCase();
-        if (type === 'first') return /pickup|collect|first|am\b/.test(name);
-        if (type === 'final') return /deliver|final|pm\b|home/.test(name);
-        return true;
-      })
+    return rows
+      .filter((r) => (type === 'all' ? true : r.kind === type))
       .filter((r) => {
         if (!needle) return true;
         return (
@@ -1222,11 +1391,13 @@ function RecurringRoutesTab() {
           r.schedules.some((s) => s.name.toLowerCase().includes(needle))
         );
       });
-  }, [query.data, type, q]);
+  }, [rows, type, q]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const boundedPage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(boundedPage * PAGE_SIZE, (boundedPage + 1) * PAGE_SIZE);
+  const isLoading = routesQuery.isLoading || linehaulQuery.isLoading;
+  const anyError = routesQuery.error ?? linehaulQuery.error;
 
   return (
     <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
@@ -1241,33 +1412,27 @@ function RecurringRoutesTab() {
         <div className="flex gap-1 p-1 bg-surface-light border border-border rounded">
           <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); }}>All types</SegmentPill>
           <SegmentPill active={type === 'first'} onClick={() => { setType('first'); setPage(0); }}>First mile</SegmentPill>
-          <SegmentPill
-            active={false}
-            onClick={() => { /* middle mile lands with linehaul-runs join */ }}
-            title="Middle mile (linehaul runs) lands once the v2 join with TblbulkLinehaulRun is added."
-          >
-            Middle mile
-          </SegmentPill>
+          <SegmentPill active={type === 'middle'} onClick={() => { setType('middle'); setPage(0); }}>Middle mile</SegmentPill>
           <SegmentPill active={type === 'final'} onClick={() => { setType('final'); setPage(0); }}>Final mile</SegmentPill>
         </div>
         <span className="text-xs text-text-muted">
-          {query.data ? `Showing ${pageRows.length} of ${filtered.length}` : ''}
+          {!isLoading ? `Showing ${pageRows.length} of ${filtered.length}` : ''}
         </span>
       </div>
 
       <p className="text-xs text-text-muted italic max-w-3xl">
         Same rows as the Recurring Routes page, anchored to the schedules that
-        deliver them. First/Final mile filtering is a name heuristic today; the
-        typed column lands with the v2 route join.
+        deliver them. Middle-mile rows are linehaul runs, showing their master
+        job (or a red flag if none set).
       </p>
 
-      {query.isLoading && <div className="text-sm text-text-muted py-8 text-center">Loading routes...</div>}
-      {query.isError && (
+      {isLoading && <div className="text-sm text-text-muted py-8 text-center">Loading routes...</div>}
+      {anyError && (
         <div className="text-sm text-error py-8 text-center">
-          Failed to load routes: {(query.error as Error).message}
+          Failed to load routes: {(anyError as Error).message}
         </div>
       )}
-      {filtered.length === 0 && !query.isLoading && (
+      {filtered.length === 0 && !isLoading && (
         <div className="text-sm text-text-muted py-8 text-center">No routes match.</div>
       )}
       {pageRows.length > 0 && (
@@ -1285,34 +1450,45 @@ function RecurringRoutesTab() {
   );
 }
 
-function RecurringRoutesTable({ rows }: { rows: RecurringRoute[] }) {
+function RecurringRoutesTable({ rows }: { rows: RecurringRow[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="text-left text-[10px] uppercase tracking-wider text-text-muted border-b border-border">
           <tr>
             <th className="py-2 pr-3 font-medium">Name</th>
-            <th className="py-2 pr-3 font-medium">Area</th>
+            <th className="py-2 pr-3 font-medium">Type</th>
             <th className="py-2 pr-3 font-medium">Default target</th>
             <th className="py-2 pr-3 font-medium">Schedule(s)</th>
-            <th className="py-2 pr-3 font-medium">Zips</th>
+            <th className="py-2 pr-3 font-medium">Clients via schedule</th>
+            <th className="py-2 pr-3 font-medium">Master job</th>
             <th className="py-2 pr-3 font-medium">Active</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.routeId} className="border-b border-border/60 hover:bg-surface-light">
+            <tr key={r.key} className="border-b border-border/60 hover:bg-surface-light">
               <td className="py-2 pr-3">
                 <div className="font-medium text-text-primary">{r.name}</div>
-                <div className="text-xs text-text-muted">#{r.routeId}</div>
+                <div className="text-xs text-text-muted">{r.subtitle}</div>
               </td>
-              <td className="py-2 pr-3 text-text-secondary">{r.area || '-'}</td>
+              <td className="py-2 pr-3">
+                <span className={`text-[10px] px-2 py-0.5 rounded border ${
+                  r.kind === 'middle'
+                    ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30'
+                    : 'bg-surface-light text-text-secondary border-border'
+                }`}>
+                  {r.kind === 'first' ? 'First mile' : r.kind === 'middle' ? `Middle mile · ${r.mode ?? 'Road'}` : 'Final mile'}
+                </span>
+              </td>
               <td className="py-2 pr-3">
                 {r.defaultTargetName ? (
                   <>
                     <span className="text-text-primary">{r.defaultTargetName}</span>
                     <span className="text-xs text-text-muted ml-1">
-                      ({targetTypeLabel(r.defaultTargetType)})
+                      ({typeof r.defaultTargetType === 'number'
+                        ? targetTypeLabel(r.defaultTargetType)
+                        : (r.defaultTargetType ?? '-')})
                     </span>
                   </>
                 ) : (
@@ -1326,9 +1502,9 @@ function RecurringRoutesTable({ rows }: { rows: RecurringRoute[] }) {
                   </span>
                 ) : (
                   <div className="flex gap-1 flex-wrap max-w-md">
-                    {r.schedules.slice(0, 3).map((s) => (
+                    {r.schedules.slice(0, 3).map((s, i) => (
                       <span
-                        key={s.scheduleId ?? s.name}
+                        key={s.scheduleId ?? `${s.name}-${i}`}
                         className="text-[10px] bg-surface-light text-text-secondary border border-border px-2 py-0.5 rounded"
                         title={s.name}
                       >
@@ -1343,7 +1519,41 @@ function RecurringRoutesTable({ rows }: { rows: RecurringRoute[] }) {
                   </div>
                 )}
               </td>
-              <td className="py-2 pr-3 text-text-secondary">{r.zipcodes.length}</td>
+              <td className="py-2 pr-3">
+                {r.clientCodes.length === 0 ? (
+                  <span className="text-text-muted">-</span>
+                ) : (
+                  <div className="flex gap-1 flex-wrap max-w-md">
+                    {r.clientCodes.slice(0, 3).map((c) => (
+                      <span
+                        key={c}
+                        className="text-[10px] bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 px-2 py-0.5 rounded"
+                      >
+                        {c}
+                      </span>
+                    ))}
+                    {r.clientCodes.length > 3 && (
+                      <span className="text-[10px] text-text-muted">
+                        +{r.clientCodes.length - 3}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </td>
+              <td className="py-2 pr-3">
+                {r.kind !== 'middle' ? (
+                  <span className="text-text-muted">-</span>
+                ) : r.masterBookingLabel ? (
+                  <span className="text-xs font-mono text-brand-cyan" title="Run's master booking (IsLinehaulMaster=1)">
+                    {r.masterBookingLabel}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs text-error" title="Without a master job the driver sees every item as its own job.">
+                    <span className="w-1.5 h-1.5 rounded-full bg-error inline-block" />
+                    <span className="font-medium">Missing</span>
+                  </span>
+                )}
+              </td>
               <td className="py-2 pr-3">
                 <ToggleSwitch on={r.active} />
               </td>

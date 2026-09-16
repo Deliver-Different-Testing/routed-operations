@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
 
@@ -20,16 +21,29 @@ namespace RoutedOperations.API.Controllers;
 ///                          SchedulesNew.tsx page with type + q filters
 ///                          per Steve's brief section 6.
 ///
-/// Read-only until the BaseScheduleId column + tblBulkRunScheduleGroup
-/// tables ship (Phase 4 of the workstream). Writes will land on this
-/// controller alongside the migrations, keeping the legacy controller
-/// untouched throughout.
+/// Write endpoints (POST/PUT/DELETE) added alongside the BaseScheduleId
+/// migration (20260914140000). Legacy controller stays live for the old
+/// Schedules.tsx page and remains untouched. Both surfaces write through
+/// the same ScheduleService.UpsertAsync so the group-shape contract is
+/// consistent across paths.
 /// </summary>
 [ApiController]
 [Route("api/v2/schedules")]
 [Authorize(Policy = "RouteBuilder.Read")]
 public class SchedulesV2Controller(ScheduleService svc) : BaseController
 {
+    /// <summary>
+    /// Translate an EF Core DbUpdateException into an operator-facing
+    /// 400 message. The underlying SqlException usually names the FK or
+    /// check constraint that failed - we surface that verbatim so the
+    /// operator can act (e.g. "the client you picked was just deleted;
+    /// refresh and try again") instead of an opaque 500.
+    /// </summary>
+    private IActionResult HandleDbUpdate(DbUpdateException ex)
+    {
+        var inner = ex.InnerException?.Message ?? ex.Message;
+        return BadRequest(new { message = "Save failed: " + inner });
+    }
     /// <summary>
     /// List all live schedule headers. Filters:
     ///
@@ -212,6 +226,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -231,6 +246,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -254,6 +270,69 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
+    /// POST /api/v2/schedules - create a new schedule header + day rows
+    /// + junctions in one shot. Body is the same ScheduleGroupUpsertRequest
+    /// the legacy PUT accepts, with `scheduleId = null`. Returns the fresh
+    /// ScheduleGroupDto (including its new scheduleId) so the caller can
+    /// open it in the detail modal without a round-trip.
+    /// </summary>
+    [HttpPost]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> Create([FromBody] ScheduleGroupUpsertRequest req)
+    {
+        if (req == null) return BadRequest(new { message = "Body is required." });
+        req.ScheduleId = null;
+        try
+        {
+            var saved = await svc.UpsertAsync(req);
+            return Ok(new { response = saved });
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
+    /// PUT /api/v2/schedules/{id} - update an existing schedule header +
+    /// day rows + junctions. Path scheduleId wins; body's scheduleId (if
+    /// any) is overridden.
+    /// </summary>
+    [HttpPut("{scheduleId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> Update(int scheduleId, [FromBody] ScheduleGroupUpsertRequest req)
+    {
+        if (req == null) return BadRequest(new { message = "Body is required." });
+        if (scheduleId <= 0) return BadRequest(new { message = "scheduleId is required." });
+        req.ScheduleId = scheduleId;
+        try
+        {
+            var saved = await svc.UpsertAsync(req);
+            return Ok(new { response = saved });
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
+    /// PUT /api/v2/schedules/{id}/clients - full replace of the schedule's
+    /// link rows in one call. Body `{ clientIds: int[] }`. Adds missing,
+    /// removes any not in the list; blocks any client that has its own
+    /// override of this base per Steve's section 5 invariant.
+    /// </summary>
+    [HttpPut("{scheduleId:int}/clients")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> ReplaceClients(int scheduleId, [FromBody] AttachClientsRequest req)
+    {
+        try
+        {
+            var (added, removed) = await svc.ReplaceClientsAsync(scheduleId, req?.ClientIds ?? Array.Empty<int>());
+            return Ok(new { response = new { added, removed } });
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -275,6 +354,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -305,6 +385,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -346,6 +427,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>PUT /api/v2/schedule-groups/{groupId} - rename / redescribe.</summary>
@@ -358,6 +440,28 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
             if (req == null) return BadRequest(new { message = "Body is required." });
             await svc.UpdateGroupAsync(groupId, req.Name, req.Description);
             return Ok(new { response = "ok" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
+    /// GET /api/v2/clients/{clientId}/schedules - the resolution rule
+    /// made visible per Steve's brief §5. Returns one row per schedule
+    /// the client can actually book, tagged with why ("override" |
+    /// "shared" | "default"). Feeds the "View as client" chip strip on
+    /// the Schedules NEW tab.
+    /// </summary>
+    [HttpGet("/api/v2/clients/{clientId:int}/schedules")]
+    public async Task<IActionResult> ClientSchedules(int clientId)
+    {
+        try
+        {
+            var rows = await svc.GetSchedulesForClientAsync(clientId);
+            return Ok(new { response = rows });
         }
         catch (InvalidOperationException ex)
         {
@@ -382,6 +486,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>DELETE /api/v2/schedule-groups/{groupId}/members/{scheduleId}.</summary>
@@ -398,6 +503,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>DELETE /api/v2/schedule-groups/{groupId} - hard-delete.</summary>
@@ -414,6 +520,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -435,6 +542,7 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
@@ -8,8 +8,9 @@ import { schedulesV2Service } from '../../services/schedulesV2Service';
 // 2026-09-14 review). Opened from the "attach clients" action icon
 // on a Schedules row.
 //
-// Phase 1 read-only: the modal opens, lets the operator tick candidate
-// clients, but the Attach button is disabled. Writes land in Phase 3.
+// Wired end-to-end: Attach button POSTs to /api/v2/schedules/{id}/clients
+// and invalidates the list + detail queries so the row re-renders with
+// the new client chips.
 //
 // Per-row status semantics:
 //   - "already attached"  = client is in this schedule's clientIds.
@@ -24,9 +25,11 @@ interface Props {
 }
 
 export function AttachClientsModal({ scheduleId, onClose }: Props) {
+  const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   // Reset the selection each time the modal opens for a different
   // schedule so leftovers don't leak between rows.
@@ -34,6 +37,7 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     setSelected([]);
     setSearch('');
     setDebounced('');
+    setError(null);
   }, [scheduleId]);
 
   useEffect(() => {
@@ -80,6 +84,17 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     else setSelected([...selected, id]);
   };
 
+  const attachMut = useMutation({
+    mutationFn: (clientIds: number[]) =>
+      schedulesV2Service.attachClients(scheduleId!, clientIds),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', scheduleId ?? 0] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
   const title = detailQuery.data
     ? `Attach clients to #${detailQuery.data.scheduleId}`
     : 'Attach clients';
@@ -93,12 +108,14 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
       onClose={onClose}
       title={title}
       size="lg"
-      loading={detailQuery.isLoading}
-      loadingMessage="Loading schedule..."
+      loading={detailQuery.isLoading || attachMut.isPending}
+      loadingMessage={attachMut.isPending ? 'Attaching...' : 'Loading schedule...'}
       footer={
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between w-full">
           <span className="text-xs text-text-muted">
-            {selected.length === 0 ? 'Nothing selected' : `${selected.length} to attach`}
+            {error
+              ? <span className="text-error">{error}</span>
+              : selected.length === 0 ? 'Nothing selected' : `${selected.length} to attach`}
           </span>
           <div className="flex gap-2">
             <button
@@ -110,11 +127,11 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
             </button>
             <button
               type="button"
-              disabled
-              title="Phase 1 is read-only. Write lands in Phase 3 (POST /api/v2/schedules/{id}/clients)."
+              onClick={() => attachMut.mutate(selected)}
+              disabled={selected.length === 0 || attachMut.isPending}
               className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
             >
-              Attach
+              {attachMut.isPending ? 'Attaching...' : 'Attach'}
             </button>
           </div>
         </div>

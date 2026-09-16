@@ -53,6 +53,22 @@ export interface LinehaulLeg {
   insertToBulk: boolean | null;
   applyDiscount: boolean | null;
   applyAddOnPercentage: boolean | null;
+  /** Human-readable leg name (surfaces in the roster chip strip).
+   *  Falls back to `Linehaul run #{linehaulRunId}` when null. */
+  name: string | null;
+  /** Active flag - operator can add a leg then defer it via this. */
+  active: boolean;
+  /** 7-day array (Mon..Sun) of 1/0. Null falls back to the schedule's
+   *  overall day mask, matching legacy default; setting the array on a
+   *  leg overrides so uneven-week patterns work (e.g. Mon Wed Fri
+   *  linehaul on a Mon-Fri schedule). */
+  weekDay: number[] | null;
+  /** Drop-off location at the destination end of this leg. */
+  dropOffLocationId: number | null;
+  /** If true, the leg picks up from the booking's client address
+   *  instead of `fromDepotId`. Legacy checkbox "Book from client
+   *  address". */
+  fromClientAddress: boolean | null;
 }
 
 export interface DeliveryLeg {
@@ -66,11 +82,11 @@ export interface DeliveryLeg {
 
 export type Leg = CollectionLeg | DepotLeg | LinehaulLeg | DeliveryLeg;
 
-const LEG_STYLE: Record<LegType, { tag: string; bg: string; border: string; dot: string }> = {
-  collection: { tag: 'COLLECTION', bg: 'bg-blue-50',   border: 'border-blue-300',   dot: 'bg-blue-500' },
-  depot:      { tag: 'DEPOT',      bg: 'bg-slate-100', border: 'border-slate-300', dot: 'bg-slate-500' },
-  linehaul:   { tag: 'LINEHAUL',   bg: 'bg-orange-50', border: 'border-orange-300', dot: 'bg-orange-500' },
-  delivery:   { tag: 'DELIVERY',   bg: 'bg-green-50',  border: 'border-green-300',  dot: 'bg-green-500' },
+const LEG_STYLE: Record<LegType, { tag: string; bg: string; border: string; dot: string; strip: string; chevron: string }> = {
+  collection: { tag: 'COLLECTION', bg: 'bg-blue-50',   border: 'border-blue-300',   dot: 'bg-blue-500',   strip: 'bg-blue-500',   chevron: 'text-blue-400' },
+  depot:      { tag: 'DEPOT',      bg: 'bg-slate-100', border: 'border-slate-300', dot: 'bg-slate-500',  strip: 'bg-slate-500',  chevron: 'text-slate-400' },
+  linehaul:   { tag: 'LINEHAUL',   bg: 'bg-orange-50', border: 'border-orange-300', dot: 'bg-orange-500', strip: 'bg-orange-500', chevron: 'text-orange-400' },
+  delivery:   { tag: 'DELIVERY',   bg: 'bg-green-50',  border: 'border-green-300',  dot: 'bg-green-500',  strip: 'bg-green-500',  chevron: 'text-green-400' },
 };
 
 interface LookupCatalogue {
@@ -81,6 +97,8 @@ interface LookupCatalogue {
   linehaulRuns: Array<{ id: number; runName: string; fromDepotId: number | null; toDepotId: number | null }>;
   /** Available zone numbers this tenant supports. Optional. */
   zoneNumbers?: number[];
+  /** Drop-off locations for the linehaul leg destination end. Optional. */
+  dropOffLocations?: Array<{ id: number; name: string; depotId: number }>;
 }
 
 interface Props {
@@ -101,6 +119,8 @@ const NEW_LEG: Record<LegType, Leg> = {
     dayOffset: 0, transitMinutes: 0, speedId: null,
     amount: null, amountPercentage: null,
     insertToBulk: null, applyDiscount: null, applyAddOnPercentage: null,
+    name: null, active: true, weekDay: null,
+    dropOffLocationId: null, fromClientAddress: null,
   },
   delivery: { type: 'delivery', regionId: 0, speedId: null, postcodeGroupId: null, zones: [] },
 };
@@ -109,9 +129,33 @@ export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Prop
   const [expanded, setExpanded] = useState<number | null>(0);
 
   const addLeg = (type: LegType) => {
-    const next = [...legs, { ...NEW_LEG[type] }];
+    // Delivery must terminate the chain (Steve's brief section 2b:
+    // route may end at Depot or Linehaul OR Delivery, but Delivery
+    // cannot appear mid-chain). If the last leg is already a Delivery,
+    // insert the new non-Delivery leg BEFORE it so the terminator
+    // stays put; if the new leg IS a Delivery and one already exists,
+    // no-op (operator should Remove the existing one first).
+    // Collection is the reciprocal rule: only one Collection allowed
+    // per schedule (a schedule has ONE pickup source). No-op if a
+    // Collection already exists.
+    const hasTerminalDelivery = legs.length > 0 && legs[legs.length - 1].type === 'delivery';
+    const hasCollectionAlready = legs.some((l) => l.type === 'collection');
+    if (type === 'collection' && hasCollectionAlready) return;
+    let next: Leg[];
+    let insertAt: number;
+    if (type === 'delivery') {
+      if (hasTerminalDelivery) return;
+      next = [...legs, { ...NEW_LEG[type] }];
+      insertAt = next.length - 1;
+    } else if (hasTerminalDelivery) {
+      insertAt = legs.length - 1;
+      next = [...legs.slice(0, insertAt), { ...NEW_LEG[type] }, ...legs.slice(insertAt)];
+    } else {
+      next = [...legs, { ...NEW_LEG[type] }];
+      insertAt = next.length - 1;
+    }
     onChange(next);
-    setExpanded(next.length - 1);
+    setExpanded(insertAt);
   };
   const removeLeg = (i: number) => {
     const next = legs.filter((_, idx) => idx !== i);
@@ -123,8 +167,13 @@ export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Prop
     onChange(next);
   };
 
-  const lastLeg = legs[legs.length - 1];
-  const showChooser = !readOnly && (legs.length === 0 || lastLeg?.type !== 'delivery');
+  const hasDelivery = legs.some((l) => l.type === 'delivery');
+  const hasCollection = legs.some((l) => l.type === 'collection');
+  // Chooser stays visible whenever we're editable, so operators can add
+  // additional Linehaul / Depot legs. Delivery + Collection are both
+  // one-per-schedule rules: their buttons disable when one already
+  // exists (only one pickup source, only one terminator).
+  const showChooser = !readOnly;
 
   return (
     <div className="space-y-2">
@@ -137,35 +186,54 @@ export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Prop
       {legs.map((leg, i) => {
         const s = LEG_STYLE[leg.type];
         const isOpen = expanded === i;
+        const isLast = i === legs.length - 1;
         return (
-          <div key={i} className={`border ${s.border} ${s.bg} rounded`}>
-            <button
-              type="button"
-              onClick={() => setExpanded(isOpen ? null : i)}
-              className="w-full flex items-center gap-3 px-3 py-3 text-left"
-            >
-              <span className={`text-[10px] font-semibold tracking-wide px-2 py-1 rounded ${s.bg} border ${s.border} text-text-primary`}>
-                {s.tag}
-              </span>
-              <div className="flex-1 text-sm">
-                <LegSummary leg={leg} lookups={lookups} />
+          <div key={i}>
+            {/* Leg card - solid coloured left strip + tag pill on the
+                left, summary in the middle, edit/remove on the right.
+                Matches Steve's schedules-module mockup layout. */}
+            <div className={`border ${s.border} ${s.bg} rounded flex overflow-hidden`}>
+              <div className={`w-1.5 shrink-0 ${s.strip}`} aria-hidden="true" />
+              <div className="flex-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setExpanded(isOpen ? null : i)}
+                  className="w-full flex items-center gap-3 px-3 py-3 text-left"
+                >
+                  <span className={`text-[10px] font-semibold tracking-wide px-2 py-1 rounded ${s.bg} border ${s.border} text-text-primary`}>
+                    {s.tag}
+                  </span>
+                  <div className="flex-1 text-sm min-w-0">
+                    <LegSummary leg={leg} lookups={lookups} />
+                  </div>
+                  {!readOnly && (
+                    <>
+                      <span className="text-xs text-text-muted">{isOpen ? 'close' : 'edit'} ▼</span>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); removeLeg(i); }}
+                        className="text-xs text-error hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </>
+                  )}
+                </button>
+                {isOpen && !readOnly && (
+                  <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
+                    <LegEditor leg={leg} onPatch={(p) => patchLeg(i, p as never)} lookups={lookups} />
+                  </div>
+                )}
               </div>
-              {!readOnly && (
-                <>
-                  <span className="text-xs text-text-muted">{isOpen ? 'close' : 'edit'} ▼</span>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); removeLeg(i); }}
-                    className="text-xs text-error hover:underline"
-                  >
-                    Remove
-                  </button>
-                </>
-              )}
-            </button>
-            {isOpen && !readOnly && (
-              <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
-                <LegEditor leg={leg} onPatch={(p) => patchLeg(i, p as never)} lookups={lookups} />
+            </div>
+            {/* Chevron connector between legs (Steve's mockup shows a
+                downward arrow indicating flow direction). Hidden after
+                the last leg. */}
+            {!isLast && (
+              <div className={`flex justify-center py-0.5 ${s.chevron}`} aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
               </div>
             )}
           </div>
@@ -175,17 +243,31 @@ export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Prop
       {showChooser && (
         <div className="border border-dashed border-brand-cyan/60 rounded p-3 text-center">
           <div className="text-xs font-semibold text-text-muted mb-2">
-            {legs.length === 0 ? 'Choose first leg' : 'Add next leg'}
+            {legs.length === 0
+              ? 'Choose first leg'
+              : hasDelivery
+                ? 'Insert another leg (before Delivery)'
+                : 'Add next leg'}
           </div>
           <div className="flex gap-2 justify-center flex-wrap">
             {(['collection', 'depot', 'linehaul', 'delivery'] as LegType[]).map((t) => {
               const s = LEG_STYLE[t];
+              const disabled =
+                (t === 'delivery' && hasDelivery) ||
+                (t === 'collection' && hasCollection);
+              const disabledReason = t === 'delivery'
+                ? 'Only one Delivery leg allowed. Remove the existing one to change destination.'
+                : t === 'collection'
+                  ? 'Only one Collection leg allowed. A schedule has a single pickup source; remove the existing Collection to change it.'
+                  : `Add a ${s.tag} leg`;
               return (
                 <button
                   key={t}
                   type="button"
                   onClick={() => addLeg(t)}
-                  className={`text-xs px-3 py-1.5 rounded border ${s.border} ${s.bg} text-text-primary hover:opacity-80 flex items-center gap-1.5`}
+                  disabled={disabled}
+                  title={disabled ? disabledReason : `Add a ${s.tag} leg`}
+                  className={`text-xs px-3 py-1.5 rounded border ${s.border} ${s.bg} text-text-primary hover:opacity-80 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed`}
                 >
                   <span className={`w-2 h-2 rounded-sm ${s.dot}`} />
                   {s.tag}
@@ -245,8 +327,11 @@ function LegSummary({ leg, lookups }: { leg: Leg; lookups: LookupCatalogue }) {
   if (leg.type === 'linehaul') {
     return (
       <>
-        <div className="font-medium text-text-primary">
-          {runName(leg.linehaulRunId) ?? 'Linehaul (run not set)'}
+        <div className="font-medium text-text-primary flex items-center gap-2">
+          {leg.name ?? runName(leg.linehaulRunId) ?? 'Linehaul (run not set)'}
+          {!leg.active && (
+            <span className="text-[10px] text-warning uppercase tracking-wide">inactive</span>
+          )}
         </div>
         <div className="text-xs text-text-muted">
           {depotName(leg.fromDepotId) ?? '?'} - {depotName(leg.toDepotId) ?? '?'} · +{leg.dayOffset}d
@@ -363,8 +448,31 @@ function LegEditor({
     );
   }
   if (leg.type === 'linehaul') {
+    const dropOffs = (lookups.dropOffLocations ?? []).filter(
+      (d) => !leg.toDepotId || d.depotId === leg.toDepotId,
+    );
+    const weekDay = leg.weekDay ?? [1, 1, 1, 1, 1, 0, 0];
     return (
       <div className="grid grid-cols-2 gap-3">
+        <label className="block text-xs">
+          Leg name
+          <input
+            type="text"
+            value={leg.name ?? ''}
+            onChange={(e) => onPatch({ name: e.target.value || null } as Partial<Leg>)}
+            className="mt-1 w-full px-2 py-1 border border-border rounded"
+            placeholder="e.g. AKL - CHCH Night Air"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-xs mt-4">
+          <input
+            type="checkbox"
+            checked={leg.active}
+            onChange={(e) => onPatch({ active: e.target.checked } as Partial<Leg>)}
+            className="accent-brand-cyan"
+          />
+          Active leg (uncheck to add-but-defer)
+        </label>
         <label className="block col-span-2 text-xs">
           Linehaul run
           <select
@@ -383,6 +491,34 @@ function LegEditor({
             <option value="">- pick a run -</option>
             {lookups.linehaulRuns.map((r) => (
               <option key={r.id} value={r.id}>{r.runName}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-xs">
+          From depot
+          <select
+            value={leg.fromDepotId ?? ''}
+            disabled={leg.fromClientAddress === true}
+            onChange={(e) => onPatch({ fromDepotId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+            className="mt-1 w-full px-2 py-1 border border-border rounded disabled:bg-surface-light disabled:cursor-not-allowed"
+            title={leg.fromClientAddress === true ? 'Disabled while "Book from client address" is on' : undefined}
+          >
+            <option value="">- pick a depot -</option>
+            {lookups.depots.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-xs">
+          To depot
+          <select
+            value={leg.toDepotId ?? ''}
+            onChange={(e) => onPatch({ toDepotId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+            className="mt-1 w-full px-2 py-1 border border-border rounded"
+          >
+            <option value="">- pick a depot -</option>
+            {lookups.depots.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
         </label>
@@ -469,6 +605,61 @@ function LegEditor({
           />
           Apply add-on percentage
         </label>
+        <label className="col-span-2 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={leg.fromClientAddress === true}
+            onChange={(e) => onPatch({ fromClientAddress: e.target.checked } as Partial<Leg>)}
+            className="accent-brand-cyan"
+          />
+          Book from client address (overrides From depot)
+        </label>
+        <label className="block col-span-2 text-xs">
+          Drop-off location
+          <select
+            value={leg.dropOffLocationId ?? ''}
+            onChange={(e) => onPatch({ dropOffLocationId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+            className="mt-1 w-full px-2 py-1 border border-border rounded"
+          >
+            <option value="">- default -</option>
+            {dropOffs.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        </label>
+        <div className="col-span-2 text-xs">
+          <div className="mb-1">
+            Active days for this leg
+            <span className="text-text-muted ml-2">
+              (uncheck to override the schedule's overall day mask)
+            </span>
+          </div>
+          <div className="flex gap-1">
+            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, di) => {
+              const on = weekDay[di] === 1;
+              return (
+                <label
+                  key={di}
+                  className={`px-2 py-1 border rounded cursor-pointer ${
+                    on ? 'border-orange-400 bg-orange-100 text-orange-800' : 'border-border text-text-muted'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={(e) => {
+                      const wd = [...weekDay];
+                      wd[di] = e.target.checked ? 1 : 0;
+                      onPatch({ weekDay: wd } as Partial<Leg>);
+                    }}
+                    className="hidden"
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        </div>
       </div>
     );
   }
