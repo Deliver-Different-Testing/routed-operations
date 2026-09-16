@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
 
@@ -20,7 +21,7 @@ public class ScheduleServiceTests
     private static ScheduleService NewSvc()
     {
         var opts = CockpitTestHarness.NewInMemoryOptions();
-        return new ScheduleService(CockpitTestHarness.Factory(opts));
+        return new ScheduleService(CockpitTestHarness.Factory(opts), NullLogger<ScheduleService>.Instance);
     }
 
     private static ScheduleGroupUpsertRequest ValidRequest() => new()

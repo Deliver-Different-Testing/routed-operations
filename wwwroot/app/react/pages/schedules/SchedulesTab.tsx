@@ -418,5 +418,6 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     overrideCount: 0,
     routeCount: 0,
     linehaulHint: null,
+    overriddenFields: [],
   };
 }

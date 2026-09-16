@@ -104,6 +104,11 @@ export interface ScheduleGroupSummary {
   /** Compact linehaul chip, e.g. "LH AUC-CHR 21:30". Null when no
    *  active linehaul leg. */
   linehaulHint: string | null;
+  /** Field names on this override that differ from its base (e.g.
+   *  ["Cut-off", "Speed"]). Empty when the row is not an override or
+   *  its template matches the base verbatim. Powers the "differs on:"
+   *  hint under nested override rows per Steve's §2 brief. */
+  overriddenFields: string[];
 }
 
 export interface ScheduleGroup {
@@ -148,6 +153,13 @@ export interface ScheduleGroup {
   clientIds: number[];
   /** Resolved client codes, same order as clientIds. Prefer these for display. */
   clientCodes: string[];
+  /** Full client names (tucClient.UcclName) resolved for each ClientId, parallel-indexed with clientIds. Null when the client lacks a name row. Renders as the first token of the Clients tab row per Steve's mockup: "Full Name . CODE . id". */
+  clientNames: (string | null)[];
+  /** tblScheduleClient.CreatedUtc for each link row, parallel-indexed
+   *  with clientIds. Null when the link row lacks a timestamp (legacy
+   *  backfill rows written before the CreatedUtc column shipped).
+   *  Renders as "since YYYY-MM-DD" on the Clients tab per Steve's mockup. */
+  clientLinkedUtcs: (string | null)[];
   postcodeIds: number[];
   polygonIds: number[];
 }
@@ -231,16 +243,18 @@ export interface ScheduleGroupUpsertBody {
     /** Per-leg service class override. Null = inherit. */
     speedId: number | null;
   }>;
-  /** Legacy id-based fallback. Only used when `clientCodes` is absent
-   *  from the request body (e.g. API callers that don't have code
-   *  strings). Operator writes always send `clientCodes` and this
-   *  array is ignored. */
+  /** Legacy id-based fallback. Consulted only when `clientCodes` is
+   *  null in the request body. The NewScheduleModal + `ClientMultiPicker`
+   *  only know client ids, so their create path sends `clientCodes: null`
+   *  and populates `clientIds`. The chip-based edit path on the legacy
+   *  ScheduleEditModal sends `clientCodes` and this array is ignored. */
   clientIds: number[];
   /** Operator-facing path AND authoritative desired set. When present
-   *  (even as an empty array) it REPLACES the client link set wholesale
-   *  - anything not in this array is unbound. Chip picker toggles by
-   *  code. Unknown codes throw. */
-  clientCodes: string[];
+   *  (non-null, even as an empty array) it REPLACES the client link set
+   *  wholesale - anything not in this array is unbound. Chip picker
+   *  toggles by code. Unknown codes throw. Null falls through to the
+   *  `clientIds` fallback path. */
+  clientCodes: string[] | null;
   postcodeIds: number[];
   polygonIds: number[];
 }

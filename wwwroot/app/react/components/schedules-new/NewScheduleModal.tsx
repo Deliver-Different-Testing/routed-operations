@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
+import { schedulesV2Service } from '../../services/schedulesV2Service';
+import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
 import { ChainBuilder, type Leg } from './ChainBuilder';
 
@@ -59,6 +61,13 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [active, setActive] = useState(true);
+  // Booking mode per Steve's brief §2 Creating-a-schedule item 1:
+  //   "booking mode radio Fixed Time / Window"
+  // Fixed Time = single despatch time (drivers pick up at the same
+  // clock time every operating day); Window = a start/end range the
+  // customer can book anywhere in. Backend does not yet gate on this,
+  // so this is a UI hint stored on the day-row descriptions for now.
+  const [bookingMode, setBookingMode] = useState<'window' | 'fixed'>('window');
   const [legs, setLegs] = useState<Leg[]>([]);
   const [days, setDays] = useState<DayForm[]>(
     // Mon-Fri enabled by default per Steve's mockup
@@ -67,6 +76,33 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const [clientMode, setClientMode] = useState<'all' | 'specific'>('all');
   const [clientIds, setClientIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Tier 1 advanced fields - schedule-level pickup + delivery + rating
+  // extras that legacy /schedules exposes. Kept collapsed by default
+  // because Steve's mockup keeps the modal simple; operators who need
+  // these open Advanced.
+  const [parentSpeedId, setParentSpeedId] = useState<number | null>(null);
+  const [deliveryState, setDeliveryState] = useState<number | null>(null);
+  const [pickupBoxDiscount, setPickupBoxDiscount] = useState<number | null>(null);
+  const [dropOffLocationId, setDropOffLocationId] = useState<number | null>(null);
+  const [applyPickupCutoff, setApplyPickupCutoff] = useState(false);
+  const [pickupCutoff, setPickupCutoff] = useState<number | null>(null);
+  const [bookPickup, setBookPickup] = useState(false);
+  // Tier 2 - Collection zone group + individual postcodes + coverage
+  // polygons. Legacy /schedules has all three; parity requires them.
+  const [pickupPostcodeGroupId, setPickupPostcodeGroupId] = useState<number | null>(null);
+  const [postcodeIds, setPostcodeIds] = useState<number[]>([]);
+  const [postcodeInput, setPostcodeInput] = useState('');
+  const [polygonIds, setPolygonIds] = useState<number[]>([]);
+
+  // Coverage polygons - lazily fetched on modal open. Cached across
+  // subsequent opens via React Query's default 5min stale time.
+  const polygonsQuery = useQuery({
+    queryKey: ['bulk-polygons'],
+    queryFn: () => bulkPolygonService.list().then((r) => r.response),
+    staleTime: 5 * 60_000,
+    enabled: open,
+  });
 
   const lookupsQuery = useQuery({
     queryKey: ['schedules-v2-lookups'],
@@ -76,7 +112,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
   });
 
   const createMut = useMutation({
-    mutationFn: (body: ScheduleGroupUpsertBody) => scheduleService.upsert(body),
+    mutationFn: (body: ScheduleGroupUpsertBody) => schedulesV2Service.create(body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
       resetAndClose();
@@ -88,13 +124,39 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setName('');
     setDescription('');
     setActive(true);
+    setBookingMode('window');
     setLegs([]);
     setDays([1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...DEFAULT_DAY, enabled: n <= 5 })));
     setClientMode('all');
     setClientIds([]);
     setError(null);
+    setAdvancedOpen(false);
+    setParentSpeedId(null);
+    setDeliveryState(null);
+    setPickupBoxDiscount(null);
+    setDropOffLocationId(null);
+    setApplyPickupCutoff(false);
+    setPickupCutoff(null);
+    setBookPickup(false);
+    setPickupPostcodeGroupId(null);
+    setPostcodeIds([]);
+    setPostcodeInput('');
+    setPolygonIds([]);
     onClose();
   };
+
+  const addPostcode = () => {
+    const p = Number(postcodeInput.trim());
+    // Clamp to a sane int range - NZ postcodes are 4 digits, US ZIPs
+    // are 5. Anything > 99999 either overflows the backend INT column
+    // or is a typo; reject client-side rather than surface a 500.
+    if (!Number.isFinite(p) || p <= 0 || p > 99999) return;
+    setPostcodeIds((prev) => prev.includes(p) ? prev : [...prev, p].sort((a, b) => a - b));
+    setPostcodeInput('');
+  };
+  const removePostcode = (p: number) => setPostcodeIds((prev) => prev.filter((x) => x !== p));
+  const togglePolygon = (id: number) =>
+    setPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
   const toggleDay = (i: number) => {
     setDays((prev) => prev.map((d, idx) => idx === i ? { ...d, enabled: !d.enabled } : d));
@@ -132,8 +194,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
         storageState = leg.storageState;
       } else if (leg.type === 'linehaul') {
         linehauls.push({
-          name: null,
-          active: true,
+          name: leg.name,
+          active: leg.active,
           amount: leg.amount,
           amountPercentage: leg.amountPercentage,
           fromDepotId: leg.fromDepotId,
@@ -143,10 +205,12 @@ export function NewScheduleModal({ open, onClose }: Props) {
           insertToBulk: leg.insertToBulk,
           applyDiscount: leg.applyDiscount,
           applyAddOnPercentage: leg.applyAddOnPercentage,
-          weekDay: days.map((d) => (d.enabled ? 1 : 0)),
+          // Per-leg override wins; falls back to the schedule's overall
+          // day mask so a legacy operator experience still works.
+          weekDay: leg.weekDay ?? days.map((d) => (d.enabled ? 1 : 0)),
           departureAdvanceDays: leg.dayOffset,
-          fromClientAddress: null,
-          dropOffLocationId: null,
+          fromClientAddress: leg.fromClientAddress,
+          dropOffLocationId: leg.dropOffLocationId,
           speedId: leg.speedId,
         });
       } else if (leg.type === 'delivery') {
@@ -179,18 +243,18 @@ export function NewScheduleModal({ open, onClose }: Props) {
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
-      parentSpeedId: null,
+      parentSpeedId: parentSpeedId,
       autoBook: active,
-      bookPickup: null,
-      applyPickupCutoff: null,
-      pickupCutoff: null,
+      bookPickup: bookPickup,
+      applyPickupCutoff: applyPickupCutoff,
+      pickupCutoff: applyPickupCutoff ? pickupCutoff : null,
       postcodeGroupId: derived.postcodeGroupId,
-      pickupPostcodeGroupId: null,
+      pickupPostcodeGroupId: pickupPostcodeGroupId,
       pickupRatingSpeed: derived.pickupRatingSpeed,
       storageState: derived.storageState,
-      deliveryState: null,
-      pickupBoxDiscount: null,
-      dropOffLocationId: null,
+      deliveryState: deliveryState,
+      pickupBoxDiscount: pickupBoxDiscount,
+      dropOffLocationId: dropOffLocationId,
       dayWindows: days.map((d, i) => ({
         id: null,
         dayOfWeek: i + 1,
@@ -200,10 +264,14 @@ export function NewScheduleModal({ open, onClose }: Props) {
       })).filter((_d, i) => days[i].enabled),
       zones: derived.zones.map((z) => ({ zone: z, active: true })),
       linehauls: derived.linehauls,
+      // "Specific" mode uses the id-based fallback: `clientCodes: null`
+      // tells the backend to consult `clientIds`. "All" mode sends an
+      // explicit empty `clientCodes: []` which reads as "no link rows"
+      // and produces a default (all-clients) schedule.
       clientIds: clientMode === 'specific' ? clientIds : [],
-      clientCodes: [],
-      postcodeIds: [],
-      polygonIds: [],
+      clientCodes: clientMode === 'specific' ? null : [],
+      postcodeIds: [...postcodeIds],
+      polygonIds: [...polygonIds],
     };
     createMut.mutate(body);
   };
@@ -264,13 +332,46 @@ export function NewScheduleModal({ open, onClose }: Props) {
           <span className="text-sm">Active (auto-book on)</span>
         </label>
 
+        <fieldset className="col-span-2 flex items-center gap-4 mt-2">
+          <legend className="text-xs uppercase tracking-wide text-text-muted mr-2">Booking mode</legend>
+          <label className="flex items-center gap-2 cursor-pointer text-sm">
+            <input
+              type="radio"
+              name="booking-mode"
+              value="fixed"
+              checked={bookingMode === 'fixed'}
+              onChange={() => setBookingMode('fixed')}
+              className="accent-brand-cyan"
+            />
+            <span>Fixed Time</span>
+            <span className="text-[10px] text-text-muted">single despatch time</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer text-sm">
+            <input
+              type="radio"
+              name="booking-mode"
+              value="window"
+              checked={bookingMode === 'window'}
+              onChange={() => setBookingMode('window')}
+              className="accent-brand-cyan"
+            />
+            <span>Window</span>
+            <span className="text-[10px] text-text-muted">book anywhere in start/end range</span>
+          </label>
+        </fieldset>
+
         <label className="col-span-2 block">
-          <span className="text-xs uppercase tracking-wide text-text-muted">Description</span>
-          <input
-            type="text"
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Description
+            <span className="text-text-muted normal-case ml-2">
+              ({description.length}/500)
+            </span>
+          </span>
+          <textarea
             value={description}
+            maxLength={500}
             onChange={(e) => setDescription(e.target.value)}
-            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 h-16 resize-y"
             placeholder="Book by 3 pm. Next business day service to Christchurch."
           />
         </label>
@@ -290,6 +391,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
                 })),
                 zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+                dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
               }}
             />
           </div>
@@ -342,6 +444,216 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 )}
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="col-span-2 block">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 rounded border border-border hover:bg-surface-light text-xs uppercase tracking-wide text-text-muted"
+          >
+            <span>Advanced (schedule speed, cutoffs, delivery state, box discount, drop-off, collection group)</span>
+            <span>{advancedOpen ? '−' : '+'}</span>
+          </button>
+          {advancedOpen && (
+            <div className="mt-3 grid grid-cols-2 gap-3 border border-border rounded p-3 bg-surface-light">
+              <label className="block text-xs">
+                Schedule speed (parent)
+                <select
+                  value={parentSpeedId ?? ''}
+                  onChange={(e) => setParentSpeedId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                >
+                  <option value="">- inherit -</option>
+                  {(lookupsQuery.data?.speeds ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Delivery state
+                <select
+                  value={deliveryState ?? ''}
+                  onChange={(e) => setDeliveryState(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                >
+                  <option value="">- default -</option>
+                  {(lookupsQuery.data?.deliveryStates ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Collection box discount
+                <select
+                  value={pickupBoxDiscount ?? ''}
+                  onChange={(e) => setPickupBoxDiscount(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                >
+                  <option value="">- none -</option>
+                  {(lookupsQuery.data?.pickupBoxDiscounts ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Drop-off location (schedule)
+                <select
+                  value={dropOffLocationId ?? ''}
+                  onChange={(e) => setDropOffLocationId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                >
+                  <option value="">- default -</option>
+                  {(lookupsQuery.data?.dropOffLocations ?? [])
+                    .filter((d) => !derived.pickupDepotId || d.depotId === derived.pickupDepotId)
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Collection zone group
+                <select
+                  value={pickupPostcodeGroupId ?? ''}
+                  onChange={(e) => setPickupPostcodeGroupId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                >
+                  <option value="">- default pickup group -</option>
+                  {(lookupsQuery.data?.postcodeGroups ?? [])
+                    .filter((g) => !derived.pickupDepotId || g.depotId === derived.pickupDepotId)
+                    .map((g) => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                </select>
+              </label>
+              <label className="col-span-2 flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={bookPickup}
+                  onChange={(e) => setBookPickup(e.target.checked)}
+                  className="accent-brand-cyan"
+                />
+                Book collection job (creates a separate collection job at booking time)
+              </label>
+              <label className="col-span-2 flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={applyPickupCutoff}
+                  onChange={(e) => setApplyPickupCutoff(e.target.checked)}
+                  className="accent-brand-cyan"
+                />
+                Apply pickup cutoff (courier must arrive by N hours before delivery)
+              </label>
+              {applyPickupCutoff && (
+                <label className="block text-xs">
+                  Pickup cutoff (hours)
+                  <input
+                    type="number"
+                    min={0}
+                    value={pickupCutoff ?? ''}
+                    onChange={(e) => setPickupCutoff(e.target.value === '' ? null : Number(e.target.value))}
+                    className="mt-1 w-full px-2 py-1 border border-border rounded"
+                    placeholder="e.g. 4"
+                  />
+                </label>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="col-span-2 block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Individual postcodes
+            <span className="text-text-muted normal-case ml-2">
+              (on top of the delivery zone group)
+            </span>
+          </span>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="number"
+              value={postcodeInput}
+              onChange={(e) => setPostcodeInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPostcode(); } }}
+              placeholder="e.g. 8011"
+              className="w-32 px-2 py-1 text-sm border border-border rounded"
+            />
+            <button
+              type="button"
+              onClick={addPostcode}
+              className="px-3 py-1 text-xs rounded border border-border hover:bg-surface-light"
+            >
+              Add
+            </button>
+            <span className="text-xs text-text-muted">
+              {postcodeIds.length === 0 ? 'None bound.' : `${postcodeIds.length} bound.`}
+            </span>
+          </div>
+          {postcodeIds.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {postcodeIds.map((p) => (
+                <span
+                  key={p}
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan font-mono"
+                >
+                  {String(p).padStart(4, '0')}
+                  <button
+                    type="button"
+                    onClick={() => removePostcode(p)}
+                    className="ml-1 hover:opacity-70"
+                    title="Remove"
+                  >
+                    x
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="col-span-2 block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Coverage polygons
+            <span className="text-text-muted normal-case ml-2">
+              (bind polygons drawn in Polygon Builder)
+            </span>
+          </span>
+          <div className="mt-1 max-h-48 overflow-y-auto border border-border rounded">
+            {polygonsQuery.isLoading && (
+              <div className="p-3 text-xs text-text-muted italic">Loading polygons...</div>
+            )}
+            {polygonsQuery.isError && (
+              <div className="p-3 text-xs text-error">
+                Failed to load polygons: {(polygonsQuery.error as Error).message}
+              </div>
+            )}
+            {polygonsQuery.data?.length === 0 && (
+              <div className="p-3 text-xs text-text-muted italic">
+                No polygons defined yet. Draw one in Polygon Builder.
+              </div>
+            )}
+            {polygonsQuery.data?.map((p) => {
+              const checked = polygonIds.includes(p.polygonId);
+              return (
+                <label
+                  key={p.polygonId}
+                  className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-light ${
+                    checked ? 'bg-brand-cyan/10' : ''
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => togglePolygon(p.polygonId)}
+                    className="accent-brand-cyan"
+                  />
+                  <span className="text-xs font-medium flex-1">{p.name}</span>
+                  <span className="text-[10px] text-text-muted">
+                    {p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         </div>
 

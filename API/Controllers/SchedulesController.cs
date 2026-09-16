@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
 
@@ -16,6 +17,16 @@ namespace RoutedOperations.API.Controllers;
 [Authorize(Policy = "RouteBuilder.Read")]
 public class SchedulesController(ScheduleService svc) : BaseController
 {
+    /// <summary>
+    /// Translate an EF Core DbUpdateException into an operator-facing
+    /// 400 message. Surfaces the SP-level constraint/FK error so the
+    /// operator can see what actually failed rather than an opaque 500.
+    /// </summary>
+    private IActionResult HandleDbUpdate(DbUpdateException ex)
+    {
+        var inner = ex.InnerException?.Message ?? ex.Message;
+        return BadRequest(new { message = "Save failed: " + inner });
+    }
     /// <summary>
     /// List schedule groups. Filter by client either by CODE (preferred -
     /// operators use ACME etc.) or by ID (kept for internal callers).
@@ -122,6 +133,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -150,6 +162,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -172,6 +185,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
     /// <summary>
@@ -200,5 +214,6 @@ public class SchedulesController(ScheduleService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 }

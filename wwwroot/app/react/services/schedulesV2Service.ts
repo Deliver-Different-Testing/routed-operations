@@ -1,5 +1,5 @@
 import { request, buildQuery } from './api';
-import type { ScheduleGroup, ScheduleGroupSummary } from './scheduleService';
+import type { ScheduleGroup, ScheduleGroupSummary, ScheduleGroupUpsertBody } from './scheduleService';
 
 // Client for /api/v2/schedules (Steve's 2026-09-08 id-keyed view).
 // Reuses ScheduleGroupSummary from scheduleService.ts because the row
@@ -114,6 +114,27 @@ export const schedulesV2Service = {
       { method: 'POST', body: JSON.stringify({ clientId }) },
     ).then((r) => r.response),
 
+  /** POST /api/v2/schedules - create a fresh schedule (header + day rows + junctions). */
+  create: (body: ScheduleGroupUpsertBody) =>
+    request<{ response: ScheduleGroup }>(
+      '/v2/schedules',
+      { method: 'POST', body: JSON.stringify({ ...body, scheduleId: undefined }) },
+    ).then((r) => r.response),
+
+  /** PUT /api/v2/schedules/{id} - update existing schedule (path id wins). */
+  update: (scheduleId: number, body: ScheduleGroupUpsertBody) =>
+    request<{ response: ScheduleGroup }>(
+      `/v2/schedules/${scheduleId}`,
+      { method: 'PUT', body: JSON.stringify({ ...body, scheduleId }) },
+    ).then((r) => r.response),
+
+  /** PUT /api/v2/schedules/{id}/clients - full replace of link rows. */
+  replaceClients: (scheduleId: number, clientIds: number[]) =>
+    request<{ response: { added: number; removed: number } }>(
+      `/v2/schedules/${scheduleId}/clients`,
+      { method: 'PUT', body: JSON.stringify({ clientIds }) },
+    ).then((r) => r.response),
+
   /** POST /api/v2/schedules/{id}/retire - soft-delete the schedule. */
   retire: (scheduleId: number) =>
     request<{ response: string }>(
@@ -157,6 +178,14 @@ export const schedulesV2Service = {
       { method: 'PUT', body: JSON.stringify(body) },
     ).then((r) => r.response),
 
+  /** GET /api/v2/clients/{clientId}/schedules - what can this client
+   *  actually book, per Steve's §5 resolution rule. Each row is tagged
+   *  "override" / "shared" / "default". */
+  clientSchedules: (clientId: number) =>
+    request<{ response: ClientSchedule[] }>(
+      `/v2/clients/${clientId}/schedules`,
+    ).then((r) => r.response),
+
   /** POST /api/v2/schedule-groups/{id}/members - add schedules. */
   addGroupMembers: (groupId: number, scheduleIds: number[]) =>
     request<{ response: { added: number } }>(
@@ -178,4 +207,12 @@ export interface OverrideRef {
   scheduleId: number;
   clientId: number;
   clientCode: string | null;
+}
+
+/** One row from GET /v2/clients/{clientId}/schedules. Tags each
+ *  bookable schedule with why per Steve's §5 resolution rule. */
+export interface ClientSchedule {
+  scheduleId: number;
+  name: string;
+  source: 'override' | 'shared' | 'default';
 }

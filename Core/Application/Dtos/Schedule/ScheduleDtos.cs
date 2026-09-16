@@ -51,7 +51,11 @@ public record ScheduleGroupDto(
     /// <summary>Individual postcodes bound via tblSchedulePostcode. Supplements PostcodeGroupId.</summary>
     List<int> PostcodeIds,
     /// <summary>Coverage polygons bound via tblSchedulePolygon.</summary>
-    List<int> PolygonIds);
+    List<int> PolygonIds,
+    /// <summary>tblScheduleClient.CreatedUtc for each ClientId, parallel-indexed. Null when the link row lacks a timestamp (legacy backfill rows). Feeds the "since YYYY-MM-DD" hint on the Clients tab per Steve's mockup.</summary>
+    List<DateTime?> ClientLinkedUtcs,
+    /// <summary>Full client name (tucClient.UcclName) resolved from ClientIds. Same order. Null when the client lacks a name. Renders as the first column in the Attached Clients row per Steve's mockup: "Full Name . CODE . id".</summary>
+    List<string> ClientNames);
 
 /// <summary>
 /// A single day-window entry within a schedule group. One tblBulkRunSchedule
@@ -148,7 +152,14 @@ public record ScheduleGroupSummaryDto(
     /// <summary>Compact linehaul summary. Example "LH AUC-CHR 21:30".
     /// Null when the schedule has no active linehaul leg. Picks the
     /// first active linehaul row for stable display.</summary>
-    string LinehaulHint);
+    string LinehaulHint,
+    /// <summary>Field names on this override that differ from its base
+    /// schedule. Empty when this row is not an override (BaseScheduleId
+    /// is null) or when the override matches its base verbatim on every
+    /// scoped field. Powers the "differs on: Cut-off, Speed" hint under
+    /// the nested override row per Steve's brief §2 Schedules-tab item
+    /// "the fields that differ".</summary>
+    string[] OverriddenFields);
 
 /// <summary>
 /// One schedule group (Dane's bundle-of-schedules concept). Row shape
@@ -181,6 +192,19 @@ public record OverrideRefDto(
     int ScheduleId,
     int ClientId,
     string ClientCode);
+
+/// <summary>
+/// One row of "the schedules this client can actually book" per Steve's
+/// brief §5 resolution rule. Source tag lets the frontend tag each row
+/// in the View-as-client view: "override" = the client owns this
+/// override header; "shared" = the client is linked to a shared
+/// (non-default) header; "default" = fallback because the client has
+/// no link rows and no override.
+/// </summary>
+public record ClientScheduleDto(
+    int ScheduleId,
+    string Name,
+    string Source);
 
 public record ScheduleLinehaulDto(
     int Id,

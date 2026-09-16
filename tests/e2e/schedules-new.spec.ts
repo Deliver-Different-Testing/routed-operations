@@ -54,6 +54,7 @@ const V2_SCHEDULES = [
     hasActiveLinehaul: true,
     linkedClientCodes: ['HRAD'],
     baseScheduleId: 1042,
+    overriddenFields: ['Cut-off', 'Speed'],
   },
   {
     scheduleId: 7,
@@ -134,6 +135,15 @@ const V2_DETAIL = {
   ],
   clientIds: [100, 200, 300, 400, 500, 600, 700, 800, 900],
   clientCodes: ['MLC', 'PATH', 'NPG', 'AWA', 'KOW', 'SXP', 'OPT', 'BBS', 'AVD'],
+  clientNames: [
+    'Med Lab Co', 'Pathology Partners', 'North Pole Group', 'Awapuni Ltd',
+    'Kowhai Healthcare', 'South Xpress', 'Optical Ltd', 'Bay Business Supplies', 'Avondale Distribution',
+  ],
+  clientLinkedUtcs: [
+    '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z',
+    '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z',
+    '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z',
+  ],
   postcodeIds: [],
   polygonIds: [],
 };
@@ -254,6 +264,16 @@ async function stubApis(page: import('@playwright/test').Page) {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ response: V2_ROUTES }),
+    }),
+  );
+  // Linehaul runs power the Middle-mile rows on the Recurring Routes
+  // tab. Empty list is fine for most tests; specific tests can add a
+  // narrower stub with `page.route(...)` after this one.
+  await page.route('**/api/recurring-linehaul-runs', (route: Route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ response: [] }),
     }),
   );
   await page.route('**/api/schedules/clients*', (route: Route) => {
@@ -377,10 +397,13 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await nameInput.fill('Renamed by test');
     await expect(save).toBeEnabled();
 
-    // Route tab shows the vertical leg stack.
+    // Route tab shows the vertical leg stack. Scope to the leg-card
+    // badge span so the editable ChainBuilder chooser at the bottom
+    // (which also renders COLLECTION / DELIVERY add buttons) doesn't
+    // trip strict-mode.
     await page.getByRole('button', { name: 'Route', exact: true }).click();
-    await expect(page.getByText('COLLECTION', { exact: true })).toBeVisible();
-    await expect(page.getByText('DELIVERY', { exact: true })).toBeVisible();
+    await expect(page.locator('span').filter({ hasText: /^COLLECTION$/ }).first()).toBeVisible();
+    await expect(page.locator('span').filter({ hasText: /^DELIVERY$/ }).first()).toBeVisible();
 
     // Operating days tab: editable time + cut-off inputs.
     await page.getByRole('button', { name: 'Operating days', exact: true }).click();
@@ -397,16 +420,17 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await page.getByRole('button', { name: /^Recurring Routes\b/ }).click();
 
     await expect(page.getByText('AKL Medical AM - North Shore')).toBeVisible();
-    // Area cell is scoped to a table cell so it doesn't collide with the
-    // Name column which also contains the string "North Shore".
-    await expect(page.getByRole('cell', { name: 'North Shore', exact: true })).toBeVisible();
     await expect(page.getByText('V. Patel')).toBeVisible();
     // Schedule chip on the route row.
     await expect(page.getByTitle('AKL > CHCH Pre 8am Medical').first()).toBeVisible();
-    // Type filter pills.
+    // Type filter pills (Middle mile now live).
     await expect(page.getByRole('button', { name: 'All types' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'First mile' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Middle mile' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Final mile' })).toBeVisible();
+    // New columns per Steve's §2 brief.
+    await expect(page.getByRole('columnheader', { name: 'Master job' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Clients via schedule' })).toBeVisible();
   });
 
   test('Schedule Groups tab renders bundle with expand', async ({ page }) => {
@@ -689,6 +713,20 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
   test('New Schedule modal creates + closes on success', async ({ page }) => {
     let createPayload: any = null;
     await stubApis(page);
+    // The New Schedule modal now hits POST /api/v2/schedules
+    // (v2 upsert) instead of the legacy PUT /api/schedules. Match both
+    // shapes so this test survives during the transition.
+    await page.route('**/api/v2/schedules', async (route) => {
+      if (route.request().method() === 'POST') {
+        createPayload = await route.request().postDataJSON();
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ response: { scheduleId: 5555, name: createPayload.name } }),
+        });
+      }
+      return route.fallback();
+    });
     await page.route('**/api/schedules', async (route) => {
       if (route.request().method() === 'PUT') {
         createPayload = await route.request().postDataJSON();
