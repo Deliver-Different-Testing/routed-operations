@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
+  schedulesV2Keys,
   useSchedulesV2Groups,
   useSchedulesV2List,
 } from '../hooks/queries/useSchedulesV2';
@@ -21,6 +22,7 @@ import { recurringRouteService, type RecurringRoute } from '../services/recurrin
 import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
 import { ScheduleDetailModal } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
+import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
 import { NewScheduleModal } from '../components/schedules-new/NewScheduleModal';
 import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal';
@@ -65,7 +67,9 @@ export default function SchedulesNew() {
     const raw = searchParams.get('edit');
     if (!raw) return null;
     const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    // Number.isInteger rejects 0.5 / NaN / Infinity - integer-only ids
+    // per the DB PK contract. Audit HIGH #7 (2026-09-17).
+    return Number.isInteger(n) && n > 0 ? n : null;
   }, [searchParams]);
   const setOpenScheduleId = (id: number | null) => {
     setSearchParams(
@@ -104,11 +108,11 @@ export default function SchedulesNew() {
     // AppLayout's <main> is `overflow-hidden` so each page owns its
     // own scroll container. Dashboard uses `h-full ... overflow-auto`;
     // we follow the same pattern.
-    <div className="h-full overflow-y-auto p-6 space-y-6">
+    <div className="h-full overflow-y-auto p-4 space-y-4">
       <header className="flex items-start justify-between gap-6 max-w-7xl">
         <div className="space-y-2">
-          <h1 className="text-3xl font-semibold text-text-primary">Schedules</h1>
-          <p className="text-sm text-text-secondary max-w-2xl">
+          <h1 className="text-2xl font-semibold text-text-primary">Schedules</h1>
+          <p className="text-xs text-text-secondary max-w-2xl">
             One schedule, many clients. Each schedule has its own id; clients
             are attached to it, overrides stay linked to their base, and the
             recurring routes and linehaul runs that deliver it sit alongside
@@ -174,15 +178,30 @@ function SchedulesTab({
   onRowClick: (id: number) => void;
   onAttachClients: (id: number) => void;
 }) {
+  const user = useAuth();
+  const tenantId = user.currentTenantId ?? 0;
   const [type, setType] = useState<SchedulesV2Type>('all');
   const [q, setQ] = useState('');
-  const [depotFilter, setDepotFilter] = useState<string>('all');
+  // Debounced mirror of q, fed to the query key. Fires the backend
+  // 250ms after the last keystroke instead of on every character.
+  // Audit HIGH #13 (2026-09-17): the pickers already debounce, the
+  // main list search did not.
+  const [debouncedQ, setDebouncedQ] = useState('');
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [q]);
+  // Multi-select depot filter. Empty array = "All depots" (no filter).
+  // Was previously a single string 'all' | depot-name; changed to
+  // string[] so operators can filter by multiple depots at once
+  // (Kevin 2026-09-17).
+  const [depotFilter, setDepotFilter] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const [viewAsClientIds, setViewAsClientIds] = useState<number[]>([]);
   const [copySource, setCopySource] = useState<ScheduleGroupSummary | null>(null);
   const query = useSchedulesV2List({
     type,
-    q: q.trim() || undefined,
+    q: debouncedQ || undefined,
     clientIds: viewAsClientIds.length > 0 ? viewAsClientIds : undefined,
     page,
     pageSize: PAGE_SIZE,
@@ -194,7 +213,7 @@ function SchedulesTab({
   // tag is ambiguous when the union of two clients produces the row.
   const singleClientId = viewAsClientIds.length === 1 ? viewAsClientIds[0] : null;
   const sourceQuery = useQuery({
-    queryKey: ['client-schedule-sources', singleClientId ?? 0],
+    queryKey: schedulesV2Keys.clientScheduleSources(tenantId, singleClientId ?? 0),
     queryFn: () =>
       singleClientId ? schedulesV2Service.clientSchedules(singleClientId) : Promise.resolve([]),
     enabled: singleClientId != null,
@@ -212,11 +231,44 @@ function SchedulesTab({
   const retireMut = useMutation({
     mutationFn: (id: number) => schedulesV2Service.retire(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId)});
       toast.show('Schedule retired.', 'success');
     },
     onError: (e: Error) => toast.show(`Retire failed: ${e.message}`, 'error'),
   });
+
+  // Row-level AutoBook toggle. Fires the same endpoint the detail
+  // modal Save would use so no drift between the two write paths.
+  // Optimistic - flip the cache immediately so the pill feels
+  // instant, then invalidate on settle so the server value wins.
+  const autoBookMut = useMutation({
+    mutationFn: (id: number) => scheduleService.toggleAutoBook(id),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: schedulesV2Keys.listAll(tenantId)});
+      const previous = qc.getQueriesData<{ rows: ScheduleGroupSummary[]; total: number }>(
+        { queryKey: schedulesV2Keys.listAll(tenantId)},
+      );
+      for (const [key, data] of previous) {
+        if (!data) continue;
+        qc.setQueryData(key, {
+          ...data,
+          rows: data.rows.map((r) =>
+            r.scheduleId === id ? { ...r, autoBook: !r.autoBook } : r,
+          ),
+        });
+      }
+      return { previous };
+    },
+    onError: (e: Error, _id, ctx) => {
+      // Roll back the optimistic flip if the server rejected.
+      if (ctx?.previous) for (const [key, data] of ctx.previous) qc.setQueryData(key, data);
+      toast.show(`Toggle failed: ${e.message}`, 'error');
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId)});
+    },
+  });
+  const handleToggleAutoBook = (row: ScheduleGroupSummary) => autoBookMut.mutate(row.scheduleId);
 
   // Copy is triggered via CopyScheduleModal (rendered below). The row
   // action just puts the source row into state; the modal owns the
@@ -246,7 +298,7 @@ function SchedulesTab({
   // don't happen to be represented in the current page. Falls back to
   // the set-derived approach if lookups hasn't loaded.
   const lookupsQuery = useQuery({
-    queryKey: ['schedules-v2-lookups'],
+    queryKey: schedulesV2Keys.lookups(tenantId),
     queryFn: () => scheduleService.lookups().then((r) => r.response),
     staleTime: 5 * 60_000,
   });
@@ -267,9 +319,12 @@ function SchedulesTab({
   }, [lookupsQuery.data, serverRows]);
 
   const filtered = useMemo(() => {
-    if (depotFilter === 'all') return serverRows;
+    if (depotFilter.length === 0) return serverRows;
+    const wanted = new Set(depotFilter);
     return serverRows.filter(
-      (s) => s.pickupDepotName === depotFilter || s.regionName === depotFilter,
+      (s) =>
+        (s.pickupDepotName != null && wanted.has(s.pickupDepotName)) ||
+        (s.regionName != null && wanted.has(s.regionName)),
     );
   }, [serverRows, depotFilter]);
 
@@ -281,10 +336,10 @@ function SchedulesTab({
   const pageRows = nested;
 
   return (
-    <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
+    <div className="space-y-3 bg-surface-white border border-border rounded-lg p-4">
       <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="11" cy="11" r="7" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
           </svg>
@@ -293,8 +348,8 @@ function SchedulesTab({
           type="search"
           placeholder="Search schedules by name, route, client or run..."
           value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
-          className="w-full pl-9 pr-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+          onChange={(e) => { setQ(e.target.value); setPage(0); setDepotFilter([]); }}
+          className="w-full pl-8 pr-3 py-1.5 text-xs border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
         />
       </div>
 
@@ -303,31 +358,33 @@ function SchedulesTab({
           <span className="text-xs uppercase tracking-wide text-text-muted">View as</span>
           <ClientMultiPicker
             selected={viewAsClientIds}
-            onChange={(ids) => { setViewAsClientIds(ids); setPage(0); }}
+            onChange={(ids) => { setViewAsClientIds(ids); setPage(0); setDepotFilter([]); }}
             placeholder="All schedules"
             panelTitle="View as clients"
           />
         </div>
 
+        {/* Reset depotFilter on any server-side filter change (audit
+            MEDIUM #12 2026-09-17). Depot filter is client-side over the
+            CURRENT page; changing type / q / view-as swaps the row set,
+            so a stale depot filter can silently narrow to zero rows. */}
         <div className="flex bg-surface-light border border-border rounded p-0.5">
-          <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); }}>All</SegmentPill>
-          <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); }}>Defaults</SegmentPill>
-          <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); }}>Shared</SegmentPill>
-          <SegmentPill active={type === 'override'} onClick={() => { setType('override'); setPage(0); }}>Overrides</SegmentPill>
+          <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); setDepotFilter([]); }}>All</SegmentPill>
+          <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); setDepotFilter([]); }}>Defaults</SegmentPill>
+          <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); setDepotFilter([]); }}>Shared</SegmentPill>
+          <SegmentPill active={type === 'override'} onClick={() => { setType('override'); setPage(0); setDepotFilter([]); }}>Overrides</SegmentPill>
         </div>
 
         <div className="flex items-center gap-2">
           <span className="text-xs uppercase tracking-wide text-text-muted">Depot</span>
-          <select
-            value={depotFilter}
-            onChange={(e) => { setDepotFilter(e.target.value); setPage(0); }}
-            className="w-44 pl-3 pr-2 py-1.5 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
-          >
-            <option value="all">All depots</option>
-            {depotOptions.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
+          <DepotMultiPicker
+            selected={depotFilter}
+            options={depotOptions}
+            onChange={(names) => { setDepotFilter(names); setPage(0); }}
+            placeholder="All depots"
+            panelTitle="Filter by depot"
+            triggerWidth="w-44"
+          />
         </div>
 
         <span className="ml-auto text-xs text-text-muted">
@@ -363,6 +420,11 @@ function SchedulesTab({
             onAttachClients={onAttachClients}
             onRetire={handleRetire}
             onCopy={handleCopy}
+            onToggleAutoBook={handleToggleAutoBook}
+            // Audit HIGH #4 (2026-09-17): rapid clicks on the toggle
+            // fire concurrent mutations that race. Disable the toggle
+            // for whichever id is currently in flight.
+            autoBookPendingId={autoBookMut.isPending ? autoBookMut.variables : null}
           />
           <Pager
             page={boundedPage}
@@ -440,34 +502,47 @@ function PagerBtn({
 
 type NestedRow = { row: ScheduleGroupSummary; isOverride: boolean };
 
+// Walks the BaseScheduleId chain to nest overrides under their base(s)
+// transitively. Previously only 1 level was handled: an override-of-an-
+// override (C -> B -> A) landed as an orphan when B was on the same
+// page as A. Audit item CRITICAL #3 in the 2026-09-17 review. We now
+// walk each override up to its true root using childrenByBase; the
+// isOverride flag stays true for every non-root node so styling is
+// unchanged.
 function nestOverrides(rows: ScheduleGroupSummary[]): NestedRow[] {
   const byId = new Map<number, ScheduleGroupSummary>();
   rows.forEach((r) => byId.set(r.scheduleId, r));
-  const overridesByBase = new Map<number, ScheduleGroupSummary[]>();
-  const bases: ScheduleGroupSummary[] = [];
-  const orphanOverrides: ScheduleGroupSummary[] = [];
+  const childrenByBase = new Map<number, ScheduleGroupSummary[]>();
+  const roots: ScheduleGroupSummary[] = [];
   for (const r of rows) {
-    if (r.baseScheduleId != null) {
-      if (byId.has(r.baseScheduleId)) {
-        const list = overridesByBase.get(r.baseScheduleId) ?? [];
-        list.push(r);
-        overridesByBase.set(r.baseScheduleId, list);
-      } else {
-        orphanOverrides.push(r);
-      }
+    if (r.baseScheduleId != null && byId.has(r.baseScheduleId)) {
+      const list = childrenByBase.get(r.baseScheduleId) ?? [];
+      list.push(r);
+      childrenByBase.set(r.baseScheduleId, list);
     } else {
-      bases.push(r);
+      // Either a genuine base (no BaseScheduleId) or an orphan override
+      // whose base is off-page. Orphan overrides bubble to top-level so
+      // they still render, with the isOverride flag preserved via the
+      // r.baseScheduleId != null check when we push out.
+      roots.push(r);
     }
   }
   const out: NestedRow[] = [];
-  for (const base of bases) {
-    out.push({ row: base, isOverride: false });
-    for (const ov of overridesByBase.get(base.scheduleId) ?? []) {
-      out.push({ row: ov, isOverride: true });
-    }
-  }
-  for (const ov of orphanOverrides) {
-    out.push({ row: ov, isOverride: true });
+  const visited = new Set<number>();
+  const walk = (node: ScheduleGroupSummary) => {
+    // Cycle guard: BaseScheduleId chains should be acyclic but a bad
+    // backfill or hand-edit could produce one; visiting a node twice
+    // would loop forever otherwise.
+    if (visited.has(node.scheduleId)) return;
+    visited.add(node.scheduleId);
+    out.push({ row: node, isOverride: node.baseScheduleId != null });
+    for (const child of childrenByBase.get(node.scheduleId) ?? []) walk(child);
+  };
+  for (const root of roots) walk(root);
+  // Anything left un-visited is part of a cycle or unreachable island.
+  // Emit them anyway so operators can still see (and fix) them.
+  for (const r of rows) if (!visited.has(r.scheduleId)) {
+    out.push({ row: r, isOverride: r.baseScheduleId != null });
   }
   return out;
 }
@@ -479,6 +554,8 @@ function SchedulesTable({
   onAttachClients,
   onRetire,
   onCopy,
+  onToggleAutoBook,
+  autoBookPendingId,
 }: {
   rows: NestedRow[];
   sourceByScheduleId?: Map<number, 'override' | 'shared' | 'default'> | null;
@@ -486,22 +563,50 @@ function SchedulesTable({
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
   onCopy: (row: ScheduleGroupSummary) => void;
+  onToggleAutoBook: (row: ScheduleGroupSummary) => void;
+  autoBookPendingId: number | null | undefined;
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-left text-[10px] uppercase tracking-wider text-text-muted border-b border-border">
+    // Scroll container gives the sticky <thead> something to stick
+    // within. Height caps at the viewport so a 50-row page scrolls
+    // internally while the surrounding page stays put.
+    <div className="max-h-[calc(100vh-320px)] overflow-y-auto relative">
+      <table className="w-full text-xs table-fixed">
+        {/* Explicit column widths - without these, the table auto-layouts on
+            intrinsic content and overflows the container (the reason we
+            previously had a horizontal scrollbar). Percentages sum >100
+            deliberately; table-fixed distributes the shortfall. */}
+        <colgroup>
+          {/* Rebalanced to sum to 100% (was 104%). Audit HIGH #1 in
+              the 2026-09-17 review. table-fixed uses these verbatim
+              so any over-100 was silently redistributed by shrinking
+              every column ~1-2px; now the math is honest. */}
+          <col style={{ width: '24%' }} />
+          <col style={{ width: '10%' }} />
+          <col style={{ width: '8%' }} />
+          <col style={{ width: '8%' }} />
+          <col style={{ width: '8%' }} />
+          <col style={{ width: '6%' }} />
+          <col style={{ width: '12%' }} />
+          <col style={{ width: '9%' }} />
+          <col style={{ width: '7%' }} />
+          <col style={{ width: '8%' }} />
+        </colgroup>
+        {/* Sticky header per audit HIGH #2 (2026-09-17). Was scrolling
+            out of view once operators paged past ~15 rows. Wrapper div
+            below gives it a scroll container to stick within. */}
+        <thead className="text-left text-[10px] uppercase tracking-wider text-text-muted border-b border-border sticky top-0 bg-surface-white z-10">
           <tr>
-            <th className="py-2 pr-3 font-medium">Name</th>
-            <th className="py-2 pr-3 font-medium">Days</th>
-            <th className="py-2 pr-3 font-medium">Origin</th>
-            <th className="py-2 pr-3 font-medium">Dest</th>
-            <th className="py-2 pr-3 font-medium">Window</th>
-            <th className="py-2 pr-3 font-medium">Cut-off</th>
-            <th className="py-2 pr-3 font-medium">Clients</th>
-            <th className="py-2 pr-3 font-medium">Roster</th>
-            <th className="py-2 pr-3 font-medium">AutoBook</th>
-            <th className="py-2 pr-3 font-medium">Actions</th>
+            <th className="py-1.5 pr-2 font-medium">Name</th>
+            <th className="py-1.5 pr-2 font-medium">Days</th>
+            <th className="py-1.5 pr-2 font-medium">Origin</th>
+            <th className="py-1.5 pr-2 font-medium">Dest</th>
+            <th className="py-1.5 pr-2 font-medium">Window</th>
+            <th className="py-1.5 pr-2 font-medium">Cut-off</th>
+            <th className="py-1.5 pr-2 font-medium">Clients</th>
+            <th className="py-1.5 pr-2 font-medium">Roster</th>
+            <th className="py-1.5 pr-2 font-medium">AutoBook</th>
+            <th className="py-1.5 pr-2 font-medium">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -515,6 +620,8 @@ function SchedulesTable({
               onAttachClients={onAttachClients}
               onRetire={onRetire}
               onCopy={onCopy}
+              onToggleAutoBook={onToggleAutoBook}
+              autoBookPending={autoBookPendingId === s.scheduleId}
             />
           ))}
         </tbody>
@@ -531,6 +638,8 @@ function ScheduleRow({
   onAttachClients,
   onRetire,
   onCopy,
+  onToggleAutoBook,
+  autoBookPending,
 }: {
   row: ScheduleGroupSummary;
   isOverride: boolean;
@@ -539,69 +648,80 @@ function ScheduleRow({
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
   onCopy: (row: ScheduleGroupSummary) => void;
+  onToggleAutoBook: (row: ScheduleGroupSummary) => void;
+  autoBookPending: boolean;
 }) {
   const window = s.windowStart && s.windowEnd ? `${s.windowStart}-${s.windowEnd}` : '-';
   const cutoff = formatCutoff(s.monCutoffHours, s.otherCutoffHours);
   return (
     <tr
       onClick={() => onOpen(s.scheduleId)}
-      className={`border-b border-border/60 hover:bg-surface-light cursor-pointer align-top ${
-        isOverride ? 'bg-warning-bg/30' : ''
+      className={`border-b border-border/60 cursor-pointer align-top ${
+        // Hover replaces the base bg-color entirely under Tailwind's
+        // ordering, so the warning tint would disappear on hover for
+        // override rows and re-appear on leave, breaking the visual
+        // hierarchy. Use a warning-tinted hover for override rows so
+        // it stays flagged. Audit MEDIUM #9 (2026-09-17).
+        isOverride ? 'bg-warning-bg/10 hover:bg-warning-bg/20' : 'hover:bg-surface-light'
       }`}
     >
-      <td className={`py-3 pr-3 ${isOverride ? 'pl-6' : ''}`}>
+      <td className={`py-1.5 pr-2 ${isOverride ? 'pl-4' : ''}`}>
         <div className="flex items-center gap-2">
           {isOverride && (
             <span
               title="Client override"
-              className="text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full bg-warning text-white shrink-0"
+              className="text-[9px] font-bold w-3.5 h-3.5 flex items-center justify-center rounded-full bg-warning text-white shrink-0"
             >
               O
             </span>
           )}
-          <span className="font-medium text-text-primary">{s.name ?? '(unnamed)'}</span>
+          <span className="text-xs font-semibold text-text-primary">{s.name ?? '(unnamed)'}</span>
           {!isOverride && s.overrideCount > 0 && (
             <span
               title={`${s.overrideCount} override${s.overrideCount === 1 ? '' : 's'}`}
-              className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-brand-cyan/15 text-brand-cyan"
+              className="text-[9px] font-medium px-1 py-px rounded bg-brand-cyan/15 text-brand-cyan"
             >
               +{s.overrideCount}
             </span>
           )}
           {sourceTag && <SourceTag source={sourceTag} />}
         </div>
-        <div className={`text-xs mt-0.5 ${isOverride ? 'text-warning' : 'text-text-muted'}`}>
+        <div className={`text-[11px] mt-0.5 leading-tight ${isOverride ? 'text-warning' : 'text-text-muted'}`}>
           {isOverride && s.baseScheduleId != null
             ? `Based on #${s.baseScheduleId}${s.description ? ` · ${s.description}` : ''}`
             : `#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
         </div>
         {isOverride && s.overriddenFields && s.overriddenFields.length > 0 && (
-          <div className="text-[11px] mt-0.5 text-warning/90">
+          <div className="text-[10px] mt-0.5 leading-tight text-warning/80">
             differs on: <span className="font-medium">{s.overriddenFields.join(', ')}</span>
           </div>
         )}
       </td>
-      <td className="py-3 pr-3">
+      <td className="py-1.5 pr-2">
         {isOverride ? <span className="text-text-muted">-</span> : <DayPills active={s.activeDays} />}
       </td>
-      <td className="py-3 pr-3 text-text-secondary">
-        {isOverride ? '-' : (s.pickupDepotName ?? 'Client address')}
+      <td className="py-1.5 pr-2 text-text-secondary">
+        {isOverride ? <span className="text-text-muted">-</span> : (s.pickupDepotName ?? 'Client address')}
       </td>
-      <td className="py-3 pr-3 text-text-secondary">{isOverride ? '-' : (s.regionName ?? '-')}</td>
-      <td className="py-3 pr-3 text-text-secondary font-mono text-xs">{window}</td>
-      <td className="py-3 pr-3 text-text-secondary font-mono text-xs">{cutoff}</td>
-      <td className="py-3 pr-3"><ClientChips row={s} /></td>
-      <td className="py-3 pr-3">
+      <td className="py-1.5 pr-2 text-text-secondary">{isOverride ? <span className="text-text-muted">-</span> : (s.regionName ?? <span className="text-text-muted">-</span>)}</td>
+      <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{window}</td>
+      <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{cutoff}</td>
+      <td className="py-1.5 pr-2"><ClientChips row={s} /></td>
+      <td className="py-1.5 pr-2">
         {isOverride ? (
-          <span className="text-xs text-text-muted">as base</span>
+          <span className="text-[11px] text-text-muted">as base</span>
         ) : (
           <RosterChips routeCount={s.routeCount} linehaulHint={s.linehaulHint} />
         )}
       </td>
-      <td className="py-3 pr-3">
-        <ToggleSwitch on={s.autoBook === true} />
+      <td className="py-1.5 pr-2" onClick={(e) => e.stopPropagation()}>
+        <ToggleSwitch
+          on={s.autoBook === true}
+          onClick={() => onToggleAutoBook(s)}
+          disabled={autoBookPending}
+        />
       </td>
-      <td className="py-3 pr-3">
+      <td className="py-1.5 pr-2">
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <ActionIcon
             label="Attach clients"
@@ -634,14 +754,14 @@ function formatCutoff(mon: number | null, other: number | null): string {
 function DayPills({ active }: { active: number[] }) {
   const set = new Set(active);
   return (
-    <div className="flex gap-0.5">
+    <div className="flex gap-px">
       {DAY_LABELS.map(({ n, label }) => (
         <span
           key={n}
-          className={`w-6 h-6 rounded text-[10px] font-semibold flex items-center justify-center ${
+          className={`w-4 h-4 rounded-sm text-[9px] font-semibold flex items-center justify-center ${
             set.has(n)
-              ? 'bg-brand-cyan/15 text-brand-cyan border border-brand-cyan/40'
-              : 'bg-surface-light text-text-muted border border-border'
+              ? 'bg-brand-cyan text-brand-dark border border-brand-cyan'
+              : 'bg-transparent text-text-muted border border-border'
           }`}
         >
           {label}
@@ -661,7 +781,7 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
   return (
     <span
       title="Why this schedule is bookable for the selected client (Steve's §5 resolution rule)."
-      className={`text-[10px] font-medium border px-2 py-0.5 rounded ${styles}`}
+      className={`text-[9px] font-medium border px-1.5 py-px rounded ${styles}`}
     >
       {label}
     </span>
@@ -671,7 +791,7 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
 function ClientChips({ row }: { row: ScheduleGroupSummary }) {
   if (row.clientCount === 0 && row.legacyClientId == null) {
     return (
-      <span className="text-xs bg-success-bg text-success border border-success/30 px-2 py-0.5 rounded font-medium">
+      <span className="text-[10px] bg-success-bg text-success border border-success/30 px-1.5 py-px rounded font-medium">
         All clients
       </span>
     );
@@ -687,7 +807,7 @@ function ClientChips({ row }: { row: ScheduleGroupSummary }) {
       {codes.map((code) => (
         <span
           key={code}
-          className="text-[10px] font-medium bg-surface-light text-text-secondary border border-border px-2 py-0.5 rounded"
+          className="text-[10px] font-medium bg-surface-light text-text-secondary border border-border px-1.5 py-px rounded"
         >
           {code}
         </span>
@@ -701,17 +821,17 @@ function ClientChips({ row }: { row: ScheduleGroupSummary }) {
 
 function RosterChips({ routeCount, linehaulHint }: { routeCount: number; linehaulHint: string | null }) {
   if (routeCount === 0 && !linehaulHint) {
-    return <span className="text-xs text-text-muted">-</span>;
+    return <span className="text-[11px] text-text-muted">-</span>;
   }
   return (
     <div className="flex gap-1 flex-wrap items-center">
       {routeCount > 0 && (
-        <span className="text-[10px] font-medium bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-medium bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 px-1.5 py-px rounded">
           {routeCount} route{routeCount === 1 ? '' : 's'}
         </span>
       )}
       {linehaulHint && (
-        <span className="text-[10px] font-medium bg-warning-bg text-warning border border-warning/30 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-medium bg-warning-bg text-warning border border-warning/30 px-1.5 py-px rounded">
           {linehaulHint}
         </span>
       )}
@@ -719,20 +839,51 @@ function RosterChips({ routeCount, linehaulHint }: { routeCount: number; linehau
   );
 }
 
-function ToggleSwitch({ on }: { on: boolean }) {
-  return (
-    <div
-      className={`w-9 h-5 rounded-full relative transition-colors ${
-        on ? 'bg-brand-cyan' : 'bg-surface-light border border-border'
+function ToggleSwitch({
+  on,
+  onClick,
+  disabled,
+}: {
+  on: boolean;
+  /** When set, the toggle becomes an interactive button. Click calls
+   *  onClick with the target boolean (the value the toggle would flip
+   *  to). Callers own the row's stopPropagation so a click here does
+   *  not also trigger a row-level navigation. */
+  onClick?: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  const clickable = !!onClick && !disabled;
+  const cls = `w-8 h-4 rounded-full relative transition-colors ${
+    on ? 'bg-brand-cyan' : 'bg-surface-light border border-border'
+  } ${clickable ? 'cursor-pointer' : ''} ${disabled ? 'opacity-60' : ''}`;
+  const knob = (
+    <span
+      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${
+        on ? 'translate-x-4' : ''
       }`}
-      title={on ? 'Auto-book on' : 'Auto-book off'}
+    />
+  );
+  if (!clickable) {
+    return (
+      <div className={cls} title={on ? 'Auto-book on' : 'Auto-book off'}>
+        {knob}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={cls}
+      title={on ? 'Auto-book on - click to disable' : 'Auto-book off - click to enable'}
+      aria-pressed={on}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick!(!on);
+      }}
+      disabled={disabled}
     >
-      <span
-        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
-          on ? 'translate-x-4' : ''
-        }`}
-      />
-    </div>
+      {knob}
+    </button>
   );
 }
 
@@ -757,13 +908,13 @@ function ActionIcon({
       onClick={onClick}
       disabled={!clickable}
       title={label}
-      className={`w-7 h-7 rounded flex items-center justify-center hover:bg-surface-light ${
+      className={`w-6 h-6 rounded flex items-center justify-center hover:bg-surface-light ${
         clickable
           ? 'text-text-secondary hover:text-text-primary cursor-pointer'
           : 'text-text-muted disabled:cursor-not-allowed'
       }`}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
         {path}
       </svg>
     </button>
@@ -825,7 +976,7 @@ function SegmentPill({
       type="button"
       onClick={onClick}
       title={title}
-      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+      className={`px-2.5 py-0.5 text-xs font-medium rounded transition-colors ${
         active
           ? 'bg-brand-cyan text-brand-dark'
           : 'text-text-secondary hover:text-text-primary'
@@ -839,6 +990,8 @@ function SegmentPill({
 // ─── Schedule Groups tab ────────────────────────────────────────────
 
 function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) => void }) {
+  const user = useAuth();
+  const tenantId = user.currentTenantId ?? 0;
   const query = useSchedulesV2Groups();
   const qc = useQueryClient();
   const toast = useToast();
@@ -856,7 +1009,7 @@ function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) 
   };
 
   const invalidateGroups = () =>
-    qc.invalidateQueries({ queryKey: ['schedules-v2-groups'] });
+    qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
 
   const deleteMut = useMutation({
     mutationFn: (groupId: number) => schedulesV2Service.deleteGroup(groupId),
@@ -977,7 +1130,7 @@ function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) 
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
-          qc.invalidateQueries({ queryKey: ['schedules-v2-groups'] });
+          qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
           setCreateOpen(false);
           toast.show('Group created.', 'success');
         }}
@@ -998,13 +1151,15 @@ function GroupAttachClientsModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
   const toast = useToast();
   const [selected, setSelected] = useState<number[]>([]);
   const attachMut = useMutation({
     mutationFn: (ids: number[]) =>
       schedulesV2Service.attachClientsToGroup(groupId!, ids),
     onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-groups'] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
       toast.show(`Attached to ${r.added} member link row${r.added === 1 ? '' : 's'}.`, 'success');
       setSelected([]);
       onClose();

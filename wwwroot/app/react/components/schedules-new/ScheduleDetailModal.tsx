@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
-import { useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
+import { schedulesV2Keys, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { scheduleService, type ScheduleGroup, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
 import {
@@ -15,9 +15,13 @@ import {
   type TenantLinehaulRun,
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
-import { bulkPolygonService } from '../../services/bulkPolygonService';
+import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { ChainBuilder, type Leg } from './ChainBuilder';
 import { CreateOverrideModal } from './CreateOverrideModal';
+import { PostcodeLookupInput } from './PostcodeLookupInput';
+import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
+import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../context/ToastContext';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
 // section 2). 4 tabs: Clients / Route / Operating days / Roster.
@@ -120,6 +124,35 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
   const query = useSchedulesV2Detail(scheduleId);
   const data = query.data;
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
+  const toast = useToast();
+  // Not-found guard for ?edit=99999999 style URLs. Backend returns
+  // 200 + null for missing ids; without this the modal sits in
+  // "loading" forever because retry:false suppresses error surfacing.
+  // Audit HIGH #7 (2026-09-17).
+  useEffect(() => {
+    if (scheduleId == null) return;
+    if (query.isLoading || query.isFetching) return;
+    if (query.data == null && !query.isError) {
+      toast.show(`Schedule #${scheduleId} not found.`, 'error');
+      onClose();
+    }
+  }, [scheduleId, query.isLoading, query.isFetching, query.data, query.isError, toast, onClose]);
+  // Create-override modal state lives here (not on ClientsTab) so it
+  // survives tab switches and renders as a sibling of the parent Modal
+  // instead of nested inside its overflow-auto content div - a nested
+  // fixed-positioned modal was rendering but getting clipped by the
+  // parent modal's stacking context, so the button felt like a no-op.
+  const [showCreateOverride, setShowCreateOverride] = useState(false);
+
+  // Reset showCreateOverride when the parent modal closes (scheduleId
+  // becomes null) so a subsequent open on a different schedule doesn't
+  // resurface the child modal bound to the previous base. Audit HIGH
+  // #5 (2026-09-17).
+  useEffect(() => {
+    if (scheduleId == null) setShowCreateOverride(false);
+  }, [scheduleId]);
 
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
@@ -140,7 +173,6 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
   const [formPickupCutoff, setFormPickupCutoff] = useState<number | null>(null);
   const [formBookPickup, setFormBookPickup] = useState(false);
   const [formPostcodeIds, setFormPostcodeIds] = useState<number[]>([]);
-  const [formPostcodeInput, setFormPostcodeInput] = useState('');
   const [formPolygonIds, setFormPolygonIds] = useState<number[]>([]);
   // Snapshot of the seeded form state for dirty-state tracking.
   // A no-op Save on a legacy per-client schedule would still trigger
@@ -236,7 +268,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
   }, [scheduleId]);
 
   const lookupsQuery = useQuery({
-    queryKey: ['schedules-v2-lookups'],
+    queryKey: schedulesV2Keys.lookups(tenantId),
     queryFn: () => scheduleService.lookups().then((r) => r.response),
     staleTime: 5 * 60_000,
   });
@@ -261,22 +293,14 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
 
   // Coverage polygons - lazy-fetched on modal open, cached.
   const polygonsQuery = useQuery({
-    queryKey: ['bulk-polygons'],
+    queryKey: schedulesV2Keys.bulkPolygons(tenantId),
     queryFn: () => bulkPolygonService.list().then((r) => r.response),
     staleTime: 5 * 60_000,
     enabled: scheduleId != null,
   });
 
-  const addPostcode = () => {
-    const p = Number(formPostcodeInput.trim());
-    // Clamp to a sane int range - NZ postcodes are 4 digits, US ZIPs
-    // are 5. Anything > 99999 either overflows the backend INT column
-    // or is a typo; reject client-side rather than surface a 500.
-    if (!Number.isFinite(p) || p <= 0 || p > 99999) return;
-    setFormPostcodeIds((prev) => prev.includes(p) ? prev : [...prev, p].sort((a, b) => a - b));
-    setFormPostcodeInput('');
-  };
-  const removePostcode = (p: number) => setFormPostcodeIds((prev) => prev.filter((x) => x !== p));
+  // Postcode add/remove now owned by PostcodeLookupInput; the parent
+  // only receives the final ids via onPostcodeIdsChange.
   const togglePolygon = (id: number) =>
     setFormPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
@@ -328,8 +352,10 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
         ? schedulesV2Service.update(body.scheduleId, body)
         : schedulesV2Service.create(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
-      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', data?.scheduleId] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
+      if (data?.scheduleId != null) {
+        qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+      }
       onClose();
     },
     onError: (e: Error) => setSaveError(e.message),
@@ -388,6 +414,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     : 'Schedule';
 
   return (
+    <>
     <Modal
       open={scheduleId != null}
       onClose={onClose}
@@ -498,6 +525,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               data={data}
               onAttachClients={onAttachClients}
               onOpenSchedule={onOpenSchedule}
+              onOpenCreateOverride={() => setShowCreateOverride(true)}
             />
           )}
           {tab === 'route' && (
@@ -523,21 +551,55 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
           {tab === 'coverage' && (
             <CoverageTab
               postcodeIds={formPostcodeIds}
-              postcodeInput={formPostcodeInput}
-              onPostcodeInputChange={setFormPostcodeInput}
-              onAddPostcode={addPostcode}
-              onRemovePostcode={removePostcode}
+              onPostcodeIdsChange={setFormPostcodeIds}
               polygonIds={formPolygonIds}
               onTogglePolygon={togglePolygon}
-              polygons={polygonsQuery.data ?? null}
+              polygons={polygonsQuery.data ?? []}
               polygonsError={polygonsQuery.error ? (polygonsQuery.error as Error).message : null}
               polygonsLoading={polygonsQuery.isLoading}
+              // destinationDepotId here MUST be a depot id (used by the
+              // /territory/postcodesForSchedule resolver for zone-derived
+              // zip polygons). derived.regionId is a REGION id, not a
+              // depot - on US tenants the two differ and the zone layer
+              // silently returned wrong/empty data. Until we plumb a
+              // proper delivery-depot id through, prefer pickupDepotId
+              // (which IS a depot fk); null when both are absent. Audit
+              // CRITICAL #5 in the 2026-09-17 review.
+              destinationDepotId={derived.pickupDepotId ?? null}
+              activeZones={derived.zones}
+              isUsTenant={auth.isUsTenant}
+              googleMapsKey={auth.googleMapsKey}
+              scheduleKey={data.scheduleId}
             />
           )}
           {tab === 'roster' && <RosterTab data={data} />}
         </>
       )}
     </Modal>
+
+    {/* Rendered as a sibling of the parent Modal (not nested inside its
+        overflow-auto content) so its fixed-position backdrop escapes
+        the parent's stacking context cleanly. Also survives tab
+        switches: state lives at the ScheduleDetailModal level, not
+        inside ClientsTab which unmounts on tab change. */}
+    {data && (
+      <CreateOverrideModal
+        baseScheduleId={showCreateOverride ? data.scheduleId : null}
+        baseName={data.name}
+        attachedClientIds={data.clientIds}
+        onCreated={(newId) => {
+          setShowCreateOverride(false);
+          // Steve's design: after creating an override, pop the newly
+          // created override in the detail modal so the operator can
+          // immediately edit its differing fields. onOpenSchedule
+          // navigates the ?edit=<id> deep-link, which drives this same
+          // ScheduleDetailModal to reload for the new id.
+          onOpenSchedule(newId);
+        }}
+        onClose={() => setShowCreateOverride(false)}
+      />
+    )}
+    </>
   );
 }
 
@@ -547,18 +609,25 @@ interface ClientsTabProps {
   data: ScheduleGroup;
   onAttachClients: (scheduleId: number) => void;
   onOpenSchedule: (scheduleId: number) => void;
+  onOpenCreateOverride: () => void;
 }
 
-function ClientsTab({ data, onAttachClients, onOpenSchedule }: ClientsTabProps) {
+function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverride }: ClientsTabProps) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
+  const toast = useToast();
   const isDefault = data.legacyClientId == null && data.clientIds.length === 0;
-  const [showCreateOverride, setShowCreateOverride] = useState(false);
   const detachMut = useMutation({
     mutationFn: (clientId: number) =>
       schedulesV2Service.detachClient(data.scheduleId, clientId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
-      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', data.scheduleId] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+    },
+    onError: (e: Error) => {
+      // Audit finding: this mutation previously swallowed errors silently.
+      toast.show(`Detach failed: ${e.message}`, 'error');
     },
   });
 
@@ -567,7 +636,7 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule }: ClientsTabProps) 
   // headers with the client each owns; clicking an override navigates
   // the modal to that schedule via the ?edit=<id> deep-link pattern.
   const overridesQuery = useQuery({
-    queryKey: ['schedules-v2-overrides', data.scheduleId],
+    queryKey: schedulesV2Keys.overrides(tenantId, data.scheduleId),
     queryFn: () => schedulesV2Service.listOverrides(data.scheduleId),
     staleTime: 30_000,
   });
@@ -641,7 +710,7 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule }: ClientsTabProps) 
           </p>
           <button
             type="button"
-            onClick={() => setShowCreateOverride(true)}
+            onClick={onOpenCreateOverride}
             disabled={isDefault}
             title={isDefault
               ? 'Overrides derive from a specific-client schedule. Attach a client first.'
@@ -655,16 +724,6 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule }: ClientsTabProps) 
           </button>
         </div>
       </section>
-      <CreateOverrideModal
-        baseScheduleId={showCreateOverride ? data.scheduleId : null}
-        baseName={data.name}
-        attachedClientIds={data.clientIds}
-        onCreated={(newId) => {
-          setShowCreateOverride(false);
-          onOpenSchedule(newId);
-        }}
-        onClose={() => setShowCreateOverride(false)}
-      />
 
       <section>
         <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
@@ -909,71 +968,52 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced }: RouteTabProps
 
 interface CoverageTabProps {
   postcodeIds: number[];
-  postcodeInput: string;
-  onPostcodeInputChange: (v: string) => void;
-  onAddPostcode: () => void;
-  onRemovePostcode: (p: number) => void;
+  /** Full-list handler for postcodeIds. Replaces the old
+   *  input/add/remove trio since PostcodeLookupInput owns its own
+   *  text state internally. */
+  onPostcodeIdsChange: (next: number[]) => void;
   polygonIds: number[];
   onTogglePolygon: (id: number) => void;
-  polygons: { polygonId: number; name: string; attachedRouteCount: number }[] | null;
+  polygons: BulkPolygon[];
   polygonsError: string | null;
   polygonsLoading: boolean;
+  /** Depot id used by the /territory/postcodesForSchedule resolver for
+   *  the zone-derived postcode overlay. MUST be a depot id (not a
+   *  region id) - passing a region here on US tenants silently returns
+   *  the wrong zip set. */
+  destinationDepotId: number | null;
+  /** Zone numbers active on the schedule. Postcodes in these zones
+   *  render as blue-outlined ZIP polygons on the map. */
+  activeZones: number[];
+  isUsTenant: boolean;
+  googleMapsKey: string | null;
+  /** Passed through as React `key` to the inner map so navigating from
+   *  schedule A to B (via override-open) forces a fresh map instance
+   *  and the auto-fit runs against the new schedule's polygons. */
+  scheduleKey: number;
 }
 
 function CoverageTab({
-  postcodeIds, postcodeInput, onPostcodeInputChange, onAddPostcode, onRemovePostcode,
+  postcodeIds, onPostcodeIdsChange,
   polygonIds, onTogglePolygon, polygons, polygonsError, polygonsLoading,
+  destinationDepotId, activeZones, isUsTenant, googleMapsKey, scheduleKey,
 }: CoverageTabProps) {
   return (
     <div className="space-y-6">
       <section>
-        <h3 className="text-sm font-semibold text-text-primary mb-2">
-          Individual postcodes
+        <h3 className="text-xs uppercase tracking-wider font-semibold text-text-muted mb-2">
+          Postcodes
         </h3>
-        <p className="text-xs text-text-muted mb-2">
-          Bound on top of the delivery zone group. Resolver union: schedule covers a postcode
-          if it's in the bound group OR in this list.
+        <p className="text-xs text-text-muted mb-3">
+          Individual postcodes bound to this schedule (on top of the postcode group
+          dropdown above). Resolver union: schedule covers a postcode if it's in the
+          bound group OR in this list.
         </p>
-        <div className="flex items-center gap-2 mb-2">
-          <input
-            type="number"
-            value={postcodeInput}
-            onChange={(e) => onPostcodeInputChange(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onAddPostcode(); } }}
-            placeholder="e.g. 8011"
-            className="w-32 px-2 py-1 text-sm border border-border rounded"
-          />
-          <button
-            type="button"
-            onClick={onAddPostcode}
-            className="px-3 py-1 text-xs rounded border border-border hover:bg-surface-light"
-          >
-            Add
-          </button>
-          <span className="text-xs text-text-muted">
-            {postcodeIds.length === 0 ? 'None bound.' : `${postcodeIds.length} bound.`}
-          </span>
-        </div>
-        {postcodeIds.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {postcodeIds.map((p) => (
-              <span
-                key={p}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan font-mono"
-              >
-                {String(p).padStart(4, '0')}
-                <button
-                  type="button"
-                  onClick={() => onRemovePostcode(p)}
-                  className="ml-1 hover:opacity-70"
-                  title="Remove"
-                >
-                  x
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        <PostcodeLookupInput
+          selected={postcodeIds}
+          onChange={onPostcodeIdsChange}
+          enabled={true}
+        />
       </section>
 
       <section className="pt-4 border-t border-border">
@@ -981,45 +1021,74 @@ function CoverageTab({
           Coverage polygons
         </h3>
         <p className="text-xs text-text-muted mb-2">
-          Bind polygons drawn in Polygon Builder. Ticking a polygon here binds it to this
-          schedule; the operator sees the polygon as covering this schedule's territory.
+          Bind coverage polygons to this schedule. Click on the map to bind or unbind,
+          or use the checkbox list on the right. Draw a new polygon inline, or open the
+          full toolkit in{' '}
+          <a
+            href="/polygon-builder"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-brand-cyan underline"
+          >
+            Polygon Builder
+          </a>
+          .
         </p>
-        <div className="max-h-72 overflow-y-auto border border-border rounded">
-          {polygonsLoading && (
-            <div className="p-3 text-xs text-text-muted italic">Loading polygons...</div>
-          )}
-          {polygonsError && (
-            <div className="p-3 text-xs text-error">
-              Failed to load polygons: {polygonsError}
-            </div>
-          )}
-          {polygons?.length === 0 && (
-            <div className="p-3 text-xs text-text-muted italic">
-              No polygons defined yet. Draw one in Polygon Builder.
-            </div>
-          )}
-          {polygons?.map((p) => {
-            const checked = polygonIds.includes(p.polygonId);
-            return (
-              <label
-                key={p.polygonId}
-                className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-light ${
-                  checked ? 'bg-brand-cyan/10' : ''
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => onTogglePolygon(p.polygonId)}
-                  className="accent-brand-cyan"
-                />
-                <span className="text-xs font-medium flex-1">{p.name}</span>
-                <span className="text-[10px] text-text-muted">
-                  {p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}
-                </span>
-              </label>
-            );
-          })}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-3">
+          <div>
+            {polygonsLoading && (
+              <div className="p-3 text-xs text-text-muted italic border border-border rounded-lg">
+                Loading polygons...
+              </div>
+            )}
+            {polygonsError && !polygonsLoading && (
+              <div className="p-3 text-xs text-error border border-error/30 rounded-lg">
+                Failed to load polygons: {polygonsError}
+              </div>
+            )}
+            {!polygonsLoading && !polygonsError && (
+              <ScheduleCoverageMap
+                key={scheduleKey}
+                polygons={polygons}
+                selectedIds={polygonIds}
+                onToggle={onTogglePolygon}
+                boundPostcodes={postcodeIds}
+                activeZones={activeZones}
+                destinationDepotId={destinationDepotId}
+                isUsTenant={isUsTenant}
+                googleMapsKey={googleMapsKey}
+              />
+            )}
+          </div>
+          <div className="max-h-[360px] overflow-y-auto rounded-lg border border-border">
+            {polygons?.length === 0 && (
+              <div className="p-3 text-xs text-text-muted italic">
+                No polygons defined yet. Draw one in Polygon Builder.
+              </div>
+            )}
+            {polygons?.map((p) => {
+              const checked = polygonIds.includes(p.polygonId);
+              return (
+                <label
+                  key={p.polygonId}
+                  className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-light ${
+                    checked ? 'bg-brand-cyan/10' : ''
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onTogglePolygon(p.polygonId)}
+                    className="accent-brand-cyan"
+                  />
+                  <span className="text-xs font-medium flex-1">{p.name}</span>
+                  <span className="text-[10px] text-text-muted">
+                    {p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </div>
       </section>
     </div>

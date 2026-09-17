@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
+import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
+import { useAuth } from '../../context/AuthContext';
 
 // Attach Clients modal - Steve's mockup (screenshot 10 in Kevin's
 // 2026-09-14 review). Opened from the "attach clients" action icon
@@ -26,6 +28,8 @@ interface Props {
 
 export function AttachClientsModal({ scheduleId, onClose }: Props) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [selected, setSelected] = useState<number[]>([]);
@@ -49,7 +53,7 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
   // client ids (for the "already attached" indicator). Only fires
   // when the modal is open.
   const detailQuery = useQuery({
-    queryKey: ['schedules-v2-detail', scheduleId ?? 0],
+    queryKey: schedulesV2Keys.detail(tenantId, scheduleId ?? 0),
     queryFn: () => schedulesV2Service.getById(scheduleId!),
     enabled: scheduleId != null && scheduleId > 0,
     staleTime: 60_000,
@@ -58,7 +62,7 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
 
   // Client search - 50 rows per response, live server-side match.
   const clientsQuery = useQuery({
-    queryKey: ['schedules-v2-attach-search', debounced],
+    queryKey: ['schedules-v2-attach-search', tenantId, debounced],
     queryFn: () => scheduleService.searchClients(debounced, 50).then((r) => r.response),
     enabled: scheduleId != null,
     staleTime: 30_000,
@@ -88,8 +92,10 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     mutationFn: (clientIds: number[]) =>
       schedulesV2Service.attachClients(scheduleId!, clientIds),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
-      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', scheduleId ?? 0] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
+      if (scheduleId != null) {
+        qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, scheduleId) });
+      }
       onClose();
     },
     onError: (e: Error) => setError(e.message),

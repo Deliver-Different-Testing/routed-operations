@@ -3,6 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import type { ScheduleGroupSummary } from '../../services/scheduleService';
+import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
+import { useAuth } from '../../context/AuthContext';
 
 // Copy Schedule modal. Replaces the previous window.prompt() flow that
 // only surfaced a bare "new name" input. This modal shows the source
@@ -19,6 +21,8 @@ interface Props {
 
 export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
   const [newName, setNewName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +39,7 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
   const copyMut = useMutation({
     mutationFn: (name: string) => schedulesV2Service.copy(source!.scheduleId, name),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       onSuccess?.();
       onClose();
     },
@@ -45,7 +49,7 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
   const submit = () => {
     const trimmed = newName.trim();
     if (!trimmed) { setError('New name is required.'); return; }
-    if (source && trimmed === source.name) {
+    if (source && trimmed === (source.name ?? '').trim()) {
       setError('New name must differ from the source name.'); return;
     }
     copyMut.mutate(trimmed);

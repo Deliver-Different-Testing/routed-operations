@@ -27,11 +27,32 @@ describe('Dashboard page', () => {
     expect(screen.getByText('Polygon Builder')).toBeInTheDocument();
   });
 
+  it('renders the new tiles added 2026-09-17 (Schedules legacy + Schedules NEW + Driver Scheduling)', () => {
+    renderWithProviders(<Dashboard />);
+    // Legacy schedules card uses the disambiguated title "Schedules
+    // (legacy)" to avoid a duplicate <h2> vs the new Schedules card.
+    expect(screen.getByText('Schedules (legacy)')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Schedules' }))
+      .toHaveAttribute('href', '/schedules');
+    // New Schedules card title is plain "Schedules" plus a NEW badge.
+    // Look up by CTA to disambiguate from the legacy one.
+    expect(screen.getByRole('link', { name: 'Open Schedules NEW' }))
+      .toHaveAttribute('href', '/schedules-new');
+    // NEW badge presence.
+    expect(screen.getByText('NEW')).toBeInTheDocument();
+    // Driver Scheduling card.
+    expect(screen.getByText('Driver Scheduling')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Driver Scheduling' }))
+      .toHaveAttribute('href', '/driver-scheduling');
+  });
+
   it('uses postcode label in the Recurring Routes card for the NZ tenant default', () => {
     renderWithProviders(<Dashboard />);
     // Default test AppUser has isUsTenant=false, so the copy talks about
-    // "postcode" (NZ) rather than "zip" (US).
-    const rrCard = screen.getByText('Recurring Routes').closest('div');
+    // "postcode" (NZ) rather than "zip" (US). Rely on the Card container
+    // (identified by the h2 title text) rather than .closest('div') which
+    // now grabs the badge-flex row instead of the whole card.
+    const rrCard = screen.getByText('Recurring Routes').closest('.bg-surface-white');
     expect(rrCard?.textContent).toContain('postcode');
   });
 
@@ -41,7 +62,7 @@ describe('Dashboard page', () => {
     try {
       renderWithProviders(<Dashboard />);
       // US tenant uses zip in the Polygon Builder / Recurring Routes copy.
-      const pbCard = screen.getByText('Polygon Builder').closest('div');
+      const pbCard = screen.getByText('Polygon Builder').closest('.bg-surface-white');
       expect(pbCard?.textContent?.toLowerCase()).toContain('zip');
     } finally {
       (window as any).__APP_USER__ = original;

@@ -6,6 +6,10 @@ import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
 import { ChainBuilder, type Leg } from './ChainBuilder';
+import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
+import { useAuth } from '../../context/AuthContext';
+import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
+import { PostcodeLookupInput } from './PostcodeLookupInput';
 
 // New Schedule modal - covers Steve's mockup "New Schedule" creator.
 // Uses ChainBuilder (this session's MVP of Dane's visual leg builder)
@@ -58,6 +62,8 @@ const DEFAULT_DAY: DayForm = {
 
 export function NewScheduleModal({ open, onClose }: Props) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [active, setActive] = useState(true);
@@ -92,20 +98,19 @@ export function NewScheduleModal({ open, onClose }: Props) {
   // polygons. Legacy /schedules has all three; parity requires them.
   const [pickupPostcodeGroupId, setPickupPostcodeGroupId] = useState<number | null>(null);
   const [postcodeIds, setPostcodeIds] = useState<number[]>([]);
-  const [postcodeInput, setPostcodeInput] = useState('');
   const [polygonIds, setPolygonIds] = useState<number[]>([]);
 
   // Coverage polygons - lazily fetched on modal open. Cached across
   // subsequent opens via React Query's default 5min stale time.
   const polygonsQuery = useQuery({
-    queryKey: ['bulk-polygons'],
+    queryKey: schedulesV2Keys.bulkPolygons(tenantId),
     queryFn: () => bulkPolygonService.list().then((r) => r.response),
     staleTime: 5 * 60_000,
     enabled: open,
   });
 
   const lookupsQuery = useQuery({
-    queryKey: ['schedules-v2-lookups'],
+    queryKey: schedulesV2Keys.lookups(tenantId),
     queryFn: () => scheduleService.lookups().then((r) => r.response),
     staleTime: 5 * 60_000,
     enabled: open,
@@ -114,7 +119,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const createMut = useMutation({
     mutationFn: (body: ScheduleGroupUpsertBody) => schedulesV2Service.create(body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       resetAndClose();
     },
     onError: (e: Error) => setError(e.message),
@@ -140,21 +145,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setBookPickup(false);
     setPickupPostcodeGroupId(null);
     setPostcodeIds([]);
-    setPostcodeInput('');
     setPolygonIds([]);
     onClose();
   };
 
-  const addPostcode = () => {
-    const p = Number(postcodeInput.trim());
-    // Clamp to a sane int range - NZ postcodes are 4 digits, US ZIPs
-    // are 5. Anything > 99999 either overflows the backend INT column
-    // or is a typo; reject client-side rather than surface a 500.
-    if (!Number.isFinite(p) || p <= 0 || p > 99999) return;
-    setPostcodeIds((prev) => prev.includes(p) ? prev : [...prev, p].sort((a, b) => a - b));
-    setPostcodeInput('');
-  };
-  const removePostcode = (p: number) => setPostcodeIds((prev) => prev.filter((x) => x !== p));
   const togglePolygon = (id: number) =>
     setPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
@@ -569,91 +563,79 @@ export function NewScheduleModal({ open, onClose }: Props) {
               (on top of the delivery zone group)
             </span>
           </span>
-          <div className="mt-1 flex items-center gap-2">
-            <input
-              type="number"
-              value={postcodeInput}
-              onChange={(e) => setPostcodeInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPostcode(); } }}
-              placeholder="e.g. 8011"
-              className="w-32 px-2 py-1 text-sm border border-border rounded"
+          <div className="mt-1">
+            <PostcodeLookupInput
+              selected={postcodeIds}
+              onChange={setPostcodeIds}
+              enabled={open}
             />
-            <button
-              type="button"
-              onClick={addPostcode}
-              className="px-3 py-1 text-xs rounded border border-border hover:bg-surface-light"
-            >
-              Add
-            </button>
-            <span className="text-xs text-text-muted">
-              {postcodeIds.length === 0 ? 'None bound.' : `${postcodeIds.length} bound.`}
-            </span>
           </div>
-          {postcodeIds.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {postcodeIds.map((p) => (
-                <span
-                  key={p}
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan font-mono"
-                >
-                  {String(p).padStart(4, '0')}
-                  <button
-                    type="button"
-                    onClick={() => removePostcode(p)}
-                    className="ml-1 hover:opacity-70"
-                    title="Remove"
-                  >
-                    x
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
         </div>
 
         <div className="col-span-2 block">
           <span className="text-xs uppercase tracking-wide text-text-muted">
             Coverage polygons
             <span className="text-text-muted normal-case ml-2">
-              (bind polygons drawn in Polygon Builder)
+              (bind polygons drawn in Polygon Builder; click the map or the list)
             </span>
           </span>
-          <div className="mt-1 max-h-48 overflow-y-auto border border-border rounded">
-            {polygonsQuery.isLoading && (
-              <div className="p-3 text-xs text-text-muted italic">Loading polygons...</div>
-            )}
-            {polygonsQuery.isError && (
-              <div className="p-3 text-xs text-error">
-                Failed to load polygons: {(polygonsQuery.error as Error).message}
-              </div>
-            )}
-            {polygonsQuery.data?.length === 0 && (
-              <div className="p-3 text-xs text-text-muted italic">
-                No polygons defined yet. Draw one in Polygon Builder.
-              </div>
-            )}
-            {polygonsQuery.data?.map((p) => {
-              const checked = polygonIds.includes(p.polygonId);
-              return (
-                <label
-                  key={p.polygonId}
-                  className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-light ${
-                    checked ? 'bg-brand-cyan/10' : ''
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => togglePolygon(p.polygonId)}
-                    className="accent-brand-cyan"
-                  />
-                  <span className="text-xs font-medium flex-1">{p.name}</span>
-                  <span className="text-[10px] text-text-muted">
-                    {p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}
-                  </span>
-                </label>
-              );
-            })}
+          <div className="mt-1 grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-3">
+            <div>
+              {polygonsQuery.isLoading && (
+                <div className="p-3 text-xs text-text-muted italic border border-border rounded-lg">
+                  Loading polygons...
+                </div>
+              )}
+              {polygonsQuery.isError && !polygonsQuery.isLoading && (
+                <div className="p-3 text-xs text-error border border-error/30 rounded-lg">
+                  Failed to load polygons: {(polygonsQuery.error as Error).message}
+                </div>
+              )}
+              {!polygonsQuery.isLoading && !polygonsQuery.isError && (
+                <ScheduleCoverageMap
+                  polygons={polygonsQuery.data ?? []}
+                  selectedIds={polygonIds}
+                  onToggle={togglePolygon}
+                  boundPostcodes={postcodeIds}
+                  activeZones={derived.zones}
+                  // MUST be a depot id (not a region id). Same fix as
+                  // ScheduleDetailModal - see audit CRITICAL #5 in the
+                  // 2026-09-17 review.
+                  destinationDepotId={derived.pickupDepotId ?? null}
+                  isUsTenant={auth.isUsTenant}
+                  googleMapsKey={auth.googleMapsKey}
+                />
+              )}
+            </div>
+            <div className="max-h-[360px] overflow-y-auto border border-border rounded">
+              {polygonsQuery.data?.length === 0 && (
+                <div className="p-3 text-xs text-text-muted italic">
+                  No polygons defined yet. Draw one in Polygon Builder.
+                </div>
+              )}
+              {polygonsQuery.data?.map((p) => {
+                const checked = polygonIds.includes(p.polygonId);
+                return (
+                  <label
+                    key={p.polygonId}
+                    className={`flex items-center gap-2 px-2 py-1 border-b border-border-light last:border-b-0 cursor-pointer hover:bg-surface-light ${
+                      checked ? 'bg-brand-cyan/10' : ''
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => togglePolygon(p.polygonId)}
+                      className="accent-brand-cyan"
+                    />
+                    <span className="text-xs font-medium flex-1">{p.name}</span>
+                    <span className="text-[10px] text-text-muted">
+                      {p.attachedRouteCount} route{p.attachedRouteCount === 1 ? '' : 's'}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
         </div>
 
