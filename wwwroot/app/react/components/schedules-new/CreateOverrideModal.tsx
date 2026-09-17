@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
+import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
+import { useAuth } from '../../context/AuthContext';
 
 // Create Client Override modal per Steve's brief §2 Schedule modal /
 // edit form item 3 "Create override for a client":
@@ -33,6 +35,8 @@ export function CreateOverrideModal({
   onClose,
 }: Props) {
   const qc = useQueryClient();
+  const auth = useAuth();
+  const tenantId = auth.currentTenantId ?? 0;
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [pickedId, setPickedId] = useState<number | null>(null);
@@ -53,7 +57,7 @@ export function CreateOverrideModal({
   }, [search]);
 
   const clientsQuery = useQuery({
-    queryKey: ['create-override-search', debounced],
+    queryKey: schedulesV2Keys.createOverrideSearch(tenantId, debounced),
     queryFn: () => scheduleService.searchClients(debounced, 50).then((r) => r.response),
     enabled: isOpen,
     staleTime: 30_000,
@@ -63,7 +67,7 @@ export function CreateOverrideModal({
   // (their link row is on the existing override, not the base). Fetch
   // the override list so we can grey those out.
   const overridesQuery = useQuery({
-    queryKey: ['schedules-v2-overrides', baseScheduleId ?? 0],
+    queryKey: schedulesV2Keys.overrides(tenantId, baseScheduleId ?? 0),
     queryFn: () => schedulesV2Service.listOverrides(baseScheduleId!),
     enabled: isOpen,
     staleTime: 30_000,
@@ -82,9 +86,12 @@ export function CreateOverrideModal({
     mutationFn: (clientId: number) =>
       schedulesV2Service.createOverride(baseScheduleId!, clientId),
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ['schedules-v2-list'] });
-      qc.invalidateQueries({ queryKey: ['schedules-v2-detail', baseScheduleId] });
-      qc.invalidateQueries({ queryKey: ['schedules-v2-overrides', baseScheduleId] });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
+      // Broad-match invalidation across ALL detail entries: both the base
+      // (client count / override list change) and the newly-created id
+      // (fresh detail on modal navigate) need to refetch.
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.detailAll(tenantId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.overridesAll(tenantId) });
       onCreated(res.scheduleId);
       onClose();
     },

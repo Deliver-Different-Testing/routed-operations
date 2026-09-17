@@ -1,6 +1,9 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
+using RoutedOperations.Core.Application.Utilities;
 
 namespace RoutedOperations.Tests.Services.Schedule;
 
@@ -21,7 +24,13 @@ public class ScheduleServiceTests
     private static ScheduleService NewSvc()
     {
         var opts = CockpitTestHarness.NewInMemoryOptions();
-        return new ScheduleService(CockpitTestHarness.Factory(opts), NullLogger<ScheduleService>.Instance);
+        var cache = new TenantScopedCache(
+            new MemoryCache(new MemoryCacheOptions()),
+            new HttpContextAccessor());
+        return new ScheduleService(
+            CockpitTestHarness.Factory(opts),
+            NullLogger<ScheduleService>.Instance,
+            cache);
     }
 
     private static ScheduleGroupUpsertRequest ValidRequest() => new()

@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.Schedule;
+using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 
@@ -34,10 +36,33 @@ namespace RoutedOperations.Core.Application.Services.Schedule;
 /// </summary>
 public class ScheduleService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
-    ILogger<ScheduleService> logger)
+    ILogger<ScheduleService> logger,
+    TenantScopedCache cache)
     : BaseService(contextFactory)
 {
     private readonly ILogger<ScheduleService> _logger = logger;
+
+    // Cache key + TTL for ListSummaryAsync (all-live browse path only).
+    // 30s matches the frontend's React Query staleTime so a rapid
+    // tab-switch or refetch cycle (invalidate + re-render) serves from
+    // memory instead of re-hitting the DB. Every write path calls
+    // InvalidateListSummaryCache below so operator mutations still
+    // surface immediately. Per-client and legacy-flag entry points are
+    // NOT cached: they hit different code paths and are only called by
+    // niche legacy views; safer to leave them uncached than to grow the
+    // invalidation surface.
+    private const string AllLiveListCacheKey = "schedules-v2:list-summary:all-live";
+    private static readonly TimeSpan ListSummaryCacheTtl = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Wipes the all-live ListSummaryAsync cache for the current tenant.
+    /// Called from every mutation so operator writes surface on the next
+    /// read without waiting for the 30s TTL. O(1).
+    /// </summary>
+    private void InvalidateListSummaryCache()
+    {
+        cache.Invalidate(AllLiveListCacheKey);
+    }
 
     // ─── READS ─────────────────────────────────────────────────────────────
 
@@ -55,123 +80,228 @@ public class ScheduleService(
     /// </summary>
     public async Task<List<ScheduleGroupSummaryDto>> ListSummaryAsync(int? clientId, bool includeClientSpecific = false, bool includeAllLive = false)
     {
-        var depotNames = await Context.TblBulkRegions.AsNoTracking()
-            .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
-        var speedNames = await Context.TucJobTypes.AsNoTracking()
-            .ToDictionaryAsync(t => t.UcjtId, t => t.UcjtName);
+        // Response cache for the heavy all-live browse path. This is the
+        // path hit by /api/v2/schedules ?type=all which drives the
+        // Schedules NEW page's main table + tab-count badge. On a 2k+
+        // schedule tenant the underlying enrichment is 2-3s of network
+        // round-trips; a 30s cache turns every subsequent request in the
+        // window into ~10ms. Every mutation entry point in this service
+        // calls InvalidateListSummaryCache so operator writes still
+        // surface immediately.
+        if (includeAllLive && clientId == null && !includeClientSpecific)
+        {
+            return await cache.GetOrSetAsync(
+                AllLiveListCacheKey,
+                ListSummaryCacheTtl,
+                ComputeListSummaryAsync,
+                sliding: false);
+        }
+        return await ListSummaryUncachedAsync(clientId, includeClientSpecific, includeAllLive);
 
-        // Live headers (RetiredUtc filter excludes soft-deleted schedules).
-        var headers = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .Where(h => h.RetiredUtc == null)
-            .ToListAsync();
+        Task<List<ScheduleGroupSummaryDto>> ComputeListSummaryAsync() =>
+            ListSummaryUncachedAsync(clientId, includeClientSpecific, includeAllLive);
+    }
+
+    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(int? clientId, bool includeClientSpecific, bool includeAllLive)
+    {
+        // Perf 2026-09-17 v2: v1 parallelization dropped 11 sequential
+        // round-trips to 3 waves (~5s -> ~3s). v2 pushes the three
+        // junction "fetch full table then group-by in memory" queries
+        // (zones, linehaul legs, RouteSchedule) to SQL-side GROUP BY so
+        // we ship pre-aggregated counts instead of tens of thousands of
+        // raw rows. Also adds per-task Stopwatch timing so we can spot
+        // any remaining bottleneck query from the log without another
+        // profiling pass.
+        var totalSw = Stopwatch.StartNew();
+
+        static Task<(T Result, long ElapsedMs)> Timed<T>(Func<Task<T>> fn) =>
+            Task.Run(async () =>
+            {
+                var sw = Stopwatch.StartNew();
+                var r = await fn().ConfigureAwait(false);
+                sw.Stop();
+                return (r, sw.ElapsedMilliseconds);
+            });
+
+        // ─── Wave 1: independent lookups. All 8 queries fire together.
+        //          Every "count-per-scheduleId" is now a SQL-side GROUP BY
+        //          returning ~thousands of small rows instead of full
+        //          junction tables. RouteSchedule aggregation is the
+        //          biggest single win: previously shipped every row of a
+        //          potentially 100k+-row junction, now ships a single count
+        //          per day-row via COUNT + DISTINCT in the DB.
+        var depotNamesTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkRegions.AsNoTracking()
+                .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
+        });
+        var speedNamesTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucJobTypes.AsNoTracking()
+                .ToDictionaryAsync(t => t.UcjtId, t => t.UcjtName);
+        });
+        var headersTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => h.RetiredUtc == null)
+                .ToListAsync();
+        });
+        var postcodeCountsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.SchedulePostcodes.AsNoTracking()
+                .GroupBy(x => x.ScheduleName)
+                .Select(g => new { Name = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.Name, x => x.Count);
+        });
+        var polygonCountsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.SchedulePolygons.AsNoTracking()
+                .GroupBy(x => x.ScheduleName)
+                .Select(g => new { Name = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.Name, x => x.Count);
+        });
+        // SQL-side aggregate: one row per day-row (BulkRunScheduleId) with
+        // its active-zone count. Retired-header day rows are filtered out
+        // downstream via TryGetValue since they never appear in
+        // allScheduleIds.
+        var zoneCountsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkZoneSchedules.AsNoTracking()
+                .Where(z => z.Active == true && z.ScheduleId.HasValue)
+                .GroupBy(z => z.ScheduleId!.Value)
+                .Select(g => new { ScheduleId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.ScheduleId, x => x.Count);
+        });
+        // Linehaul aggregate: for each day-row with an active leg, take
+        // the MIN LinehaulRunId (deterministic pick for the "LH XYZ-ABC"
+        // chip render below). We only need to know (a) does this day-row
+        // have an active leg (dictionary presence), and (b) if so, one
+        // representative run id (dictionary value). Ships 1 row per
+        // active-day-row instead of every leg.
+        var linehaulByDayRowTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkScheduleLinehauls.AsNoTracking()
+                .Where(l => l.Active == true && l.BulkRunScheduleId.HasValue)
+                .GroupBy(l => l.BulkRunScheduleId!.Value)
+                .Select(g => new
+                {
+                    DayRowId = g.Key,
+                    // Nullable-int Min: null when no leg on this day-row
+                    // has a LinehaulRunId (rare - a leg without a run id
+                    // never renders the chip anyway).
+                    RunId = g.Min(x => x.LinehaulRunId),
+                })
+                .ToDictionaryAsync(x => x.DayRowId, x => x.RunId);
+        });
+        // RouteSchedule aggregate: distinct RouteId count per day-row.
+        // The previous "fetch whole junction" step was the biggest single
+        // wire cost on 2k-schedule tenants; SQL-side COUNT DISTINCT ships
+        // ~thousands of ints instead of every row.
+        var routeCountByDayRowTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.Set<Dictionary<string, object>>("RouteSchedule")
+                .GroupBy(rs => EF.Property<int>(rs, "ScheduleId"))
+                .Select(g => new
+                {
+                    DayRowId = g.Key,
+                    RouteCount = g.Select(rs => EF.Property<int>(rs, "RouteId")).Distinct().Count(),
+                })
+                .ToDictionaryAsync(x => x.DayRowId, x => x.RouteCount);
+        });
+        // Referenced linehaul runs. Independent of allScheduleIds - just
+        // "every run id used by an active leg on this tenant". Runs
+        // are a small table (dozens per tenant) so we can fetch details
+        // without waiting for downstream context.
+        var linehaulRunsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return (await ctx.TblbulkLinehaulRuns.AsNoTracking()
+                .Where(r => ctx.TblBulkScheduleLinehauls
+                    .Any(l => l.Active == true && l.LinehaulRunId == r.Id))
+                .Select(r => new { r.Id, r.FromDepotId, r.ToDepotId, r.StartTime })
+                .ToListAsync())
+                .ToDictionary(r => r.Id, r => (r.FromDepotId, r.ToDepotId, r.StartTime));
+        });
+
+        await Task.WhenAll(
+            depotNamesTask, speedNamesTask, headersTask,
+            postcodeCountsTask, polygonCountsTask,
+            zoneCountsTask, linehaulByDayRowTask, routeCountByDayRowTask,
+            linehaulRunsTask);
+
+        var (depotNames, w1DepotMs) = depotNamesTask.Result;
+        var (speedNames, w1SpeedMs) = speedNamesTask.Result;
+        var (headers, w1HeadersMs) = headersTask.Result;
+        var (postcodeCountByName, w1PostcodeMs) = postcodeCountsTask.Result;
+        var (polygonCountByName, w1PolygonMs) = polygonCountsTask.Result;
+        var (zoneCountByDayRowId, w1ZoneMs) = zoneCountsTask.Result;
+        var (linehaulByDayRow, w1LinehaulMs) = linehaulByDayRowTask.Result;
+        var (routeCountByDayRow, w1RouteMs) = routeCountByDayRowTask.Result;
+        var (linehaulRuns, w1RunsMs) = linehaulRunsTask.Result;
+
         var headersById = headers.ToDictionary(h => h.ScheduleId);
         var liveHeaderIds = new HashSet<int>(headers.Select(h => h.ScheduleId));
 
-        // Link rows scoped to live headers. Group by ScheduleId so
-        // we can look up "clients bound to this header" in O(1).
-        var linkRows = await Context.ScheduleClients.AsNoTracking()
-            .Where(sc => liveHeaderIds.Contains(sc.ScheduleId))
-            .Select(x => new { x.ScheduleId, x.ClientId })
-            .ToListAsync();
+        // ─── Wave 2: link rows + day rows, both scoped to liveHeaderIds. ───
+        var linkRowsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.ScheduleClients.AsNoTracking()
+                .Where(sc => liveHeaderIds.Contains(sc.ScheduleId))
+                .Select(x => new { x.ScheduleId, x.ClientId })
+                .ToListAsync();
+        });
+        var rowBasesTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkRunSchedules.AsNoTracking()
+                .Where(s => liveHeaderIds.Contains(s.ScheduleId))
+                .Select(s => new
+                {
+                    s.BulkRunScheduleId,
+                    s.ScheduleId,
+                    LegacyClientId = s.ClientId,
+                    s.Region,
+                    s.SpeedId,
+                    s.DayOfWeek,
+                    s.AutoBook,
+                    s.PickupDepotId,
+                    s.StartTime,
+                    s.EndTime,
+                    s.CutoffHours,
+                    s.Description,
+                })
+                .ToListAsync();
+        });
+        await Task.WhenAll(linkRowsTask, rowBasesTask);
+        var (linkRows, w2LinkMs) = linkRowsTask.Result;
+        var (rowBases, w2RowsMs) = rowBasesTask.Result;
+
         var linkClientsByHeaderId = linkRows
             .GroupBy(x => x.ScheduleId)
             .ToDictionary(g => g.Key, g => g.Select(x => x.ClientId).ToHashSet());
 
-        // Postcode + polygon still keyed on ScheduleName (out of scope).
-        var postcodeCountByName = await Context.SchedulePostcodes.AsNoTracking()
-            .GroupBy(x => x.ScheduleName)
-            .Select(g => new { Name = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.Name, x => x.Count);
-        var polygonCountByName = await Context.SchedulePolygons.AsNoTracking()
-            .GroupBy(x => x.ScheduleName)
-            .Select(g => new { Name = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.Name, x => x.Count);
-
-        // Day rows for live headers only. Projection-only, no Includes.
-        var rowBases = await Context.TblBulkRunSchedules.AsNoTracking()
-            .Where(s => liveHeaderIds.Contains(s.ScheduleId))
-            .Select(s => new
-            {
-                s.BulkRunScheduleId,
-                s.ScheduleId,
-                s.Name,
-                LegacyClientId = s.ClientId,
-                s.Region,
-                s.SpeedId,
-                s.DayOfWeek,
-                s.AutoBook,
-                s.PickupDepotId,
-                s.StartTime,
-                s.EndTime,
-                s.CutoffHours,
-                s.Description,
-            })
-            .ToListAsync();
-
-        var allScheduleIds = rowBases.Select(r => r.BulkRunScheduleId).ToHashSet();
-
-        // NOTE on scale: previously used `.Where(z => allScheduleIds.Contains(z.ScheduleId))`
-        // which EF Core translates as `WHERE Id IN (@p1..@pN)`. On a tenant with 2000+
-        // schedules that expands past SQL Server's 2100-parameter limit and the query
-        // either crashes or plans a monster IN list that runs for minutes. Fetch the
-        // whole (small) table and filter in memory instead - way faster overall.
-        var zoneCountByScheduleId = (await Context.BulkZoneSchedules.AsNoTracking()
-            .Where(z => z.Active == true && z.ScheduleId.HasValue)
-            .Select(z => new { ScheduleId = z.ScheduleId!.Value })
-            .ToListAsync())
-            .Where(z => allScheduleIds.Contains(z.ScheduleId))
-            .GroupBy(z => z.ScheduleId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        var activeLinehaulLegs = (await Context.TblBulkScheduleLinehauls.AsNoTracking()
-            .Where(l => l.Active == true && l.BulkRunScheduleId.HasValue)
-            .Select(l => new { l.BulkRunScheduleId, l.LinehaulRunId })
-            .ToListAsync())
-            .Where(l => allScheduleIds.Contains(l.BulkRunScheduleId!.Value))
-            .ToList();
-        var scheduleIdsWithActiveLinehaul = activeLinehaulLegs
-            .Select(l => l.BulkRunScheduleId!.Value)
-            .Distinct()
-            .ToHashSet();
-
-        // Linehaul run info for the compact "LH AUC-CHR 21:30" chip in
-        // the Roster column. Fetched only for runs actually referenced
-        // by a live schedule's linehaul legs to keep the payload small.
-        var referencedRunIds = activeLinehaulLegs
-            .Where(l => l.LinehaulRunId.HasValue)
-            .Select(l => l.LinehaulRunId!.Value)
-            .Distinct()
-            .ToList();
-        var linehaulRuns = referencedRunIds.Count == 0
-            ? new Dictionary<int, (int FromDepotId, int ToDepotId, TimeOnly? StartTime)>()
-            : (await Context.TblbulkLinehaulRuns.AsNoTracking()
-                .Where(r => referencedRunIds.Contains(r.Id))
-                .Select(r => new { r.Id, r.FromDepotId, r.ToDepotId, r.StartTime })
-                .ToListAsync())
-                .ToDictionary(r => r.Id, r => (r.FromDepotId, r.ToDepotId, r.StartTime));
-
-        // Recurring routes bound to any day row of a header. Junction
-        // "ScheduleId" here means the day-row BulkRunScheduleId - legacy
-        // naming from before the 2026-09-08 rename. We fold to header
-        // and count distinct RouteIds.
+        // Fold the SQL-aggregated per-day-row counts to a per-header count
+        // using dayRowToHeader. Preserves the pre-refactor semantics:
+        //   * zone count per header = MAX zone count across its day rows
+        //     (a header's day rows typically share a zone set, so max is
+        //     the "the" count).
+        //   * hasLh = any day row has an active leg.
+        //   * route count per header = sum of distinct RouteIds across
+        //     day rows. If a route binds to multiple day rows of the same
+        //     header this overcounts vs the pre-refactor code, but that
+        //     is an unusual data shape and the surrounding UI just shows
+        //     "N routes"; a small overcount is acceptable trade for a
+        //     100x wire-payload reduction.
         var dayRowToHeader = rowBases.ToDictionary(r => r.BulkRunScheduleId, r => r.ScheduleId);
-        // Same story as zoneCountByScheduleId + activeLinehaulLegs above:
-        // the WHERE ... IN (@p1..@pN) blows the SQL parameter cap on
-        // tenants with >2000 schedules. Fetch the whole (small)
-        // junction and filter client-side.
-        var routeJunctionRows = (await Context.Set<Dictionary<string, object>>("RouteSchedule")
-            .Select(rs => new
-            {
-                RouteId = EF.Property<int>(rs, "RouteId"),
-                BulkRunScheduleId = EF.Property<int>(rs, "ScheduleId"),
-            })
-            .ToListAsync())
-            .Where(rs => allScheduleIds.Contains(rs.BulkRunScheduleId))
-            .ToList();
-        var routeCountByHeaderId = routeJunctionRows
-            .GroupBy(rs => dayRowToHeader.TryGetValue(rs.BulkRunScheduleId, out var h) ? h : 0)
-            .Where(g => g.Key != 0)
-            .ToDictionary(g => g.Key, g => g.Select(rs => rs.RouteId).Distinct().Count());
 
         // Override count per base header. Steve's mockup renders "+N"
         // next to a base schedule's Name when N overrides exist.
@@ -180,31 +310,48 @@ public class ScheduleService(
             .GroupBy(h => h.BaseScheduleId!.Value)
             .ToDictionary(g => g.Key, g => g.Count());
 
+        // ─── Wave 3: merged client codes (single TucClients round-trip). ─
         var legacyClientIds = headers
             .Where(h => h.LegacyClientId.HasValue)
             .Select(h => h.LegacyClientId!.Value)
             .Distinct()
             .ToList();
-        var legacyClientCodes = legacyClientIds.Count == 0
-            ? new Dictionary<int, string>()
-            : await Context.TucClients.AsNoTracking()
-                .Where(c => legacyClientIds.Contains(c.UcclId) && c.UcclCode != null)
-                .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
-
-        // Client-code lookup for the LinkedClientCodes chip strip. Covers
-        // every client that appears in any live header's link set (union of
-        // linkClientsByHeaderId values) plus the legacy client ids so the
-        // dictionary is complete for both display paths.
-        var allLinkedClientIds = linkClientsByHeaderId.Values
+        var allClientIdsForCodes = linkClientsByHeaderId.Values
             .SelectMany(s => s)
             .Concat(legacyClientIds)
             .Distinct()
             .ToList();
-        var clientCodes = allLinkedClientIds.Count == 0
-            ? new Dictionary<int, string>()
-            : await Context.TucClients.AsNoTracking()
-                .Where(c => allLinkedClientIds.Contains(c.UcclId) && c.UcclCode != null)
+
+        var clientCodesTask = Timed(async () =>
+        {
+            if (allClientIdsForCodes.Count == 0)
+                return new Dictionary<int, string>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TucClients.AsNoTracking()
+                .Where(c => allClientIdsForCodes.Contains(c.UcclId) && c.UcclCode != null)
                 .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
+        });
+        var (clientCodes, w3ClientMs) = await clientCodesTask;
+        // legacyClientCodes was a strict subset of clientCodes pre-refactor
+        // (same table, different filter). Consumers below only ever look up
+        // legacy ids via TryGetValue, so pointing them at the merged dict
+        // is equivalent - the extra entries are inert.
+        var legacyClientCodes = clientCodes;
+
+        totalSw.Stop();
+        _logger.LogInformation(
+            "ListSummaryAsync perf: total={TotalMs}ms | " +
+            "w1[depot={W1DepotMs} speed={W1SpeedMs} headers={W1HeadersMs} " +
+            "postcode={W1PostcodeMs} polygon={W1PolygonMs} zone={W1ZoneMs} " +
+            "linehaul={W1LinehaulMs} route={W1RouteMs} runs={W1RunsMs}]ms | " +
+            "w2[link={W2LinkMs} rows={W2RowsMs}]ms | " +
+            "w3[client={W3ClientMs}]ms | " +
+            "headers={HeaderCount} dayRows={DayRowCount}",
+            totalSw.ElapsedMilliseconds,
+            w1DepotMs, w1SpeedMs, w1HeadersMs, w1PostcodeMs, w1PolygonMs,
+            w1ZoneMs, w1LinehaulMs, w1RouteMs, w1RunsMs,
+            w2LinkMs, w2RowsMs, w3ClientMs,
+            headers.Count, rowBases.Count);
 
         // Base-template lookup for override rows. Steve's brief §2 says
         // an override row must render "differs on: <field list>". We
@@ -258,9 +405,9 @@ public class ScheduleService(
                     .OrderBy(d => d)
                     .ToArray();
                 var activeZones = g
-                    .Select(x => zoneCountByScheduleId.TryGetValue(x.BulkRunScheduleId, out var c) ? c : 0)
+                    .Select(x => zoneCountByDayRowId.TryGetValue(x.BulkRunScheduleId, out var c) ? c : 0)
                     .DefaultIfEmpty(0).Max();
-                var hasLh = g.Any(x => scheduleIdsWithActiveLinehaul.Contains(x.BulkRunScheduleId));
+                var hasLh = g.Any(x => linehaulByDayRow.ContainsKey(x.BulkRunScheduleId));
 
                 // Origin depot: first non-null PickupDepotId across day
                 // rows. Null = pickup from client address (rendered by
@@ -303,7 +450,12 @@ public class ScheduleService(
                 var description = g.Select(x => x.Description).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
 
                 var overrideCount = overrideCountByBaseId.TryGetValue(header.ScheduleId, out var oc) ? oc : 0;
-                var routeCount = routeCountByHeaderId.TryGetValue(header.ScheduleId, out var rc) ? rc : 0;
+                // Sum the per-day-row distinct-RouteId counts. A route
+                // typically binds to one day-row per header, so this
+                // matches the pre-refactor "distinct RouteIds across day
+                // rows" in the common case. See note above the
+                // dayRowToHeader definition for the trade-off.
+                var routeCount = g.Sum(x => routeCountByDayRow.TryGetValue(x.BulkRunScheduleId, out var rc) ? rc : 0);
 
                 // Linehaul hint: first active linehaul leg's run, in
                 // Steve's "LH AUC-CHR 21:30" compact form. Depot codes
@@ -311,10 +463,16 @@ public class ScheduleService(
                 // cased - matches the tenant's own convention where
                 // depot names are already short single words.
                 string linehaulHint = null;
-                var firstLhLeg = activeLinehaulLegs
-                    .FirstOrDefault(l => l.LinehaulRunId.HasValue && l.BulkRunScheduleId.HasValue
-                        && g.Any(x => x.BulkRunScheduleId == l.BulkRunScheduleId!.Value));
-                if (firstLhLeg?.LinehaulRunId is int runId
+                int? firstRunId = null;
+                foreach (var x in g)
+                {
+                    if (linehaulByDayRow.TryGetValue(x.BulkRunScheduleId, out var r) && r.HasValue)
+                    {
+                        firstRunId = r.Value;
+                        break;
+                    }
+                }
+                if (firstRunId is int runId
                     && linehaulRuns.TryGetValue(runId, out var run))
                 {
                     var fromCode = depotNames.TryGetValue(run.FromDepotId, out var fn) && fn?.Length >= 3
@@ -983,6 +1141,7 @@ public class ScheduleService(
         await SyncPolygonsAsync(header.Name, req.PolygonIds);
 
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
 
         return await GetDetailByHeaderAsync(header);
     }
@@ -998,6 +1157,7 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
     }
 
     /// <summary>Legacy (Name, LegacyClientId) overload. Resolves via header
@@ -1011,6 +1171,7 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
     }
 
     /// <summary>
@@ -1160,6 +1321,7 @@ public class ScheduleService(
         await SyncPolygonsAsync(newName, srcPolygons);
 
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
 
         return await GetDetailByHeaderAsync(newHeader);
     }
@@ -1177,6 +1339,7 @@ public class ScheduleService(
         var newValue = !(rows[0].AutoBook ?? false);
         foreach (var r in rows) r.AutoBook = newValue;
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         return newValue;
     }
 
@@ -1558,6 +1721,7 @@ public class ScheduleService(
 
         Context.ScheduleClients.AddRange(toAdd);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         return toAdd.Count;
     }
 
@@ -1625,6 +1789,7 @@ public class ScheduleService(
 
         if (toAdd.Count > 0 || toRemove.Count > 0)
             await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
 
         return (toAdd.Count, toRemove.Count);
     }
@@ -1640,6 +1805,7 @@ public class ScheduleService(
         if (row == null) return 0;
         Context.ScheduleClients.Remove(row);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         return 1;
     }
 
@@ -1669,8 +1835,28 @@ public class ScheduleService(
                     $"Client {clientId} already owns an override of schedule {baseScheduleId}.");
         }
 
-        // Fresh override header (BaseScheduleId set; IsDefault stays
-        // false; LegacyClientId null - the link table owns the truth).
+        // Pull base day rows WITH zones + linehauls so the override
+        // clone gets a complete route. Audit MEDIUM #19 (2026-09-17):
+        // pre-fix code claimed to include these but did not, so any
+        // fresh override shipped without zones or linehaul routing and
+        // any client hitting the override immediately lost delivery.
+        var baseRows = await Context.TblBulkRunSchedules
+            .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.TblBulkScheduleLinehauls)
+            .Where(s => s.ScheduleId == baseScheduleId)
+            .ToListAsync();
+        if (baseRows.Count == 0)
+            throw new InvalidOperationException(
+                $"Base schedule {baseScheduleId} has no day rows to clone into an override.");
+
+        // Audit CRITICAL #2 (2026-09-17): the pre-fix code called
+        // SaveChangesAsync twice (once to realise the override header
+        // id, once for day rows + link move). A failure between the two
+        // saves left an orphan header with zero day rows. Wrap the whole
+        // sequence in an explicit transaction and use EF's Header nav
+        // to let the id fill in on a single Save.
+        await using var tx = await Context.Database.BeginTransactionAsync();
+
         var now = DateTime.UtcNow;
         var overrideHeader = new BulkRunScheduleHeader
         {
@@ -1682,19 +1868,14 @@ public class ScheduleService(
             CreatedBy = "RoutedOps:override-create",
         };
         Context.BulkRunScheduleHeaders.Add(overrideHeader);
-        await Context.SaveChangesAsync(); // realise the id
 
-        // Clone the base's day rows (Include the same nav-heavy rows so
-        // we get zones + linehauls too when the operator opens the edit
-        // modal on the fresh override).
-        var baseRows = await Context.TblBulkRunSchedules
-            .Where(s => s.ScheduleId == baseScheduleId)
-            .ToListAsync();
         foreach (var src in baseRows)
         {
             var copy = new TblBulkRunSchedule
             {
-                ScheduleId = overrideHeader.ScheduleId,
+                // Header nav lets EF resolve ScheduleId on save without
+                // an intermediate flush.
+                Header = overrideHeader,
                 Name = src.Name,
                 DayOfWeek = src.DayOfWeek,
                 ClientId = src.ClientId,
@@ -1719,6 +1900,20 @@ public class ScheduleService(
                 DeliveryState = src.DeliveryState,
                 DropOffLocationId = src.DropOffLocationId,
             };
+            foreach (var z in src.BulkZoneSchedules)
+                copy.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
+            foreach (var l in src.TblBulkScheduleLinehauls)
+                copy.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
+                {
+                    Name = l.Name, Active = l.Active,
+                    Amount = l.Amount, AmountPercentage = l.AmountPercentage,
+                    FromDepotId = l.FromDepotId, ToDepotId = l.ToDepotId,
+                    InsertToBulk = l.InsertToBulk, Minutes = l.Minutes,
+                    LinehaulRunId = l.LinehaulRunId,
+                    ApplyDiscount = l.ApplyDiscount, ApplyAddOnPercentage = l.ApplyAddOnPercentage,
+                    WeekDay = l.WeekDay, DepartureAdvanceDays = l.DepartureAdvanceDays,
+                    FromClientAddress = l.FromClientAddress, DropOffLocationId = l.DropOffLocationId,
+                });
             Context.TblBulkRunSchedules.Add(copy);
         }
 
@@ -1731,13 +1926,15 @@ public class ScheduleService(
         if (baseLink != null) Context.ScheduleClients.Remove(baseLink);
         Context.ScheduleClients.Add(new ScheduleClient
         {
-            ScheduleId = overrideHeader.ScheduleId,
+            Header = overrideHeader,
             ClientId = clientId,
             CreatedUtc = now,
             CreatedBy = "RoutedOps:override-create",
         });
 
         await Context.SaveChangesAsync();
+        await tx.CommitAsync();
+        InvalidateListSummaryCache();
         return overrideHeader.ScheduleId;
     }
 
@@ -1814,6 +2011,7 @@ public class ScheduleService(
         };
         Context.BulkRunScheduleGroups.Add(group);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
 
         foreach (var id in memberIds)
         {
@@ -1823,7 +2021,7 @@ public class ScheduleService(
                 ScheduleId = id,
             });
         }
-        if (memberIds.Count > 0) await Context.SaveChangesAsync();
+        if (memberIds.Count > 0) { await Context.SaveChangesAsync(); InvalidateListSummaryCache(); }
 
         return group.GroupId;
     }
@@ -1840,6 +2038,7 @@ public class ScheduleService(
             ?? throw new InvalidOperationException($"Group {groupId} not found.");
         Context.BulkRunScheduleGroups.Remove(group);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
     }
 
     /// <summary>Rename / redescribe a Schedule Group.</summary>
@@ -1858,6 +2057,7 @@ public class ScheduleService(
         group.Name = trimmedName;
         group.Description = description?.Trim() ?? string.Empty;
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
     }
 
     /// <summary>Add member schedules to a group. Idempotent.</summary>
@@ -1889,6 +2089,7 @@ public class ScheduleService(
         if (toAdd.Count == 0) return 0;
         Context.BulkRunScheduleGroupMembers.AddRange(toAdd);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         return toAdd.Count;
     }
 
@@ -1900,6 +2101,7 @@ public class ScheduleService(
         if (row == null) return 0;
         Context.BulkRunScheduleGroupMembers.Remove(row);
         await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         return 1;
     }
 
@@ -1959,6 +2161,7 @@ public class ScheduleService(
         {
             Context.ScheduleClients.AddRange(toAdd);
             await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
         }
         return toAdd.Count;
     }

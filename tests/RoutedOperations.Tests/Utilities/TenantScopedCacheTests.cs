@@ -59,13 +59,42 @@ public class TenantScopedCacheTests
     }
 
     [Fact]
-    public async Task GetOrSetAsync_MissingClaim_UsesAnonPrefix()
+    public async Task GetOrSetAsync_MissingClaim_BypassesCache()
     {
+        // 2026-09-17 audit CRITICAL #1: the previous "anon" fallback let
+        // non-HTTP callers (hosted services, warmup, cron) share a
+        // single cache slot across every tenant. The wrapper now returns
+        // null from TryBuildKey and GetOrSetAsync bypasses the cache
+        // entirely - factory runs, nothing is stored, nothing is shared.
         var (sut, backing, _) = NewSut(null);
+        var calls = 0;
 
-        await sut.GetOrSetAsync<string>("k", TimeSpan.FromMinutes(5), () => Task.FromResult("v"));
+        var a = await sut.GetOrSetAsync<string>("k", TimeSpan.FromMinutes(5), () =>
+        {
+            calls++;
+            return Task.FromResult("v");
+        });
+        // Second call MUST NOT hit the cache - factory runs again.
+        var b = await sut.GetOrSetAsync<string>("k", TimeSpan.FromMinutes(5), () =>
+        {
+            calls++;
+            return Task.FromResult("v2");
+        });
 
-        Assert.True(backing.TryGetValue("tanon:k", out _));
+        Assert.Equal("v", a);
+        Assert.Equal("v2", b);
+        Assert.Equal(2, calls);
+        Assert.False(backing.TryGetValue("tanon:k", out _), "no 'anon' slot should ever be written");
+    }
+
+    [Fact]
+    public void Invalidate_MissingClaim_IsSafe()
+    {
+        // With no HttpContext.User claim, Invalidate is a no-op instead
+        // of throwing / removing a cross-tenant "anon" slot.
+        var (sut, _, _) = NewSut(null);
+        var ex = Record.Exception(() => sut.Invalidate("k"));
+        Assert.Null(ex);
     }
 
     [Fact]

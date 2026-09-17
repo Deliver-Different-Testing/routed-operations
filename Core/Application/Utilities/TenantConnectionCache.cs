@@ -73,6 +73,24 @@ public static class TenantConnectionCache
                 builder.Password = ours.Password;
             }
 
+            // Keep the SqlClient pool warm across requests. Default MinPoolSize
+            // is 0, so idle connections are trimmed within a minute and the
+            // next request re-pays the SSL/auth handshake (~500-1000ms per
+            // connection to AWS RDS over WAN). A modest MinPoolSize means
+            // parallel read queries (ScheduleService.ListSummaryAsync fires
+            // up to 9 concurrent) usually land on warm sockets.
+            //
+            // 2026-09-17 audit HIGH #7: previously 20. On a many-tenant
+            // deployment (200 tenants across 3 app instances) that pinned
+            // 12k idle sessions per host. Bumped down to 5 so the ratio
+            // stays sane; hot tenants earn more via ambient traffic
+            // keeping the pool warm above the floor. Explicit env override
+            // (SQLCredentials with Min Pool Size=N) still wins.
+            if (builder.MinPoolSize < 5)
+            {
+                builder.MinPoolSize = 5;
+            }
+
             return builder.ConnectionString;
         }
         catch (ArgumentException ex)
