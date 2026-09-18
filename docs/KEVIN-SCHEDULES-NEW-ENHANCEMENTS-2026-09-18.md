@@ -26,12 +26,13 @@ connecting it forces you to know an integer id.**
 |---|---|---|
 | **E1** | A schedule row and modal show **which schedule group(s)** it belongs to | Schedules tab |
 | **E2** | Adding a schedule to a group is a **wildcard name search**, not a ScheduleId field | Schedule Groups tab |
-| **E3** | A schedule shows the **recurring routes bound to it** | Schedules tab + Roster tab |
+| **E3** | The **recurring routes bound to a schedule** show on the schedule row, not only in the Roster tab | Schedules tab |
 
 E1 and E2 need the two schedule-group tables that are still the launch blocker
 from `KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08.md` §3/§5 — DDL repeated
-in section 4 below so this brief is self-contained. **E3 needs the
-`Routes.ScheduleId` re-point in section 4.2 or it renders empty on real data.**
+in section 4 below so this brief is self-contained. E3 is largely a lift of what
+the Roster tab already resolves onto the list row; it needs a batch endpoint and
+the `Routes.ScheduleId` question in section 4.2 settled.
 
 ---
 
@@ -196,55 +197,54 @@ rows — ops needs to choose that.
 
 ---
 
-## E3 — Show the recurring routes a schedule is bound to
+## E3 — Show the recurring routes a schedule is bound to, in the list
 
 ### What ops sees today
 
-Nothing, on real data. The reverse direction was specified — the Recurring
-Routes tab shows `Schedule(s)` chips per route — but from a schedule you cannot
-see which routes deliver it without going to the Configurator Routes editor and
-reading bindings one at a time.
+The **Roster tab inside the schedule modal already shows the recurring routes**
+bound to a schedule — that part works and is not being asked for again. The gap
+is one level up: from the Schedules **list** you cannot tell which schedules
+have a rostered route behind them and which do not, without opening each
+schedule and clicking through to its Roster tab. With 2,725 schedules that is
+not a question anyone can answer.
 
-The frontend for this is **already written and already in the repo**; it is
-running on sample rows:
-
-| Built | File |
-|---|---|
-| `Roster` column chips (`2 routes`, `LH AUC→CHC 21:30`) | `components/ScheduleTable.tsx`, `DispatchCell` ≈ line 31 |
-| Roster tab: routes bound, linehaul runs, master job, 7-day roster strips | `components/DispatchTab.tsx` |
-| Join + roster resolution (date override › weekly › default) | `dispatch/dispatchData.ts`, `dispatch/types.ts` |
-
-`DispatchCell` imports `sampleRecurringRoutes` / `sampleLinehaulRuns` directly
-from `dispatch/dispatchData`. **E3 is mostly a wiring job, not a build job** —
-replace those two imports with real data and the column lights up.
+So E3 is: **lift what the Roster tab already resolves up onto the schedule row**,
+and make "has no route bound" a thing you can filter for.
 
 ### Build
 
-1. **Batch the list-level data.** The table renders every schedule; one
-   `/schedules/{id}/dispatch` call per row is 2,700 calls. Add a single batch
-   endpoint (below), fetch it once in `SchedulesPage.tsx`, hold it in a
-   `Map<scheduleId, DispatchSummary>` and pass that into `ScheduleTable`.
-   `DispatchCell` takes the summary as a prop instead of importing samples.
-2. **Roster tab** (`DispatchTab.tsx`) calls the existing
-   `GET /api/v2/schedules/{id}/dispatch` on modal open — full detail, per
-   schedule, lazily. `schedulesApi.dispatch(id)` in `api/v2.ts` is already
-   typed for it.
-3. **Click-through.** A route chip opens the Recurring Routes tab filtered to
-   that route; a linehaul chip opens the Edit Linehaul Run modal. Keep the
-   Route Roster / Linehaul Roster editors where they are and deep-link, as the
-   2026-09-08 brief already settled.
-4. **Unbound is a state, not a blank.** A schedule with no bound route and no
-   linehaul leg shows a muted `No routes bound` rather than `—`, and a `Routes`
-   filter gets a `Not bound` option. That is the operational question behind
-   this enhancement: which schedules are we relying on ad-hoc matching for.
-5. **Master job red flag** already renders in `DispatchTab.tsx`; make sure the
-   real DTO populates `masterJob: null` rather than omitting it, so the flag
-   fires. A run with no master job means the driver sees every item as its own
-   job.
+1. **Wire the `Roster` column to real data.** The column and its renderer
+   already exist —
+   `v2/frontend/src/schedules/modules/schedules/components/ScheduleTable.tsx`,
+   `DispatchCell` ≈ line 31 — and it renders `2 routes` and
+   `LH AUC→CHC 21:30` chips correctly. It just imports
+   `sampleRecurringRoutes` / `sampleLinehaulRuns` from `dispatch/dispatchData`.
+   Replace those two imports with the batch data below; the rendering needs no
+   change.
+2. **Batch the fetch.** The table renders every schedule, so one
+   `/schedules/{id}/dispatch` call per row is 2,700 calls. Add the single batch
+   endpoint below, fetch it once in `SchedulesPage.tsx`, hold it as a
+   `Map<scheduleId, DispatchSummary>` and pass it into `ScheduleTable`;
+   `DispatchCell` takes its summary as a prop instead of importing samples.
+   The per-schedule `GET /api/v2/schedules/{id}/dispatch` the Roster tab
+   already uses stays exactly as it is.
+3. **Unbound is a state, not a blank.** A schedule with no bound route and no
+   linehaul leg shows a muted `No routes bound` rather than `—`, and the filter
+   row gets a `Routes` dropdown with `All` / `Has routes` / `Not bound`. That
+   is the operational question behind this enhancement: which schedules are we
+   relying on ad-hoc matching for.
+4. **Click-through.** A route chip opens the Recurring Routes tab filtered to
+   that route; a linehaul chip opens the Edit Linehaul Run modal. Same
+   deep-link approach the Roster tab already uses — reuse its handlers rather
+   than writing new ones.
+5. **Master-job flag at list level.** The Roster tab already flags a linehaul
+   run with no master job. Carry `hasMasterJob` in the summary and tint the
+   linehaul chip red when it is false, so a missing master job is visible from
+   the list instead of only after opening the schedule.
 
 ### API
 
-Existing, now actually consumed:
+Existing, unchanged, already consumed by the Roster tab:
 
 ```
 GET /api/v2/schedules/{id}/dispatch  → DispatchDto { routes[], runs[] }
@@ -260,37 +260,41 @@ GET /api/v2/schedules/dispatch-summary?scheduleIds=1,2,3   (omit = all live)
                    hasMasterJob: bool }] }]
 ```
 
-Routes come from `Routes.ScheduleId`; runs from
-`TblBulkScheduleLinehaul.LinehaulRunId` → `TblbulkLinehaulRun`. No roster
-resolution in the summary — the 7-day strip stays on the detail call, it is
-expensive and the table does not show it.
+**Join it on whatever key the Roster tab already joins on.** Since the Roster
+tab resolves routes correctly today, that join is proven — reuse it verbatim in
+the batch query rather than writing a second one against the header id, or the
+list and the modal will disagree about the same schedule. Runs come from
+`TblBulkScheduleLinehaul.LinehaulRunId` → `TblbulkLinehaulRun`, which has been
+id-keyed all along.
 
-### 4.2 is a hard prerequisite — read it before starting E3
+No roster resolution in the summary — the 7-day strip stays on the detail call,
+it is expensive and the list does not show it.
 
-`Routes.ScheduleId` currently points at a **representative day-row id**, not at
-the header `ScheduleId` (`ScheduleLookup.id` in `tenant_routeService.ts`;
-2026-09-08 brief §2b). Joining the summary endpoint on the header id against
-today's column returns **zero rows for nearly every schedule**, and it will look
-like the feature works and the data is empty rather than like a broken join. Do
-the re-point in section 4.2 first, and check the count before wiring the UI.
+### Note on `Routes.ScheduleId` (section 4.2)
+
+`Routes.ScheduleId` was pointing at a representative **day-row id**, not the
+header `ScheduleId` (2026-09-08 brief §2b). If the Roster tab is resolving
+routes today then that is either already re-pointed or the query is still
+joining the day row. Worth settling before the batch endpoint is written,
+because the two must agree: tell me which it is, and if it is still the day-row
+id, 4.2 is the tidy-up — not a blocker on E3 as long as the batch query joins
+the same way the Roster tab does.
 
 ### Acceptance
 
-- A schedule with two bound routes shows `2 routes`; hovering names them.
-- A schedule with a linehaul leg shows `LH AUC→CHC 21:30`, sourced from
+- A schedule whose Roster tab shows two routes also shows `2 routes` on its row
+  in the list. The list and the modal never disagree.
+- A schedule with a linehaul leg shows `LH AUC→CHC 21:30` on the row, from
   `TblbulkLinehaulRun`, not from sample data.
 - A schedule with neither shows `No routes bound`, and the `Not bound` filter
   returns exactly that set.
-- Opening the schedule's Roster tab lists the same routes and runs, plus the
-  7-day roster strip with date overrides in amber.
-- A run with no `tucJobBooking` where `IsLinehaulMaster = 1` shows the red
-  missing-master-job flag.
+- A linehaul run with no `tucJobBooking` where `IsLinehaulMaster = 1` shows the
+  red chip on the row as well as the flag in the Roster tab.
 - A route bound to more than one schedule shows `shared by n schedules` (this
   stays M:1 until the join table lands — the chip just needs to tolerate the
   plural).
-- Count check before and after the 4.2 re-point:
-  `SELECT COUNT(*) FROM Routes WHERE ScheduleId IS NOT NULL` is unchanged, and
-  every non-null `ScheduleId` now resolves to a live header.
+- The list renders in one round trip: one `dispatch-summary` call, not one call
+  per row.
 
 ---
 
@@ -328,7 +332,10 @@ the same audit the client link rows have. The `ScheduleId` index is what makes
 E1's Groups column cheap — that lookup is schedule → groups, the opposite
 direction to the PK.
 
-### 4.2 Re-point `Routes.ScheduleId` at the header (blocks E3)
+### 4.2 Re-point `Routes.ScheduleId` at the header (tidy-up, settle before E3)
+
+Only needed if the Roster tab is still resolving routes through the day-row id.
+If it already joins the header, this is done — tell me and skip it.
 
 ```sql
 -- Confirm the current state first: how many route bindings resolve to a day row
@@ -380,7 +387,8 @@ same `@Commit = 0` rollback harness as `001`.
 2. **E2** — the member picker. It is the one ops is actively blocked on, and it
    is a copy of `AttachClientsModal.tsx`.
 3. **E1** — Groups column, filter, modal chips. Small once the tables exist.
-4. **4.2 route re-point**, with the count checks.
+4. **4.2** — confirm which key the Roster tab joins on; re-point if it is still
+   the day-row id, with the count checks.
 5. **E3** — batch endpoint, swap the two sample imports, wire the Roster tab.
 
 E1 + E2 are one deployable slice; E3 is the second.
