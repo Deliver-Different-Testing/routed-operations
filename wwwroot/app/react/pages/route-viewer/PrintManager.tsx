@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
+import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { Button } from '../../components/common/Button';
 import { RvBox } from '../../components/route-viewer/RvBox';
@@ -101,10 +102,40 @@ export default function PrintManager() {
     return () => window.clearTimeout(t);
   }, [searchInput]);
 
+  // Hydrate tenant lookups so the first fetch already carries the full
+  // clientIds + regionIds scope. Fixes George's 2026-09-18 Medical-Prod
+  // report: RVW_stpPrintJobsV2 was returning 0 rows because the query
+  // called `getPrintJobList(runDate)` with null @ClientIDs + null
+  // @Regions. Legacy /home/PrintJobList always sends the operator's
+  // checked-client + checked-region sets (printService.js:6). Defaulting
+  // to "everything the tenant + user can see" matches legacy on a fresh
+  // page-load with no filters touched.
+  const lookups = useRouteViewerLookups(runDate);
+  const defaultClientIds = useMemo(
+    () => lookups.clients.map((c) => c.id).filter((id) => id > 0),
+    [lookups.clients],
+  );
+  const defaultRegionIds = useMemo(
+    () => lookups.regions.map((r) => r.id).filter((id) => id > 0),
+    [lookups.regions],
+  );
+
   const q = useQuery({
-    queryKey: ['pm-list', runDate],
-    queryFn: () => routeViewerService.getPrintJobList(runDate),
-    enabled: !!runDate,
+    // Include the lookup array lengths so the query refetches once
+    // lookups arrive (initial paint has 0 clients/regions, then the
+    // lookup responses land and the query key changes).
+    queryKey: ['pm-list', runDate, defaultClientIds.length, defaultRegionIds.length],
+    queryFn: () => routeViewerService.getPrintJobList(runDate, {
+      clientIds: defaultClientIds.length > 0 ? defaultClientIds : undefined,
+      regionIds: defaultRegionIds.length > 0 ? defaultRegionIds : undefined,
+    }),
+    // Wait until the lookups settle so we don't waste a call with
+    // empty arrays that reproduces the exact bug this fix is closing.
+    // If the lookups themselves fail (0 rows), fire anyway - the
+    // filter arrays fall to undefined and behaviour matches the
+    // pre-fix path (which at least surfaces a network error rather
+    // than looking indefinitely blocked).
+    enabled: !!runDate && !lookups.isLoading,
     staleTime: 10_000,
   });
 

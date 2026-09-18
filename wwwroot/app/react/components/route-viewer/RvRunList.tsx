@@ -13,7 +13,12 @@ import { Button } from '../common/Button';
 // handler forwards the modifier keys up so the parent can decide whether
 // this is "replace selection" or "extend / toggle in place".
 
-export type ViewMode = 'Combined' | 'Inbound' | 'Outbound';
+// Owned by wwwroot/app/react/lib/runViewerViewMode.ts as of 2026-09-18;
+// re-exported here so existing `import { type ViewMode } from '.../RvRunList'`
+// paths keep working (RunViewer.tsx + RvRunList.test.tsx today). Imported
+// locally too because this file uses ViewMode in its own type annotations.
+import type { ViewMode } from '../../lib/runViewerViewMode';
+export type { ViewMode };
 
 interface Props {
   runs: BulkRun[];

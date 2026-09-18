@@ -27,7 +27,7 @@ describe('Dashboard page', () => {
     expect(screen.getByText('Polygon Builder')).toBeInTheDocument();
   });
 
-  it('renders the new tiles added 2026-09-17 (Schedules legacy + Schedules NEW + Driver Scheduling)', () => {
+  it('renders the new tiles added 2026-09-17 (Schedules legacy + Schedules NEW + Driver Rostering)', () => {
     renderWithProviders(<Dashboard />);
     // Legacy schedules card uses the disambiguated title "Schedules
     // (legacy)" to avoid a duplicate <h2> vs the new Schedules card.
@@ -40,9 +40,9 @@ describe('Dashboard page', () => {
       .toHaveAttribute('href', '/schedules-new');
     // NEW badge presence.
     expect(screen.getByText('NEW')).toBeInTheDocument();
-    // Driver Scheduling card.
-    expect(screen.getByText('Driver Scheduling')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open Driver Scheduling' }))
+    // Driver Rostering card (renamed 2026-09-18 per Steve, still routes to /driver-scheduling).
+    expect(screen.getByText('Driver Rostering')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Driver Rostering' }))
       .toHaveAttribute('href', '/driver-scheduling');
   });
 

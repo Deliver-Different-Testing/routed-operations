@@ -29,11 +29,17 @@ import { routeViewerService } from '../../services/routeViewerService';
 // (NP users are locked to the courier-only variant just below).
 
 interface Props {
-  runId: number;
-  /** Date the run is on. Needed so the dialog can resolve the run's
-   *  bulk job ids at submit time - the assign endpoint requires
-   *  JobIds and does NOT resolve them from runId + date server-side. */
-  runDate: string;
+  /** tucJob.UcjbId list pre-filtered by the caller. This is the
+   *  legacy Run Viewer pattern (assignRouteDialogController.js: dialog
+   *  is dumb, caller owns scope). Refactored 2026-09-18 out of the
+   *  fetch-at-submit-with-hardcoded-Combined shape after George's
+   *  Medical-Prod report - see lib/runViewerViewMode.ts. Callers must
+   *  ensure ids are non-zero (assign endpoint keys off ucjbID and
+   *  rejects 0s server-side). Empty list surfaces an inline error. */
+  jobIds: number[];
+  /** Human label used in the success toast: "run #204", "Job P123LHP",
+   *  "12 selected jobs", etc. Whatever reads well in the toast. */
+  runLabel: string;
   /** Optional anchor job id used by the Agent + NP search endpoint's
    *  NP scope guard. Callers with a selected job (job context menu)
    *  should pass it; run-scoped callers can omit and we default to 0. */
@@ -50,7 +56,7 @@ interface PickerRow {
   subtitle?: string;
 }
 
-export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSuccess }: Props) {
+export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSuccess }: Props) {
   const user = useAuth();
   const [bucket, setBucket] = useState<Bucket>('courier');
   const [query, setQuery] = useState('');
@@ -122,18 +128,17 @@ export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSucc
     setSubmitting(true);
     setError(null);
     try {
-      // The assign endpoint (POST /api/runviewer/jobs/assign) requires
-      // an explicit JobIds list; it does NOT resolve them from runId +
-      // runDate server-side. The backend AssignAsync treats those ids
-      // as tucJob.UcjbId (per-job scope guard + DES_stpJob_AutoDespatch
-      // SPs both key off ucjbID), so we send `jobId` NOT `bulkJobId` -
-      // matches legacy homeControl.js:2196 (`j.jobID`) and keeps
-      // synthetic Recurring Route runs assignable (they carry real
-      // tucJob rows even though tblBulkJob is empty).
-      const jobs = await routeViewerService.getRunJobs(runId, runDate, { group: 'Combined' });
-      const jobIds = jobs.map((j) => j.jobId).filter((id) => id > 0);
+      // Legacy Run Viewer pattern (assignRouteDialogController.js:210):
+      // dialog is dumb, caller supplies JobIds. The assign endpoint
+      // (POST /api/runviewer/jobs/assign) requires an explicit JobIds
+      // list; the backend AssignAsync treats those ids as tucJob.UcjbId
+      // (per-job scope guard + DES_stpJob_AutoDespatch SPs both key off
+      // ucjbID). Callers filter ids > 0 up front - matches legacy
+      // homeControl.js:2196 (`j.jobID`) and keeps synthetic Recurring
+      // Route runs assignable (they carry real tucJob rows even though
+      // tblBulkJob is empty). Empty list = caller bug; surface inline.
       if (jobIds.length === 0) {
-        setError('This run has no jobs to assign yet.');
+        setError('No jobs to assign in the current selection.');
         return;
       }
       const targetType = bucket === 'courier'
@@ -152,8 +157,8 @@ export function AssignRouteDialog({ runId, runDate, anchorJobId, onClose, onSucc
         return;
       }
       const summary = result.failed > 0
-        ? `Assigned ${picked.label} as ${label} to ${result.succeeded} of ${jobIds.length} jobs on run #${runId} (${result.failed} failed).`
-        : `Assigned ${picked.label} as ${label} to run #${runId} (${result.succeeded} jobs).`;
+        ? `Assigned ${picked.label} as ${label} to ${result.succeeded} of ${jobIds.length} jobs on ${runLabel} (${result.failed} failed).`
+        : `Assigned ${picked.label} as ${label} to ${runLabel} (${result.succeeded} jobs).`;
       onSuccess(summary);
     } catch (e) {
       setError((e as Error).message);

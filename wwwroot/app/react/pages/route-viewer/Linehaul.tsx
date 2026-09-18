@@ -722,10 +722,9 @@ export default function Linehaul() {
       />
 
       {assignTarget && (
-        <AssignRouteDialog
-          runId={assignTarget.runId}
+        <LinehaulAssignBridge
+          target={assignTarget}
           runDate={runDate}
-          anchorJobId={assignTarget.kind === 'job' ? assignTarget.bulkJobId : undefined}
           onClose={() => setAssignTarget(null)}
           onSuccess={(summary) => {
             setAssignTarget(null);
@@ -739,6 +738,64 @@ export default function Linehaul() {
         />
       )}
     </div>
+  );
+}
+
+// Linehaul does not have an Inbound/Outbound viewMode toggle, so the
+// Assign flow only needs to fetch the run's jobs and drop unmaterialised
+// rows (jobId == 0) before handing the tucJob ids to the dialog. This
+// bridge component owns the fetch so the dialog itself stays dumb
+// (legacy Run Viewer pattern - caller supplies jobIds). Errors surface
+// via toast + auto-close, matching how the RvRunContextMenu handles the
+// same failure mode.
+function LinehaulAssignBridge({
+  target,
+  runDate,
+  onClose,
+  onSuccess,
+}: {
+  target: LinehaulCtxTarget;
+  runDate: string;
+  onClose: () => void;
+  onSuccess: (summary: string) => void;
+}) {
+  const toast = useToast();
+  const [jobIds, setJobIds] = useState<number[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const jobs = await routeViewerService.getRunJobs(target.runId, runDate);
+        if (cancelled) return;
+        const ids = jobs.map((j) => j.jobId).filter((id) => id > 0);
+        if (ids.length === 0) {
+          toast.show('No assignable jobs on this run.', 'error');
+          onClose();
+          return;
+        }
+        setJobIds(ids);
+      } catch (e) {
+        if (cancelled) return;
+        toast.show(`Failed to load run jobs: ${(e as Error).message}`, 'error');
+        onClose();
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [target.runId, runDate, toast, onClose]);
+
+  if (!jobIds) return null;
+  const runLabel = target.kind === 'run'
+    ? `Run ${target.runName ?? `#${target.runId}`}`
+    : `Job ${target.jobNumber ?? `#${target.bulkJobId}`}`;
+  return (
+    <AssignRouteDialog
+      jobIds={jobIds}
+      runLabel={runLabel}
+      anchorJobId={target.kind === 'job' ? target.bulkJobId : undefined}
+      onClose={onClose}
+      onSuccess={onSuccess}
+    />
   );
 }
 

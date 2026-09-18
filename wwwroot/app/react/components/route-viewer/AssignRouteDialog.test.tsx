@@ -25,23 +25,17 @@ const stubAgents = (
     },
   );
 
-// AssignRouteDialog now fetches the run's jobs at submit time so it can
-// send the explicit JobIds the backend requires. Tests that click
-// "Assign" need this stub or the submit path stalls. Default = one
-// assignable job (jobId=42) so onSuccess fires. The backend AssignAsync
-// treats JobIds as tucJob.UcjbId, so `jobId` is what we send - NOT
-// bulkJobId. Synthetic Recurring Route runs carry real tucJob rows
-// even when tblBulkJob is empty, so filtering on jobId keeps them
-// assignable (matches legacy runViewer parity).
-const stubRunJobs = (jobs: Array<{ jobId: number; bulkJobId?: number }> = [{ jobId: 42 }]) =>
-  http.get('/api/runviewer/runs/:runId/jobs', () =>
-    HttpResponse.json({ response: jobs }),
-  );
-
+// 2026-09-18: legacy-pattern port. AssignRouteDialog no longer fetches
+// the run's jobs itself - the caller supplies `jobIds` pre-filtered by
+// the current viewMode (see lib/runViewerViewMode.ts). Tests set
+// `jobIds` directly; no MSW stub for the runs endpoint is needed. The
+// backend AssignAsync treats JobIds as tucJob.UcjbId - callers filter
+// jobId > 0 before opening the dialog, matching legacy runViewer parity
+// (homeControl.js:2196 `j.jobID`).
 function renderDlg(props: Partial<Parameters<typeof AssignRouteDialog>[0]> = {}) {
   const defaults = {
-    runId: 5,
-    runDate: '2026-09-08',
+    jobIds: [42],
+    runLabel: 'run #5',
     onClose: vi.fn(),
     onSuccess: vi.fn(),
   };
@@ -58,7 +52,6 @@ describe('AssignRouteDialog', () => {
     };
     server.use(stubCouriers([]));
     server.use(stubAgents([]));
-    server.use(stubRunJobs());
   });
 
   it('renders "Assign route" title for admin', () => {
@@ -298,33 +291,20 @@ describe('AssignRouteDialog', () => {
     expect(assignPayload).toMatchObject({ targetType: 'NetworkPartner', targetId: 88 });
   });
 
-  // Regression guard: the assign endpoint requires an explicit JobIds
-  // list (rejects empty with "JobIds is required.") AND expects tucJob
-  // ids, not tblBulkJob ids. The dialog fetches the run's jobs at
-  // submit time, keeps rows with jobId > 0. This is what makes
-  // synthetic Recurring Route runs assignable: they carry real tucJob
-  // rows (jobId > 0) even though tblBulkJob is empty (bulkJobId = 0).
-  // Matches legacy runViewer homeControl.js:2196 which also uses
-  // `j.jobID`.
-  it('sends the resolved tucJob ids from the fetched run jobs', async () => {
+  // Regression guard: the dialog forwards the caller-supplied JobIds
+  // verbatim to the assign endpoint (post 2026-09-18 legacy pattern).
+  // Callers own the scope + jobId > 0 filter (matches legacy
+  // homeControl.js:2196 `j.jobID` gate); the dialog is dumb.
+  it('sends the injected jobIds verbatim in the assign payload', async () => {
     let assignPayload: any = null;
     server.use(
       stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
-      // Two real tucJob rows + one unmaterialised (jobId=0) - only the
-      // reals should reach the assign payload. bulkJobId is deliberately
-      // varied (0 on the first row) to prove we do NOT gate on it -
-      // synthetic Route runs come back with bulkJobId=0 across the board.
-      stubRunJobs([
-        { jobId: 100, bulkJobId: 0 },
-        { jobId: 200, bulkJobId: 500 },
-        { jobId: 0, bulkJobId: 0 },
-      ]),
       http.post('/api/runviewer/jobs/assign', async ({ request }) => {
         assignPayload = await request.json();
-        return HttpResponse.json({ response: { succeeded: 2, failed: 0, errors: [], targetType: 'Agent', targetId: 77, displayName: 'Northshore' } });
+        return HttpResponse.json({ response: { succeeded: 2, failed: 0, errors: [], targetType: 'Courier', targetId: 1, displayName: 'Ace' } });
       }),
     );
-    const props = renderDlg();
+    const props = renderDlg({ jobIds: [100, 200] });
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
     await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
@@ -333,16 +313,35 @@ describe('AssignRouteDialog', () => {
     expect(assignPayload).toMatchObject({ targetType: 'Courier', targetId: 1, jobIds: [100, 200] });
   });
 
-  it('surfaces an error when the run has no jobs to assign', async () => {
+  it('surfaces an inline error when the caller passes an empty jobIds list', async () => {
+    // Defensive path - callers are meant to guard empty selections
+    // themselves + not open the dialog, but the dialog still fails
+    // loud rather than sending an empty JobIds array (which the
+    // backend would reject with "JobIds is required.").
     server.use(
       stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
-      stubRunJobs([{ jobId: 0 }, { jobId: 0 }]),   // no materialised tucJob rows
     );
-    renderDlg();
+    renderDlg({ jobIds: [] });
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
     await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
     await user.click(screen.getByRole('button', { name: 'Assign' }));
     expect(await screen.findByText(/no jobs to assign/i)).toBeInTheDocument();
+  });
+
+  it('reflects the runLabel prop in the success summary', async () => {
+    server.use(
+      stubCouriers([{ courierId: 1, code: 'ACE', name: 'Ace' }]),
+      http.post('/api/runviewer/jobs/assign', () =>
+        HttpResponse.json({ response: { succeeded: 3, failed: 0, errors: [], targetType: 'Courier', targetId: 1, displayName: 'Ace' } }),
+      ),
+    );
+    const props = renderDlg({ runLabel: 'Job P42LHP' });
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText(/Search couriers/), 'ac');
+    await user.click(await screen.findByRole('button', { name: /Ace \(ACE\)/ }));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(vi.mocked(props.onSuccess).mock.calls[0][0]).toMatch(/Job P42LHP/);
   });
 });

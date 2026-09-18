@@ -608,14 +608,23 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // Depot dropdown pulls the full tenant list from
+    // Depot filter pulls the full tenant list from
     // /api/schedules/lookups, not just depots seen in the current
-    // page. All three seeded depots appear as options.
-    const depot = page.getByRole('combobox').filter({ has: page.locator('option', { hasText: 'All depots' }) });
-    await expect(depot).toBeVisible();
-    await expect(depot.getByRole('option', { name: 'Auckland' })).toHaveCount(1);
-    await expect(depot.getByRole('option', { name: 'Christchurch' })).toHaveCount(1);
-    await expect(depot.getByRole('option', { name: 'Gisborne' })).toHaveCount(1);
+    // page. The 2026-09-17 filter refactor replaced the plain <select>
+    // with `DepotMultiPicker` - a trigger button labelled "All depots"
+    // (when nothing selected) that reveals a panel (testid
+    // `depot-multi-picker-panel`) with one checkbox row per depot.
+    // Assert the trigger exists, then open the panel and assert every
+    // seeded depot renders as a row.
+    const trigger = page.getByRole('button', { name: 'All depots' });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    const panel = page.getByTestId('depot-multi-picker-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText('Auckland', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Christchurch', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Gisborne', { exact: true })).toBeVisible();
   });
 
   test('Groups tab New group wire creates + refreshes list', async ({ page }) => {

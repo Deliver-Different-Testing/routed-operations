@@ -46,7 +46,7 @@ const items: NavItem[] = [
   // Distinct from Schedules above - that's booking / prebook
   // templates, this is courier availability rosters + time slots +
   // SMS notifications.
-  { to: '/driver-scheduling', label: 'Driver Scheduling' },
+  { to: '/driver-scheduling', label: 'Driver Rostering' },
   { to: '/polygon-builder', label: 'Polygon Builder' },
   { to: '/auto-assign-log', label: 'Auto-Assign Log' },
   // Internal-only surface. Loads legacy job history into tucJobArchive.
