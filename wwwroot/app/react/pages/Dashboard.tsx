@@ -77,9 +77,9 @@ function buildModules(isUs: boolean, isInternal: boolean): ModuleCard[] {
     },
     {
       to: '/driver-scheduling',
-      title: 'Driver Scheduling',
+      title: 'Driver Rostering',
       blurb: 'Courier availability rosters + time slots + SMS notifications. Ported from the legacy CourierManager scheduler; distinct from Schedules above (that covers booking / prebook templates, this covers driver-side rosters).',
-      cta: 'Open Driver Scheduling',
+      cta: 'Open Driver Rostering',
     },
     {
       to: '/polygon-builder',

@@ -416,11 +416,14 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewe
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerEventService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerAssignmentService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerRouteTransferService>();
-// RouteViewerLabelService is an HTTP proxy to the legacy RunViewer
-// label endpoints. Typed HttpClient so per-service timeout stays out
-// of the shared IHttpClientFactory default. Env var
-// RunViewerLabelProxyUrl activates the proxy; missing = 501 error
-// with a specific "set this env var" message.
+// RouteViewerLabelService generates label PDFs directly via the shared
+// DeliverDifferent.AlertLabel.Data package (GitLab project 809). Keeps
+// a typed HttpClient for the two still-proxied endpoints
+// (SendPodEmailAsync + GetLineHaulManifestCsvAsync); those two require
+// env var RunViewerLabelProxyUrl to be set until they are ported off
+// legacy. Label PDFs no longer need any env var. Swapped 2026-09-18
+// from the P14-interim HTTP proxy.
+DeliverDifferent.AlertLabel.Data.Extensions.ServiceCollectionExtensions.AddAlertLabelService(builder.Services);
 builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(60);

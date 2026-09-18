@@ -780,6 +780,74 @@ export const routeViewerService = {
     speedIds: payload.speedIds ?? null,
   }),
 
+  /** Wraps POST /runviewer/labels/bulk-jobs and returns the raw PDF as
+   *  a Blob so the caller can `window.open(URL.createObjectURL(blob))`.
+   *  The backend's LabelPdfAsync returns FileContentResult with
+   *  Content-Type=application/pdf; the shared `request()` wrapper
+   *  assumes JSON and would trip on the binary body, so this method
+   *  fetches directly and preserves the CSRF header the wrapper
+   *  normally sets. Matches legacy homeControl.js:printLabel mode=4
+   *  which base64-decoded the response into a blob and window.open'd
+   *  it. Callers pass the same LabelRequest fields as the legacy
+   *  (bookDate + sortMode + runName + optional filter csvs). */
+  printRunLabelsPdf: async (payload: {
+    bookDate: string;
+    sortMode: number;
+    runName?: string | null;
+    bulkJobIds?: string | null;
+    clientIds?: string | null;
+    courierIds?: string | null;
+    regionIds?: string | null;
+    speedIds?: string | null;
+  }): Promise<Blob> => {
+    const res = await fetch('/api/runviewer/labels/bulk-jobs', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({
+        bookDate: payload.bookDate,
+        sortMode: payload.sortMode,
+        runName: payload.runName ?? null,
+        bulkJobIds: payload.bulkJobIds ?? null,
+        clientIds: payload.clientIds ?? null,
+        courierIds: payload.courierIds ?? null,
+        regionIds: payload.regionIds ?? null,
+        speedIds: payload.speedIds ?? null,
+      }),
+    });
+    if (!res.ok) {
+      // Surface a server-provided message so the toast can name
+      // the failure (proxy-not-configured 501, legacy 500, etc.).
+      const body = await res.json().catch(() => ({}));
+      const msg = body?.message ?? body?.messages?.[0]?.message ?? `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return res.blob();
+  },
+
+  /** Wraps GET /runviewer/labels/jobs/{jobId} (single-job Mode 1
+   *  tucJob label) and returns the PDF as a Blob. Matches legacy
+   *  printLabel mode=1 / mode=2. Same reason as `printRunLabelsPdf`
+   *  for bypassing the JSON request wrapper. */
+  printSingleJobLabelPdf: async (jobId: number): Promise<Blob> => {
+    const res = await fetch(`/api/runviewer/labels/jobs/${jobId}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const msg = body?.message ?? body?.messages?.[0]?.message ?? `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return res.blob();
+  },
+
   /** Email a POD photo to an operator-provided address. Proxies to
    *  the legacy /Home/SendPOD endpoint via the same env-var-gated
    *  proxy the label endpoints use. */

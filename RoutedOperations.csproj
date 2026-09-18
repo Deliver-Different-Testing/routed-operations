@@ -31,7 +31,10 @@
 
     <!-- XLSX parsing for the Bulk Import server-side parse endpoint. Same
          ClosedXML dep SetUp Dashboard uses so the two apps stay aligned. -->
-    <PackageReference Include="ClosedXML" Version="0.104.2" />
+    <!-- Bumped 2026-09-18 from 0.104.2 to 0.105.0 to satisfy the
+         DeliverDifferent.AlertLabel.Data -> DeliverDifferentReporting
+         2.0.8 transitive requirement. -->
+    <PackageReference Include="ClosedXML" Version="0.105.0" />
 
     <!-- AWS DataProtection (prod key ring shared with the rest of the DFRNT suite) -->
     <PackageReference Include="Amazon.AspNetCore.DataProtection.SSM" Version="4.0.1" />
@@ -83,6 +86,13 @@
          @PickupTimeZone / @DeliverByTimeZone. Behavior kept identical to
          BulkImportHyper. -->
     <PackageReference Include="GeoTimeZone" Version="5.3.0" />
+
+    <!-- Route Viewer label rendering. Consumes IAlertLabelService for
+         PDF generation via the shared DeliverDifferent.AlertLabel.Data
+         package (GitLab project 809). Restore needs env vars
+         GITLAB_NUGET_USERNAME + GITLAB_NUGET_TOKEN - see NuGet.config
+         packageSourceCredentials for the gitlab-alertlabel feed. -->
+    <PackageReference Include="DeliverDifferent.AlertLabel.Data" Version="1.0.4" />
   </ItemGroup>
 
   <ItemGroup>

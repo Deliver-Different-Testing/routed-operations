@@ -12,6 +12,10 @@ function renderMenu(over: Partial<Parameters<typeof RvRunContextMenu>[0]> = {}) 
     y: 100,
     runId: 42,
     runDate: '2026-08-13',
+    // Default = Combined so the pre-refactor tests (which do not care
+    // about direction filtering) keep matching every job the run
+    // fetch returns. Direction-scoped tests override this.
+    viewMode: 'Combined' as const,
     onClose: vi.fn(),
     onDone: vi.fn(),
   };
@@ -55,7 +59,14 @@ describe('RvRunContextMenu', () => {
   });
 
   it('opens Assign dialog on Assign Route click', async () => {
+    // Post 2026-09-18 legacy-pattern port: RvRunContextMenu fetches the
+    // run's jobs itself and filters by viewMode before opening the
+    // dialog with pre-scoped jobIds. Stub both the runs/jobs fetch and
+    // the courier search so the dialog renders once the async fetch
+    // resolves.
     server.use(
+      http.get('/api/runviewer/runs/:runId/jobs', () =>
+        HttpResponse.json({ response: [{ jobId: 100 }, { jobId: 200 }] })),
       http.get('/api/runviewer/couriers/search', () =>
         HttpResponse.json({ response: [] })),
     );
