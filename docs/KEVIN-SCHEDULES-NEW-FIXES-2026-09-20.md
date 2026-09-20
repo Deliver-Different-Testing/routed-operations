@@ -27,6 +27,19 @@ v2/frontend/src/schedules/modules/schedules/
 It is **not** on `main` yet. Line numbers are from that branch — if you have moved
 on, take the anchors as landmarks rather than coordinates.
 
+## The screenshots
+
+The items below carry Steve's own screenshots from the walkthrough, under each
+symptom they evidence. They are extracted from the source document —
+[New Schedules Fixes](https://docs.google.com/document/d/1It2LsM4ZCm8B9FToVApp8J76Q0a-GZGUt6cvPX3ZCcE/edit)
+— and committed to `docs/images/schedules-fixes-2026-09-20/` so this brief stands on
+its own without a Google account. Filenames carry the item number, so
+`f5-frozen-storage-state-on-medical.png` belongs to F5.
+
+Four items have no screenshot because they were not visible defects: F2 (the empty
+day column on an override) was described rather than captured, F8 and F17–F20 were
+found by reading the code and the data.
+
 The three enhancements from Friday (E1 group membership, E2 wildcard member search,
 E3 bound routes on the row) are unchanged and still queued behind the schedule-bundle
 tables. Nothing in this document replaces them. This is the defect and direction list
@@ -111,6 +124,11 @@ was written to end.
 - 2,725 schedules today; every client who wants a different cut-off adds another one.
   This is precisely the proliferation the rationalisation exercise just spent
   11,110 rows → 2,725 schedules undoing.
+
+**From Steve's walkthrough** — setting an override creates a new ScheduleId
+![setting an override creates a new ScheduleId](images/schedules-fixes-2026-09-20/f1-override-creates-new-schedule-id-1.png)
+![setting an override creates a new ScheduleId](images/schedules-fixes-2026-09-20/f1-override-creates-new-schedule-id-2.png)
+
 
 ### What it should be — one scoped override table, keyed on ScheduleId
 
@@ -540,6 +558,10 @@ maintain it differently:
 So the chips are a stale artefact of whichever editor last saved, in whichever
 vocabulary that editor uses.
 
+**From Steve's walkthrough** — "differs on" says cut-off after only the speeds were changed; the cut-off column then shows 3 hours
+!["differs on" says cut-off after only the speeds were changed; the cut-off column then shows 3 hours](images/schedules-fixes-2026-09-20/f3-differs-on-cutoff-but-speeds-changed.png)
+
+
 **Fix.** Never store it. The delta row from F1 *is* the difference — the field list
 is `SELECT` of its non-null value columns, computed server-side, exactly as
 `api/v2.ts:39` already promises. Delete `Schedule.overriddenFields` as stored state
@@ -569,6 +591,10 @@ and only one of the two parents passes it:
 So whether you can create an override depends on which mount you opened the schedule
 from, not on whether the schedule is a default. That it looked like a default-only
 rule is coincidence of which list you were in.
+
+**From Steve's walkthrough** — Client Override unavailable on a default schedule
+![Client Override unavailable on a default schedule](images/schedules-fixes-2026-09-20/f4-client-override-unavailable-on-default.png)
+
 
 **Fix.** One mount, or one props contract. `ScheduleEditForm` should not silently
 degrade: make `allSchedules`, `clients` and the override callbacks required, and let
@@ -611,6 +637,10 @@ sets, `StorageState` is `1` on 87, `2` on 5, `3` on 3 and NULL on 84 —
 mis-read of the value `1` hits roughly half the estate, and medical is exactly where
 you would notice it.
 
+**From Steve's walkthrough** — a medical schedule showing frozen storage state
+![a medical schedule showing frozen storage state](images/schedules-fixes-2026-09-20/f5-frozen-storage-state-on-medical.png)
+
+
 **Fix.**
 
 1. Get the legacy enum from ClientManager (`Core/Domain/Despatch`, or the Angular
@@ -633,6 +663,11 @@ estate after a no-op save sweep.
 ## F6 — Collection section on schedules with no collection job
 
 **Cause.** The collection leg is created only when the flag is set —
+
+**From Steve's walkthrough** — a collection section on a schedule with no collection job ticked in the old screen
+![a collection section on a schedule with no collection job ticked in the old screen](images/schedules-fixes-2026-09-20/f6-collection-section-with-no-collection-job-1.png)
+![a collection section on a schedule with no collection job ticked in the old screen](images/schedules-fixes-2026-09-20/f6-collection-section-with-no-collection-job-2.png)
+
 `types.ts:612`, `if (first.bookPickup)`. So the section should not appear at all for
 a schedule that never booked a collection. Two candidates, and they are distinguished
 by one query:
@@ -676,6 +711,10 @@ does not turn a collection job on.
 
 **Symptom.** Delivery Zone Group ended up blank on some schedules. Collection zones
 are not shown the way delivery zones are.
+
+**From Steve's walkthrough** — Delivery Zone Group blank — no zone group attached
+![Delivery Zone Group blank — no zone group attached](images/schedules-fixes-2026-09-20/f7-delivery-zone-group-blank.png)
+
 
 **Cause — read.** `types.ts:687`:
 
@@ -773,6 +812,10 @@ unsafe.
 
 Your four points, mapped to the code:
 
+**From Steve's walkthrough** — the linehaul leg carrying its own name, the run's detail and its pricing
+![the linehaul leg carrying its own name, the run's detail and its pricing](images/schedules-fixes-2026-09-20/f9-linehaul-detail-and-pricing-on-schedule.png)
+
+
 1. **Naming the linehaul leg duplicates the run.** There is no leg-name input in
    `LegConfigPanel.tsx` on this branch, so either the deployed build is ahead of it
    or the field is on the node header — tell me which build you screenshotted.
@@ -811,6 +854,12 @@ select (`:96`). The type is `'client_address' | 'depot' | 'booking'`
 (`types.ts:254`).
 
 **What you want.**
+
+**From Steve's walkthrough** — collection pricing and availability driven by the pickup depot rather than its zones; and neither collection nor depot offering inwards-goods locations
+![collection pricing and availability driven by the pickup depot rather than its zones; and neither collection nor depot offering inwards-goods locations](images/schedules-fixes-2026-09-20/f10-collection-zones-and-pickup-depot-1.png)
+![collection pricing and availability driven by the pickup depot rather than its zones; and neither collection nor depot offering inwards-goods locations](images/schedules-fixes-2026-09-20/f10-collection-zones-and-pickup-depot-2.png)
+![collection pricing and availability driven by the pickup depot rather than its zones; and neither collection nor depot offering inwards-goods locations](images/schedules-fixes-2026-09-20/f10-no-inwards-goods-locations.png)
+
 
 - Collection pricing and availability come from the **zones enabled on the collection
   job**, so the pickup depot lookup is unnecessary — the job starts wherever the zone
@@ -851,6 +900,11 @@ There is already a day-specific exception structure (`CutoffException`: delivery
 cut-off day, cut-off time — `OperatingScheduleSection.tsx:183`) that is stored as an
 **absolute** day+time. So the absolute form exists; it is the special case rather
 than the norm.
+
+**From Steve's walkthrough** — cut-off still expressed in hours, still feeding back from the delivery job time
+![cut-off still expressed in hours, still feeding back from the delivery job time](images/schedules-fixes-2026-09-20/f11-cutoff-in-hours-from-delivery-1.png)
+![cut-off still expressed in hours, still feeding back from the delivery job time](images/schedules-fixes-2026-09-20/f11-cutoff-in-hours-from-delivery-2.png)
+
 
 **Fix.** Invert it. The stored form is a firm cut-off day and time; the offset
 becomes a display convenience, not the truth. Then:
@@ -921,6 +975,11 @@ additionalItemChargingLogic: first.pickupBoxDiscount ? 'speed_second_box_discoun
 So the percentage is visible only as "this schedule has a second-box rule", and a new
 schedule can never be given one. 108 of the 179 rationalised sets carry a value.
 
+**From Steve's walkthrough** — the collection box discount field, present in the old screen and gone from the new one
+![the collection box discount field, present in the old screen and gone from the new one](images/schedules-fixes-2026-09-20/f14-collection-box-discount-missing-1.png)
+![the collection box discount field, present in the old screen and gone from the new one](images/schedules-fixes-2026-09-20/f14-collection-box-discount-missing-2.png)
+
+
 **Fix.** Put the field back on the collection leg, next to Additional Item Charging:
 a percentage input, enabled when the charging logic is *Speed Second Box %*, disabled
 otherwise. It is a two-line change in `LegConfigPanel.tsx` plus the leg config type —
@@ -931,6 +990,10 @@ do it with F7, same file, same leg.
 ## F15 — Pricing and zones
 
 Not a fix — a scoping item, and you are right that it is the major separate piece.
+
+**From Steve's walkthrough** — rating and zone rates, still only in old ClientManager
+![rating and zone rates, still only in old ClientManager](images/schedules-fixes-2026-09-20/f15-no-rating-or-zone-rates.png)
+
 The new view has no home for rates, additional-item rules or dimension rules;
 `BookingSimulator.tsx:439` says as much out loud: *"Pricing will be available when the
 rates module is connected."* Zone rates are still maintained in the old ClientManager
@@ -949,6 +1012,10 @@ I will write the pricing/zones brief separately once F9 is agreed.
 ## F16 — The list view
 
 Three small things, all in `ScheduleTable.tsx`:
+
+**From Steve's walkthrough** — the list with no working depot filter and no sorting on several columns
+![the list with no working depot filter and no sorting on several columns](images/schedules-fixes-2026-09-20/f16-no-depot-filter-or-sorting.png)
+
 
 1. **The Depot filter is a dead control.** `:225`–`:232`: `selectedValues={[]}`,
    `onChange={() => {}}`, and `filteredRows` (`:100`–`:139`) never looks at a depot.
