@@ -53,6 +53,7 @@ from walking the deployed view.
 | **F15** | Rates, additional-item rules and dimension rules have no home in the new view | Separate piece — scoping only |
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
+| **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name — and "group" currently means two different things | Rule — read first |
 
 Order of work is in §5.
 
@@ -125,6 +126,9 @@ migration `001` created — and at nothing else:
   schedule;
 - **not** `tblBulkRunSchedule.ClientId`, which `001` retired to
   `Header.LegacyClientId`.
+
+This is the rule F18 states for the whole system, and F18 lists every other place
+still holding a name or a line id.
 
 `Schedule.baseScheduleId` then disappears from the model entirely. There is no base
 and no child, because there is no second schedule — there is one schedule and a set
@@ -1058,6 +1062,119 @@ on this list.
 
 ---
 
+## F18 — One key everywhere: the schedule header id. Never the line, never the name
+
+This is a rule, not a defect, and it cuts across F1, F17 and the 2026-09-18 brief's
+§4.2. Steve's instruction: **linking is on the schedule id that identifies the whole
+schedule — not the individual schedule line — and nothing anywhere links on the
+schedule name.**
+
+### First, the word "group" means two different things
+
+They are unrelated, and wiring the wrong one would be a quiet disaster, so fix the
+vocabulary before writing any code:
+
+| Thing | Key | What it is |
+| :- | :- | :- |
+| **Schedule line** (day row) | `tblBulkRunSchedule.BulkRunScheduleId` | One row per operating day. Five rows for a Mon–Fri schedule. **Never a link target.** |
+| **Schedule** — the group of those lines | `tblBulkRunScheduleHeader.ScheduleId` | The schedule as ops means it. Created by migration `001`. **This is the only thing anything links to.** |
+| **Schedule group / bundle** (E1, E2) | `tblBulkRunScheduleGroup.GroupId` | A convenience bundle of *several schedules* for bulk edit and attach-clients. Not an identity. Nothing resolves through it at booking time. |
+
+When this brief and the 2026-09-18 brief say "the schedule group id", they mean the
+middle row — `Header.ScheduleId`. The bottom row is a different feature that happens
+to share the English word.
+
+**Worth deciding now, while it is free:** the E1/E2 group tables *do not exist yet*.
+If we want that collision gone permanently, rename them before they are created —
+`tblBulkRunScheduleBundle` / `…BundleMember`, "Bundles" in the UI. After they ship
+with data in them the rename costs a migration and a UI pass. My recommendation is to
+do it, but either way the API must never expose a field called `scheduleGroupId`: the
+header is `scheduleId`, the bundle is `groupId` (or `bundleId`), and nothing is
+ambiguous.
+
+### Every place a schedule is referenced
+
+| Holder | Column | Today | Must be |
+| :- | :- | :- | :- |
+| Day rows | `tblBulkRunSchedule.ScheduleId` | FK to header, added by `001` | ✔ done |
+| Client links | `tblBulkRunScheduleClient.ScheduleId` + `ScheduleName` | `001` adds the id beside the name and back-fills where unambiguous | drop `ScheduleName` — `001` already leaves the `ALTER` commented and ready |
+| Client overrides | `tblBulkRunScheduleOverride.ScheduleId` | new in `003` | header id, FK enforced — already correct |
+| Group / bundle members | `tblBulkRunScheduleGroupMember.ScheduleId` | not built | header id, FK enforced |
+| Recurring routes | `Routes.ScheduleId` | points at a **day-row** id (2026-09-08 §2b) — or does not exist at all; the configurator's `Route` entity has no such column (F17) | header id, via `HeaderScheduleId` per the 2026-09-18 brief §4.2 |
+| Linehaul legs | `TblBulkScheduleLinehaul.BulkRunScheduleId` | points at a **day row** — `types.ts:636` reads only the legs attached to row 0 | header id |
+| Bookings | `tucJobBooking.ScheduleId` **and** `tucJobBooking.ScheduleName` | both exist (`TucJobBooking.cs:289` and `:293`); which one dispatch trusts is unconfirmed | header id; the name becomes display-only, then goes |
+| Jobs | `tucJob.ScheduleId` **and** `tucJob.ScheduleName` | both exist (`TucJob.cs:368`, `:488`) | same |
+| Nightly materialiser | `uspPrebookSet` | not in version control (F17) | audit once it is in the repo |
+| Front end: override → base | `isOverrideOf` (`types.ts:1079`) | id first, **falls back to `baseScheduleName === base.name`** | id only; delete the fallback |
+| Front end: base lookup | `baseOf` (`clientLinks.ts:30`) | same name fallback | id only |
+| Front end: row grouping | `groupRowsByName` (`types.ts:744`) | groups production rows **by Name** | group by `ScheduleId` |
+| Front end: override tab | `ClientOverridesTab.tsx:26` | matches overrides by `baseScheduleName` | dead once F1 lands — the tab edits deltas |
+
+The one legitimate use of the name is `001` itself, which bootstraps identity from
+`(Name, ClientId)` because that is all the old model had. After `001`, the name is a
+label: it is what ops reads, it is never what the system joins on.
+
+### Why this is not just tidiness
+
+Two of the worst symptoms in this brief are name-matching in disguise:
+
+- `types.ts:736` sets `baseScheduleName` to the schedule's own name for **every**
+  legacy client-specific schedule. Two schedules with the same name and different
+  clients therefore look like overrides of each other. That is F3's phantom chips and
+  part of F2.
+- The linehaul row binds to a day row, so a Mon–Fri schedule's linehaul leg hangs off
+  Monday. Read row 0 and it appears; read any other day and it does not. That is the
+  same class of bug as `Routes.ScheduleId`, and it is why F8's flattening matters
+  beyond tidiness.
+
+And the performance argument from F1 only holds on an id: the single-seek resolve is
+a seek because the clustered key starts with an `int ScheduleId`. A name-based or
+line-based join cannot be made cheap — an `nvarchar(200)` key is wider, collates, and
+cannot be trusted to be unique in the first place.
+
+### Verification
+
+The rule is testable. These should all return zero rows once the work is done:
+
+```sql
+-- 1. Every client link row resolves to a live header (and no name column is left).
+SELECT COUNT(*) FROM dbo.tblBulkRunScheduleClient l
+  LEFT JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = l.ScheduleId
+ WHERE h.ScheduleId IS NULL;
+SELECT COL_LENGTH('dbo.tblBulkRunScheduleClient', 'ScheduleName');  -- must be NULL
+
+-- 2. No route binds to a day row.
+SELECT COUNT(*) FROM dbo.Routes r
+ WHERE r.HeaderScheduleId IS NULL AND r.ScheduleId IS NOT NULL;
+
+-- 3. No booking carries a ScheduleId that is not a header id.
+SELECT COUNT(*) FROM dbo.tucJobBooking b
+  LEFT JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = b.ScheduleId
+ WHERE b.ScheduleId IS NOT NULL AND h.ScheduleId IS NULL;
+
+-- 4. Names are not unique, which is the whole point — this will NOT be zero,
+--    and every one of these is a pair the old model could not tell apart.
+SELECT Name, COUNT(*) AS Headers
+  FROM dbo.tblBulkRunScheduleHeader WHERE RetiredUtc IS NULL
+ GROUP BY Name HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC;
+```
+
+Query 4 is the one to run first and send back. It is the size of the problem
+name-matching has been hiding, and it sets how careful the `Routes` and `tucJobBooking`
+back-fills have to be.
+
+### Acceptance
+
+- `grep -rn "ScheduleName\|baseScheduleName" v2/frontend/src/schedules` returns only
+  display strings — no comparisons, no lookups, no `find`.
+- `isOverrideOf`, `baseOf` and `groupRowsByName` take ids only. Deleting the name
+  fallback does not change any rendered list.
+- Queries 1–3 above return zero.
+- A schedule renamed in ops breaks nothing: every link survives the rename, because
+  nothing joined on the name.
+
+---
+
 # 4. Database summary
 
 Three scripts, all under the `@Commit = 0` harness used by `001`:
@@ -1071,6 +1188,7 @@ sit beside it in the same folder.
 | `002_group_tables_and_route_header_binding.sql` | Schedule group tables + `Routes.HeaderScheduleId` — unchanged from the 2026-09-18 brief §4 | E1, E2, E3 |
 | `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg, clustered on the lookup key) + `Header.OverrideCount` / `OverridesVersion` + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
 | `004_display_names.sql` | `DisplayName` / `DisplayDescription` on the header | F13 |
+| `005_drop_name_joins.sql` | Drop `tblBulkRunScheduleClient.ScheduleName` (the `ALTER` is already written and commented in `001`), re-point `TblBulkScheduleLinehaul` and `tucJobBooking` / `tucJob` at the header id, with the F18 verification queries as the gate | F18 |
 
 No schema change is needed for F5–F8, F14 or F16 — they are mapper and view fixes.
 
@@ -1078,6 +1196,9 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
+0. **F18** — read it first. It is one page, it costs nothing, and it decides the key
+   every other item on this list writes. The naming call (do the E1/E2 group tables
+   become "bundles"?) is free today and expensive once those tables hold data.
 0. **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. It
    is a `SELECT OBJECT_DEFINITION(...)` and a commit, it blocks nothing else, and
    until it is done a nightly production job has no review and no history.
@@ -1111,6 +1232,10 @@ and E1's Groups column is easier once overrides are out of the schedule rows.
   collection-section screenshot (F6).
 - The result of the row-0 disagreement query (F8).
 - Which build the linehaul leg-name field is in — it is not in this branch (F9).
+- The duplicate-header-name count — query 4 in F18. Run this one first; it sizes what
+  name-matching has been hiding.
+- Your call on renaming the E1/E2 schedule *group* tables to *bundles*, before they
+  are created (F18).
 - The `uspPrebookSet` definition, the schedules-per-route counts, and one RouteId
   that works next to one that does not (F17).
 - Whether `Routes.ScheduleId` exists in the tenant database — the configurator's
