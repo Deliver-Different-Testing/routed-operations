@@ -1452,6 +1452,11 @@ booking is invisible to them.** The legs exist; the client's view is the parent,
 the parent is not there yet. Every "where is my delivery?" call in that window is
 caused by this.
 
+The client seeing only the parent is correct and stays that way: **every leg's status
+updates attach to the parent**, so it already carries the whole story. That is
+exactly why its absence is total rather than partial — there is no other record the
+client could be shown in the meantime.
+
 That deferral is not a separate mechanism — it is the run-building gate above, seen
 from the other end. Runs are built for the day's work, `InsertFromRunBuilder` is the
 only bridge from `tblBulkJob` to `tucJob`, so a job cannot become visible before the
@@ -1492,11 +1497,34 @@ date against the date the parent became visible.
 - Does `PrebookJob` (`Models/TblBulkJob.cs:86`) already distinguish advance work from
   immediate work? If it does, the routing decision may have a home already rather
   than needing a new column.
-- Should the client see the **legs** as well as the parent? Today they see only the
-  parent, which is why its absence is total. Making the parent land at booking fixes
-  the reported problem without answering this — but "my collection happened, my
-  linehaul is in transit" is the question customers ask next, and it is worth
-  deciding deliberately rather than by default.
+- ~~Should the client see the legs as well as the parent?~~ **Answered (Steve): no.
+  The status updates from every leg attach to the parent**, so the parent already
+  carries the whole story and the legs stay internal. Do not build a client-facing
+  leg view.
+
+  That answer makes the timing defect worse than "the client cannot find it", and
+  the point is worth being explicit about: **the parent is where leg status lands.**
+  Book Tuesday afternoon, collect Wednesday, deliver Thursday — the collection leg
+  inserts and runs on Wednesday (it has to, or nobody could scan it), but the parent
+  does not exist until Thursday. So Wednesday's collection scan is a status update
+  with no parent to attach to. Either it is lost, or it is back-filled on Thursday,
+  or it attaches to something that is not yet the client's job.
+
+  Kevin: establish which, because it decides whether this is only a visibility fix
+  or also a data one.
+
+```sql
+-- Leg status recorded before its parent existed. Should be empty; if it is not,
+-- those are updates that had nowhere to land at the time they happened.
+-- Confirm the child/parent linkage column first (ParentId vs RootParentId vs
+-- BookingParentId, TucJob.cs:202/206/450) — the shape is what matters.
+SELECT TOP 200 child.JobId, child.ParentId, child.JobDate AS LegDate,
+       parent.JobDate AS ParentDate
+  FROM dbo.tucJob child
+  JOIN dbo.tucJob parent ON parent.JobId = child.ParentId
+ WHERE child.JobDate < parent.JobDate
+ ORDER BY DATEDIFF(day, child.JobDate, parent.JobDate) DESC;
+```
 
 ### Acceptance
 
