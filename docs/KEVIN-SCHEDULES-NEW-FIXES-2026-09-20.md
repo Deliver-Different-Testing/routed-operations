@@ -40,6 +40,9 @@ Four items have no screenshot because they were not visible defects: F2 (the emp
 day column on an override) was described rather than captured, F8 and F17–F20 were
 found by reading the code and the data.
 
+There is a one-page summary of this brief, for sharing outside the build:
+[`SCHEDULES-FIXES-SUMMARY-2026-09-20.md`](SCHEDULES-FIXES-SUMMARY-2026-09-20.md).
+
 The three enhancements from Friday (E1 group membership, E2 wildcard member search,
 E3 bound routes on the row) are unchanged and still queued behind the schedule-bundle
 tables. Nothing in this document replaces them. This is the defect and direction list
@@ -1729,43 +1732,47 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
-0. **F21** — stop the Active toggle writing `AutoBook`. One line, today. It is live,
-   ops cannot see that it happened, and there is no audit trail to find the schedules
-   it has already changed.
-0. **F18** — read it first. It is one page, it costs nothing, and it decides the key
-   every other item on this list writes. The group → bundle rename is decided: do it
-   in one pass before E1/E2 start, while those tables still do not exist.
-0. **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. It
-   is a `SELECT OBJECT_DEFINITION(...)` and a commit, it blocks nothing else, and
-   until it is done a nightly production job has no review and no history.
-1. **F7 write path** — stop the zone rows being overwritten. One line, today, before
-   anything else: it is live data loss.
-2. **F8 MaxJobs** — same reason, same size.
-3. **F5** — confirm the legacy state enum, add the mapping both ways. Half the estate
+## Before anything else — today, and all small
+
+- **F21** — stop the Active toggle writing `AutoBook`. One line. It is live, ops
+  cannot see that it happened, and there is no audit trail to find the schedules it
+  has already changed.
+- **F7 write path** — stop the zone rows being overwritten on save. One line. Live
+  data loss.
+- **F8 `MaxJobs`** — stop writing 10000 over the real value. Same size, same reason.
+- **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. A
+  `SELECT OBJECT_DEFINITION(...)` and a commit. It blocks nothing, and until it is
+  done a nightly production job has no review and no history.
+- **F18** — read it. One page, and it decides the key every other item writes. The
+  group → bundle rename is decided: one pass, before E1/E2 start, while those tables
+  still do not exist.
+
+## Then
+
+1. **F19a + F20's parent half** — the parent lands at booking time, with
+   `tblBulkJob.BookDate`/`BookTime` carrying the booking rather than the delivery
+   window. Customer-facing: today a client cannot see their own booking until the
+   morning it runs. Neither half waits on F1 or F11.
+2. **F5** — confirm the legacy state enum, add the mapping both ways. Half the estate
    is showing the wrong temperature state.
-4. **F6** — run the disagreement query, then fix per the answer.
-5. **F1 + F3 + F2 + F4** — the override model. One deployable slice; F2, F3 and F4
+3. **F6** — run the disagreement query, then fix per the answer.
+4. **F1 + F2 + F3 + F4** — the override model. One deployable slice; F2, F3 and F4
    fall out of F1 and should not be fixed separately first.
-6. **F7 read path, F14, F16, F19a** — the small fixes. F19a (parent start = booking
-   time, into `tblBulkJob.BookDate`/`BookTime`) is unblocked and does not wait for
-   F11.
-7. **F9** — linehaul out of the schedule. Biggest structural win, and it unblocks F15.
-8. **F13, F12, F10** — schedule shape.
-9. **F11 + F19b** — cut-off rewrite, and the next-available-collection rule that
+5. **F7 read path, F14, F16** — the small view fixes, one pass through
+   `LegConfigPanel` and `ScheduleTable`.
+6. **F9** — linehaul out of the schedule. Biggest structural win, and it unblocks F15.
+7. **F13, F12, F10** — schedule shape.
+8. **F11 + F19b** — cut-off rewrite, and the next-available-collection rule that
    depends on its collection modes.
-10. **F15** — pricing and zones, as its own brief.
-11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
+9. **F15** — pricing and zones, as its own brief.
+10. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
     what is left; there is a fair chance most of it dissolves.
-12. **F20** — the staging bypass. It needs the `AutoBook` answer from step 0 and the
-    read-impact counts.
+11. **F20's staging bypass** — book-immediately writes no staging row. Needs the
+    read-impact counts first, because reporting, DIFOT and the OTG upload all read
+    that row.
 
-**F20's parent-visibility half does not belong at step 12.** A client who cannot find
-their own booking until the morning it runs is a live customer-facing defect, and
-making the parent land at booking time is a smaller change than most of what is above
-it. Treat it as step 1b, alongside the data-loss fixes.
-
-E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the bundle tables,
-and E1's Groups column is easier once overrides are out of the schedule rows.
+E1/E2/E3 from the 2026-09-18 brief slot in after step 4 — they need the bundle tables,
+and E1's Bundles column is easier once overrides are out of the schedule rows.
 
 ---
 
