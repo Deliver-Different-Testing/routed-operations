@@ -36,7 +36,7 @@ from walking the deployed view.
 
 | # | Item | Kind |
 | :- | :- | :- |
-| **F1** | A client override creates a **full clone** of the schedule. It should record only the differences. | Model — biggest item |
+| **F1** | A client override creates a **full clone** of the schedule. It should be a scoped delta row keyed on ScheduleId. | Model — biggest item |
 | **F2** | Override rows sit in the schedule list as schedules, so Days / Origin / Dest / Mode render as `—` | Follows from F1 |
 | **F3** | "Differs on" is stored, computed three different ways, and discarded on one save path | Bug |
 | **F4** | Create override is dead in one of the two places the schedule modal is mounted | Wiring |
@@ -108,122 +108,279 @@ was written to end.
   This is precisely the proliferation the rationalisation exercise just spent
   11,110 rows → 2,725 schedules undoing.
 
-### What it should be
+### What it should be — one scoped override table, keyed on ScheduleId
 
-An override is a **delta row per (schedule, client)**, not a schedule. The
-overridable set is already closed and already written down — `types.ts:965`,
-`OVERRIDABLE_FIELDS`: booking cut-off, operating days, delivery speed, pickup speed,
-linehaul speed, delivery zone group, pickup zone group. `NON_OVERRIDABLE_FIELDS`
-(`types.ts:975`) already says legs, origin type, pickup depot and region are *not*
-overridable — which is the tell that an override was never meant to be a whole
-schedule. A closed set means typed nullable columns, not an EAV table: resolution at
-booking time is one `COALESCE` join rather than a pivot.
+Two decisions. The second is the answer to "surely we can do this smarter".
+
+#### 1. Key it on ScheduleId
+
+The override points at `dbo.tblBulkRunScheduleHeader.ScheduleId` — the identity
+migration `001` created — and at nothing else:
+
+- **not** the schedule *name*, which is what `ClientOverridesTab.tsx:26` and
+  `types.ts:736` still do;
+- **not** `tblBulkRunSchedule.BulkRunScheduleId`, the per-day row id — that is the
+  same mistake as `Routes.ScheduleId` (2026-09-18 brief §4.2), and a day row is not a
+  schedule;
+- **not** `tblBulkRunSchedule.ClientId`, which `001` retired to
+  `Header.LegacyClientId`.
+
+`Schedule.baseScheduleId` then disappears from the model entirely. There is no base
+and no child, because there is no second schedule — there is one schedule and a set
+of per-client differences hanging off its ScheduleId.
+
+#### 2. Scope the row
+
+Your two examples are the reason a flat per-client row is not enough:
+
+| You said | Where that value actually lives |
+| :- | :- |
+| "the pick up time is different" | the **collection leg** — `pickupTimeMode`, `pickupWindowStart/End` |
+| "the delivery speed at destination is different" | the **delivery leg** — `SpeedId` |
+| (and from your walkthrough) a 3-hour cut-off, Monday and Friday off | the **schedule** — `CutoffHours`, the day rows |
+
+Three of those are leg facts and two are schedule facts. A single flat row per
+client cannot say *which* leg it means without one column per (leg × field), which
+is how you end up back at a clone. So the row carries a **scope**: either the
+schedule, or one leg role.
+
+One thing to know before reading the DDL: **there is no leg table.** Collection,
+depot and delivery legs are derived on read from columns on the day rows
+(`types.ts:612`, `:672`, `:688`) and given negative synthetic ids; only linehaul legs
+are real rows in `TblBulkScheduleLinehaul`. So a leg-scoped override has nothing
+durable to point at except the leg's **role** — which is fine, because the read
+mapper can produce at most one collection, one depot and one delivery leg per
+schedule. `LegOrdinal` is in the key anyway so that a second one later is not a
+migration.
 
 ```sql
-CREATE TABLE dbo.tblBulkRunScheduleClientOverride (
-  ScheduleId            int NOT NULL REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
-  ClientId              int NOT NULL,
-  -- every value column: NULL = inherit from the base schedule
-  CutoffHours           int           NULL,
-  WeekDays              char(7)       NULL,  -- '1111100' Mon..Sun; NULL = inherit
-  SpeedId               int           NULL,
-  PickupRatingSpeed     int           NULL,
-  ParentSpeedId         int           NULL,
-  PostcodeGroupId       int           NULL,
-  PickupPostcodeGroupId int           NULL,
-  IsActive              bit           NULL,
-  DisplayName           nvarchar(200) NULL,  -- F13
-  DisplayDescription    nvarchar(500) NULL,
-  CreatedUtc  datetime2(0)  NOT NULL DEFAULT SYSUTCDATETIME(),
-  CreatedBy   nvarchar(100) NOT NULL,
-  UpdatedUtc  datetime2(0)  NULL,
-  UpdatedBy   nvarchar(100) NULL,
-  PRIMARY KEY (ScheduleId, ClientId));
+CREATE TABLE dbo.tblBulkRunScheduleOverride (
+    OverrideId  int IDENTITY(1,1) NOT NULL
+        CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY,
+    ScheduleId  int NOT NULL
+        CONSTRAINT FK_tblBulkRunScheduleOverride_Header
+        REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
+    ClientId    int         NOT NULL,
+    Scope       varchar(12) NOT NULL,   -- 'schedule' | 'collection' | 'depot' | 'delivery'
+    LegOrdinal  tinyint     NOT NULL CONSTRAINT DF_..._LegOrdinal DEFAULT 0,
+    DayOfWeek   tinyint     NOT NULL CONSTRAINT DF_..._DayOfWeek  DEFAULT 0,  -- 0 = every day
 
-CREATE INDEX IX_tblBulkRunScheduleClientOverride_ClientId
-  ON dbo.tblBulkRunScheduleClientOverride (ClientId) INCLUDE (ScheduleId);
+    -- ---- schedule scope: NULL = inherit -------------------------------
+    CutoffHours        int           NULL,
+    CutoffDay          tinyint       NULL,   -- absolute cut-off, when F11 lands
+    CutoffTime         time(0)       NULL,
+    WeekDays           char(7)       NULL,   -- '1111100' Mon..Sun
+    IsActive           bit           NULL,
+    DisplayName        nvarchar(200) NULL,   -- F13
+    DisplayDescription nvarchar(500) NULL,
+
+    -- ---- leg scope: NULL = inherit ------------------------------------
+    SpeedId            int           NULL,   -- the speed of THAT leg
+    ZoneGroupId        int           NULL,   -- that leg's zone / postcode group
+    PickupTimeMode     varchar(10)   NULL,   -- 'window' | 'fixed' | 'on_demand'
+    PickupWindowStart  time(0)       NULL,
+    PickupWindowEnd    time(0)       NULL,
+    AdditionalItemChargingLogic varchar(40) NULL,
+
+    CreatedUtc datetime2(0)  NOT NULL CONSTRAINT DF_..._CreatedUtc DEFAULT SYSUTCDATETIME(),
+    CreatedBy  nvarchar(100) NOT NULL,
+    UpdatedUtc datetime2(0)  NULL,
+    UpdatedBy  nvarchar(100) NULL,
+
+    CONSTRAINT UQ_tblBulkRunScheduleOverride
+        UNIQUE (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek),
+    CONSTRAINT CK_tblBulkRunScheduleOverride_Scope
+        CHECK (Scope IN ('schedule','collection','depot','delivery')),
+    -- a schedule row carries no leg values and a leg row carries no schedule values
+    CONSTRAINT CK_tblBulkRunScheduleOverride_ScopeFields CHECK (
+        (Scope =  'schedule' AND SpeedId IS NULL AND ZoneGroupId IS NULL
+                             AND PickupTimeMode IS NULL AND PickupWindowStart IS NULL
+                             AND PickupWindowEnd IS NULL
+                             AND AdditionalItemChargingLogic IS NULL)
+     OR (Scope <> 'schedule' AND CutoffHours IS NULL AND CutoffDay IS NULL
+                             AND CutoffTime IS NULL AND WeekDays IS NULL
+                             AND IsActive IS NULL AND DisplayName IS NULL
+                             AND DisplayDescription IS NULL)),
+    -- never store a row that overrides nothing
+    CONSTRAINT CK_tblBulkRunScheduleOverride_NotEmpty CHECK (
+        CutoffHours IS NOT NULL OR CutoffDay IS NOT NULL OR CutoffTime IS NOT NULL
+     OR WeekDays IS NOT NULL OR IsActive IS NOT NULL OR DisplayName IS NOT NULL
+     OR DisplayDescription IS NOT NULL OR SpeedId IS NOT NULL OR ZoneGroupId IS NOT NULL
+     OR PickupTimeMode IS NOT NULL OR PickupWindowStart IS NOT NULL
+     OR PickupWindowEnd IS NOT NULL OR AdditionalItemChargingLogic IS NOT NULL)
+);
+
+CREATE INDEX IX_tblBulkRunScheduleOverride_Client
+    ON dbo.tblBulkRunScheduleOverride (ClientId) INCLUDE (ScheduleId, Scope);
 ```
 
-Resolution at booking time is then one left join:
+DDL as written is in `scripts/schedule-rationalisation/sql/003_client_override_deltas.sql`,
+with the same `@Commit = 0` rollback harness as `001`.
+
+#### Your three cases, as rows
+
+Base schedule #1947, *AKL > HLZ Afternoon*, Mon–Fri, 2-hour cut-off, delivery speed
+110, collection window 14:00–15:00.
 
 ```sql
-SELECT COALESCE(o.CutoffHours,       s.CutoffHours)       AS CutoffHours,
-       COALESCE(o.SpeedId,           s.SpeedId)           AS SpeedId,
-       COALESCE(o.PickupRatingSpeed, s.PickupRatingSpeed) AS PickupRatingSpeed,
-       COALESCE(o.PostcodeGroupId,   s.PostcodeGroupId)   AS PostcodeGroupId,
-       ...
+-- UCLMP: 3-hour cut-off, and Monday and Friday off
+(1947, UCLMP, 'schedule', 0, 0, CutoffHours = 3, WeekDays = '0111000')
+
+-- A client whose pickup happens in the morning
+(1947, ACME,  'collection', 0, 0, PickupWindowStart = '09:00', PickupWindowEnd = '11:00')
+
+-- A client who pays for Pre 10am into the destination
+(1947, MEDCO, 'delivery',   0, 0, SpeedId = 164)
+```
+
+Three clients, three rows, **one schedule**. No new ScheduleId, no copied day rows,
+no copied legs, no copied zones. Ops can read the whole difference in one line, and
+"which clients are on a non-standard delivery speed?" is
+`WHERE Scope = 'delivery' AND SpeedId IS NOT NULL` instead of a diff across 2,725
+schedules.
+
+#### Resolving it
+
+One left join per scope the caller needs, then `COALESCE`:
+
+```sql
+SELECT COALESCE(so.CutoffHours, s.CutoffHours)          AS CutoffHours,
+       COALESCE(dl.SpeedId,     s.SpeedId)              AS DeliverySpeedId,
+       COALESCE(dl.ZoneGroupId, s.PostcodeGroupId)      AS DeliveryZoneGroupId,
+       COALESCE(cl.SpeedId,     s.PickupRatingSpeed)    AS PickupSpeedId,
+       COALESCE(cl.PickupWindowStart, s.StartTime)      AS PickupWindowStart,
+       COALESCE(cl.PickupWindowEnd,   s.EndTime)        AS PickupWindowEnd
   FROM dbo.tblBulkRunSchedule s
-  JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId
-  LEFT JOIN dbo.tblBulkRunScheduleClientOverride o
-         ON o.ScheduleId = h.ScheduleId AND o.ClientId = @ClientId
- WHERE h.ScheduleId = @ScheduleId;
+  LEFT JOIN dbo.tblBulkRunScheduleOverride so
+         ON so.ScheduleId = s.ScheduleId AND so.ClientId = @ClientId
+        AND so.Scope = 'schedule'  AND so.DayOfWeek IN (0, s.DayOfWeek)
+  LEFT JOIN dbo.tblBulkRunScheduleOverride cl
+         ON cl.ScheduleId = s.ScheduleId AND cl.ClientId = @ClientId
+        AND cl.Scope = 'collection' AND cl.LegOrdinal = 0
+        AND cl.DayOfWeek IN (0, s.DayOfWeek)
+  LEFT JOIN dbo.tblBulkRunScheduleOverride dl
+         ON dl.ScheduleId = s.ScheduleId AND dl.ClientId = @ClientId
+        AND dl.Scope = 'delivery'   AND dl.LegOrdinal = 0
+        AND dl.DayOfWeek IN (0, s.DayOfWeek)
+ WHERE s.ScheduleId = @ScheduleId;
 ```
 
-Days deserve one note: days are **rows**, not a column, so "switch Monday and Friday
-off for this client" is a row-level difference. `WeekDays char(7)` is the cheap
-version and covers what you actually did — days on/off. Per-day *time* overrides
-(Monday delivers 10:00 for this client only) are not covered and should stay out of
-phase 1; if ops asks for them, they need a child table, and I would rather see the
-demand first than build it.
+Days-off resolve one level up: a schedule-scope `WeekDays` filters which day rows the
+client sees at all. Put that in one view or one function —
+`dbo.fnScheduleForClient(@ScheduleId, @ClientId)` — and have every caller use it. The
+moment two call sites resolve overrides with their own SQL, they will disagree, which
+is how the list and the modal disagree today.
+
+#### Deliberately not in phase 1
+
+- **Linehaul overrides.** No `'linehaul'` scope. Per-client linehaul differences are
+  F9's job — they belong on the client's rating against the run, not on the schedule.
+  Adding the scope here would re-import the exact problem F9 removes. If a client
+  needs a different linehaul *speed*, that is an argument for F9 landing sooner, not
+  for a fourth scope.
+- **Per-day overrides.** `DayOfWeek` is in the table and in the unique key, always
+  written as `0` for now. The hook costs nothing today and means "ACME's Monday
+  pickup is 07:00, the rest of the week is 09:00" needs no migration when ops asks
+  for it.
+- **Clearing a value the base sets.** NULL means inherit, so an override cannot say
+  "this client has *no* delivery zone group when the schedule has one". Nothing in the
+  estate needs it today and `003` reports any case it finds rather than guessing. If
+  it turns out to be real, the answer is a sentinel per column, not a second meaning
+  for NULL — tell me before anyone invents one.
+- **The chain shape.** See below — this is the rule that keeps the table from
+  becoming a schedule again.
+
+#### What is never overridable
+
+Which legs exist, in what order, the origin and destination depots, the region, and
+the linehaul runs. `types.ts:975` (`NON_OVERRIDABLE_FIELDS`) already says as much and
+it should now be enforced by the API, not just the UI: a `PUT` that tries to set a
+field outside the scoped column list is a `400`.
+
+If what differs between two clients *is* the chain shape, it is not an override — it
+is a different schedule, and the UI should offer **Copy schedule**, not **Create
+override**. That single rule is the difference between this table staying small and
+it turning into the clone problem wearing a new hat.
+
+#### Why not the other two shapes
+
+| Shape | Why not |
+| :- | :- |
+| **JSON patch column** — one row per client holding `{"cutoffHours":3}` | No foreign keys, so a `SpeedId` can point at a deleted speed and nothing complains. No index, so "who overrides speed 164?" is a table scan with `OPENJSON`. And a patch can carry a key that no longer exists, which is how the current `overriddenFields` drifted (F3). |
+| **EAV** — `(ScheduleId, ClientId, FieldKey, Value nvarchar)` | Everything typed as a string, every read a pivot, every write unvalidated. The overridable set is small and closed — there is no flexibility to buy here, only integrity to lose. |
+
+Typed columns win because the set of things ops is allowed to vary per client is a
+decision, not an open question. When the set changes, that should be a migration
+someone signs off, not a new string appearing in a JSON blob.
 
 ### API
 
-Replace `POST /api/v2/schedules/{id}/overrides` (returns a schedule) with:
+Replace `POST /api/v2/schedules/{id}/overrides` (`api/v2.ts:91`, returns a whole
+`ScheduleDto`) with a delta-shaped resource. `{id}` is the **ScheduleId**
+throughout — the same id as everywhere else in the v2 API.
 
 | Method | Route | Body / notes |
 | :- | :- | :- |
-| GET | `/api/v2/schedules/{id}/overrides` | `[{ clientId, clientCode, clientName, fields: { cutoffHours?, weekDays?, speedId?, … }, updatedUtc, updatedBy }]` — only the keys actually set |
-| PUT | `/api/v2/schedules/{id}/overrides/{clientId}` | Full replace of that client's delta. A key set to `null` clears the override and returns the client to the base value. An empty body deletes the row. |
-| DELETE | `/api/v2/schedules/{id}/overrides/{clientId}` | Client returns to the base entirely |
+| GET | `/api/v2/schedules/{id}/overrides` | `[{ clientId, clientCode, clientName, scopes: { schedule?: {...}, collection?: {...}, delivery?: {...} }, updatedUtc, updatedBy }]` — only the keys actually set |
+| PUT | `/api/v2/schedules/{id}/overrides/{clientId}` | Full replace of that client's delta, all scopes in one body. A key set to `null` clears that one field; an empty scope object deletes that scope's row; an empty body deletes the client's override entirely. `400` on any key outside the scoped column list, or on a leg scope the schedule does not have. |
+| DELETE | `/api/v2/schedules/{id}/overrides/{clientId}` | The client returns to the base schedule in full |
+| GET | `/api/v2/clients/{clientId}/overrides` | Every schedule this client differs on — the view ops actually wants, and impossible today without opening 2,725 schedules |
 
-`ScheduleDto.overriddenFields` stays "computed server-side" as `api/v2.ts:39` already
-says — it becomes the key list of the delta row, which is the same thing and now
-cannot drift (see F3).
+`ScheduleDto.overriddenFields` stays "computed server-side" as `api/v2.ts:39`
+already promises. It becomes `scope.field` keys read off the delta row — the same
+source the editor diffs against, so it cannot drift (F3).
 
-An override no longer moves the client's link row off the base. The client stays
-attached to the base schedule and carries a delta — that is the whole point.
-`upsertOverride` and `attachBlocker` in `utils/clientLinks.ts` lose their
-move-the-link behaviour; `effectiveSchedulesForClient` stops excluding overridden
-bases, because there is no longer a second schedule to prefer.
+The client's link row **stays on the base schedule**. An override no longer moves it,
+so `upsertOverride` and `attachBlocker` in `utils/clientLinks.ts` lose their
+move-the-link behaviour, and `effectiveSchedulesForClient` stops excluding overridden
+bases — there is no second schedule to prefer any more.
 
-**A default schedule is still overridable** and should stay that way: a client with a
-delta on a default keeps using the default schedule, it does not get pulled out into
-"specific". That falls out of the model for free once the override is a delta rather
-than a schedule.
+**A default schedule is overridable**, and the client stays on the default. That
+falls out for free once the override is a delta rather than a schedule, and it is
+what F4 was tripping over.
 
 ### Migration
 
-Two populations:
+Two populations, both folded into the new table by
+`scripts/schedule-rationalisation/sql/003_client_override_deltas.sql`:
 
-1. **Clones created through the new view.** Fold each back: read the clone, diff it
-   against its base over the overridable set, write one delta row, retire the clone
-   header. Anything that differs *outside* the overridable set (a different leg
-   chain, a different depot) is not an override — it is a genuinely different
-   schedule and must be left alone and reported.
+1. **Clones created through the new view** (`BaseScheduleId IS NOT NULL`, or a header
+   whose name matches another's with a `LegacyClientId`). Diff each against its base
+   over the scoped column list; write one row per scope that differs; retire the
+   clone header. A clone that differs **outside** the scoped list — a different leg
+   chain, depot or region — is not an override: leave it alone and list it in the
+   script's report. Those are genuinely different schedules and a human decides.
 2. **Legacy client-specific schedules.** `types.ts:735` reads `isOverride:
    first.clientId != null`, so every legacy ClientId-bearing schedule presents as an
-   override with no base. The rationalisation output already identifies which of
-   these are variants of a common parent and what they differ on —
-   `scripts/schedule-rationalisation/output/variants.csv` (`DiffersFromGroup1On`) and
-   `merge_groups.csv`. Fold only the sets whose `DiffersFromGroup1On` is inside the
-   overridable list; leave the rest as schedules.
+   override with no base. `scripts/schedule-rationalisation/output/variants.csv`
+   already groups them and names what each differs on in `DiffersFromGroup1On`. Fold
+   only the sets whose differences are inside the scoped list; everything else stays
+   a schedule.
 
-Both directions are reversible, so do them under the same `@Commit = 0` harness as
-`scripts/schedule-rationalisation/sql/001_schedule_header_and_id_keyed_links.sql`.
-Suggested file: `scripts/schedule-rationalisation/sql/003_client_override_deltas.sql`.
+The script reports, before it commits: rows folded, clones retired, and the ones it
+refused to touch with the reason. Run it with `@Commit = 0` first and send me that
+report.
 
 ### Acceptance
 
-- Creating an override writes **one row** and **no new ScheduleId**. The schedule
-  count is unchanged after a day of ops creating overrides.
+- Creating an override writes **one row per scope touched** and **no new
+  ScheduleId**. The schedule count is unchanged after a day of ops creating
+  overrides.
 - The client stays attached to the base; the base's client list does not shrink.
+- UCLMP with a 3-hour cut-off and Mon/Fri off is one `schedule`-scope row, and the
+  base schedule's day rows are untouched.
+- A client with a different pickup window is one `collection`-scope row; a client
+  with a different destination speed is one `delivery`-scope row. Neither writes
+  anything to the other's scope.
 - Changing only the speed produces a delta whose only non-null value column is
-  `SpeedId`, and the UI says it differs on speed and nothing else.
-- Clearing an override field returns that client to the base value without touching
-  anything else.
-- Deleting the delta leaves the client on the base, unchanged.
+  `SpeedId`, and the UI says it differs on delivery speed and nothing else.
+- Clearing one field returns that client to the base value and leaves the rest of
+  the delta alone. Deleting the delta leaves the client on the base, unchanged.
 - An override on a **default** schedule works, and the client still resolves to that
   default.
+- Two clients with different pickup times on the same schedule both book correctly
+  through `fnScheduleForClient`, and the schedule itself has one row set in
+  `tblBulkRunSchedule`.
 
 ---
 
@@ -698,10 +855,14 @@ Three small things, all in `ScheduleTable.tsx`:
 
 Three scripts, all under the `@Commit = 0` harness used by `001`:
 
+`001_schedule_header_and_id_keyed_links.sql` is on the rationalisation branch, not on
+`main`; `003` below builds on the header and link tables it creates and is written to
+sit beside it in the same folder.
+
 | Script | Contents | Blocks |
 | :- | :- | :- |
 | `002_group_tables_and_route_header_binding.sql` | Schedule group tables + `Routes.HeaderScheduleId` — unchanged from the 2026-09-18 brief §4 | E1, E2, E3 |
-| `003_client_override_deltas.sql` | `tblBulkRunScheduleClientOverride` + fold clones and legacy variants into deltas | F1, F2, F3 |
+| `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg) + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
 | `004_display_names.sql` | `DisplayName` / `DisplayDescription` on the header | F13 |
 
 No schema change is needed for F5–F8, F14 or F16 — they are mapper and view fixes.
