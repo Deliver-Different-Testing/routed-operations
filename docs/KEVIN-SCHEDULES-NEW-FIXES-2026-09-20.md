@@ -70,9 +70,14 @@ I cannot see that build, so for every item below:
 Where an item says "live", read it as *live once persistence is wired, and possibly
 live now*. The fix does not change either way; the urgency does.
 
-**First question for Kevin:** which build is at the tenant URL, does it save to the
-database, and does its `handleToggleActive` still write `autoBook`? That one answer
-re-grades F21, F7 and F8 from "fix before wiring" to "stop it today", or the reverse.
+**Partly answered by the screenshot in F21.** The deployed build is at
+`routedoperations.urgent.deliverdifferent.com/schedules-new`, shows 2,729 schedules
+with real client link rows, and migrates a legacy per-client row to a link row "on
+next save" — so it persists. Treat the on-save items as live.
+
+**Still needed from Kevin:** where that build's source lives, so the line references
+below can be re-pointed at it. Everything here describes behaviour that build
+demonstrably has; only the coordinates are from this branch.
 
 ---
 
@@ -1649,14 +1654,31 @@ SELECT TOP 200 child.JobId, child.ParentId, child.JobDate AS LegDate,
 
 ## F21 — The Active toggle writes `AutoBook`. Disable it today.
 
-**Confirmed by Steve, 2026-09-20: `AutoBook` means book immediately.** That turns the
-conflation recorded in F8 from a naming tidy-up into a defect that reroutes dispatch.
+**Confirmed by Steve, 2026-09-20: `AutoBook` means book immediately.** And the
+deployed build states the conflation out loud — the schedule modal's checkbox is
+labelled **"Active (auto-book on)"**, while the list carries an **AUTOBOOK** column of
+toggles:
 
-Severity depends on the deployed build — see *How live is any of this?* above. On the
-branch I can read there is no persistence, so this cannot reach the database yet. If
-the build ops is using does persist, this is the most urgent item here.
+![The schedule modal's "Active (auto-book on)" checkbox, and the list's AUTOBOOK column](images/schedules-fixes-2026-09-20/f21-active-autobook-conflated-in-deployed-build.png)
 
-### What the code does
+*`routedoperations.urgent.deliverdifferent.com/schedules-new?edit=3` — schedule #3,
+2,729 schedules, real client link rows.*
+
+So this is not a hidden bug in that build. It is one control doing two jobs, said
+plainly in the label. **There is no way to deactivate a schedule without changing how
+it dispatches, because there is no Active concept separate from `AutoBook` at all.**
+
+That screenshot also settles the question in *How live is any of this?* above: the
+deployed build is ahead of this branch, carries real data and real link rows
+("Legacy per-client group… migration to a link row happens on next save"), and
+persists. So the on-save items — F7's zone rows, F8's `MaxJobs`, F1's clones — are
+live there, in whatever form that build implements them.
+
+### What the code does on this branch
+
+The deployed build's source is not in this repo, so the lines below are from
+`claude/schedule-link-regression-review`. The behaviour they produce is what the
+screenshot shows, so treat them as the shape to fix rather than the exact coordinates.
 
 `ScheduleTableView.tsx:61`:
 

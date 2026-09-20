@@ -20,37 +20,32 @@ items they evidence.
 
 **The Active toggle in the schedules list changes how a schedule dispatches.**
 
-`AutoBook` means "book immediately". The Active toggle writes it. So switching a
-schedule to Inactive stops it booking immediately and starts it staging into the bulk
-table — where nothing becomes a job until someone builds a run. Switching it to
-Active does the reverse.
+`AutoBook` means "book immediately" — whether a booking becomes a job now or stages
+into the bulk table for run building. **Active means whether the schedule can be
+booked at all.** They are currently one control: the schedule modal's checkbox is
+labelled "Active (auto-book on)", and the list has a single AUTOBOOK column.
 
-Neither is what "Active" means to the person clicking it, and it is invisible
-afterwards, because the list then displays `AutoBook` as the Active state. The toggle
-looks like it did exactly what was asked.
+So there is no way to switch a schedule off without also changing how it dispatches,
+and no way to change how it dispatches without it appearing inactive. Ops has one
+switch where it needs two.
 
-The fix is one line; separating Active from Book-immediately properly is a small
-follow-up. If the deployed build does write to the database, this is today's work and
-there is no audit trail to find the schedules it has already changed — the only check
-available is the book-immediately count against what ops expects. See the caveat
-below.
+The fix is to separate them: Active (reversible on/off), Retired (archived, already
+exists), and Book immediately (dispatch routing, its own labelled control). Small, but
+it needs doing before anyone relies on the Active state meaning anything.
 
 ---
 
 ## A caveat that decides urgency, not substance
 
-The branch this was written against has **no persistence in the Schedules view at
-all** — it runs on sample data, and nothing it does reaches a database. But the
-walkthrough shows real schedules, so the build ops is using is ahead of that branch
-and wired to something the repo does not hold, which I have not been able to inspect.
+The branch this was written against has no persistence — it runs on sample data. The
+**deployed build is ahead of it**: 2,729 schedules, real client link rows, and a
+legacy per-client row that migrates "on next save". So it does write to the database,
+and the items marked **(on save)** are live there.
 
-So: every defect below is real and precisely located in the code. Whether it is
-*currently* corrupting data depends on how the deployed build saves. The fixes do not
-change either way — the urgency does, and the first question for Kevin is which build
-is deployed and whether it writes to the database.
-
-For the three marked **(on save)**, that question decides whether they are "fix before
-this is connected" or "stop it today".
+What this means for the detail: every defect is real and its behaviour is confirmed,
+but the line references in the full brief point at the branch rather than at the
+deployed source, which is not in the repo. The fixes are unaffected; Kevin will need
+to re-point the coordinates.
 
 ---
 
@@ -119,8 +114,8 @@ id** — never the day-row line, never the schedule name.
 
 ## What is needed back
 
-- **Which build is at the tenant URL, and does it write to the database?** This
-  re-grades the three "(on save)" items above.
+- Where the deployed build's source lives, so the line references can be re-pointed
+  at it.
 - The legacy temperature-state integer → label mapping.
 - The name of the holidays table.
 - Three diagnostic queries run: duplicate schedule names, day rows that disagree with
