@@ -8,6 +8,15 @@ variables:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_NOLOGO: "true"
 
+  # nuget.config authenticates the private GitLab feeds (projects 797 + 809)
+  # with these. ci-templates/base.yml already sets them stack-wide, but
+  # base.yml is only included by the generated CHILD pipeline - the jobs below
+  # run in the PARENT, which includes ci-template.yml only. Without these the
+  # dotnet restore in test:backend:unit 401s the first time its rules fire,
+  # which is on merge to master, i.e. at release time rather than on the MR.
+  GITLAB_NUGET_USERNAME: "gitlab-ci-token"
+  GITLAB_NUGET_TOKEN: "${CI_JOB_TOKEN}"
+
 # Path-based rules: only run frontend jobs when frontend files change.
 # Backend-only MRs (a service edit, a migration bump) skip the ~11-min
 # vitest suite entirely. Pattern copied from DespatchWeb's .gitlab-ci.yml

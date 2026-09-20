@@ -9,9 +9,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 COPY package.json package-lock.json* ./
 RUN npm install --no-audit --no-fund
 
-# Cache NuGet deps
+# Cache NuGet deps. GITLAB_NUGET_USERNAME/GITLAB_NUGET_TOKEN reach this build
+# as Docker build args (ci-templates/base.yml forwards them via
+# AUTO_DEVOPS_BUILD_IMAGE_FORWARDED_CI_VARIABLES, and the project-level
+# AUTO_DEVOPS_BUILD_IMAGE_EXTRA_ARGS passes them explicitly, as on runviewer
+# and dfrntdrive_configurator). They MUST be declared as ARG here or Docker
+# discards them and nuget.config resolves the credential placeholders to
+# nothing - which is why every build failed with 401 Unauthorized against the
+# gitlab-alertlabel feed from 2026-09-18. Set on the RUN line rather than ENV
+# so the token is not baked into an image layer.
+ARG GITLAB_NUGET_USERNAME
+ARG GITLAB_NUGET_TOKEN
 COPY *.csproj nuget.config ./
-RUN dotnet restore
+RUN GITLAB_NUGET_USERNAME=${GITLAB_NUGET_USERNAME} GITLAB_NUGET_TOKEN=${GITLAB_NUGET_TOKEN} dotnet restore
 
 # Copy the rest of the source and build the SPA + backend
 COPY . ./
