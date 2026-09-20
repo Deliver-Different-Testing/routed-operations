@@ -5,6 +5,7 @@ const nav = [
   { to: '/routes', label: 'Route Building', icon: '📦', end: false },
   { to: '/quoting', label: 'Quoting', icon: '💰', end: false, badge: 'NEW' },
   { to: '/polygons', label: 'Polygon Builder', icon: '🗺️', end: false, badge: 'NEW' },
+  { to: '/schedules', label: 'Schedules', icon: '📅', end: false, badge: 'NEW' },
 ];
 
 export default function Shell() {
