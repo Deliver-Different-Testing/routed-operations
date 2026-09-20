@@ -7,7 +7,8 @@ status: Summary — the full brief is KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md
 
 # Schedules (NEW) — what is wrong, and the order to fix it
 
-21 items from Steve's walkthrough of the deployed new Schedules view, each grounded
+21 items from Steve's walkthrough of the deployed **Schedules NEW** view
+(`/schedules-new`), each grounded
 in the code with a file and line, a fix and acceptance criteria.
 
 **Full brief:** [`KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md`](KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md)
@@ -35,6 +36,18 @@ it needs doing before anyone relies on the Active state meaning anything.
 
 ---
 
+## Scope: Schedules NEW only
+
+Every item is against **Schedules NEW** — the view deployed at `/schedules-new`,
+sidebar "Schedules NEW". Nothing here describes the old Schedules page, and no fix
+should be applied to it.
+
+The route moved: the module was specced to mount at `/schedules` (09-08 brief, "New
+route, new sidebar entry"), and the deployed build has since been remounted at
+`/schedules-new`. The identity check is the copy, not the URL — the deployed modal
+carries strings that sit verbatim in this module ("Only the clients attached below.
+Each is a row in the schedule/client link table."). Same module, later revision.
+
 ## A caveat that decides urgency, not substance
 
 The branch this was written against has no persistence — it runs on sample data. The
@@ -42,10 +55,12 @@ The branch this was written against has no persistence — it runs on sample dat
 legacy per-client row that migrates "on next save". So it does write to the database,
 and the items marked **(on save)** are live there.
 
-What this means for the detail: every defect is real and its behaviour is confirmed,
-but the line references in the full brief point at the branch rather than at the
-deployed source, which is not in the repo. The fixes are unaffected; Kevin will need
-to re-point the coordinates.
+It is also a later revision of the same module — its modal reads Clients / Route /
+Operating days / Coverage / Roster, where the branch reads Schedule Config / Clients /
+Client Overrides / Roster. Every defect is real and its behaviour confirmed, because
+they live in the data mappers rather than the tab chrome; but the line references in
+the full brief point at the branch, not at the deployed source, which is not in the
+repo. The fixes are unaffected; Kevin will need to re-point the coordinates.
 
 ---
 
@@ -56,7 +71,7 @@ to re-point the coordinates.
 | **Zone rows overwritten** *(on save)* | Delivery zones are read from one column and written from another, so opening a schedule and saving it destroys its zone rows. The read column is empty on 81 of 179 schedule sets. |
 | **`MaxJobs` overwritten** *(on save)* | Hardcoded to 10000 on every save. The real value is never read back. |
 | **Wrong temperature state** | A production integer is handed to a text dropdown with no mapping. The affected value covers 87 of 179 sets, including every medical schedule. |
-| **Clients cannot see their own booking** | The parent job does not exist until the delivery day, and the parent is the client's entire view — every leg's status attaches to it. Every "where is my delivery?" call between booking and delivery day comes from this. **This one is in the live dispatch pipeline, not the new view — it is happening now.** |
+| **Clients cannot see their own booking** | The parent job does not exist until the delivery day, and the parent is the client's entire view — every leg's status attaches to it. Every "where is my delivery?" call between booking and delivery day comes from this. **This one is in the live dispatch pipeline, not Schedules NEW — it is happening now.** |
 | **Overrides clone the schedule** *(on save)* | Every client wanting a different cut-off adds another schedule to the 2,725 that exist. |
 
 ---

@@ -2,8 +2,8 @@
 title: Kevin — Schedules (NEW) fix list: client overrides, migration defects, schedule shape, job timing
 date: 2026-09-20
 audience: Kevin
-status: Active brief — fixes and product moves on the new Schedules view
-source: Steve, walkthrough of the deployed new Schedules view, 2026-09-18 → 2026-09-20
+status: Active brief — fixes and product moves on Schedules NEW (/schedules-new)
+source: Steve, walkthrough of the deployed Schedules NEW view (/schedules-new), 2026-09-18 → 2026-09-20
 supersedes: nothing — sits on top of KEVIN-SCHEDULES-NEW-ENHANCEMENTS-2026-09-18.md (E1/E2/E3 still stand)
 related_docs:
   - KEVIN-SCHEDULES-NEW-ENHANCEMENTS-2026-09-18.md
@@ -15,17 +15,69 @@ related_docs:
 
 # Schedules (NEW) — fix list
 
+## Which view is this? — Schedules NEW, not the old Schedules page
+
+**Every item below is against Schedules NEW.** Nothing here describes the old
+Schedules page, and no fix should be applied to it.
+
+That needs saying because the route moved. The module was specced to mount at
+`/schedules` with the sidebar reading "Schedules NEW" —
+`KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08.md:271`:
+
+> `| Route | /schedules — sidebar entry "Schedules NEW" (src/App.tsx, src/components/Shell.tsx) |`
+
+and `:50`, *"entry, 'Schedules (NEW)', next to the existing Schedules page"*. The
+deployed build has since been remounted at **`/schedules-new`** — which is the URL in
+Steve's walkthrough, `routedoperations.urgent.deliverdifferent.com/schedules-new?edit=3`.
+The review branch still has the original mount (`App.tsx:22`,
+`<Route path="schedules" element={<SchedulesPage />} />`), and it is the only
+schedules route in that app — the old view is not in this module at all.
+
+So the same code answers to two paths depending on build vintage. The identity check
+is not the URL; it is the copy. The deployed modal's client tab carries the strings
+that are in this module verbatim (`ClientsTab.tsx:68`, `:81`, `:138`):
+
+- *"Available to every client with no schedule of its own for this run. No link rows."*
+- *"Only the clients attached below. Each is a row in the schedule/client link table."*
+- *"Client overrides · same route, different values"*
+
+Those are not strings the old view has ever had. This module is what is deployed at
+`/schedules-new`.
+
+### The drift you will hit
+
+The deployed build is a later revision of this module, and the modal has been
+reorganised since the branch was cut:
+
+| | Tabs |
+| :- | :- |
+| **This branch** (`ScheduleEditForm.tsx:453–505`) | Schedule Config · Clients · Client Overrides · Roster |
+| **Deployed** (Steve's screenshot, `?edit=3`) | Clients · Route · Operating days · Coverage · Roster |
+
+Same module, later layout: config has been split into Route / Operating days /
+Coverage, and Client Overrides has folded into Clients. Which means:
+
+- **The defects hold.** They are in the data mappers and the state handlers
+  (`types.ts`, `ScheduleTableView.tsx`), not in the tab chrome — and the deployed
+  build demonstrably behaves as described.
+- **The line numbers do not.** Take every `file:line` below as a landmark to search
+  for, not a coordinate to open. Tell us where the deployed source lives and they can
+  be re-pointed properly.
+
+---
+
 ## Where the code is
 
-Everything referenced below is in the schedules module as it stands on branch
+Everything referenced below is in the **Schedules NEW** module as it stands on branch
 `claude/schedule-link-regression-review`:
 
 ```
 v2/frontend/src/schedules/modules/schedules/
 ```
 
-It is **not** on `main` yet. Line numbers are from that branch — if you have moved
-on, take the anchors as landmarks rather than coordinates.
+It is **not** on `main` yet, and per the section above it is an **earlier revision of
+what is deployed at `/schedules-new`**. Line numbers are from that branch — take the
+anchors as landmarks rather than coordinates.
 
 ## The screenshots
 
@@ -108,7 +160,7 @@ from walking the deployed view.
 | **F12** | "Book from client address" should be a depot setting — this is what moves eco runs onto schedules | Direction |
 | **F13** | Schedule name vs client-facing display name | Small feature |
 | **F14** | Collection box discount field is gone from the UI | Regression |
-| **F15** | Rates, additional-item rules and dimension rules have no home in the new view | Separate piece — scoping only |
+| **F15** | Rates, additional-item rules and dimension rules have no home in Schedules NEW | Separate piece — scoping only |
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
 | **F19** | The parent job starts at the **delivery** leg's time. It must start at the booking, and the pickup at the next actually-available collection | Behaviour — half of it ships now |
@@ -515,7 +567,7 @@ what F4 was tripping over.
 Two populations, both folded into the new table by
 `scripts/schedule-rationalisation/sql/003_client_override_deltas.sql`:
 
-1. **Clones created through the new view** (`BaseScheduleId IS NOT NULL`, or a header
+1. **Clones created through Schedules NEW** (`BaseScheduleId IS NOT NULL`, or a header
    whose name matches another's with a `LegacyClientId`). Diff each against its base
    over the scoped column list; write one row per scope that differs; retire the
    clone header. A clone that differs **outside** the scoped list — a different leg
@@ -747,7 +799,7 @@ data, not from `'14:00'`. A collection leg with no configured values should read
 "No collection job" rather than a filled-in section that nobody entered.
 
 **Acceptance.** A schedule with the collection tick off in the old screen shows no
-collection section in the new one. Round-tripping a schedule through the new view
+collection section in the new one. Round-tripping a schedule through Schedules NEW
 does not turn a collection job on.
 
 ---
@@ -793,7 +845,7 @@ loss, not just a display bug — it should be the first thing fixed in this sect
 2. Write back symmetrically: whatever the resolver reads, the writer writes — both
    legs' zone rows, and `PostcodeGroupId`/`PickupPostcodeGroupId` only when the
    schedule genuinely uses the group form.
-3. Until it is symmetrical, **do not let the new view save zone rows at all** —
+3. Until it is symmetrical, **do not let Schedules NEW save zone rows at all** —
    read-only is better than lossy.
 4. Surface collection zones the same way delivery zones are surfaced (the
    `ZoneSelector` at `LegConfigPanel.tsx:189` vs `:355` — same component, give it the
@@ -813,7 +865,7 @@ Worth fixing while you are in this file, because it sits underneath F5, F6 and F
 reads every shared field from it — speeds, cut-off, zone groups, depot, states,
 flags. `multiDayToPerDay` then writes those values back to **every** day row
 (`types.ts:488`–`:556`). Any schedule whose days genuinely differ is silently
-flattened to Monday's values on the first save from the new view.
+flattened to Monday's values on the first save from Schedules NEW.
 
 ```sql
 -- How many schedules have day rows that disagree on a shared field?
@@ -886,7 +938,7 @@ Your four points, mapped to the code:
 
 **Acceptance.** Changing a run's departure time changes every schedule that uses it,
 with no schedule edit. No pricing column on `TblBulkScheduleLinehaul` is written by
-the new view. Two clients with different linehaul prices share one schedule.
+Schedules NEW. Two clients with different linehaul prices share one schedule.
 
 ---
 
@@ -1503,7 +1555,7 @@ immediately.** So the routing decision above reads `AutoBook`, and there is a li
 defect on top of it — **F21**, summarised here because it decides whether this item
 can be worked on safely:
 
-`types.ts:734` reads `isActive: first.autoBook ?? true`, so in the new Schedules view
+`types.ts:734` reads `isActive: first.autoBook ?? true`, so in Schedules NEW
 the **Active toggle is bound to `AutoBook`** — and it is a live control on every row
 of the list (the Status column's `ActiveToggle`, `ScheduleTable.tsx:418`). If
 `AutoBook` is the immediate-booking flag, then switching a schedule Active or
