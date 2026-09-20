@@ -1,5 +1,5 @@
 ---
-title: Kevin — Schedules (NEW) fix list: client overrides, migration defects, schedule shape
+title: Kevin — Schedules (NEW) fix list: client overrides, migration defects, schedule shape, job timing
 date: 2026-09-20
 audience: Kevin
 status: Active brief — fixes and product moves on the new Schedules view
@@ -53,6 +53,7 @@ from walking the deployed view.
 | **F15** | Rates, additional-item rules and dimension rules have no home in the new view | Separate piece — scoping only |
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
+| **F19** | The parent job starts at the **delivery** leg's time. It must start at the booking, and the pickup at the next actually-available collection | Behaviour — half of it ships now |
 | **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name. Schedule *groups* are renamed to *bundles* so the word stops meaning two things | Rule — read first |
 
 Order of work is in §5.
@@ -856,7 +857,8 @@ becomes a display convenience, not the truth. Then:
 
 This is the one item on the list that is a genuine rewrite of a component rather than
 a fix. Budget for it accordingly, and do it after F1 so you are not rewriting the
-override diff twice.
+override diff twice — and build F19b in the same pass, because it is the same
+inversion applied to the job records rather than the UI.
 
 ---
 
@@ -1191,6 +1193,138 @@ back-fills have to be.
 
 ---
 
+## F19 — The parent starts at the booking; the pickup starts at the next available collection
+
+Reported: the parent job is created with the same start time as the delivery leg. It
+should start at the **booking time**, and the collection leg should start at the
+**first pickup actually available** from that booking — this afternoon if the booking
+makes today's run, otherwise tomorrow's, or Monday's.
+
+### What the model does today
+
+The delivery window is the anchor and everything else is produced by subtracting from
+it. Two places show it plainly:
+
+- `TimelinePreview.tsx:80` builds the delivery event first, then walks the leg chain
+  **backwards** (`const reversedLegs = [...schedule.legs].sort((a, b) => b.order - a.order)`),
+  and finally places the cut-off at `firstEvent.absoluteMinutes - cutoffMinutes`.
+- `BookingSimulator.tsx` check 5 computes
+  `deliveryStartTime` = the **booking day** at the operating day's `startTime`, then
+  `cutoffTime = deliveryStartTime - cutoffOffset`, and passes only when
+  `bookingDateTime <= cutoffTime`.
+
+Two consequences fall straight out of that second one. It assumes delivery happens on
+the day of the booking — there is no roll-forward anywhere. And a booking that misses
+the cut-off is a **failure**, not a later collection: the simulator marks it failed and
+stops. That is the behaviour to invert.
+
+The collection leg has no real time to start from either: `types.ts:629` fabricates
+`pickupTimeMode: 'window'`, `'14:00'`–`'15:00'` for every collection leg it builds
+(F6).
+
+This is F11's complaint expressed in job records instead of UI copy, which is why the
+two should be built together — but see the split at the end, because half of this is
+shippable on its own.
+
+### What it must be
+
+1. **Parent start = the booking time.** Not the delivery window, not the collection.
+2. **Collection leg start = the first collection opportunity at or after the booking.**
+3. **Delivery becomes a consequence** — collection plus the chain: linehaul departure
+   and day offsets, transit, then the delivery window on the arrival day.
+4. **The cut-off stops being an offset** and becomes the thing that decides *which*
+   collection you catch. It is then a promise to the customer ("book by 15:00 and it
+   goes today") rather than a validation error.
+
+### The rule
+
+Resolve the schedule through `fnScheduleForClient` first — never the raw columns, or
+a client whose override moves the cut-off or drops a day gets the wrong answer
+(F1, F18).
+
+```
+A = the anchor: the earliest the freight can be collected
+  = MAX(booking timestamp, requested ready time if the customer gave one)
+S = the client's resolved schedule
+
+for D in [day of A .. day of A + 14]:
+    if D is not an operating day of S:            continue
+    if D is a non-working day (holiday calendar): continue
+    C = the collection time on D:
+          'fixed'     -> the fixed start time
+          'window'    -> the window start
+          'on_demand' -> MAX(A + lead time, window start if one is set)
+    if D is A's day and A > the cut-off for D:    continue   # missed today's run
+    if C < A:                                     continue   # today's run has gone
+    return (D, C)
+
+no D in 14 days -> the booking cannot be served. Fail loudly and say why.
+```
+
+Then: parent start = A's booking timestamp; collection leg start = `C` on `D` (a
+window keeps its end as well); every later leg offsets forward from `C`.
+
+All comparisons in **tenant local time**. `tucJobBooking` carries both `CreatedTime`
+and `CreatedTimeUtc`, so whichever is chosen, choose it once and write it down.
+
+### Decisions baked into that, so they are arguable rather than accidental
+
+| Decision | Chosen | Why |
+| :- | :- | :- |
+| Cut-off boundary | **inclusive** — "book by 15:00" passes at 15:00:00 | It is what the words say to a customer. |
+| Anchor when the customer names a ready time | `MAX(booking, requested ready)` | Freight that is not ready cannot be collected, and a booking cannot reach backwards. |
+| On-demand collections | need a **lead time in minutes** on the collection leg | The field does not exist today; add it with F11's three modes. Without it "on demand" has no computable start. |
+| Search horizon | **14 days**, then fail | A mis-configured schedule must not silently produce a job three months out. |
+| Non-operating days | honoured, **including a client's `WeekDays` override** | Otherwise F1's day override is cosmetic. |
+
+Two open questions I cannot answer from the code:
+
+- **Is there a holiday / non-working-day calendar?** I cannot find one in what I can
+  read. If there is not, a Good Friday booking will roll to a collection nobody runs.
+  This may be the single most expensive omission in the rule.
+- **Which column *is* the parent's start time?** `tblBulkJob` has `BookDate` and
+  `BookTime` (both non-null) and `PickupReadyDateTime`; `tucJobBooking` has
+  `TruckStartTime`, `RequiredDeliveryTime` and `DeliverByTime`. The materialiser that
+  sets them is not in any repo we hold — same gap as `uspPrebookSet` in F17. Name the
+  column and this is a small change in one place; guess it and it is a rewrite in the
+  wrong one.
+
+### Acceptance
+
+- Book at 09:00 on an operating day, before cut-off → parent starts **09:00**,
+  collection at today's collection time, delivery derived forward from it.
+- Book at 16:00 against a 15:00 cut-off → parent still starts **16:00**, collection is
+  tomorrow's. **Nothing fails.**
+- Book Friday 16:00 on a Mon–Fri schedule → collection Monday.
+- Two bookings ten minutes apart straddling the cut-off land on different collection
+  days, and both produce a job.
+- A client whose override moves the cut-off to 13:00 rolls forward earlier — with no
+  second schedule anywhere.
+- The parent's start equals the delivery leg's start only when the booking genuinely
+  happened then.
+
+```sql
+-- After the change: nothing may be collected before it was booked.
+-- Confirm first how BookDate and BookTime combine in this tenant — they are two
+-- datetime columns, and only one of them is meant to carry the time.
+SELECT TOP 50 BulkJobId, BookDate, BookTime, PickupReadyDateTime
+  FROM dbo.tblBulkJob
+ WHERE PickupReadyDateTime IS NOT NULL
+   AND PickupReadyDateTime < BookTime;
+```
+
+### Ship it in two halves
+
+**F19a — parent start = booking time.** Independent of everything else here. It does
+not need the collection modes, the cut-off rewrite or F1. Once Kevin names the
+column it is a small change, and it is the half you asked for. Do it early.
+
+**F19b — next available collection.** Needs F11's collection modes (fixed / window /
+on demand) and the on-demand lead time to exist, and resolves through F1 so client
+overrides count. Build it with F11, not before.
+
+---
+
 # 4. Database summary
 
 Three scripts, all under the `@Commit = 0` harness used by `001`:
@@ -1226,11 +1360,12 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 4. **F6** — run the disagreement query, then fix per the answer.
 5. **F1 + F3 + F2 + F4** — the override model. One deployable slice; F2, F3 and F4
    fall out of F1 and should not be fixed separately first.
-6. **F7 read path, F14, F16** — the small view fixes, one pass through
-   `LegConfigPanel` and `ScheduleTable`.
+6. **F7 read path, F14, F16, F19a** — the small fixes. F19a (parent start = booking
+   time) is unblocked the moment Kevin names the column, and does not wait for F11.
 7. **F9** — linehaul out of the schedule. Biggest structural win, and it unblocks F15.
 8. **F13, F12, F10** — schedule shape.
-9. **F11** — cut-off rewrite.
+9. **F11 + F19b** — cut-off rewrite, and the next-available-collection rule that
+   depends on its collection modes.
 10. **F15** — pricing and zones, as its own brief.
 11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
     what is left; there is a fair chance most of it dissolves.
@@ -1248,6 +1383,10 @@ and E1's Groups column is easier once overrides are out of the schedule rows.
   collection-section screenshot (F6).
 - The result of the row-0 disagreement query (F8).
 - Which build the linehaul leg-name field is in — it is not in this branch (F9).
+- Which column is the parent job's start time — `tblBulkJob.BookTime`,
+  `PickupReadyDateTime`, `tucJobBooking.TruckStartTime` or something else (F19). This
+  unblocks F19a on its own.
+- Whether a holiday / non-working-day calendar exists anywhere (F19).
 - The duplicate-header-name count — query 4 in F18. Run this one first; it sizes what
   name-matching has been hiding.
 - Your call on renaming the E1/E2 schedule *group* tables to *bundles*, before they
