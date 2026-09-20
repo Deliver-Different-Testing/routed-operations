@@ -28,7 +28,7 @@ It is **not** on `main` yet. Line numbers are from that branch — if you have m
 on, take the anchors as landmarks rather than coordinates.
 
 The three enhancements from Friday (E1 group membership, E2 wildcard member search,
-E3 bound routes on the row) are unchanged and still queued behind the schedule-group
+E3 bound routes on the row) are unchanged and still queued behind the schedule-bundle
 tables. Nothing in this document replaces them. This is the defect and direction list
 from walking the deployed view.
 
@@ -53,7 +53,7 @@ from walking the deployed view.
 | **F15** | Rates, additional-item rules and dimension rules have no home in the new view | Separate piece — scoping only |
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
-| **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name — and "group" currently means two different things | Rule — read first |
+| **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name. Schedule *groups* are renamed to *bundles* so the word stops meaning two things | Rule — read first |
 
 Order of work is in §5.
 
@@ -1078,19 +1078,35 @@ vocabulary before writing any code:
 | :- | :- | :- |
 | **Schedule line** (day row) | `tblBulkRunSchedule.BulkRunScheduleId` | One row per operating day. Five rows for a Mon–Fri schedule. **Never a link target.** |
 | **Schedule** — the group of those lines | `tblBulkRunScheduleHeader.ScheduleId` | The schedule as ops means it. Created by migration `001`. **This is the only thing anything links to.** |
-| **Schedule group / bundle** (E1, E2) | `tblBulkRunScheduleGroup.GroupId` | A convenience bundle of *several schedules* for bulk edit and attach-clients. Not an identity. Nothing resolves through it at booking time. |
+| **Schedule bundle** (E1, E2) | `tblBulkRunScheduleBundle.BundleId` | A convenience collection of *several schedules* for bulk edit and attach-clients. Not an identity. Nothing resolves through it at booking time. Called a "group" until 2026-09-20 — renamed, see below. |
 
 When this brief and the 2026-09-18 brief say "the schedule group id", they mean the
 middle row — `Header.ScheduleId`. The bottom row is a different feature that happens
 to share the English word.
 
-**Worth deciding now, while it is free:** the E1/E2 group tables *do not exist yet*.
-If we want that collision gone permanently, rename them before they are created —
-`tblBulkRunScheduleBundle` / `…BundleMember`, "Bundles" in the UI. After they ship
-with data in them the rename costs a migration and a UI pass. My recommendation is to
-do it, but either way the API must never expose a field called `scheduleGroupId`: the
-header is `scheduleId`, the bundle is `groupId` (or `bundleId`), and nothing is
-ambiguous.
+**Decided 2026-09-20 (Steve): they are bundles.** The tables do not exist yet, so the
+rename is free today and costs a migration plus a UI pass once they hold data. This
+supersedes the DDL in the 2026-09-18 brief §4.1 — build `002` from
+`scripts/schedule-rationalisation/sql/002_bundle_tables_and_route_header_binding.sql`,
+not from that section. The rename surface is small and entirely ahead of us:
+
+| Layer | Was | Is |
+| :- | :- | :- |
+| Tables | `tblBulkRunScheduleGroup`, `tblBulkRunScheduleGroupMember` | `tblBulkRunScheduleBundle`, `tblBulkRunScheduleBundleMember` |
+| Key | `GroupId` | `BundleId` |
+| Index | `IX_…GroupMember_ScheduleId` | `IX_…BundleMember_ScheduleId` |
+| API | `/api/v2/schedule-groups`, `?groupId=`, `ScheduleGroupDto` | `/api/v2/schedule-bundles`, `?bundleId=`, `ScheduleBundleDto` |
+| Types | `ScheduleGroup` (`types.ts:758`) | `ScheduleBundle` |
+| Components | `ScheduleGroupsTab.tsx`, `CopyGroupModal.tsx`, `AddSchedulesToGroupModal.tsx` (E2, unbuilt) | `ScheduleBundlesTab.tsx`, `CopyBundleModal.tsx`, `AddSchedulesToBundleModal.tsx` |
+| Helpers | `attachClientsToGroup` (`clientLinks.ts`), `expandedGroupId` | `attachClientsToBundle`, `expandedBundleId` |
+| UI copy | "Schedule Groups", "Attach clients to group" | "Schedule Bundles", "Attach clients to bundle" |
+
+Nine files in the module plus the two tables. Do it in one pass before E1/E2 start,
+not alongside them.
+
+The rule that outlives the rename: **the API never exposes a field called
+`scheduleGroupId`.** The header is `scheduleId`, the bundle is `bundleId`, and
+nothing that resolves at booking time ever takes a `bundleId` at all.
 
 ### Every place a schedule is referenced
 
@@ -1099,7 +1115,7 @@ ambiguous.
 | Day rows | `tblBulkRunSchedule.ScheduleId` | FK to header, added by `001` | ✔ done |
 | Client links | `tblBulkRunScheduleClient.ScheduleId` + `ScheduleName` | `001` adds the id beside the name and back-fills where unambiguous | drop `ScheduleName` — `001` already leaves the `ALTER` commented and ready |
 | Client overrides | `tblBulkRunScheduleOverride.ScheduleId` | new in `003` | header id, FK enforced — already correct |
-| Group / bundle members | `tblBulkRunScheduleGroupMember.ScheduleId` | not built | header id, FK enforced |
+| Bundle members | `tblBulkRunScheduleBundleMember.ScheduleId` | not built | header id, FK enforced — a bundle holds schedules, and holds nothing else |
 | Recurring routes | `Routes.ScheduleId` | points at a **day-row** id (2026-09-08 §2b) — or does not exist at all; the configurator's `Route` entity has no such column (F17) | header id, via `HeaderScheduleId` per the 2026-09-18 brief §4.2 |
 | Linehaul legs | `TblBulkScheduleLinehaul.BulkRunScheduleId` | points at a **day row** — `types.ts:636` reads only the legs attached to row 0 | header id |
 | Bookings | `tucJobBooking.ScheduleId` **and** `tucJobBooking.ScheduleName` | both exist (`TucJobBooking.cs:289` and `:293`); which one dispatch trusts is unconfirmed | header id; the name becomes display-only, then goes |
@@ -1185,7 +1201,7 @@ sit beside it in the same folder.
 
 | Script | Contents | Blocks |
 | :- | :- | :- |
-| `002_group_tables_and_route_header_binding.sql` | Schedule group tables + `Routes.HeaderScheduleId` — unchanged from the 2026-09-18 brief §4 | E1, E2, E3 |
+| `002_bundle_tables_and_route_header_binding.sql` | Schedule **bundle** tables + `Routes.HeaderScheduleId`. Written, in this branch. Supersedes the 2026-09-18 brief §4.1 DDL, and carries the `sp_rename` block in case those tables were already created as groups | E1, E2, E3 |
 | `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg, clustered on the lookup key) + `Header.OverrideCount` / `OverridesVersion` + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
 | `004_display_names.sql` | `DisplayName` / `DisplayDescription` on the header | F13 |
 | `005_drop_name_joins.sql` | Drop `tblBulkRunScheduleClient.ScheduleName` (the `ALTER` is already written and commented in `001`), re-point `TblBulkScheduleLinehaul` and `tucJobBooking` / `tucJob` at the header id, with the F18 verification queries as the gate | F18 |
@@ -1197,8 +1213,8 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 # 5. Order of work
 
 0. **F18** — read it first. It is one page, it costs nothing, and it decides the key
-   every other item on this list writes. The naming call (do the E1/E2 group tables
-   become "bundles"?) is free today and expensive once those tables hold data.
+   every other item on this list writes. The group → bundle rename is decided: do it
+   in one pass before E1/E2 start, while those tables still do not exist.
 0. **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. It
    is a `SELECT OBJECT_DEFINITION(...)` and a commit, it blocks nothing else, and
    until it is done a nightly production job has no review and no history.
@@ -1219,7 +1235,7 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
     what is left; there is a fair chance most of it dissolves.
 
-E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the group tables,
+E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the bundle tables,
 and E1's Groups column is easier once overrides are out of the schedule rows.
 
 ---
