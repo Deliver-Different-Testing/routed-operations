@@ -52,6 +52,7 @@ from walking the deployed view.
 | **F14** | Collection box discount field is gone from the UI | Regression |
 | **F15** | Rates, additional-item rules and dimension rules have no home in the new view | Separate piece — scoping only |
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
+| **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
 
 Order of work is in §5.
 
@@ -155,8 +156,10 @@ migration.
 
 ```sql
 CREATE TABLE dbo.tblBulkRunScheduleOverride (
+    -- surrogate only so the API can address a row; the CLUSTERED index below is
+    -- the lookup key — see "Cost on the booking path".
     OverrideId  int IDENTITY(1,1) NOT NULL
-        CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY,
+        CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY NONCLUSTERED,
     ScheduleId  int NOT NULL
         CONSTRAINT FK_tblBulkRunScheduleOverride_Header
         REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
@@ -187,8 +190,6 @@ CREATE TABLE dbo.tblBulkRunScheduleOverride (
     UpdatedUtc datetime2(0)  NULL,
     UpdatedBy  nvarchar(100) NULL,
 
-    CONSTRAINT UQ_tblBulkRunScheduleOverride
-        UNIQUE (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek),
     CONSTRAINT CK_tblBulkRunScheduleOverride_Scope
         CHECK (Scope IN ('schedule','collection','depot','delivery')),
     -- a schedule row carries no leg values and a leg row carries no schedule values
@@ -210,6 +211,11 @@ CREATE TABLE dbo.tblBulkRunScheduleOverride (
      OR PickupWindowEnd IS NOT NULL OR AdditionalItemChargingLogic IS NOT NULL)
 );
 
+-- the lookup key: every row a client has on one schedule is physically adjacent
+CREATE UNIQUE CLUSTERED INDEX CX_tblBulkRunScheduleOverride
+    ON dbo.tblBulkRunScheduleOverride (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek);
+
+-- "which schedules does this client differ on?"
 CREATE INDEX IX_tblBulkRunScheduleOverride_Client
     ON dbo.tblBulkRunScheduleOverride (ClientId) INCLUDE (ScheduleId, Scope);
 ```
@@ -241,7 +247,9 @@ schedules.
 
 #### Resolving it
 
-One left join per scope the caller needs, then `COALESCE`:
+The readable form is one left join per scope, then `COALESCE` — but read "Cost on the
+booking path" below before you implement it, because the shipped resolver pivots in a
+single seek instead:
 
 ```sql
 SELECT COALESCE(so.CutoffHours, s.CutoffHours)          AS CutoffHours,
@@ -270,6 +278,100 @@ client sees at all. Put that in one view or one function —
 `dbo.fnScheduleForClient(@ScheduleId, @ClientId)` — and have every caller use it. The
 moment two call sites resolve overrides with their own SQL, they will disagree, which
 is how the list and the modal disagree today.
+
+#### Cost on the booking path
+
+This sits in the middle of pricing and dispatch, so the resolve has to be a seek and
+nothing else. Five things make it one.
+
+**1. Cluster on the lookup key, not on the surrogate.**
+
+```sql
+CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY NONCLUSTERED (OverrideId),
+...
+CREATE UNIQUE CLUSTERED INDEX CX_tblBulkRunScheduleOverride
+    ON dbo.tblBulkRunScheduleOverride (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek);
+```
+
+Every row a client has on one schedule is then physically adjacent: **one seek, one
+page, one to three rows.** Clustering on `OverrideId` instead would scatter them and
+turn the resolve into three separate reads for no benefit — the surrogate exists only
+so the API can address a row.
+
+**2. One seek, not one join per scope.**
+
+The three-left-join form earlier in this section reads the same index three times.
+Pivot instead:
+
+```sql
+SELECT MAX(CASE WHEN o.Scope = 'schedule'   THEN o.CutoffHours       END) AS CutoffHours,
+       MAX(CASE WHEN o.Scope = 'schedule'   THEN o.WeekDays          END) AS WeekDays,
+       MAX(CASE WHEN o.Scope = 'delivery'   THEN o.SpeedId           END) AS DeliverySpeedId,
+       MAX(CASE WHEN o.Scope = 'delivery'   THEN o.ZoneGroupId       END) AS DeliveryZoneGroupId,
+       MAX(CASE WHEN o.Scope = 'collection' THEN o.SpeedId           END) AS PickupSpeedId,
+       MAX(CASE WHEN o.Scope = 'collection' THEN o.PickupWindowStart END) AS PickupWindowStart,
+       MAX(CASE WHEN o.Scope = 'collection' THEN o.PickupWindowEnd   END) AS PickupWindowEnd
+  FROM dbo.tblBulkRunScheduleOverride o
+ WHERE o.ScheduleId = @ScheduleId AND o.ClientId = @ClientId AND o.DayOfWeek = 0;
+```
+
+One range seek over adjacent rows, one pass, every scope resolved together.
+
+While per-day overrides are unused, keep the predicate `DayOfWeek = 0` — a pure
+equality seek. It becomes `IN (0, s.DayOfWeek)` only when per-day actually lands.
+
+**3. An inline table-valued function. Never a scalar UDF, never multi-statement.**
+
+`fnScheduleForClient` must be `RETURNS TABLE AS RETURN <one SELECT>` so SQL Server
+expands it into the caller's plan. A scalar UDF or a multi-statement TVF executes
+per row and disables parallelism in the calling query — same logic, an order of
+magnitude worse, and it is the easiest way to turn this into exactly the load you are
+worried about. (SQL Server 2019+ can inline some scalar UDFs; do not rely on it.)
+
+**4. Skip the table entirely for schedules that have no overrides — which is most of them.**
+
+```sql
+ALTER TABLE dbo.tblBulkRunScheduleHeader
+  ADD OverrideCount int NOT NULL CONSTRAINT DF_..._OverrideCount DEFAULT 0;
+```
+
+Maintained in the same transaction as the override write. The booking path already
+has the header row in hand; when `OverrideCount = 0` it never touches the override
+table. `003` ships a reconcile query so a drifted counter is detectable rather than
+silent.
+
+**5. Cache on a version, invalidate on write.**
+
+Overrides change when ops edits them, not per booking. Add `OverridesVersion
+rowversion` to the header and cache resolved values keyed
+`(ScheduleId, ClientId, OverridesVersion)`. The booking path then usually does no
+database work at all for the override layer.
+
+**Expected size.** One row per (schedule, client, scope that differs) — hundreds,
+low thousands at the very outside. Worth being explicit about the direction of
+travel: today an override is a header **plus five day rows plus zone rows plus
+linehaul rows**. The delta model *removes* rows from the database. It is smaller and
+cheaper than what it replaces, not an extra layer on top.
+
+**Watch it.** If any single schedule passes ~20 override rows, or the table passes
+~10k, something has gone wrong — either the chain-shape rule is being ignored or ops
+is expressing a second schedule as deltas. A weekly count catches it:
+
+```sql
+SELECT TOP 20 ScheduleId, COUNT(*) AS Rows_
+  FROM dbo.tblBulkRunScheduleOverride
+ GROUP BY ScheduleId ORDER BY COUNT(*) DESC;
+```
+
+**What not to do**
+
+- **Do not materialise a resolved row per (schedule × client).** That is the clone
+  problem again wearing a cache table, and it has to be maintained on every schedule
+  edit.
+- **Do not resolve per row in the list view.** One batch call for the page, the way
+  E3 does for dispatch. 2,700 resolves is the N+1 that E3 exists to avoid.
+- **Do not resolve in the app layer** by loading every override and joining in C#.
+  The join belongs where the data is; the app gets a resolved row.
 
 #### Deliberately not in phase 1
 
@@ -851,6 +953,111 @@ Three small things, all in `ScheduleTable.tsx`:
 
 ---
 
+## F17 — A recurring route stops working above three linked schedules
+
+Reported: link more than about three schedules to a recurring route and the route
+becomes non-functional.
+
+### What is actually in source — and what is not
+
+I went looking for the route ↔ schedule binding in every repo we hold:
+
+| Repo | What its route model carries |
+| :- | :- |
+| `routed-operations` | `v2/backend/Entities/TblRecurringRoute.cs` — name, frequency, window, avg jobs, service level, colour, zips. **No schedule column at all.** |
+| `dfrntdrive-configurator` | `Core/Domain/Despatch/Route.cs` — `RouteId`, `Name`, `Area`, `DefaultCourierId`, `Active`, audit columns, plus zip polygons, roster and jobs. **No `ScheduleId` column.** `TenantRouteService.cs` and `wwwroot/app/react/services/tenant_routeService.ts` never mention a schedule. |
+| `dfrntdrive_configurator` | App-config only; no schedules, no routes. |
+
+The link is made on the **booking**, not on the route: `tucJobBooking` carries both
+`RouteId` and `ScheduleID`, and the thing that reads them nightly is
+**`uspPrebookSet`** — named at `TenantRouteService.cs:17` ("is read downstream by
+uspPrebookSet (each night, to materialise tucJob…)") and again in the UI at
+`RecurringRoutes.tsx:414`. **That stored procedure is not in any repository.**
+
+So the first finding is structural, and it is the real answer to "why is this
+cumbersome":
+
+> "The schedules linked to a recurring route" is not a modelled relationship
+> anywhere in source. It is emergent — bookings stamped with one `RouteId` happen to
+> carry several different `ScheduleID`s — and the logic that consumes it lives in a
+> stored procedure that nobody has in version control.
+
+That is why no one can say what the limit is or why it exists. It also means the
+behaviour cannot be changed safely today: there is no diff, no review, and no way to
+tell whether an edit to that proc breaks dispatch until the next morning.
+
+One thing to settle alongside it: the 2026-09-08 brief §2b and the 2026-09-18 brief
+§4.2 both describe the binding as `Routes.ScheduleId`, M:1. The `Routes` entity in
+the configurator has no such column. Either the column exists in the tenant database
+and the EF model is stale, or the binding those briefs describe is somewhere else
+again. That is the same question §4.2 already asks — it now matters twice, so answer
+it first.
+
+### Step 1 — put the proc in version control
+
+```sql
+SELECT OBJECT_DEFINITION(OBJECT_ID('dbo.uspPrebookSet')) AS Definition;
+```
+
+Commit it to `database/` beside the numbered migrations. Nothing below can be
+answered without reading it, and a nightly job that materialises production dispatch
+should not exist only inside the server.
+
+### Step 2 — get the numbers
+
+```sql
+-- how many distinct schedules feed each route
+SELECT  b.RouteId,
+        COUNT(DISTINCT b.ScheduleID) AS Schedules,
+        COUNT(*)                     AS Bookings
+  FROM  dbo.tucJobBooking b
+ WHERE  b.RouteId IS NOT NULL
+ GROUP BY b.RouteId
+ ORDER BY Schedules DESC;
+```
+
+Line that up against the routes ops says are broken. **If every broken route has 4+
+and every working route has ≤3, it is a hard limit — hypothesis 1 or 3. If some
+5-schedule routes work fine, it is 2 or 4.** That single comparison decides where to
+look, and it costs one query.
+
+### Step 3 — the four candidates, ranked
+
+| # | Cause | What it looks like, and how to tell |
+| :- | :- | :- |
+| **1** | **A delimited id list, truncated.** This codebase passes id lists as delimited strings — `UTL_stpJob_tblBulkJobWithFilter(@clientIDs, @regions, @ourRefs, @speeds)` at `Models/IDespatchContextProcedures.cs:23` is exactly that shape. SQL Server truncates a string **silently** when it is assigned to a too-short `varchar(n)`: `'1947,1948,1949'` fits a `varchar(16)`, the fourth id does not. | Look for a `varchar`/`nvarchar` parameter or local holding a list of schedule ids with a declared length. Fix: `varchar(max)`, or better a table-valued parameter / `STRING_SPLIT`. Gives a hard cut at the same count every time, which fits "above 3" exactly. |
+| **2** | **Fan-out.** Each extra schedule multiplies candidate rows before filtering — an unkeyed join, or a `CROSS APPLY` per schedule. At four the nightly job exceeds its window. | Runtime grows faster than linearly with schedule count; the route fails intermittently rather than always. `SET STATISTICS IO, TIME ON` and run the proc against a 3-schedule and a 4-schedule route. |
+| **3** | **A literal 3.** `TOP 3`, a three-way `UNION`, or `Schedule1/2/3`-shaped columns. | Grep the proc. Crude, and it happens. |
+| **4** | **Empty window intersection.** If the effective window is the tightest across the bound schedules — the N:M rule the 2026-08-03 spec proposes and 2026-09-08 §2b records — then every schedule added can only narrow it. By the fourth the intersection is often empty, so the route produces nothing. It is not broken; it is correctly producing no jobs from an impossible window. | The schedules on a failing route have non-overlapping windows or disjoint day masks. **This is the one where "3" is correlation, not a limit** — check the windows on a broken route before assuming a bug. |
+
+### Why this connects to F1 and F9
+
+Hypothesis 4 deserves the extra attention because it points at the same root cause as
+the rest of this brief. Ask why one route ended up with five schedules in the first
+place. If the answer is "because those clients needed a different cut-off, a
+different pickup time and a different destination speed", then **F1 removes most of
+them** — they collapse into one schedule with delta rows, and the route binds to one
+schedule again. F9 removes the ones that exist only because linehaul pricing
+differed.
+
+So: **land F1 and F9, then re-run the count in step 2.** There is a real chance this
+problem shrinks to a handful of routes on its own, and what is left is then worth
+engineering properly rather than working around now. That said, step 1 — getting
+`uspPrebookSet` into the repo — is worth doing this week regardless of anything else
+on this list.
+
+### Acceptance
+
+- `uspPrebookSet` is in `database/`, reviewed, and changes to it go through a merge
+  request like everything else.
+- The schedules-per-route count exists and is repeatable.
+- The cause is named from the proc, not inferred — and if it is hypothesis 4, the
+  route is documented as behaving correctly and the fix is at the schedule layer.
+- A route with eight linked schedules materialises the same jobs as eight routes with
+  one each.
+
+---
+
 # 4. Database summary
 
 Three scripts, all under the `@Commit = 0` harness used by `001`:
@@ -862,7 +1069,7 @@ sit beside it in the same folder.
 | Script | Contents | Blocks |
 | :- | :- | :- |
 | `002_group_tables_and_route_header_binding.sql` | Schedule group tables + `Routes.HeaderScheduleId` — unchanged from the 2026-09-18 brief §4 | E1, E2, E3 |
-| `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg) + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
+| `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg, clustered on the lookup key) + `Header.OverrideCount` / `OverridesVersion` + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
 | `004_display_names.sql` | `DisplayName` / `DisplayDescription` on the header | F13 |
 
 No schema change is needed for F5–F8, F14 or F16 — they are mapper and view fixes.
@@ -871,6 +1078,9 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
+0. **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. It
+   is a `SELECT OBJECT_DEFINITION(...)` and a commit, it blocks nothing else, and
+   until it is done a nightly production job has no review and no history.
 1. **F7 write path** — stop the zone rows being overwritten. One line, today, before
    anything else: it is live data loss.
 2. **F8 MaxJobs** — same reason, same size.
@@ -885,6 +1095,8 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 8. **F13, F12, F10** — schedule shape.
 9. **F11** — cut-off rewrite.
 10. **F15** — pricing and zones, as its own brief.
+11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
+    what is left; there is a fair chance most of it dissolves.
 
 E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the group tables,
 and E1's Groups column is easier once overrides are out of the schedule rows.
@@ -899,6 +1111,10 @@ and E1's Groups column is easier once overrides are out of the schedule rows.
   collection-section screenshot (F6).
 - The result of the row-0 disagreement query (F8).
 - Which build the linehaul leg-name field is in — it is not in this branch (F9).
+- The `uspPrebookSet` definition, the schedules-per-route counts, and one RouteId
+  that works next to one that does not (F17).
+- Whether `Routes.ScheduleId` exists in the tenant database — the configurator's
+  `Route` entity has no such column, and two briefs assume it does (F17).
 - Your read on the transfer source: a new pickup source, or a depot-to-depot leg
   rule (F10)?
 - A date for steps 1–4. They are small and they are all data integrity.

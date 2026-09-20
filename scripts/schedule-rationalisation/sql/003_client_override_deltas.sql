@@ -30,8 +30,11 @@ BEGIN TRAN;
 IF OBJECT_ID('dbo.tblBulkRunScheduleOverride', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.tblBulkRunScheduleOverride (
+        -- Surrogate only so the API can address one row. The CLUSTERED index is the
+        -- natural key: it puts every row a client has on one schedule on one page, so
+        -- the booking-path resolve is a single seek. Do not cluster on OverrideId.
         OverrideId  int IDENTITY(1,1) NOT NULL
-            CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY,
+            CONSTRAINT PK_tblBulkRunScheduleOverride PRIMARY KEY NONCLUSTERED,
         ScheduleId  int NOT NULL
             CONSTRAINT FK_tblBulkRunScheduleOverride_Header
             REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
@@ -71,8 +74,6 @@ BEGIN
         UpdatedUtc datetime2(0)  NULL,
         UpdatedBy  nvarchar(100) NULL,
 
-        CONSTRAINT UQ_tblBulkRunScheduleOverride
-            UNIQUE (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek),
         CONSTRAINT CK_tblBulkRunScheduleOverride_Scope
             CHECK (Scope IN ('schedule','collection','depot','delivery')),
         CONSTRAINT CK_tblBulkRunScheduleOverride_WeekDays
@@ -103,9 +104,30 @@ BEGIN
          OR AdditionalItemChargingLogic IS NOT NULL)
     );
 
+    -- The lookup key. Unique, so it also enforces one row per scope per client.
+    CREATE UNIQUE CLUSTERED INDEX CX_tblBulkRunScheduleOverride
+        ON dbo.tblBulkRunScheduleOverride (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek);
+
+    -- "which schedules does this client differ on?" — the ops question, and the
+    -- GET /api/v2/clients/{id}/overrides endpoint.
     CREATE INDEX IX_tblBulkRunScheduleOverride_Client
         ON dbo.tblBulkRunScheduleOverride (ClientId) INCLUDE (ScheduleId, Scope);
 END;
+
+------------------------------------------------------------------------
+-- 1b. Let the booking path skip the override table entirely for the schedules
+--     that have no overrides — which is most of them. The header row is already
+--     loaded at booking time, so OverrideCount = 0 costs nothing to check.
+--     The write API maintains it in the same transaction as the override write.
+------------------------------------------------------------------------
+IF COL_LENGTH('dbo.tblBulkRunScheduleHeader', 'OverrideCount') IS NULL
+    ALTER TABLE dbo.tblBulkRunScheduleHeader
+      ADD OverrideCount int NOT NULL
+          CONSTRAINT DF_tblBulkRunScheduleHeader_OverrideCount DEFAULT 0;
+
+-- Cache key for the resolved values; bump by touching the header on any override write.
+IF COL_LENGTH('dbo.tblBulkRunScheduleHeader', 'OverridesVersion') IS NULL
+    ALTER TABLE dbo.tblBulkRunScheduleHeader ADD OverridesVersion rowversion;
 
 ------------------------------------------------------------------------
 -- 2. Candidates: headers that look like an override of another header.
@@ -307,6 +329,17 @@ UPDATE h
    AND h.RetiredUtc IS NULL;
 
 ------------------------------------------------------------------------
+-- 5b. Maintain the skip-the-lookup counter.
+------------------------------------------------------------------------
+UPDATE h
+   SET h.OverrideCount = x.n
+  FROM dbo.tblBulkRunScheduleHeader h
+  JOIN (SELECT ScheduleId, COUNT(*) AS n
+          FROM dbo.tblBulkRunScheduleOverride GROUP BY ScheduleId) x
+    ON x.ScheduleId = h.ScheduleId
+ WHERE h.OverrideCount <> x.n;
+
+------------------------------------------------------------------------
 -- 6. Report. Read this before setting @Commit = 1.
 ------------------------------------------------------------------------
 SELECT Disposition, COUNT(*) AS Schedules
@@ -323,6 +356,19 @@ SELECT p.OverrideScheduleId, p.BaseScheduleId, p.ClientId, p.Name, p.Disposition
  WHERE p.Disposition LIKE 'skip:%'
  ORDER BY p.Disposition, p.Name;
 
+-- Reconcile: the counter must match the rows. Must return no rows.
+SELECT h.ScheduleId, h.OverrideCount, COUNT(o.OverrideId) AS ActualRows
+  FROM dbo.tblBulkRunScheduleHeader h
+  LEFT JOIN dbo.tblBulkRunScheduleOverride o ON o.ScheduleId = h.ScheduleId
+ GROUP BY h.ScheduleId, h.OverrideCount
+HAVING h.OverrideCount <> COUNT(o.OverrideId);
+
+-- Size watch: no schedule should carry many override rows. Past ~20 means the
+-- chain-shape rule is being ignored and a second schedule is being expressed as deltas.
+SELECT TOP 20 ScheduleId, COUNT(*) AS Rows_
+  FROM dbo.tblBulkRunScheduleOverride
+ GROUP BY ScheduleId ORDER BY COUNT(*) DESC;
+
 -- Nothing may resolve to two schedules for one client.
 SELECT l.ClientId, l.ScheduleId, COUNT(*) AS LinkRows
   FROM dbo.tblBulkRunScheduleClient l
@@ -337,32 +383,45 @@ GO
 ------------------------------------------------------------------------
 -- 7. The one resolver. Every caller uses this; nobody writes their own COALESCE.
 --    Run this part after the table is committed.
+--
+--    It MUST stay an INLINE table-valued function — RETURNS TABLE AS RETURN <one SELECT>.
+--    A scalar UDF or a multi-statement TVF runs per row and kills parallelism in the
+--    calling query: same answer, an order of magnitude more load.
+--
+--    `ov` aggregates with no GROUP BY, so it always returns exactly one row — a row of
+--    NULLs when the client has no overrides. That is why it is a CROSS JOIN and not a
+--    LEFT JOIN, and why the whole override layer costs one seek over adjacent rows.
+--    Callers that already hold the header can skip this entirely when OverrideCount = 0.
 ------------------------------------------------------------------------
 -- CREATE OR ALTER FUNCTION dbo.fnScheduleForClient (@ScheduleId int, @ClientId int)
 -- RETURNS TABLE AS RETURN
+--   WITH ov AS (
+--     SELECT MAX(CASE WHEN o.Scope = 'schedule'   THEN o.CutoffHours       END) AS CutoffHours,
+--            MAX(CASE WHEN o.Scope = 'schedule'   THEN o.WeekDays          END) AS WeekDays,
+--            MAX(CASE WHEN o.Scope = 'delivery'   THEN o.SpeedId           END) AS DeliverySpeedId,
+--            MAX(CASE WHEN o.Scope = 'delivery'   THEN o.ZoneGroupId       END) AS DeliveryZoneGroupId,
+--            MAX(CASE WHEN o.Scope = 'collection' THEN o.SpeedId           END) AS PickupSpeedId,
+--            MAX(CASE WHEN o.Scope = 'collection' THEN o.ZoneGroupId       END) AS PickupZoneGroupId,
+--            MAX(CASE WHEN o.Scope = 'collection' THEN o.PickupWindowStart END) AS PickupWindowStart,
+--            MAX(CASE WHEN o.Scope = 'collection' THEN o.PickupWindowEnd   END) AS PickupWindowEnd
+--       FROM dbo.tblBulkRunScheduleOverride o
+--      WHERE o.ScheduleId = @ScheduleId
+--        AND o.ClientId   = @ClientId
+--        AND o.DayOfWeek  = 0    -- equality seek; widen to IN (0, s.DayOfWeek) only when per-day lands
+--   )
 --   SELECT s.BulkRunScheduleId,
 --          s.DayOfWeek,
 --          s.StartTime,
 --          s.EndTime,
---          COALESCE(so.CutoffHours,       s.CutoffHours)           AS CutoffHours,
---          COALESCE(dl.SpeedId,           s.SpeedId)               AS SpeedId,
---          COALESCE(dl.ZoneGroupId,       s.PostcodeGroupId)       AS PostcodeGroupId,
---          COALESCE(cl.SpeedId,           s.PickupRatingSpeed)     AS PickupRatingSpeed,
---          COALESCE(cl.ZoneGroupId,       s.PickupPostcodeGroupId) AS PickupPostcodeGroupId,
---          COALESCE(cl.PickupWindowStart, s.StartTime)             AS PickupWindowStart,
---          COALESCE(cl.PickupWindowEnd,   s.EndTime)               AS PickupWindowEnd
+--          COALESCE(ov.CutoffHours,         s.CutoffHours)           AS CutoffHours,
+--          COALESCE(ov.DeliverySpeedId,     s.SpeedId)               AS SpeedId,
+--          COALESCE(ov.DeliveryZoneGroupId, s.PostcodeGroupId)       AS PostcodeGroupId,
+--          COALESCE(ov.PickupSpeedId,       s.PickupRatingSpeed)     AS PickupRatingSpeed,
+--          COALESCE(ov.PickupZoneGroupId,   s.PickupPostcodeGroupId) AS PickupPostcodeGroupId,
+--          COALESCE(ov.PickupWindowStart,   s.StartTime)             AS PickupWindowStart,
+--          COALESCE(ov.PickupWindowEnd,     s.EndTime)               AS PickupWindowEnd
 --     FROM dbo.tblBulkRunSchedule s
---     LEFT JOIN dbo.tblBulkRunScheduleOverride so
---            ON so.ScheduleId = s.ScheduleId AND so.ClientId = @ClientId
---           AND so.Scope = 'schedule' AND so.DayOfWeek IN (0, s.DayOfWeek)
---     LEFT JOIN dbo.tblBulkRunScheduleOverride cl
---            ON cl.ScheduleId = s.ScheduleId AND cl.ClientId = @ClientId
---           AND cl.Scope = 'collection' AND cl.LegOrdinal = 0
---           AND cl.DayOfWeek IN (0, s.DayOfWeek)
---     LEFT JOIN dbo.tblBulkRunScheduleOverride dl
---            ON dl.ScheduleId = s.ScheduleId AND dl.ClientId = @ClientId
---           AND dl.Scope = 'delivery' AND dl.LegOrdinal = 0
---           AND dl.DayOfWeek IN (0, s.DayOfWeek)
+--    CROSS JOIN ov
 --    WHERE s.ScheduleId = @ScheduleId
---      -- a schedule-scope WeekDays override removes days from the client's view
---      AND (so.WeekDays IS NULL OR SUBSTRING(so.WeekDays, s.DayOfWeek, 1) = '1');
+--      -- a schedule-scope WeekDays override removes days from this client's view
+--      AND (ov.WeekDays IS NULL OR SUBSTRING(ov.WeekDays, s.DayOfWeek, 1) = '1');
