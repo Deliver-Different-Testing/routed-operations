@@ -67,8 +67,8 @@ public partial class DespatchContext : DbContext
             entity.Property(e => e.ClientCode).HasMaxLength(5);
             entity.Property(e => e.ClientId).HasColumnName("ClientID");
             entity.Property(e => e.ClientItemIds).HasMaxLength(100);
-            entity.Property(e => e.ClientRefa).HasMaxLength(20);
-            entity.Property(e => e.ClientRefb).HasMaxLength(15);
+            entity.Property(e => e.ClientRefa).HasMaxLength(100);
+            entity.Property(e => e.ClientRefb).HasMaxLength(100);
             entity.Property(e => e.Contact).HasMaxLength(50);
             entity.Property(e => e.CourierId).HasColumnName("CourierID");
             entity.Property(e => e.CourierPayment).HasColumnType("money");
