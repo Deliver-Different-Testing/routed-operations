@@ -54,7 +54,7 @@ from walking the deployed view.
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
 | **F19** | The parent job starts at the **delivery** leg's time. It must start at the booking, and the pickup at the next actually-available collection | Behaviour — half of it ships now |
-| **F20** | `tblBulkJob` is staging for advance bulk work. A book-immediately schedule should not write a row there at all — and if "book immediately" is `AutoBook`, the new view's Active toggle is switching it | Architecture + a live hazard |
+| **F20** | The parent and delivery do not insert until the delivery day, so **clients cannot see their own booking until the morning it runs**. Plus: `tblBulkJob` is staging for advance bulk work, and if "book immediately" is `AutoBook` the new view's Active toggle is switching it | Customer-facing defect + a live hazard |
 | **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name. Schedule *groups* are renamed to *bundles* so the word stops meaning two things | Rule — read first |
 
 Order of work is in §5.
@@ -1343,7 +1343,9 @@ overrides count. Build it with F11, not before.
 The rule, from Steve on 2026-09-20:
 
 1. `tblBulkJob.BookDate` + `BookTime` **are the job's start time** (F19a).
-2. The **parent and the delivery move straight from `tblBulk` to `tucJob`.**
+2. The **parent and the delivery move straight from `tblBulk` to `tucJob`** — today
+   they do not insert until the delivery day, which leaves the client unable to see
+   their own booking until the morning it runs. See "the actual defect" below.
 3. If the schedule has **book immediately** ticked, **nothing goes into `tblBulkJob`
    at all.**
 4. `tblBulkJob` is a **staging and run-building area for bulk deliveries booked in
@@ -1436,18 +1438,70 @@ SELECT CAST(BookDate AS date) AS BookDate,
  ORDER BY BookDate DESC;
 ```
 
-### Open
+### The actual defect: the client cannot see their own delivery
 
-- Where do the **collection and linehaul** legs sit in the straight-through path? The
-  instruction names the parent and the delivery. My assumption is that all legs of an
-  immediately-booked job are created together, and that in the staged path the
-  collection leg still materialises on the same trigger as the parent — but say so
-  either way rather than leaving it to whoever writes it.
+Steve, 2026-09-20 — and this is the reason the item exists, not a side effect:
+
+> All legs of an immediately booked job are created together, but the parent job and
+> the delivery job **don't insert until the delivery day**. This causes issues for
+> clients trying to find their deliveries, because clients don't see the parts, only
+> the parent.
+
+So between the moment a customer books and the morning of the delivery day, **the
+booking is invisible to them.** The legs exist; the client's view is the parent, and
+the parent is not there yet. Every "where is my delivery?" call in that window is
+caused by this.
+
+That deferral is not a separate mechanism — it is the run-building gate above, seen
+from the other end. Runs are built for the day's work, `InsertFromRunBuilder` is the
+only bridge from `tblBulkJob` to `tucJob`, so a job cannot become visible before the
+day someone builds its run. The two facts are the same fact.
+
+Which makes the fix precise, and it is not "insert earlier":
+
+- **The parent must exist from the moment of booking.** It is the client's entire
+  view of the job, so its insert cannot be deferred for any reason.
+- **The delivery job goes with it**, per the instruction.
+- The legs are already created together, so this is about *when the rows land in
+  `tucJob`*, not about creating anything new.
+- Run building keeps doing its own job — courier, run order, sequencing — against a
+  parent that is already there.
+
+```sql
+-- The size of the blind window, per job: booked when, visible when.
+-- Anything above zero days is a customer who could not find their delivery.
+SELECT TOP 200
+       b.BulkJobId,
+       b.BookDate,
+       j.JobDate                      AS ParentAppeared,
+       DATEDIFF(day, b.BookDate, j.JobDate) AS BlindDays
+  FROM dbo.tblBulkJob b
+  JOIN dbo.tucJob    j ON j.JobId = b.JobId
+ WHERE b.JobId IS NOT NULL
+   AND b.BookDate >= DATEADD(day, -90, GETDATE())
+   AND DATEDIFF(day, b.BookDate, j.JobDate) > 0
+ ORDER BY BlindDays DESC;
+```
+
+Confirm the `tucJob` date column before running that — I have not verified which one
+records the insert rather than the service date. The shape is what matters: booked
+date against the date the parent became visible.
+
+### Still open
+
 - Does `PrebookJob` (`Models/TblBulkJob.cs:86`) already distinguish advance work from
-  immediate work? If it does, the routing decision may have a home already.
+  immediate work? If it does, the routing decision may have a home already rather
+  than needing a new column.
+- Should the client see the **legs** as well as the parent? Today they see only the
+  parent, which is why its absence is total. Making the parent land at booking fixes
+  the reported problem without answering this — but "my collection happened, my
+  linehaul is in transit" is the question customers ask next, and it is worth
+  deciding deliberately rather than by default.
 
 ### Acceptance
 
+- **A booking made today for Thursday is visible to the client today**, as a parent
+  job, not on Thursday morning. This is the one that matters.
 - A schedule with book-immediately ticked produces a `tucJob` and **no** `tblBulkJob`
   row.
 - A schedule without it produces a `tblBulkJob` row whose `BookDate` / `BookTime` are
@@ -1509,8 +1563,12 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
     what is left; there is a fair chance most of it dissolves.
 12. **F20** — the staging bypass. It needs the `AutoBook` answer from step 0 and the
-    read-impact counts; the straight-through path for parent and delivery can start
-    as soon as those are in.
+    read-impact counts.
+
+**F20's parent-visibility half does not belong at step 12.** A client who cannot find
+their own booking until the morning it runs is a live customer-facing defect, and
+making the parent land at booking time is a smaller change than most of what is above
+it. Treat it as step 1b, alongside the data-loss fixes.
 
 E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the bundle tables,
 and E1's Groups column is easier once overrides are out of the schedule rows.
