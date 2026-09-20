@@ -13,13 +13,15 @@ version: 1
 
 # Add an item to DFRNT Project Dash
 
-Credentials and background: see memory `project_dashboard_dfrnt.md` (Cloudflare Access service token + dev keys). If that memory is missing or the token is rejected (see Troubleshooting), stop and ask Steve rather than guessing new credentials.
+Credentials: prefer the environment variables `PROJECT_DASH_CF_ACCESS_CLIENT_ID` / `PROJECT_DASH_CF_ACCESS_CLIENT_SECRET` if both are set (this is how cloud/sandboxed sessions get them — they have no filesystem access to local memory). Otherwise fall back to memory `project_dashboard_dfrnt.md` (Cloudflare Access service token + dev keys) — this is the path for CLI/desktop sessions on Steve's own machine. If neither source has a value, or the token is rejected (see Troubleshooting), stop and ask Steve rather than guessing new credentials.
+
+In a cloud/sandboxed session specifically: if the POST fails with a connection/proxy error (not a Cloudflare 302/403), that's the environment's network egress policy, not a credential problem — `project-dashboard.steve-b8b.workers.dev` needs to be allowed in that environment's network settings. Say so and stop; don't try to work around network egress restrictions.
 
 ## The correct call — one POST, nothing else
 
 ```bash
-CID="<CF-Access-Client-Id from memory>"
-CSEC="<CF-Access-Client-Secret from memory>"
+CID="${PROJECT_DASH_CF_ACCESS_CLIENT_ID:-<CF-Access-Client-Id from memory>}"
+CSEC="${PROJECT_DASH_CF_ACCESS_CLIENT_SECRET:-<CF-Access-Client-Secret from memory>}"
 BASE="https://project-dashboard.steve-b8b.workers.dev"
 DEV="garry"   # or kevin / kerran / jacob
 
@@ -42,7 +44,7 @@ curl -s -X POST \
 }
 ```
 
-A `201` with the item echoed back means success. Verify by re-fetching:
+A `201` with the item echoed back means success. Verify by re-fetching (same `$CID`/`$CSEC` from above):
 ```bash
 curl -s -H "CF-Access-Client-Id: $CID" -H "CF-Access-Client-Secret: $CSEC" \
   "$BASE/api/forward-work/$DEV/items"
