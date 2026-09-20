@@ -44,9 +44,9 @@ namespace RunBuilder.Models
         [Column("Weight", TypeName = "decimal(6,2)")]
         public decimal? Weight { get; set; }
         public bool? RemoteScreen { get; set; }
-        [StringLength(20)]
+        [StringLength(100)]
         public string ClientRefa { get; set; }
-        [StringLength(15)]
+        [StringLength(100)]
         public string ClientRefb { get; set; }
         [StringLength(20)]
         public string OurRef { get; set; }
@@ -93,5 +93,12 @@ namespace RunBuilder.Models
         public int? MultiboxParentID { get; set; }
         public int? ParentId { get; set; }
         public int? JobRelationshipTypeId { get; set; }
+        public int? ScheduleID { get; set; }
+        [StringLength(200)]
+        public string ScheduleName { get; set; }
+        public DateTime? ScheduleWindowStart { get; set; }
+        public DateTime? ScheduleWindowEnd { get; set; }
+        [Column("JobCubicM3", TypeName = "decimal(18,6)")]
+        public decimal? JobCubicM3 { get; set; }
     }
 }

@@ -44,9 +44,9 @@ namespace RunBuilder.Models
         [Column("Weight", TypeName = "decimal(6,2)")]
         public decimal? Weight { get; set; }
         public bool? RemoteScreen { get; set; }
-        [StringLength(20)]
+        [StringLength(100)]
         public string ClientRefa { get; set; }
-        [StringLength(15)]
+        [StringLength(100)]
         public string ClientRefb { get; set; }
         [StringLength(20)]
         public string OurRef { get; set; }

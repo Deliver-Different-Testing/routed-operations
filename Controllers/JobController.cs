@@ -88,6 +88,13 @@ namespace RunBuilder.Controllers
             return Json(result);
         }
 
+        [HttpGet]
+        public async Task<ActionResult> VehicleSizes()
+        {
+            var result = await repository.GetVehicleSizesAsync();
+            return Json(new { response = result });
+        }
+
         [HttpPost]
         [ActionName("SyncHDJobs")]
         public async Task<ActionResult> SyncHDJobs(DateTime runDate)

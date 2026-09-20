@@ -427,6 +427,24 @@ angular
             "date": moment().format("YYYY-MM-DD")
         };
 
+        // Build criteria live outside pickDateService now: the operator picks
+        // date + filters in one popup and Build Runs configuration (mode +
+        // minutes + vehicle capacity) in a separate modal, opened either by
+        // the top mode-indicator button or by clicking Build Runs itself.
+        $scope.buildConfig = {
+            buildParameter: localStorage.getItem('RunBuilder_buildParameter') || 'maxBoxes',
+            minutesPerStop: parseFloat(localStorage.getItem('RunBuilder_minutesPerStop')) || 2,
+            vehicleCapacityEnabled: localStorage.getItem('RunBuilder_vehicleCapacityEnabled') === 'true',
+            vehicleSizeID: localStorage.getItem('RunBuilder_vehicleSizeID') || 'custom',
+            vehicleCubicCap: parseFloat(localStorage.getItem('RunBuilder_vehicleCubicCap')) || 15
+        };
+
+        // Load VehicleSize dropdown data once at controller init.
+        $scope.vehicleSizes = [];
+        uRunData.getVehicleSizes().then(function (data) {
+            $scope.vehicleSizes = (data && data.response) ? data.response : [];
+        });
+
         // Refresh the ourRef list
         $scope.$watch('pickDateService.date', function (newValue, oldValue, scope) {
             $scope.getFilter();
@@ -434,8 +452,6 @@ angular
         }, true);
 
         $scope.doPickDateService = function () {
-            //console.log("bro");
-            //console.log($scope.pickDateService);
             $scope.dateService = 0;
             $scope.getData(1);
         };
@@ -449,6 +465,155 @@ angular
         $scope.cancelPickDateService = function () {
             $scope.dateService = 0;
             $('.dateServiceForm').hide();
+        };
+
+        // Label displayed on the top mode-indicator button. Shows the base
+        // mode plus a " + VC" suffix when the Vehicle Capacity constraint
+        // is enabled so operators can see the full state at a glance.
+        $scope.buildModeLabel = function () {
+            var base = $scope.buildConfig.buildParameter === 'deliveryWindow'
+                ? 'Delivery Window'
+                : 'Max Boxes';
+            return $scope.buildConfig.vehicleCapacityEnabled ? (base + ' + VC') : base;
+        };
+
+        // When the operator picks a VehicleSize row from the dropdown, copy
+        // its CubicCapacity down onto buildConfig.vehicleCubicCap so the
+        // splitter reads a single field. "custom" keeps whatever number the
+        // operator types in the input.
+        $scope.onVehicleSizeChanged = function () {
+            var picked = $scope.buildConfig.vehicleSizeID;
+            if (!picked || picked === 'custom') return;
+            var row = ($scope.vehicleSizes || []).filter(function (v) {
+                return String(v.VehicleSizeID) === String(picked);
+            })[0];
+            if (row && row.CubicCapacity != null) {
+                $scope.buildConfig.vehicleCubicCap = parseFloat(row.CubicCapacity);
+            }
+        };
+
+        // Build Runs configuration modal. Opened either by the top mode
+        // button (no onOk => user just wants to tweak config) or by the
+        // Build Runs icon (onOk => proceed with the actual build).
+        $scope.openBuildRunsConfig = function (onOk) {
+            var okClicked = false;
+
+            // A build only makes sense with at least one selected job group.
+            // Modal is blocking so this snapshot at open time is enough - the
+            // user can't change selection while the modal is up.
+            var hasGroup = $("#jobsGroup .active[data-isGroup='1']").length > 0;
+
+            var content =
+                '<style>' +
+                '  .rb-build-modal .rb-toggle { display:inline-flex; border:1px solid #ccc; border-radius:4px; overflow:hidden; background:#fff; vertical-align:middle; }' +
+                '  .rb-build-modal .rb-toggle label { margin:0; padding:6px 18px; cursor:pointer; font-weight:400; color:#333; display:inline-flex; align-items:center; gap:6px; transition:background 120ms ease, color 120ms ease; font-size:14px; line-height:1.4; white-space:nowrap; }' +
+                '  .rb-build-modal .rb-toggle label + label { border-left:1px solid #ccc; }' +
+                '  .rb-build-modal .rb-toggle input[type="radio"] { position:absolute; opacity:0; pointer-events:none; }' +
+                '  .rb-build-modal .rb-toggle label.active { background:#7EDCEA; color:#14120E; }' +
+                '  .rb-build-modal .rb-toggle label:hover:not(.active) { background:#f5f5f5; }' +
+                '  .rb-build-modal .rb-num { display:inline-flex; align-items:stretch; border:1px solid #ccc; border-radius:4px; overflow:hidden; background:#fff; width:140px; height:34px; vertical-align:middle; }' +
+                '  .rb-build-modal .rb-num input { border:none; outline:none; flex:1; padding:6px 10px; font-size:14px; text-align:center; background:transparent; min-width:0; }' +
+                '  .rb-build-modal .rb-num__suffix { padding:6px 12px; background:#f5f5f5; color:#666; font-size:12px; border-left:1px solid #ccc; display:flex; align-items:center; }' +
+                '  .rb-build-modal .rb-vc-block { border-top:1px solid #eee; margin-top:16px; padding-top:14px; }' +
+                '  .rb-build-modal .rb-section-label { font-weight:600; margin-bottom:8px; display:block; }' +
+                '  .rb-build-modal select { padding:6px 8px; border:1px solid #ccc; border-radius:4px; height:34px; background:#fff; }' +
+                '  .rb-build-modal .rb-vc-inline { margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }' +
+                '  .rb-build-modal .rb-vc-custom-input { width:80px; padding:6px 8px; border:1px solid #ccc; border-radius:4px; height:34px; text-align:center; }' +
+                '</style>' +
+                '<div class="rb-build-modal">' +
+                '  <div>' +
+                '    <span class="rb-section-label">Build Parameter</span>' +
+                '    <div class="rb-toggle">' +
+                '      <label ng-class="{active: buildConfig.buildParameter === \'maxBoxes\'}">' +
+                '        <input type="radio" name="bp" value="maxBoxes" ng-model="buildConfig.buildParameter"> Max Boxes' +
+                '      </label>' +
+                '      <label ng-class="{active: buildConfig.buildParameter === \'deliveryWindow\'}">' +
+                '        <input type="radio" name="bp" value="deliveryWindow" ng-model="buildConfig.buildParameter"> Delivery Window' +
+                '      </label>' +
+                '    </div>' +
+                '  </div>' +
+                '  <div style="margin-top:14px;">' +
+                '    <span class="rb-section-label">Minutes per stop/drop</span>' +
+                '    <div class="rb-num">' +
+                '      <input type="number" min="0" step="1" ng-model="buildConfig.minutesPerStop">' +
+                '      <span class="rb-num__suffix">min</span>' +
+                '    </div>' +
+                '  </div>' +
+                '  <div class="rb-vc-block">' +
+                '    <input type="checkbox" id="rb-vc-checkbox" ng-model="buildConfig.vehicleCapacityEnabled" style="vertical-align:middle;">' +
+                '    <label for="rb-vc-checkbox" class="rb-section-label" style="display:inline; margin:0 0 0 6px; vertical-align:middle; cursor:pointer;">Vehicle Capacity</label>' +
+                '    <div ng-if="buildConfig.vehicleCapacityEnabled" class="rb-vc-inline">' +
+                '      <span style="margin-right:6px;">Vehicle:</span>' +
+                '      <select ng-model="buildConfig.vehicleSizeID" ng-change="onVehicleSizeChanged()">' +
+                '        <option ng-repeat="v in vehicleSizes" value="{{v.VehicleSizeID}}">{{v.VehicleName}} ({{v.CubicCapacity}} m³)</option>' +
+                '        <option value="custom">Custom</option>' +
+                '      </select>' +
+                '      <span ng-if="buildConfig.vehicleSizeID === \'custom\'" style="margin-left:8px;">' +
+                '        <input type="number" min="0.1" step="0.1" class="rb-vc-custom-input" ng-model="buildConfig.vehicleCubicCap"> m³' +
+                '      </span>' +
+                '      <span ng-if="buildConfig.vehicleSizeID !== \'custom\'" style="margin-left:8px;">' +
+                '        Cubic: <strong>{{buildConfig.vehicleCubicCap}}</strong> m³' +
+                '      </span>' +
+                '    </div>' +
+                '  </div>' +
+                (hasGroup ? '' :
+                    '  <div style="margin-top:18px; padding:10px 14px; background:#FFF7E6; border-left:4px solid #F0A040; color:#8A5A00; font-size:13px;">'
+                  +   '<i class="fa fa-exclamation-circle"></i>&nbsp; Select at least one job group to start Build Runs.'
+                  + '</div>') +
+                '</div>';
+
+            $ngConfirm({
+                title: 'Build Runs Configuration',
+                content: content,
+                columnClass: 'col-md-6 col-md-offset-3',
+                scope: $scope,
+                closeIcon: true,
+                escapeKey: true,
+                backgroundDismiss: true,
+                onClose: function () { /* user aborted - nothing to do */ },
+                buttons: {
+                    cancel: {
+                        text: 'Cancel',
+                        action: function () { /* onClose handles it */ }
+                    },
+                    ok: {
+                        text: 'OK',
+                        btnClass: 'btn-blue',
+                        keys: ['enter'],
+                        disabled: !hasGroup,
+                        action: function () {
+                            if (!hasGroup) {
+                                // Safety: user shouldn't be able to hit this
+                                // (button is disabled + Enter key is bound
+                                // to the button and thus also disabled), but
+                                // guard anyway.
+                                return false;
+                            }
+                            var mps = parseFloat($scope.buildConfig.minutesPerStop);
+                            if (isNaN(mps) || mps < 0) {
+                                alert('Minutes per stop must be a non-negative number.');
+                                return false;
+                            }
+                            if ($scope.buildConfig.vehicleCapacityEnabled) {
+                                var cap = parseFloat($scope.buildConfig.vehicleCubicCap);
+                                if (isNaN(cap) || cap <= 0) {
+                                    alert('Vehicle cubic capacity must be greater than 0.');
+                                    return false;
+                                }
+                                $scope.buildConfig.vehicleCubicCap = cap;
+                            }
+                            $scope.buildConfig.minutesPerStop = mps;
+                            localStorage.setItem('RunBuilder_buildParameter', $scope.buildConfig.buildParameter);
+                            localStorage.setItem('RunBuilder_minutesPerStop', String(mps));
+                            localStorage.setItem('RunBuilder_vehicleCapacityEnabled', $scope.buildConfig.vehicleCapacityEnabled ? 'true' : 'false');
+                            localStorage.setItem('RunBuilder_vehicleSizeID', String($scope.buildConfig.vehicleSizeID || ''));
+                            localStorage.setItem('RunBuilder_vehicleCubicCap', String($scope.buildConfig.vehicleCubicCap));
+                            okClicked = true;
+                            if (typeof onOk === 'function') onOk();
+                        }
+                    }
+                }
+            });
         };
 
         uRunData.getDateService().then(function (data) {
@@ -2858,7 +3023,7 @@ angular
         $scope.calculateRunDetails = function (jobs, mins, kms) {
             // TODO: Calculate runs based on the settings from tblSettings
             $scope.calc = {};
-            var dropExtra = 2 * jobs.length;
+            var dropExtra = (parseFloat($scope.buildConfig.minutesPerStop) || 0) * jobs.length;
             var hourlyRate = 25;
             var expPerKm = 0.5;
 
@@ -2896,7 +3061,7 @@ angular
             if ($filter('filter')($scope.runList, { 'isActive': 1 })) {
                 //console.log($filter('filter')($scope.runList, {'isActive':1})[0]);
                 if ($filter('filter')($scope.runList, { 'isActive': 1 })[0]) {
-                    var dropExtra = 2 * drops;
+                    var dropExtra = (parseFloat($scope.buildConfig.minutesPerStop) || 0) * drops;
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].mins = (parseInt(mins) + parseInt(dropExtra));
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].kms = kms;
 
@@ -2950,13 +3115,113 @@ angular
                     //$filter('filter')($scope.runList, {'isActive':1})[0].GoogleRouteResponse = googleRouteResponse;
                     $filter('filter')($scope.runList, { 'isActive': 1 })[0].RunChanged = false;
 
-                    // Auto lock the run after routing 
+                    // Auto lock the run after routing
                     $scope.toggleRunLock($filter('filter')($scope.runList, { 'isActive': 1 })[0]);
 
                     setTimeout(function () { $scope.runBuilderTotals(); $scope.$apply(); }, 0);
 
                 }
             }
+        };
+
+        // Convert two datetime-like strings (or Dates) to a difference in minutes.
+        // The schedule window StartTime/EndTime come back as "1970-01-01THH:MM:SS.sssZ";
+        // only the time-of-day matters. If end < start (crosses midnight) we add 24h.
+        function getWindowMinutes(start, end) {
+            var s = new Date(start), e = new Date(end);
+            var mins = (e - s) / 60000;
+            if (mins <= 0) mins += 24 * 60;
+            return Math.max(0, mins);
+        }
+
+        // Delivery-window split: given a route-ordered list of jobs, the arrival-leg
+        // minutes per stop (interconnections[j].time / 60), and the operator-controlled
+        // per-stop overhead, return an array of sub-runs each of which fits within the
+        // effective window. Per the 2026-07-08 amendment, jobs in the bucket share the
+        // same WindowStart but may carry different WindowEnd values; the split caps
+        // against the earliest (shortest) WindowEnd in the bucket.
+        $scope.splitOrderedJobsByDeliveryWindow = function (orderedJobs, legMinutes, minutesPerStop) {
+            if (!orderedJobs || orderedJobs.length === 0) return [];
+            var earliestEnd = orderedJobs.reduce(function (m, j) {
+                if (!j.ScheduleWindowEnd) return m;
+                if (m === null) return j.ScheduleWindowEnd;
+                return new Date(j.ScheduleWindowEnd) < new Date(m) ? j.ScheduleWindowEnd : m;
+            }, null);
+            var windowMins = getWindowMinutes(
+                orderedJobs[0].ScheduleWindowStart,
+                earliestEnd || orderedJobs[0].ScheduleWindowEnd
+            );
+            var runGroups = [];
+            var currentRun = [];
+            var currentTravel = 0;
+
+            for (var i = 0; i < orderedJobs.length; i++) {
+                var thisLeg = legMinutes[i] || 0;
+                var candidateTravel = currentTravel + thisLeg;
+                var candidateStops = (currentRun.length + 1) * minutesPerStop;
+                var candidateTotal = candidateTravel + candidateStops;
+
+                if (currentRun.length > 0 && candidateTotal > windowMins) {
+                    runGroups.push(currentRun);
+                    currentRun = [orderedJobs[i]];
+                    currentTravel = 0;
+                } else {
+                    currentRun.push(orderedJobs[i]);
+                    currentTravel = candidateTravel;
+                }
+            }
+            if (currentRun.length > 0) runGroups.push(currentRun);
+            return runGroups;
+        };
+
+        // Unified splitter that handles any combination of build constraints:
+        //   - opts.maxBoxesCap:     count cap (Max Boxes mode)
+        //   - opts.legMinutes:      per-stop arrival minutes (Delivery Window)
+        //   - opts.windowMins:      total minutes cap        (Delivery Window)
+        //   - opts.minutesPerStop:  per-stop overhead in min
+        //   - opts.vehicleCubicCap: cubic (m^3) cap          (Vehicle Capacity)
+        // A run closes as soon as adding the next job would violate ANY set cap.
+        $scope.splitOrderedJobsByConstraints = function (orderedJobs, opts) {
+            var runs = [];
+            if (!orderedJobs || orderedJobs.length === 0) return runs;
+            opts = opts || {};
+            var mps = parseFloat(opts.minutesPerStop) || 0;
+            var maxBoxesCap = opts.maxBoxesCap || null;
+            var windowMins = opts.windowMins || null;
+            var vcCap = opts.vehicleCubicCap || null;
+            var legMinutes = opts.legMinutes || null;
+
+            var cur = [];
+            var curTravel = 0;
+            var curCubic = 0;
+
+            for (var i = 0; i < orderedJobs.length; i++) {
+                var j = orderedJobs[i];
+                var candLen = cur.length + 1;
+                var thisLeg = legMinutes ? (legMinutes[i] || 0) : 0;
+                var candTravel = curTravel + thisLeg;
+                var candTotal = candTravel + candLen * mps;
+                var jobCubic = parseFloat(j.JobCubicM3) || 0;
+                var candCubic = curCubic + jobCubic;
+
+                var violated = false;
+                if (maxBoxesCap && candLen > maxBoxesCap) violated = true;
+                if (windowMins && candTotal > windowMins) violated = true;
+                if (vcCap && candCubic > vcCap) violated = true;
+
+                if (violated && cur.length > 0) {
+                    runs.push(cur);
+                    cur = [j];
+                    curTravel = 0;
+                    curCubic = jobCubic;
+                } else {
+                    cur.push(j);
+                    curTravel = candTravel;
+                    curCubic = candCubic;
+                }
+            }
+            if (cur.length > 0) runs.push(cur);
+            return runs;
         };
 
         $scope.showRun = function (run, manualRoute) {
@@ -2990,9 +3255,11 @@ angular
             $scope.updateRun(run);
             //$scope.getPotentialCouriers();
 
-            if (!localStorage.getItem('runList') && manualRoute) {
-                $scope.updatePotentialJobs(manualRoute);
-            }
+            // Always refresh the potential-jobs panel + run colouring so that
+            // rows the user just de-selected drop their inline runColor tint.
+            // (Previously this only fired when manualRoute was set + no cached
+            // runList, which meant coloured rows persisted forever after a build.)
+            $scope.updatePotentialJobs(manualRoute);
 
         };
 
@@ -3019,6 +3286,13 @@ angular
                 if (value.inBuilder != 1 && value.toLat) {
                     $scope.potentialJobs.push({ "lat": value.toLat, "lng": value.toLng, "jn": value.JobNumber, "jobID": value.BulkJobID });
                 }
+            });
+
+            // Clear any previous tinting so runs the user just de-selected
+            // don't stay coloured. The subsequent .each below re-applies
+            // colours only to rows that still carry the .active class.
+            angular.forEach($scope.runList, function (r) {
+                if (r && r.runColor) { r.runColor = null; }
             });
 
             $scope.multiSelectedRuns = []
@@ -3201,7 +3475,22 @@ angular
             });
 
             $scope.runsToInsertList = [];
+
+            // Public entry: operators click Build Runs -> we open the config
+            // modal first so they can review Build Parameter / Minutes per
+            // stop / Vehicle Capacity for this run before we spend time
+            // sequencing routes. On OK we run the actual build logic below.
             $scope.buildRunByPostalCode = function () {
+                $scope.openBuildRunsConfig(function () {
+                    $scope._doBuildRunByPostalCode();
+                });
+            };
+
+            // Internal: everything the old buildRunByPostalCode used to do
+            // up-front. Kept as its own scope method so we can call it after
+            // the config modal is confirmed, and so unit-style debug paths
+            // (or future automation) can still invoke the build directly.
+            $scope._doBuildRunByPostalCode = function () {
                 $("#box-groupedJobs").find(".loading").show();
                 $("#box-runList").find(".loading").show();
                 $("#box-runBuilder").find(".loading").show();
@@ -3238,18 +3527,193 @@ angular
                 // Get all un-locked run jobs with Postal Code
                 var unLockedJobs = $filter('filter')(selectedJobs, j => typeof j.PrefixRunName !== 'undefined' && j.PrefixRunName && j.BulkJobRunID === 0);
 
-                // Group all jobs by PostalCode
-                $scope.runJobsAllByPostalCodeRunName = unLockedJobs.reduce(function (obj, item, index, array) {
-                    if (item.ToPostCode !== 0) {
-                        obj[item.PrefixRunName] = obj[item.PrefixRunName] || [];
-                        obj[item.PrefixRunName].push(item);
-                    }
-                    return obj;
-                }, {});
+                var mode = $scope.buildConfig.buildParameter || 'maxBoxes';
+                var vcOn = $scope.buildConfig.vehicleCapacityEnabled;
 
-                // Build runs
-                $scope.getGroupedJobsHereMapSequence();
+                // Jobs with no cubic data - only meaningful when VC is on. Empty otherwise.
+                var noCubicJobs = vcOn ? unLockedJobs.filter(function (j) {
+                    return !j.JobCubicM3 || j.JobCubicM3 <= 0;
+                }) : [];
+
+                if (mode === 'deliveryWindow') {
+                    // Delivery Window mode: split off jobs with no resolved window.
+                    var invalidJobs = unLockedJobs.filter(function (j) {
+                        return !j.ScheduleWindowStart || !j.ScheduleWindowEnd;
+                    });
+                    var validJobs = unLockedJobs.filter(function (j) {
+                        if (!j.ScheduleWindowStart || !j.ScheduleWindowEnd) return false;
+                        if (j.ToPostCode === 0) return false;
+                        // When VC is on we also drop jobs with no cubic data so they don't
+                        // silently occupy volume in the capacity split. They still get
+                        // reported in the alert modal so operators know they were skipped.
+                        if (vcOn && (!j.JobCubicM3 || j.JobCubicM3 <= 0)) return false;
+                        return true;
+                    });
+
+                    // Collect distinct (WindowStart, WindowEnd) tuples for the info modal.
+                    var windowMap = {};
+                    validJobs.forEach(function (j) {
+                        var wkey = j.ScheduleWindowStart + '|' + j.ScheduleWindowEnd;
+                        if (!windowMap[wkey]) {
+                            windowMap[wkey] = { start: j.ScheduleWindowStart, end: j.ScheduleWindowEnd, scheds: {} };
+                        }
+                        if (j.ScheduleID) {
+                            windowMap[wkey].scheds[j.ScheduleID] = j.ScheduleName || ('Sched ' + j.ScheduleID);
+                        }
+                    });
+                    var windowKeys = Object.keys(windowMap);
+                    var showMultiWindow = windowKeys.length >= 2;
+
+                    var proceedWithDeliveryWindowBuild = function () {
+                        // Delivery Window mode: one bucket per WindowStart, regardless of
+                        // postcode. A single run can span multiple postcodes as long as it
+                        // fits inside the time window and vehicle cubic capacity - splits
+                        // are decided purely by those caps (see splitOrderedJobsByConstraints).
+                        // Jobs are pre-sorted by ToPostCode so HERE sees geographically
+                        // adjacent input; HERE then optimises the actual sequence.
+                        $scope.runJobsAllByPostalCodeRunName = validJobs.reduce(function (obj, item) {
+                            var key = String(item.ScheduleWindowStart);
+                            obj[key] = obj[key] || [];
+                            obj[key].push(item);
+                            return obj;
+                        }, {});
+                        Object.keys($scope.runJobsAllByPostalCodeRunName).forEach(function (k) {
+                            $scope.runJobsAllByPostalCodeRunName[k].sort(function (a, b) {
+                                return (a.ToPostCode || 0) - (b.ToPostCode || 0);
+                            });
+                        });
+                        $scope.getGroupedJobsHereMapSequence();
+                    };
+
+                    var showModal = invalidJobs.length > 0 || showMultiWindow || (vcOn && noCubicJobs.length > 0);
+
+                    if (showModal) {
+                        var htmlParts = [];
+
+                        if (invalidJobs.length > 0) {
+                            htmlParts.push(buildWarnBlockHtml(
+                                'Missing schedule windows',
+                                invalidJobs.length + ' selected jobs do not have a valid schedule window for this date and were not built.'
+                            ));
+                        }
+
+                        if (vcOn && noCubicJobs.length > 0) {
+                            htmlParts.push(buildWarnBlockHtml(
+                                'Missing cubic data',
+                                noCubicJobs.length + ' selected jobs have no cubic dimensions and were not built (Vehicle Capacity mode).'
+                            ));
+                        }
+
+                        if (showMultiWindow) {
+                            htmlParts.push(buildMultiWindowInfoHtml(windowMap, windowKeys));
+                        }
+
+                        openBuildAlertModal(htmlParts, proceedWithDeliveryWindowBuild);
+                        return;
+                    }
+
+                    proceedWithDeliveryWindowBuild();
+                    return;
+                }
+
+                // ---- Max Boxes mode (default) ----
+                var maxBoxesValidJobs = vcOn
+                    ? unLockedJobs.filter(function (j) { return j.JobCubicM3 && j.JobCubicM3 > 0; })
+                    : unLockedJobs;
+
+                var proceedWithMaxBoxesBuild = function () {
+                    $scope.runJobsAllByPostalCodeRunName = maxBoxesValidJobs.reduce(function (obj, item) {
+                        if (item.ToPostCode !== 0) {
+                            obj[item.PrefixRunName] = obj[item.PrefixRunName] || [];
+                            obj[item.PrefixRunName].push(item);
+                        }
+                        return obj;
+                    }, {});
+                    $scope.getGroupedJobsHereMapSequence();
+                };
+
+                if (vcOn && noCubicJobs.length > 0) {
+                    var mbHtmlParts = [buildWarnBlockHtml(
+                        'Missing cubic data',
+                        noCubicJobs.length + ' selected jobs have no cubic dimensions and were not built (Vehicle Capacity mode).'
+                    )];
+                    openBuildAlertModal(mbHtmlParts, proceedWithMaxBoxesBuild);
+                    return;
+                }
+
+                proceedWithMaxBoxesBuild();
             };
+
+            // -- Helpers for the pre-build alert modal ------------------------------
+            function buildWarnBlockHtml(title, message) {
+                return '<div style="background:#FFF7E6; border-left:4px solid #F0A040; padding:12px 16px; margin-bottom:14px;">'
+                     +   '<div style="font-weight:600; color:#8A5A00; margin-bottom:4px;">'
+                     +     '<i class="fa fa-exclamation-circle"></i>&nbsp; ' + title
+                     +   '</div>'
+                     +   '<div style="color:#5F4200;">' + message + '</div>'
+                     + '</div>';
+            }
+
+            function buildMultiWindowInfoHtml(windowMap, windowKeys) {
+                windowKeys.sort(function (a, b) {
+                    return new Date(windowMap[a].start) - new Date(windowMap[b].start);
+                });
+                var fmtHM = function (iso) {
+                    var d = new Date(iso);
+                    return ('0' + d.getUTCHours()).slice(-2) + ':' + ('0' + d.getUTCMinutes()).slice(-2);
+                };
+                var windowRows = windowKeys.map(function (wk) {
+                    var w = windowMap[wk];
+                    var schedList = Object.keys(w.scheds).map(function (sid) {
+                        return w.scheds[sid] + ' (Sched ' + sid + ')';
+                    }).join('; ');
+                    return '<li><strong>' + fmtHM(w.start) + '&ndash;' + fmtHM(w.end) + '</strong> &nbsp;&rarr;&nbsp; ' + (schedList || '(no ScheduleID)') + '</li>';
+                }).join('');
+                return '<div style="background:#EAF6FF; border-left:4px solid #4A90E2; padding:12px 16px;">'
+                     +   '<div style="font-weight:600; color:#1F5C99; margin-bottom:6px;">'
+                     +     '<i class="fa fa-info-circle"></i>&nbsp; Multiple schedule windows'
+                     +   '</div>'
+                     +   '<div style="color:#333; margin-bottom:8px; font-size:13px;">'
+                     +     'Schedules with the same delivery-window start time can be built together. '
+                     +     'If grouped schedules have different finish times, RunBuilder will optimise against the shortest window (earliest finish time).'
+                     +   '</div>'
+                     +   '<div style="font-size:12px; color:#333;">'
+                     +     '<div style="font-weight:600; margin-bottom:4px;">Windows present:</div>'
+                     +     '<ul style="margin:0; padding-left:18px; line-height:1.7;">' + windowRows + '</ul>'
+                     +   '</div>'
+                     + '</div>';
+            }
+
+            function openBuildAlertModal(htmlParts, proceedCallback) {
+                var okClicked = false;
+                $ngConfirm({
+                    title: 'Build Runs',
+                    content: '<div style="max-width:640px;">' + htmlParts.join('') + '</div>',
+                    columnClass: 'col-md-6 col-md-offset-3',
+                    scope: $scope,
+                    closeIcon: true,
+                    escapeKey: true,
+                    backgroundDismiss: true,
+                    onClose: function () {
+                        if (!okClicked) $scope.hideAllLoading();
+                    },
+                    buttons: {
+                        cancel: {
+                            text: 'Cancel',
+                            action: function () { /* onClose hides loading */ }
+                        },
+                        ok: {
+                            text: 'OK',
+                            btnClass: 'btn-blue',
+                            keys: ['enter'],
+                            action: function () {
+                                okClicked = true;
+                                proceedCallback();
+                            }
+                        }
+                    }
+                });
+            }
 
             $scope.hideAllLoading = function () {
                 $("#box-groupedJobs").find(".loading").fadeOut();
@@ -3294,31 +3758,81 @@ angular
                             //Devide runNameGroups jobs into 20 by default for each runs
                             $scope.runJobsAllByPostalCodeRunName[key] = $filter('orderBy')($scope.runJobsAllByPostalCodeRunName[key], "BuilderIndex");
 
+                            var mode = $scope.buildConfig.buildParameter || 'maxBoxes';
+                            var vcOn = $scope.buildConfig.vehicleCapacityEnabled;
+                            var minutesPerStop = parseFloat($scope.buildConfig.minutesPerStop) || 0;
+                            var vcCap = vcOn ? parseFloat($scope.buildConfig.vehicleCubicCap) : null;
                             var dividedRunGroups = [];
-                            while ($scope.runJobsAllByPostalCodeRunName[key].length) {
-                                //// Merge the last few jobs into the second last run group
-                                // Remove merge by Steve request
-                                if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
-                                    if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
-                                        $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
-                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
-                                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+
+                            if (mode === 'maxBoxes' && !vcOn) {
+                                // Fast path: existing Max-Boxes splice + PostCodeMergeTo loop.
+                                while ($scope.runJobsAllByPostalCodeRunName[key].length) {
+                                    //// Merge the last few jobs into the second last run group
+                                    // Remove merge by Steve request
+                                    if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
+                                        if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
+                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
+                                                $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
+                                                    $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                        } else {
+                                            dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                        }
                                     } else {
                                         dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
                                     }
-                                } else {
-                                    dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
                                 }
+                            } else {
+                                // Unified splitter: handles any combination of constraints.
+                                // RouteSavvy response has no per-leg times; approximate travel via
+                                // proportional split (>200 buckets are rare and this is fine for MVP).
+                                var orderedJobs = $scope.runJobsAllByPostalCodeRunName[key];
+                                var legMinutes = null, windowMins = null;
+                                if (mode === 'deliveryWindow') {
+                                    var totalMinutes = (data && data.totalTime) ? (data.totalTime / 60) : 0;
+                                    var perStopTravel = orderedJobs.length > 0 ? totalMinutes / orderedJobs.length : 0;
+                                    legMinutes = orderedJobs.map(function () { return perStopTravel; });
+                                    var earliestEnd = orderedJobs.reduce(function (m, j) {
+                                        if (!j.ScheduleWindowEnd) return m;
+                                        if (m === null) return j.ScheduleWindowEnd;
+                                        return new Date(j.ScheduleWindowEnd) < new Date(m) ? j.ScheduleWindowEnd : m;
+                                    }, null);
+                                    windowMins = getWindowMinutes(orderedJobs[0].ScheduleWindowStart, earliestEnd || orderedJobs[0].ScheduleWindowEnd);
+                                }
+                                dividedRunGroups = $scope.splitOrderedJobsByConstraints(orderedJobs, {
+                                    minutesPerStop: minutesPerStop,
+                                    maxBoxesCap: mode === 'maxBoxes' ? orderedJobs[0].MaxJobsPerRun : null,
+                                    legMinutes: legMinutes,
+                                    windowMins: windowMins,
+                                    vehicleCubicCap: vcCap
+                                });
+                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, orderedJobs.length);
                             }
 
                             var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
                             var result = dividedRunGroups.map(function (v, i) {
 
                                 var runNameSuffix = labels[i % labels.length];
-                                //// Change to user A1,A2, B1, B2 for run names rather then A1-A, A1-B
-                                //var run = { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
-                                var run = { name: key + runNameSuffix, jobs: dividedRunGroups[i] };
-                                //var run = { name: runNameSuffix + (i+1).toString(), jobs: dividedRunGroups[i] };
+                                // In deliveryWindow mode the composite map key contains raw
+                                // window ISO strings, which aren't user-friendly. Follow the
+                                // autobook convention from UTL_stpJob_InsertFromTblBulkJob:
+                                //     <ClientCode><HHMM><ucjtCode>
+                                // Adapted here as <PrefixRunName><HHMM> so operators see e.g.
+                                // "21380600A" (postcode 2138, 06:00 window, sub-run A).
+                                var visibleBase = key;
+                                if (mode === 'deliveryWindow') {
+                                    var firstJob = dividedRunGroups[i][0];
+                                    var winStart = firstJob.ScheduleWindowStart;
+                                    var hhmm = '';
+                                    if (winStart) {
+                                        var d = new Date(winStart);
+                                        hhmm = ('0' + d.getUTCHours()).slice(-2) + ('0' + d.getUTCMinutes()).slice(-2);
+                                    }
+                                    // DW mode: a run can span multiple postcodes, so no single
+                                    // PrefixRunName represents it. Use DW<HHMM> to make it
+                                    // visually distinct from postcode-scoped Max-Boxes runs.
+                                    visibleBase = 'DW' + hhmm;
+                                }
+                                var run = { name: visibleBase + runNameSuffix, jobs: dividedRunGroups[i] };
                                 // Store runs for insert laters
                                 $scope.runsToInsertList.push(run);
                                 return run;
@@ -3397,31 +3911,92 @@ angular
                             //Devide runNameGroups jobs into 20 by default for each runs
                             $scope.runJobsAllByPostalCodeRunName[key] = $filter('orderBy')($scope.runJobsAllByPostalCodeRunName[key], "BuilderIndex");
 
+                            var mode = $scope.buildConfig.buildParameter || 'maxBoxes';
+                            var vcOn = $scope.buildConfig.vehicleCapacityEnabled;
+                            var minutesPerStop = parseFloat($scope.buildConfig.minutesPerStop) || 0;
+                            var vcCap = vcOn ? parseFloat($scope.buildConfig.vehicleCubicCap) : null;
                             var dividedRunGroups = [];
-                            while ($scope.runJobsAllByPostalCodeRunName[key].length) {
-                                //// Merge the last few jobs into the second last run group
-                                // Remove merge by Steve request
-                                if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
-                                    if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
-                                        $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
-                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
-                                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+
+                            if (mode === 'maxBoxes' && !vcOn) {
+                                // Fast path: existing Max-Boxes splice + PostCodeMergeTo loop.
+                                while ($scope.runJobsAllByPostalCodeRunName[key].length) {
+                                    //// Merge the last few jobs into the second last run group
+                                    // Remove merge by Steve request
+                                    if (dividedRunGroups.length && $scope.runJobsAllByPostalCodeRunName[key].length && $scope.runJobsAllByPostalCodeRunName[key].length < $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun) {
+                                        if ($scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] && $scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo) {
+                                            $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo] =
+                                                $scope.runJobsAllByPostalCodeRunName[$scope.runJobsAllByPostalCodeRunName[key][0].PostCodeMergeTo].concat(
+                                                    $scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                        } else {
+                                            dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
+                                        }
                                     } else {
                                         dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
                                     }
-                                } else {
-                                    dividedRunGroups.push($scope.runJobsAllByPostalCodeRunName[key].splice(0, $scope.runJobsAllByPostalCodeRunName[key][0].MaxJobsPerRun));
                                 }
+                            } else {
+                                // Unified splitter path. HERE gives us per-leg seconds; use them.
+                                // r.waypoints[0] was spliced above (start point) but interconnections
+                                // was NOT spliced, so interconnections[j] is the leg into waypoints[j].
+                                var orderedJobs = $scope.runJobsAllByPostalCodeRunName[key];
+                                var legMinutes = null, windowMins = null;
+                                if (mode === 'deliveryWindow') {
+                                    var jobIndexById = {};
+                                    for (var oj = 0; oj < orderedJobs.length; oj++) {
+                                        jobIndexById[orderedJobs[oj].JobNumber] = oj;
+                                    }
+                                    legMinutes = orderedJobs.map(function () { return 0; });
+                                    if (r.interconnections && r.interconnections.length) {
+                                        for (var ic = 0; ic < r.waypoints.length; ic++) {
+                                            var oidx = jobIndexById[r.waypoints[ic].id];
+                                            var leg = r.interconnections[ic];
+                                            if (typeof oidx === 'number' && leg) {
+                                                legMinutes[oidx] = leg.time / 60;
+                                            }
+                                        }
+                                    }
+                                    var earliestEnd = orderedJobs.reduce(function (m, j) {
+                                        if (!j.ScheduleWindowEnd) return m;
+                                        if (m === null) return j.ScheduleWindowEnd;
+                                        return new Date(j.ScheduleWindowEnd) < new Date(m) ? j.ScheduleWindowEnd : m;
+                                    }, null);
+                                    windowMins = getWindowMinutes(orderedJobs[0].ScheduleWindowStart, earliestEnd || orderedJobs[0].ScheduleWindowEnd);
+                                }
+                                dividedRunGroups = $scope.splitOrderedJobsByConstraints(orderedJobs, {
+                                    minutesPerStop: minutesPerStop,
+                                    maxBoxesCap: mode === 'maxBoxes' ? orderedJobs[0].MaxJobsPerRun : null,
+                                    legMinutes: legMinutes,
+                                    windowMins: windowMins,
+                                    vehicleCubicCap: vcCap
+                                });
+                                $scope.runJobsAllByPostalCodeRunName[key].splice(0, orderedJobs.length);
                             }
 
                             var labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
                             var result = dividedRunGroups.map(function (v, i) {
 
                                 var runNameSuffix = labels[i % labels.length];
-                                //// Change to user A1,A2, B1, B2 for run names rather then A1-A, A1-B
-                                //var run = { name: key + "-" + runNameSuffix, jobs: dividedRunGroups[i] };
-                                var run = { name: key + runNameSuffix, jobs: dividedRunGroups[i] };
-                                //var run = { name: runNameSuffix + (i+1).toString(), jobs: dividedRunGroups[i] };
+                                // In deliveryWindow mode the composite map key contains raw
+                                // window ISO strings, which aren't user-friendly. Follow the
+                                // autobook convention from UTL_stpJob_InsertFromTblBulkJob:
+                                //     <ClientCode><HHMM><ucjtCode>
+                                // Adapted here as <PrefixRunName><HHMM> so operators see e.g.
+                                // "21380600A" (postcode 2138, 06:00 window, sub-run A).
+                                var visibleBase = key;
+                                if (mode === 'deliveryWindow') {
+                                    var firstJob = dividedRunGroups[i][0];
+                                    var winStart = firstJob.ScheduleWindowStart;
+                                    var hhmm = '';
+                                    if (winStart) {
+                                        var d = new Date(winStart);
+                                        hhmm = ('0' + d.getUTCHours()).slice(-2) + ('0' + d.getUTCMinutes()).slice(-2);
+                                    }
+                                    // DW mode: a run can span multiple postcodes, so no single
+                                    // PrefixRunName represents it. Use DW<HHMM> to make it
+                                    // visually distinct from postcode-scoped Max-Boxes runs.
+                                    visibleBase = 'DW' + hhmm;
+                                }
+                                var run = { name: visibleBase + runNameSuffix, jobs: dividedRunGroups[i] };
                                 // Store runs for insert laters
                                 $scope.runsToInsertList.push(run);
                                 return run;

@@ -231,6 +231,18 @@ namespace RunBuilder.Models.Repository
 
         }
 
+        // Pull the subset of VehicleSize rows that actually carry a cubic
+        // capacity (m^3). Feeds the Vehicle Capacity build-config dropdown.
+        // Inline SQL - no SP needed for a plain SELECT over a static table.
+        public async Task<List<VehicleSizeResult>> GetVehicleSizesAsync()
+        {
+            var result = await Context.SqlQueryToListAsync<VehicleSizeResult>(
+                "SELECT VehicleSizeID, VehicleName, CubicCapacity FROM dbo.VehicleSize " +
+                "WHERE CubicCapacity IS NOT NULL " +
+                "ORDER BY CubicCapacity, VehicleName");
+            return result;
+        }
+
         public async Task<List<UTL_stpJob_tblBulkRunWithFilterResult>> GetBulkRunsAsync(DateTime? datetime, string clientIds, string regionIds, string ourRefs, string speeds)
         {
             var data = await Context.Procedures.UTL_stpJob_tblBulkRunWithFilterAsync(datetime, clientIds == "" ? null : clientIds, regionIds == "" ? null : regionIds, ourRefs == "" ? null : ourRefs, speeds == "" ? null : speeds);
