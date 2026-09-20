@@ -54,6 +54,7 @@ from walking the deployed view.
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
 | **F19** | The parent job starts at the **delivery** leg's time. It must start at the booking, and the pickup at the next actually-available collection | Behaviour — half of it ships now |
+| **F20** | `tblBulkJob` is staging for advance bulk work. A book-immediately schedule should not write a row there at all — and if "book immediately" is `AutoBook`, the new view's Active toggle is switching it | Architecture + a live hazard |
 | **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name. Schedule *groups* are renamed to *bundles* so the word stops meaning two things | Rule — read first |
 
 Order of work is in §5.
@@ -758,6 +759,12 @@ The first two make the Mode column and the cut-off unit meaningless (and feed F1
 the third conflates auto-booking with active, so the Active toggle in the list is
 toggling `AutoBook`.
 
+**Read F20 before fixing that third one.** If `AutoBook` is the book-immediately
+flag, this is not a conflation to tidy up — it means ops can switch a schedule
+between booking immediately and staging into bulk by clicking a toggle labelled
+Active. Until that is confirmed, treat the Active toggle in the new view as
+unsafe.
+
 ---
 
 # 3. Schedule shape — the product moves
@@ -1277,17 +1284,22 @@ and `CreatedTimeUtc`, so whichever is chosen, choose it once and write it down.
 | Search horizon | **14 days**, then fail | A mis-configured schedule must not silently produce a job three months out. |
 | Non-operating days | honoured, **including a client's `WeekDays` override** | Otherwise F1's day override is cosmetic. |
 
-Two open questions I cannot answer from the code:
+Both of the questions this section originally left open are answered (Steve,
+2026-09-20):
 
-- **Is there a holiday / non-working-day calendar?** I cannot find one in what I can
-  read. If there is not, a Good Friday booking will roll to a collection nobody runs.
-  This may be the single most expensive omission in the rule.
-- **Which column *is* the parent's start time?** `tblBulkJob` has `BookDate` and
-  `BookTime` (both non-null) and `PickupReadyDateTime`; `tucJobBooking` has
-  `TruckStartTime`, `RequiredDeliveryTime` and `DeliverByTime`. The materialiser that
-  sets them is not in any repo we hold — same gap as `uspPrebookSet` in F17. Name the
-  column and this is a small change in one place; guess it and it is a rewrite in the
-  wrong one.
+- **The parent's start time is `tblBulkJob.BookDate` + `BookTime`.** Both are non-null
+  today. F19a is therefore unblocked — it is these two columns that must carry the
+  booking time rather than the delivery leg's.
+- **A holidays table exists.** Neither scaffolded EF context in the repos I can read
+  includes it, so it is either reached outside EF or the model is stale — Kevin, name
+  the table and the rule above uses it directly. Note that
+  `tucJobBooking.HolidayDeliveryOption` (`DespatchContext.cs:3755`, *0 = Don't Book,
+  1 = Deliver Next Day*) is the per-booking **policy** that sits on top of the
+  calendar. So the full rule is: skip non-working days per the calendar, then apply
+  `HolidayDeliveryOption` to decide what happens to a booking that lands on one.
+
+See F20 for where these two jobs are written, and why a book-immediately schedule
+should not be writing a `tblBulkJob` row at all.
 
 ### Acceptance
 
@@ -1315,13 +1327,136 @@ SELECT TOP 50 BulkJobId, BookDate, BookTime, PickupReadyDateTime
 
 ### Ship it in two halves
 
-**F19a — parent start = booking time.** Independent of everything else here. It does
-not need the collection modes, the cut-off rewrite or F1. Once Kevin names the
-column it is a small change, and it is the half you asked for. Do it early.
+**F19a — parent start = booking time**, written to `tblBulkJob.BookDate` /
+`BookTime`. Independent of everything else here: it does not need the collection
+modes, the cut-off rewrite or F1, and the column question is now answered. Do it
+early — it is the half you asked for, and it pairs with F20.
 
 **F19b — next available collection.** Needs F11's collection modes (fixed / window /
 on demand) and the on-demand lead time to exist, and resolves through F1 so client
 overrides count. Build it with F11, not before.
+
+---
+
+## F20 — `tblBulkJob` is staging for advance bulk work, not the road every job takes
+
+The rule, from Steve on 2026-09-20:
+
+1. `tblBulkJob.BookDate` + `BookTime` **are the job's start time** (F19a).
+2. The **parent and the delivery move straight from `tblBulk` to `tucJob`.**
+3. If the schedule has **book immediately** ticked, **nothing goes into `tblBulkJob`
+   at all.**
+4. `tblBulkJob` is a **staging and run-building area for bulk deliveries booked in
+   advance.** That is its whole job.
+
+### Why the current path cannot honour that
+
+A staged bulk job becomes a `tucJob` **only through run building.** In this repo
+there is exactly one route:
+
+- `JobRepository.InsertJobAsync` (`Models/Repository/JobRepository.cs:130`) calls
+  `UTL_stpJob_InsertFromRunBuilder(@BulkJobID, @CourierID, @RunName, @RunOrder, …)`;
+- its only caller is the `foreach (var job in run.Jobs)` loop at `:122`, inside run
+  dispatch.
+
+So a job that has to exist before anyone builds a run waits for a run that may never
+be built, and a book-immediately job staged into `tblBulkJob` is stuck there **by
+design, not by accident**. Both halves of the instruction follow from that.
+
+### The routing decision, made once at booking
+
+```
+resolve the schedule for this client (fnScheduleForClient — F1, F18)
+
+if the schedule books immediately:
+    create the tucJob parent and its legs now.
+    NO tblBulkJob row. Nothing to stage; nothing to wait for.
+else:
+    write the tblBulkJob staging row, with
+        BookDate / BookTime = the booking time          (F19a)
+        the collection leg  = the next available collection (F19b)
+    the parent and the delivery flow through to tucJob without waiting for a run.
+    Run building then attaches courier and run order to jobs that already exist,
+    rather than being the thing that brings them into existence.
+```
+
+That last line is the real change in the second branch: run building stops being the
+gate between a booking and a job, and goes back to being what its name says.
+
+### Which flag is "book immediately"? — and a live hazard if it is `AutoBook`
+
+The likeliest candidate is `tblBulkRunSchedule.AutoBook`. **If it is, there is a bug
+already on this list whose severity changes completely:**
+
+`types.ts:734` reads `isActive: first.autoBook ?? true`, so in the new Schedules view
+the **Active toggle is bound to `AutoBook`** — and it is a live control on every row
+of the list (the Status column's `ActiveToggle`, `ScheduleTable.tsx:418`). If
+`AutoBook` is the immediate-booking flag, then switching a schedule Active or
+Inactive in the list is **silently switching that schedule between booking
+immediately and staging into bulk.**
+
+F8 already lists this as "conflates auto-book with active". That was written as a
+cosmetic conflation. If `AutoBook` means book-immediately it is not cosmetic: it is
+ops changing the dispatch pathway of a schedule by clicking a toggle labelled
+something else.
+
+**So: confirm what `AutoBook` means before F8 is touched, and until it is confirmed,
+treat the Active toggle in the new view as unsafe.** If book-immediately turns out to
+be a different flag, then the schedule needs one explicitly, in its own column, and
+Active goes back to meaning active.
+
+### Before removing the bulk row, count what reads it
+
+The staging row is not only a staging record. Anything joining `tblBulkJob` stops
+seeing immediately-booked work the day this ships:
+
+- reporting and DIFOT
+- the historic OTG upload (`KEVIN-ROUTED-OPERATIONS-HISTORIC-OTG-UPLOAD-2026-08-17.md`)
+- `tblBulkJobRun` history, and anything keyed on `BulkJobId`
+- `tblBulkJob.JobId` is the handle from a staged row to its `tucJob`; a bypassed job
+  has no bulk row, so any code walking that link loses it. `tucJob` already carries
+  `ScheduleId` — per F18 that is the join to use instead.
+
+```sql
+-- How much of the estate would stop writing a staging row?
+SELECT s.AutoBook, COUNT(DISTINCT h.ScheduleId) AS Schedules
+  FROM dbo.tblBulkRunScheduleHeader h
+  JOIN dbo.tblBulkRunSchedule s ON s.ScheduleId = h.ScheduleId
+ WHERE h.RetiredUtc IS NULL
+ GROUP BY s.AutoBook;
+
+-- Staged and never materialised: bookings that became a bulk row and never a job.
+-- Worth running for its own sake, whatever happens to this item.
+SELECT CAST(BookDate AS date) AS BookDate,
+       COUNT(*)                                        AS Rows_,
+       SUM(CASE WHEN JobId IS NULL THEN 1 ELSE 0 END)  AS NeverMaterialised
+  FROM dbo.tblBulkJob
+ WHERE BookDate >= DATEADD(day, -90, GETDATE())
+ GROUP BY CAST(BookDate AS date)
+ ORDER BY BookDate DESC;
+```
+
+### Open
+
+- Where do the **collection and linehaul** legs sit in the straight-through path? The
+  instruction names the parent and the delivery. My assumption is that all legs of an
+  immediately-booked job are created together, and that in the staged path the
+  collection leg still materialises on the same trigger as the parent — but say so
+  either way rather than leaving it to whoever writes it.
+- Does `PrebookJob` (`Models/TblBulkJob.cs:86`) already distinguish advance work from
+  immediate work? If it does, the routing decision may have a home already.
+
+### Acceptance
+
+- A schedule with book-immediately ticked produces a `tucJob` and **no** `tblBulkJob`
+  row.
+- A schedule without it produces a `tblBulkJob` row whose `BookDate` / `BookTime` are
+  the booking time — not the delivery window — and its parent and delivery reach
+  `tucJob` without waiting for a run to be built.
+- Run building attaches courier and run order, and no longer creates jobs that should
+  already exist.
+- The two counts above are taken before and after; nothing in reporting loses rows
+  without someone having decided it should.
 
 ---
 
@@ -1346,6 +1481,9 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
+0. **F20's first question** — what does `AutoBook` mean? One answer, and it either
+   downgrades to a naming tidy-up or stops ops using the Active toggle today. Ask
+   before anything else on this list is touched.
 0. **F18** — read it first. It is one page, it costs nothing, and it decides the key
    every other item on this list writes. The group → bundle rename is decided: do it
    in one pass before E1/E2 start, while those tables still do not exist.
@@ -1361,7 +1499,8 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 5. **F1 + F3 + F2 + F4** — the override model. One deployable slice; F2, F3 and F4
    fall out of F1 and should not be fixed separately first.
 6. **F7 read path, F14, F16, F19a** — the small fixes. F19a (parent start = booking
-   time) is unblocked the moment Kevin names the column, and does not wait for F11.
+   time, into `tblBulkJob.BookDate`/`BookTime`) is unblocked and does not wait for
+   F11.
 7. **F9** — linehaul out of the schedule. Biggest structural win, and it unblocks F15.
 8. **F13, F12, F10** — schedule shape.
 9. **F11 + F19b** — cut-off rewrite, and the next-available-collection rule that
@@ -1369,6 +1508,9 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 10. **F15** — pricing and zones, as its own brief.
 11. **F17 proper** — after F1 and F9, re-run the schedules-per-route count. Engineer
     what is left; there is a fair chance most of it dissolves.
+12. **F20** — the staging bypass. It needs the `AutoBook` answer from step 0 and the
+    read-impact counts; the straight-through path for parent and delivery can start
+    as soon as those are in.
 
 E1/E2/E3 from the 2026-09-18 brief slot in after step 5 — they need the bundle tables,
 and E1's Groups column is easier once overrides are out of the schedule rows.
@@ -1383,10 +1525,13 @@ and E1's Groups column is easier once overrides are out of the schedule rows.
   collection-section screenshot (F6).
 - The result of the row-0 disagreement query (F8).
 - Which build the linehaul leg-name field is in — it is not in this branch (F9).
-- Which column is the parent job's start time — `tblBulkJob.BookTime`,
-  `PickupReadyDateTime`, `tucJobBooking.TruckStartTime` or something else (F19). This
-  unblocks F19a on its own.
-- Whether a holiday / non-working-day calendar exists anywhere (F19).
+- **What `AutoBook` actually means** — book immediately, or something else (F20).
+  This is the one I need first.
+- The name of the holidays table (F19, F20) — Steve confirms it exists; it is not in
+  either scaffolded EF context.
+- Where the collection and linehaul legs sit in the straight-through path (F20).
+- The two counts in F20: schedules by `AutoBook`, and staged bulk rows that never
+  became a job.
 - The duplicate-header-name count — query 4 in F18. Run this one first; it sizes what
   name-matching has been hiding.
 - Your call on renaming the E1/E2 schedule *group* tables to *bundles*, before they
