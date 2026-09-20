@@ -29,22 +29,40 @@ Neither is what "Active" means to the person clicking it, and it is invisible
 afterwards, because the list then displays `AutoBook` as the Active state. The toggle
 looks like it did exactly what was asked.
 
-It is live in the deployed view. The fix is one line today; separating Active from
-Book-immediately properly is a small follow-up. There are no audit columns on that
-table, so schedules already flipped cannot be identified — the only check available is
-the book-immediately count against what ops expects.
+The fix is one line; separating Active from Book-immediately properly is a small
+follow-up. If the deployed build does write to the database, this is today's work and
+there is no audit trail to find the schedules it has already changed — the only check
+available is the book-immediately count against what ops expects. See the caveat
+below.
 
 ---
 
-## Five defects that cost money today
+## A caveat that decides urgency, not substance
+
+The branch this was written against has **no persistence in the Schedules view at
+all** — it runs on sample data, and nothing it does reaches a database. But the
+walkthrough shows real schedules, so the build ops is using is ahead of that branch
+and wired to something the repo does not hold, which I have not been able to inspect.
+
+So: every defect below is real and precisely located in the code. Whether it is
+*currently* corrupting data depends on how the deployed build saves. The fixes do not
+change either way — the urgency does, and the first question for Kevin is which build
+is deployed and whether it writes to the database.
+
+For the three marked **(on save)**, that question decides whether they are "fix before
+this is connected" or "stop it today".
+
+---
+
+## Five defects that cost money
 
 | | What happens |
 | :- | :- |
-| **Zone rows overwritten** | Delivery zones are read from one column and written from another, so opening a schedule and saving it destroys its zone rows. The read column is empty on 81 of 179 schedule sets. |
-| **`MaxJobs` overwritten** | Hardcoded to 10000 on every save. The real value is never read back. |
+| **Zone rows overwritten** *(on save)* | Delivery zones are read from one column and written from another, so opening a schedule and saving it destroys its zone rows. The read column is empty on 81 of 179 schedule sets. |
+| **`MaxJobs` overwritten** *(on save)* | Hardcoded to 10000 on every save. The real value is never read back. |
 | **Wrong temperature state** | A production integer is handed to a text dropdown with no mapping. The affected value covers 87 of 179 sets, including every medical schedule. |
-| **Clients cannot see their own booking** | The parent job does not exist until the delivery day, and the parent is the client's entire view — every leg's status attaches to it. Every "where is my delivery?" call between booking and delivery day comes from this. |
-| **Overrides clone the schedule** | Every client wanting a different cut-off adds another schedule to the 2,725 that exist. |
+| **Clients cannot see their own booking** | The parent job does not exist until the delivery day, and the parent is the client's entire view — every leg's status attaches to it. Every "where is my delivery?" call between booking and delivery day comes from this. **This one is in the live dispatch pipeline, not the new view — it is happening now.** |
+| **Overrides clone the schedule** *(on save)* | Every client wanting a different cut-off adds another schedule to the 2,725 that exist. |
 
 ---
 
@@ -67,7 +85,7 @@ writes no staging row at all.
 
 ## Order of work
 
-### Before anything else — today, and all small
+### Before anything else — all small, and all before the view is connected
 
 | | |
 | :- | :- |
@@ -101,6 +119,8 @@ id** — never the day-row line, never the schedule name.
 
 ## What is needed back
 
+- **Which build is at the tenant URL, and does it write to the database?** This
+  re-grades the three "(on save)" items above.
 - The legacy temperature-state integer → label mapping.
 - The name of the holidays table.
 - Three diagnostic queries run: duplicate schedule names, day rows that disagree with

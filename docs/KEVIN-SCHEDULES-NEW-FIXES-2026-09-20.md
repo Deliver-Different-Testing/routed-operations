@@ -40,6 +40,42 @@ Four items have no screenshot because they were not visible defects: F2 (the emp
 day column on an override) was described rather than captured, F8 and F17–F20 were
 found by reading the code and the data.
 
+## How live is any of this? Read before grading severity
+
+On the branch above, **the Schedules (NEW) view has no persistence at all.**
+
+- `SchedulesPage` takes no props and initialises its state from `sampleSchedules`
+  (`SchedulesPage.tsx:16`, `:38`); `App.tsx:22` mounts it as `<SchedulesPage />`.
+- **Nothing in the module imports either API client.** `api.ts` and `api/v2.ts` have
+  zero call sites.
+- The write mapper `multiDayToPerDay` is called only from `api.ts:173` — which
+  nothing calls — and from tests.
+- There is no `.env`, so `VITE_SCHEDULES_API` is unset and `apiAvailable` is false
+  regardless.
+
+Every save, toggle and override in this code mutates React state and evaporates on
+refresh. So on this branch, nothing here can write to the database.
+
+**But Steve's walkthrough shows 2,725 real schedules, real medical schedules and a
+real UCLMP override — which sample data does not contain.** The build at the tenant
+URL is therefore ahead of this branch and wired to something this repo does not hold.
+
+I cannot see that build, so for every item below:
+
+- **the defect in the code is real and precisely located** — that part does not
+  depend on which build is deployed;
+- **whether it is currently corrupting data depends on how the deployed build
+  persists**, which I have not verified.
+
+Where an item says "live", read it as *live once persistence is wired, and possibly
+live now*. The fix does not change either way; the urgency does.
+
+**First question for Kevin:** which build is at the tenant URL, does it save to the
+database, and does its `handleToggleActive` still write `autoBook`? That one answer
+re-grades F21, F7 and F8 from "fix before wiring" to "stop it today", or the reverse.
+
+---
+
 There is a one-page summary of this brief, for sharing outside the build:
 [`SCHEDULES-FIXES-SUMMARY-2026-09-20.md`](SCHEDULES-FIXES-SUMMARY-2026-09-20.md).
 
@@ -1614,8 +1650,11 @@ SELECT TOP 200 child.JobId, child.ParentId, child.JobDate AS LegDate,
 ## F21 — The Active toggle writes `AutoBook`. Disable it today.
 
 **Confirmed by Steve, 2026-09-20: `AutoBook` means book immediately.** That turns the
-conflation recorded in F8 into a live production defect, and it is the most urgent
-item on this list.
+conflation recorded in F8 from a naming tidy-up into a defect that reroutes dispatch.
+
+Severity depends on the deployed build — see *How live is any of this?* above. On the
+branch I can read there is no persistence, so this cannot reach the database yet. If
+the build ops is using does persist, this is the most urgent item here.
 
 ### What the code does
 
@@ -1633,7 +1672,7 @@ It sets **both** fields. And the write path carries `autoBook` to the database �
 `types.ts:539`, `autoBook: schedule.autoBook`. The toggle is wired to every row of
 the list through the Status column (`ScheduleTable.tsx:416`).
 
-So, in the deployed view:
+So, wherever this code is wired to a database:
 
 - **Switching a schedule to Inactive sets `AutoBook = 0`.** That schedule stops
   booking immediately and starts staging into `tblBulkJob` — where, per F20, nothing
@@ -1655,10 +1694,11 @@ mechanism, not a reversible on/off.
 
 ### Fix
 
-**Today, before anything else:** stop the toggle writing `autoBook`. Removing
-`autoBook: newValue` from `handleToggleActive` is a one-line change, and the honest
-interim is to make the Status column **read-only** until the column below exists —
-a toggle that silently does nothing is its own defect.
+**Before the view is wired to anything, and today if it already is:** stop the toggle
+writing `autoBook`. Removing `autoBook: newValue` from `handleToggleActive` is a
+one-line change, and the honest interim is to make the Status column **read-only**
+until the column below exists — a toggle that silently does nothing is its own
+defect.
 
 **Then, separate the two concepts properly:**
 
@@ -1683,8 +1723,9 @@ booking stages or goes straight through is a property of the schedule.
 
 ### What cannot be recovered
 
-`tblBulkRunSchedule` has no audit columns, so a schedule whose `AutoBook` was flipped
-by this toggle cannot be told apart from one set deliberately. The only check
+If the deployed build does persist, then `tblBulkRunSchedule` has no audit columns,
+so a schedule whose `AutoBook` was flipped by this toggle cannot be told apart from
+one set deliberately. The only check
 available is the distribution against what ops expects:
 
 ```sql
@@ -1732,13 +1773,15 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
-## Before anything else — today, and all small
+## Before anything else — all small, and all before the view is wired
 
-- **F21** — stop the Active toggle writing `AutoBook`. One line. It is live, ops
-  cannot see that it happened, and there is no audit trail to find the schedules it
-  has already changed.
-- **F7 write path** — stop the zone rows being overwritten on save. One line. Live
-  data loss.
+The first three are one-liners that decide whether this view can safely be connected
+to a database. If the deployed build is already connected, they are today's work
+instead — see *How live is any of this?* at the top.
+
+- **F21** — stop the Active toggle writing `AutoBook`. One line. Ops cannot see that
+  it happened, and there is no audit trail to find the schedules it would change.
+- **F7 write path** — stop the zone rows being overwritten on save. One line.
 - **F8 `MaxJobs`** — stop writing 10000 over the real value. Same size, same reason.
 - **F17 step 1** — get `uspPrebookSet` out of the server and into `database/`. A
   `SELECT OBJECT_DEFINITION(...)` and a commit. It blocks nothing, and until it is
