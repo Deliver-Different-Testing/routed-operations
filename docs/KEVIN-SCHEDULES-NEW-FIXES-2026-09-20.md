@@ -49,6 +49,7 @@ from walking the deployed view.
 
 | # | Item | Kind |
 | :- | :- | :- |
+| **F21** | **The Active toggle writes `AutoBook`** — switching a schedule Active/Inactive changes whether it books immediately or stages into bulk. Live in the deployed view | **Urgent — disable today** |
 | **F1** | A client override creates a **full clone** of the schedule. It should be a scoped delta row keyed on ScheduleId. | Model — biggest item |
 | **F2** | Override rows sit in the schedule list as schedules, so Days / Origin / Dest / Mode render as `—` | Follows from F1 |
 | **F3** | "Differs on" is stored, computed three different ways, and discarded on one save path | Bug |
@@ -67,7 +68,7 @@ from walking the deployed view.
 | **F16** | Depot filter is a dead control; some columns do not sort; overrides scatter when you do sort | Small fixes |
 | **F17** | A recurring route breaks above ~3 linked schedules — and the binding is not modelled in any repo we hold | Investigation |
 | **F19** | The parent job starts at the **delivery** leg's time. It must start at the booking, and the pickup at the next actually-available collection | Behaviour — half of it ships now |
-| **F20** | The parent and delivery do not insert until the delivery day, so **clients cannot see their own booking until the morning it runs**. Plus: `tblBulkJob` is staging for advance bulk work, and if "book immediately" is `AutoBook` the new view's Active toggle is switching it | Customer-facing defect + a live hazard |
+| **F20** | The parent and delivery do not insert until the delivery day, so **clients cannot see their own booking until the morning it runs**. Plus: `tblBulkJob` is staging for advance bulk work, and a book-immediately schedule should not write a row there at all | Customer-facing defect |
 | **F18** | **Everything links on the schedule header id.** Not the day-row line, not the name. Schedule *groups* are renamed to *bundles* so the word stops meaning two things | Rule — read first |
 
 Order of work is in §5.
@@ -798,11 +799,10 @@ The first two make the Mode column and the cut-off unit meaningless (and feed F1
 the third conflates auto-booking with active, so the Active toggle in the list is
 toggling `AutoBook`.
 
-**Read F20 before fixing that third one.** If `AutoBook` is the book-immediately
-flag, this is not a conflation to tidy up — it means ops can switch a schedule
-between booking immediately and staging into bulk by clicking a toggle labelled
-Active. Until that is confirmed, treat the Active toggle in the new view as
-unsafe.
+**That third one is now F21, and it is confirmed.** `AutoBook` means book
+immediately (Steve, 2026-09-20), and the Active toggle writes it — so ops switching a
+schedule Active or Inactive is changing whether it books immediately or stages into
+bulk. Fix it there, not here.
 
 ---
 
@@ -1452,10 +1452,12 @@ else:
 That last line is the real change in the second branch: run building stops being the
 gate between a booking and a job, and goes back to being what its name says.
 
-### Which flag is "book immediately"? — and a live hazard if it is `AutoBook`
+### "Book immediately" is `AutoBook` — and the Active toggle writes it
 
-The likeliest candidate is `tblBulkRunSchedule.AutoBook`. **If it is, there is a bug
-already on this list whose severity changes completely:**
+**Confirmed (Steve, 2026-09-20): `tblBulkRunSchedule.AutoBook` means book
+immediately.** So the routing decision above reads `AutoBook`, and there is a live
+defect on top of it — **F21**, summarised here because it decides whether this item
+can be worked on safely:
 
 `types.ts:734` reads `isActive: first.autoBook ?? true`, so in the new Schedules view
 the **Active toggle is bound to `AutoBook`** — and it is a live control on every row
@@ -1464,15 +1466,12 @@ of the list (the Status column's `ActiveToggle`, `ScheduleTable.tsx:418`). If
 Inactive in the list is **silently switching that schedule between booking
 immediately and staging into bulk.**
 
-F8 already lists this as "conflates auto-book with active". That was written as a
-cosmetic conflation. If `AutoBook` means book-immediately it is not cosmetic: it is
-ops changing the dispatch pathway of a schedule by clicking a toggle labelled
-something else.
+`handleToggleActive` (`ScheduleTableView.tsx:61`) sets **both** `isActive` and
+`autoBook`, and `types.ts:539` carries `autoBook` to the database. So ops switching a
+schedule Active or Inactive in the list is changing its dispatch pathway.
 
-**So: confirm what `AutoBook` means before F8 is touched, and until it is confirmed,
-treat the Active toggle in the new view as unsafe.** If book-immediately turns out to
-be a different flag, then the schedule needs one explicitly, in its own column, and
-Active goes back to meaning active.
+**Disable that toggle before anyone works on this item** — F21 has the one-line change
+and the column that separates Active from Book-immediately.
 
 ### Before removing the bulk row, count what reads it
 
@@ -1609,6 +1608,105 @@ SELECT TOP 200 child.JobId, child.ParentId, child.JobDate AS LegDate,
 
 ---
 
+## F21 — The Active toggle writes `AutoBook`. Disable it today.
+
+**Confirmed by Steve, 2026-09-20: `AutoBook` means book immediately.** That turns the
+conflation recorded in F8 into a live production defect, and it is the most urgent
+item on this list.
+
+### What the code does
+
+`ScheduleTableView.tsx:61`:
+
+```ts
+const handleToggleActive = useCallback((schedule: Schedule, newValue: boolean) => {
+  setSchedules((prev) =>
+    prev.map((s) => s.id === schedule.id ? { ...s, isActive: newValue, autoBook: newValue } : s)
+  );
+}, []);
+```
+
+It sets **both** fields. And the write path carries `autoBook` to the database —
+`types.ts:539`, `autoBook: schedule.autoBook`. The toggle is wired to every row of
+the list through the Status column (`ScheduleTable.tsx:416`).
+
+So, in the deployed view:
+
+- **Switching a schedule to Inactive sets `AutoBook = 0`.** That schedule stops
+  booking immediately and starts staging into `tblBulkJob` — where, per F20, nothing
+  becomes a job until someone builds a run.
+- **Switching it to Active sets `AutoBook = 1`.** A schedule that was correctly
+  staging starts booking immediately instead.
+
+Neither is what the word "Active" means to the person clicking it, and neither is
+visible afterwards: the list then *displays* `AutoBook` as the Active state
+(`types.ts:734`, `isActive: first.autoBook ?? true`), so the toggle looks like it did
+exactly what was asked.
+
+### The second half of the bug: there is no Active flag
+
+Because `isActive` is read from `AutoBook` and written back to it, **the schedule has
+nowhere to record "switched off"**. Ops has no way to deactivate a schedule without
+changing how it dispatches. The header's `RetiredUtc` (from `001`) is the archive
+mechanism, not a reversible on/off.
+
+### Fix
+
+**Today, before anything else:** stop the toggle writing `autoBook`. Removing
+`autoBook: newValue` from `handleToggleActive` is a one-line change, and the honest
+interim is to make the Status column **read-only** until the column below exists —
+a toggle that silently does nothing is its own defect.
+
+**Then, separate the two concepts properly:**
+
+```sql
+ALTER TABLE dbo.tblBulkRunScheduleHeader
+  ADD IsActive bit NOT NULL
+      CONSTRAINT DF_tblBulkRunScheduleHeader_IsActive DEFAULT 1;
+```
+
+| Concept | Column | Means | Where it is edited |
+| :- | :- | :- | :- |
+| **Active** | `Header.IsActive` (new) | the schedule can be booked at all; reversible | the list toggle and the modal header |
+| **Retired** | `Header.RetiredUtc` | archived, history kept, never comes back | Retire action |
+| **Book immediately** | `tblBulkRunSchedule.AutoBook` | booking creates the job now rather than staging it (F20) | its own control in the schedule modal, labelled "Book immediately", with the staging consequence in the help text |
+
+`isActive` then reads from `Header.IsActive`, and `autoBook` is only ever written by
+the control that says what it does.
+
+One consequence for F1: the override table's schedule-scope `IsActive` column means
+**active**, not book-immediately. Per-client routing is not a thing — whether a
+booking stages or goes straight through is a property of the schedule.
+
+### What cannot be recovered
+
+`tblBulkRunSchedule` has no audit columns, so a schedule whose `AutoBook` was flipped
+by this toggle cannot be told apart from one set deliberately. The only check
+available is the distribution against what ops expects:
+
+```sql
+SELECT s.AutoBook, COUNT(DISTINCT h.ScheduleId) AS Schedules
+  FROM dbo.tblBulkRunScheduleHeader h
+  JOIN dbo.tblBulkRunSchedule s ON s.ScheduleId = h.ScheduleId
+ WHERE h.RetiredUtc IS NULL
+ GROUP BY s.AutoBook;
+```
+
+Run it, and have ops confirm the count of book-immediately schedules looks right. If
+it does not, F20's second query — staged bulk rows that never became a job — will
+show where the consequence landed.
+
+### Acceptance
+
+- Toggling Active never changes `AutoBook`. Verified by toggling a schedule and
+  diffing its day rows.
+- Active and Book-immediately are two controls, labelled for what they do, and the
+  list shows the first one.
+- A schedule can be switched off without changing how it dispatches, and a schedule
+  can be switched between immediate and staged without appearing inactive.
+
+---
+
 # 4. Database summary
 
 Three scripts, all under the `@Commit = 0` harness used by `001`:
@@ -1622,6 +1720,7 @@ sit beside it in the same folder.
 | `002_bundle_tables_and_route_header_binding.sql` | Schedule **bundle** tables + `Routes.HeaderScheduleId`. Written, in this branch. Supersedes the 2026-09-18 brief §4.1 DDL, and carries the `sp_rename` block in case those tables were already created as groups | E1, E2, E3 |
 | `003_client_override_deltas.sql` | `tblBulkRunScheduleOverride` (ScheduleId-keyed, scope per schedule/leg, clustered on the lookup key) + `Header.OverrideCount` / `OverridesVersion` + `fnScheduleForClient` + fold clones and legacy variants into deltas | F1, F2, F3 |
 | `004_display_names.sql` | `DisplayName` / `DisplayDescription` on the header | F13 |
+| `006_schedule_is_active.sql` | `Header.IsActive`, so Active stops meaning `AutoBook` | F21 |
 | `005_drop_name_joins.sql` | Drop `tblBulkRunScheduleClient.ScheduleName` (the `ALTER` is already written and commented in `001`), re-point `TblBulkScheduleLinehaul` and `tucJobBooking` / `tucJob` at the header id, with the F18 verification queries as the gate | F18 |
 
 No schema change is needed for F5–F8, F14 or F16 — they are mapper and view fixes.
@@ -1630,9 +1729,9 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 
 # 5. Order of work
 
-0. **F20's first question** — what does `AutoBook` mean? One answer, and it either
-   downgrades to a naming tidy-up or stops ops using the Active toggle today. Ask
-   before anything else on this list is touched.
+0. **F21** — stop the Active toggle writing `AutoBook`. One line, today. It is live,
+   ops cannot see that it happened, and there is no audit trail to find the schedules
+   it has already changed.
 0. **F18** — read it first. It is one page, it costs nothing, and it decides the key
    every other item on this list writes. The group → bundle rename is decided: do it
    in one pass before E1/E2 start, while those tables still do not exist.
@@ -1678,8 +1777,8 @@ and E1's Groups column is easier once overrides are out of the schedule rows.
   collection-section screenshot (F6).
 - The result of the row-0 disagreement query (F8).
 - Which build the linehaul leg-name field is in — it is not in this branch (F9).
-- **What `AutoBook` actually means** — book immediately, or something else (F20).
-  This is the one I need first.
+- Confirmation from ops that the book-immediately count in F21's query looks right —
+  that is the only check available for schedules the toggle may already have changed.
 - The name of the holidays table (F19, F20) — Steve confirms it exists; it is not in
   either scaffolded EF context.
 - Where the collection and linehaul legs sit in the straight-through path (F20).
