@@ -25,7 +25,7 @@ import { useToast } from '../../context/ToastContext';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
 // section 2). 4 tabs: Clients / Route / Operating days / Roster.
-// Name + Description + Active + Route + Operating days are editable
+// Name + Description + Book-immediately + Route + Operating days are editable
 // in place; Save PUTs a ScheduleGroupUpsertBody via
 // scheduleService.upsert with the current scheduleId. Clients tab
 // still uses the dedicated /api/v2 attach/detach endpoints so the
@@ -156,7 +156,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
 
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
-  const [formActive, setFormActive] = useState(true);
+  const [formAutoBook, setFormAutoBook] = useState(true);
   const [formLegs, setFormLegs] = useState<Leg[]>([]);
   const [formDays, setFormDays] = useState<DayForm[]>(() => seedDaysFromDto([]));
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -182,7 +182,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
 
   const currentSnapshot = useMemo(
     () => JSON.stringify({
-      name: formName, description: formDescription, active: formActive,
+      name: formName, description: formDescription, autoBook: formAutoBook,
       legs: formLegs, days: formDays,
       pickupPostcodeGroupId: formPickupPostcodeGroupId,
       parentSpeedId: formParentSpeedId,
@@ -195,7 +195,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
-    [formName, formDescription, formActive, formLegs, formDays,
+    [formName, formDescription, formAutoBook, formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
      formPickupBoxDiscount, formDropOffLocationId, formApplyPickupCutoff,
      formPickupCutoff, formBookPickup, formPostcodeIds, formPolygonIds],
@@ -212,7 +212,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     if (seededForId === data.scheduleId) return;
     const seedName = data.name ?? '';
     const seedDescription = data.description ?? '';
-    const seedActive = data.autoBook ?? true;
+    const seedAutoBook = data.autoBook ?? true;
     const seedLegs = seedLegsFromDto(data);
     const seedDays = seedDaysFromDto(data.dayWindows);
     const seedPickupPostcodeGroupId = data.pickupPostcodeGroupId ?? null;
@@ -227,7 +227,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     const seedPolygonIds = [...(data.polygonIds ?? [])];
     setFormName(seedName);
     setFormDescription(seedDescription);
-    setFormActive(seedActive);
+    setFormAutoBook(seedAutoBook);
     setFormLegs(seedLegs);
     setFormDays(seedDays);
     setFormPickupPostcodeGroupId(seedPickupPostcodeGroupId);
@@ -243,7 +243,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     setSaveError(null);
     setSeededForId(data.scheduleId);
     setInitialSnapshot(JSON.stringify({
-      name: seedName, description: seedDescription, active: seedActive,
+      name: seedName, description: seedDescription, autoBook: seedAutoBook,
       legs: seedLegs, days: seedDays,
       pickupPostcodeGroupId: seedPickupPostcodeGroupId,
       parentSpeedId: seedParentSpeedId,
@@ -379,7 +379,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
       parentSpeedId: formParentSpeedId,
-      autoBook: formActive,
+      autoBook: formAutoBook,
       bookPickup: formBookPickup,
       applyPickupCutoff: formApplyPickupCutoff,
       pickupCutoff: formApplyPickupCutoff ? formPickupCutoff : null,
@@ -482,11 +482,16 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
             <label className="flex items-center gap-3 mt-6">
               <input
                 type="checkbox"
-                checked={formActive}
-                onChange={(e) => setFormActive(e.target.checked)}
+                checked={formAutoBook}
+                onChange={(e) => setFormAutoBook(e.target.checked)}
                 className="accent-brand-cyan"
               />
-              <span className="text-sm">Active (auto-book on)</span>
+              <span className="text-sm">
+                Book immediately
+                <span className="ml-2 text-xs text-text-muted">
+                  job creates now instead of staging into bulk
+                </span>
+              </span>
             </label>
             <label className="col-span-2 block">
               <span className="text-xs uppercase tracking-wide text-text-muted">Description</span>
@@ -857,7 +862,13 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced }: RouteTabProps
           Dane's vertical leg builder - edit inline; Save persists via /api/schedules
         </span>
       </div>
-      <ChainBuilder legs={legs} onChange={onLegsChange} lookups={lookups} />
+      <ChainBuilder
+        legs={legs}
+        onChange={onLegsChange}
+        lookups={lookups}
+        pickupBoxDiscount={advanced.pickupBoxDiscount}
+        onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
+      />
 
       <section className="pt-4 border-t border-border">
         <button
@@ -865,7 +876,7 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced }: RouteTabProps
           onClick={() => setAdvOpen((v) => !v)}
           className="w-full flex items-center justify-between px-3 py-2 rounded border border-border hover:bg-surface-light text-xs uppercase tracking-wide text-text-muted"
         >
-          <span>Advanced (schedule speed, cutoffs, delivery state, box discount, drop-off, collection group)</span>
+          <span>Advanced (schedule speed, cutoffs, delivery state, drop-off, collection group)</span>
           <span>{advOpen ? '−' : '+'}</span>
         </button>
         {advOpen && (
@@ -890,17 +901,6 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced }: RouteTabProps
               >
                 <option value="">- default -</option>
                 {lookups.deliveryStates.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
-              </select>
-            </label>
-            <label className="block text-xs">
-              Collection box discount
-              <select
-                value={advanced.pickupBoxDiscount ?? ''}
-                onChange={(e) => advanced.onPickupBoxDiscountChange(e.target.value ? Number(e.target.value) : null)}
-                className="mt-1 w-full px-2 py-1 border border-border rounded"
-              >
-                <option value="">- none -</option>
-                {lookups.pickupBoxDiscounts.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
               </select>
             </label>
             <label className="block text-xs">

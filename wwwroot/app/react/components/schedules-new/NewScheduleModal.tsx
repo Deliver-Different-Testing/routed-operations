@@ -20,7 +20,8 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 // Fields:
 //   - Name (required)
 //   - Description (optional)
-//   - Active toggle (autoBook proxy - schedule.autoBook mirrors it)
+//   - Book-immediately toggle (writes schedule.autoBook - controls
+//     whether the job creates now vs stages into bulk)
 //   - Origin depot (pickup) - optional; empty = "Client address"
 //   - Destination region - required
 //   - Delivery speed - optional
@@ -66,7 +67,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const tenantId = auth.currentTenantId ?? 0;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [active, setActive] = useState(true);
+  const [autoBook, setAutoBook] = useState(true);
   // Booking mode per Steve's brief §2 Creating-a-schedule item 1:
   //   "booking mode radio Fixed Time / Window"
   // Fixed Time = single despatch time (drivers pick up at the same
@@ -128,7 +129,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const resetAndClose = () => {
     setName('');
     setDescription('');
-    setActive(true);
+    setAutoBook(true);
     setBookingMode('window');
     setLegs([]);
     setDays([1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...DEFAULT_DAY, enabled: n <= 5 })));
@@ -238,7 +239,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
       parentSpeedId: parentSpeedId,
-      autoBook: active,
+      autoBook: autoBook,
       bookPickup: bookPickup,
       applyPickupCutoff: applyPickupCutoff,
       pickupCutoff: applyPickupCutoff ? pickupCutoff : null,
@@ -319,11 +320,16 @@ export function NewScheduleModal({ open, onClose }: Props) {
         <label className="flex items-center gap-3 mt-6">
           <input
             type="checkbox"
-            checked={active}
-            onChange={(e) => setActive(e.target.checked)}
+            checked={autoBook}
+            onChange={(e) => setAutoBook(e.target.checked)}
             className="accent-brand-cyan"
           />
-          <span className="text-sm">Active (auto-book on)</span>
+          <span className="text-sm">
+            Book immediately
+            <span className="ml-2 text-xs text-text-muted">
+              job creates now instead of staging into bulk
+            </span>
+          </span>
         </label>
 
         <fieldset className="col-span-2 flex items-center gap-4 mt-2">
@@ -386,7 +392,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 })),
                 zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
                 dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
+                pickupBoxDiscounts: lookupsQuery.data?.pickupBoxDiscounts ?? [],
               }}
+              pickupBoxDiscount={pickupBoxDiscount}
+              onPickupBoxDiscountChange={setPickupBoxDiscount}
             />
           </div>
         </div>
@@ -447,7 +456,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
             onClick={() => setAdvancedOpen((v) => !v)}
             className="w-full flex items-center justify-between px-3 py-2 rounded border border-border hover:bg-surface-light text-xs uppercase tracking-wide text-text-muted"
           >
-            <span>Advanced (schedule speed, cutoffs, delivery state, box discount, drop-off, collection group)</span>
+            <span>Advanced (schedule speed, cutoffs, delivery state, drop-off, collection group)</span>
             <span>{advancedOpen ? '−' : '+'}</span>
           </button>
           {advancedOpen && (
@@ -474,19 +483,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 >
                   <option value="">- default -</option>
                   {(lookupsQuery.data?.deliveryStates ?? []).map((s) => (
-                    <option key={s.id} value={s.id}>{s.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-xs">
-                Collection box discount
-                <select
-                  value={pickupBoxDiscount ?? ''}
-                  onChange={(e) => setPickupBoxDiscount(e.target.value ? Number(e.target.value) : null)}
-                  className="mt-1 w-full px-2 py-1 border border-border rounded"
-                >
-                  <option value="">- none -</option>
-                  {(lookupsQuery.data?.pickupBoxDiscounts ?? []).map((s) => (
                     <option key={s.id} value={s.id}>{s.label}</option>
                   ))}
                 </select>
