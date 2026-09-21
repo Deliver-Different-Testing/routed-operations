@@ -44,8 +44,16 @@ public class ScheduleGroupUpsertRequest
     public int? PickupBoxDiscount { get; set; }
     public int? DropOffLocationId { get; set; }
     public List<DayWindowUpsertRequest> DayWindows { get; set; } = new();
-    public List<ScheduleZoneUpsertRequest> Zones { get; set; } = new();
-    public List<ScheduleLinehaulUpsertRequest> Linehauls { get; set; } = new();
+    /// <summary>F7 preservation (Steve 2026-09-20): nullable so an absent
+    /// or explicit-null field is distinguishable from an explicit empty
+    /// array. Null = "leave existing zones alone"; [] = "clear all zones";
+    /// [...] = "replace". Prior shape (non-nullable List with = new()
+    /// default) coerced absent to [], wiping live zone rows on saves that
+    /// did not repopulate them.</summary>
+    public List<ScheduleZoneUpsertRequest>? Zones { get; set; }
+    /// <summary>F7 preservation (Steve 2026-09-20): see Zones. Same
+    /// null-vs-empty semantics.</summary>
+    public List<ScheduleLinehaulUpsertRequest>? Linehauls { get; set; }
     /// <summary>Legacy id-based fallback. Only consulted when ClientCodes
     /// is absent (null) from the request payload - i.e. an API caller that
     /// does not have code strings handy. Operator writes from the React UI

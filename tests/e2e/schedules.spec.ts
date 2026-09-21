@@ -33,8 +33,8 @@ const LOOKUPS = {
   ],
   linehaulRuns: [{ id: 100, runName: 'AKL-WLG overnight', fromDepotId: 1, toDepotId: 2, startTime: '19:00', despatchTime: '21:00', courierId: 1 }],
   zoneNumbers: [1, 2, 3, 4, 5],
-  storageStates: [{ id: 0, label: 'None' }, { id: 1, label: 'Frozen' }],
-  deliveryStates: [{ id: 0, label: 'None' }, { id: 1, label: 'Frozen' }],
+  storageStates: [{ id: 0, label: 'None' }, { id: 1, label: 'Ambient' }],
+  deliveryStates: [{ id: 0, label: 'None' }, { id: 1, label: 'Ambient' }],
   pickupBoxDiscounts: [{ id: 0, label: 'None' }],
 };
 

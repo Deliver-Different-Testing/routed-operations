@@ -99,6 +99,11 @@ interface LookupCatalogue {
   zoneNumbers?: number[];
   /** Drop-off locations for the linehaul leg destination end. Optional. */
   dropOffLocations?: Array<{ id: number; name: string; depotId: number }>;
+  /** Pickup box-discount options. Optional; rendered on the Collection
+   *  leg editor when provided (Steve's F14 relocation - the value is
+   *  schedule-level, not per-leg, but it visually belongs with the
+   *  pickup config). */
+  pickupBoxDiscounts?: Array<{ id: number; label: string }>;
 }
 
 interface Props {
@@ -109,6 +114,12 @@ interface Props {
    *  Schedule Detail modal's Route tab so the same layout works for
    *  both create + read. */
   readOnly?: boolean;
+  /** Schedule-level PickupBoxDiscount value + setter, threaded down so
+   *  the picker can live on the Collection leg card even though the
+   *  underlying column (tblBulkRunSchedule.PickupBoxDiscount) is not
+   *  per-leg. Optional; if omitted the picker is hidden. */
+  pickupBoxDiscount?: number | null;
+  onPickupBoxDiscountChange?: (v: number | null) => void;
 }
 
 const NEW_LEG: Record<LegType, Leg> = {
@@ -125,7 +136,14 @@ const NEW_LEG: Record<LegType, Leg> = {
   delivery: { type: 'delivery', regionId: 0, speedId: null, postcodeGroupId: null, zones: [] },
 };
 
-export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Props) {
+export function ChainBuilder({
+  legs,
+  onChange,
+  lookups,
+  readOnly = false,
+  pickupBoxDiscount,
+  onPickupBoxDiscountChange,
+}: Props) {
   const [expanded, setExpanded] = useState<number | null>(0);
 
   const addLeg = (type: LegType) => {
@@ -221,7 +239,13 @@ export function ChainBuilder({ legs, onChange, lookups, readOnly = false }: Prop
                 </button>
                 {isOpen && !readOnly && (
                   <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
-                    <LegEditor leg={leg} onPatch={(p) => patchLeg(i, p as never)} lookups={lookups} />
+                    <LegEditor
+                      leg={leg}
+                      onPatch={(p) => patchLeg(i, p as never)}
+                      lookups={lookups}
+                      pickupBoxDiscount={pickupBoxDiscount ?? null}
+                      onPickupBoxDiscountChange={onPickupBoxDiscountChange}
+                    />
                   </div>
                 )}
               </div>
@@ -364,12 +388,21 @@ function LegEditor({
   leg,
   onPatch,
   lookups,
+  pickupBoxDiscount,
+  onPickupBoxDiscountChange,
 }: {
   leg: Leg;
   onPatch: (patch: Partial<Leg>) => void;
   lookups: LookupCatalogue;
+  /** Schedule-level PickupBoxDiscount value. Rendered on the Collection
+   *  leg editor per Steve's F14 relocation; the write path still hits
+   *  tblBulkRunSchedule.PickupBoxDiscount (not a per-leg column). */
+  pickupBoxDiscount?: number | null;
+  onPickupBoxDiscountChange?: (v: number | null) => void;
 }) {
   if (leg.type === 'collection') {
+    const boxDiscounts = lookups.pickupBoxDiscounts ?? [];
+    const showBoxDiscount = boxDiscounts.length > 0 && onPickupBoxDiscountChange != null;
     return (
       <div className="grid grid-cols-2 gap-3">
         <label className="block col-span-2 text-xs">
@@ -412,6 +445,24 @@ function LegEditor({
             ))}
           </select>
         </label>
+        {showBoxDiscount && (
+          <label className="block col-span-2 text-xs">
+            Collection box discount
+            <span className="ml-2 text-[10px] text-text-muted normal-case">
+              schedule-level (applies once per booking, not per leg)
+            </span>
+            <select
+              value={pickupBoxDiscount ?? ''}
+              onChange={(e) => onPickupBoxDiscountChange!(e.target.value ? Number(e.target.value) : null)}
+              className="mt-1 w-full px-2 py-1 border border-border rounded"
+            >
+              <option value="">- none -</option>
+              {boxDiscounts.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
     );
   }

@@ -975,17 +975,29 @@ public class ScheduleService(
             .OrderBy(z => z)
             .ToListAsync();
 
+        // Labels for the legacy int enum. Source of truth:
+        // C:\Gitlab\ClientManager_Root\ClientManager\wwwroot\app\components\schedules\schedulesControl.js:5-7
+        // Ids match the persisted values in tblBulkRunSchedule.StorageState / .DeliveryState /
+        // .PickupBoxDiscount. Do NOT invent labels here; align to ClientManager.
         var storageStates = new List<StateOptionDto>
         {
-            new(0, "None"), new(1, "Frozen"), new(2, "Chilled"), new(3, "Ambient"),
+            new(0, "None"), new(1, "Ambient"), new(2, "Chilled"), new(3, "Frozen"),
         };
+        // Labels for the legacy int enum. Source of truth:
+        // C:\Gitlab\ClientManager_Root\ClientManager\wwwroot\app\components\schedules\schedulesControl.js:5-7
+        // Ids match the persisted values in tblBulkRunSchedule.StorageState / .DeliveryState /
+        // .PickupBoxDiscount. Do NOT invent labels here; align to ClientManager.
         var deliveryStates = new List<StateOptionDto>
         {
-            new(0, "None"), new(1, "Frozen"), new(2, "Chilled"), new(3, "Ambient"),
+            new(0, "None"), new(1, "Ambient"), new(2, "Chilled"), new(3, "Frozen"),
         };
+        // Labels for the legacy int enum. Source of truth:
+        // C:\Gitlab\ClientManager_Root\ClientManager\wwwroot\app\components\schedules\schedulesControl.js:5-7
+        // Ids match the persisted values in tblBulkRunSchedule.StorageState / .DeliveryState /
+        // .PickupBoxDiscount. Do NOT invent labels here; align to ClientManager.
         var pickupBoxDiscounts = new List<StateOptionDto>
         {
-            new(0, "None"), new(1, "10%"), new(2, "20%"), new(3, "30%"),
+            new(0, "Charge once only"), new(1, "Additional box discount"), new(2, "Charge per box"),
         };
 
         return new ScheduleLookupsDto(
@@ -1073,6 +1085,15 @@ public class ScheduleService(
                     // nothing reads it. Steve's 2026-09-09 regression
                     // review Finding 6.
                     ClientId = header.LegacyClientId,
+                    // F8 preservation: 10000 is the default for freshly-inserted
+                    // day rows only. MaxJobs is deliberately NOT on
+                    // ScheduleGroupUpsertRequest and ApplyGroupTemplateToRow
+                    // does NOT touch it, so existing rows keep whatever
+                    // MaxJobs the operator set through the day-level UI.
+                    // Do not add MaxJobs to the request DTO or the template
+                    // without gating "req.MaxJobs > 0 ? req.MaxJobs : row.MaxJobs"
+                    // on the existing-row branch, or you will clobber real
+                    // operator values on save (Steve 2026-09-20 F8).
                     MaxJobs = 10000,
                     Header = header, // EF wires ScheduleId on save
                 };
@@ -1093,14 +1114,29 @@ public class ScheduleService(
         }
 
         // Zones + linehauls apply to every row in the group.
+        //
+        // F7 preservation (Steve 2026-09-20): only remove-and-re-add when the
+        // caller declared explicit intent by sending a non-null collection.
+        // A null Zones / Linehauls on the request means "leave alone" and we
+        // must NOT touch the existing rows. Sending an empty array [] IS
+        // explicit intent to clear. Prior behaviour treated null and []
+        // the same and wiped live zone / linehaul rows on any save that
+        // did not repopulate them (e.g. the operator edits a non-zone field
+        // and the frontend omits Zones from the payload).
         foreach (var row in existing)
         {
-            Context.BulkZoneSchedules.RemoveRange(row.BulkZoneSchedules);
-            Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
-            foreach (var z in req.Zones ?? Enumerable.Empty<ScheduleZoneUpsertRequest>())
-                row.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
-            foreach (var l in req.Linehauls ?? Enumerable.Empty<ScheduleLinehaulUpsertRequest>())
-                row.TblBulkScheduleLinehauls.Add(MapLinehaulToEntity(l));
+            if (req.Zones != null)
+            {
+                Context.BulkZoneSchedules.RemoveRange(row.BulkZoneSchedules);
+                foreach (var z in req.Zones)
+                    row.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
+            }
+            if (req.Linehauls != null)
+            {
+                Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
+                foreach (var l in req.Linehauls)
+                    row.TblBulkScheduleLinehauls.Add(MapLinehaulToEntity(l));
+            }
         }
 
         // Resolve the desired client-link set. clientCodes is authoritative

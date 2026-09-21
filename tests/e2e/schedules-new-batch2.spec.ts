@@ -8,8 +8,8 @@ import { test, expect, type Route, type Page } from '@playwright/test';
 //   2. Storage state label agrees between the DEPOT card (backend-lookup
 //      driven) and the Production Fields row (hardcoded temperatureLabel).
 //      Prior behaviour was "Storage Frozen" vs "Storage state: Ambient"
-//      because the modal's hardcoded 1=Ambient/2=Chilled/3=Frozen mapping
-//      was reversed vs the backend seed (1=Frozen/2=Chilled/3=Ambient).
+//      because the modal's hardcoded 1=Frozen/2=Chilled/3=Ambient mapping
+//      was reversed vs the backend seed (1=Ambient/2=Chilled/3=Frozen).
 //   3. Roster tab surfaces recurring routes bound to the schedule via
 //      the /api/recurring-routes list, filtered by scheduleId. Prior
 //      behaviour was a stub italic note "the join lands in a follow-up".
@@ -64,8 +64,8 @@ const V2_DETAIL = {
   bookPickup: null,
   applyPickupCutoff: null,
   pickupCutoff: null,
-  storageState: 1,           // 1 = Frozen (per backend seed)
-  deliveryState: 1,          // 1 = Frozen (per backend seed)
+  storageState: 1,           // 1 = Ambient (per backend seed, aligned to ClientManager)
+  deliveryState: 1,          // 1 = Ambient (per backend seed, aligned to ClientManager)
   pickupBoxDiscount: null,
   dropOffLocationId: null,
   dropOffLocationName: null,
@@ -216,15 +216,15 @@ async function stubApis(page: Page) {
           zoneNumbers: [1, 2, 3, 4, 5],
           storageStates: [
             { id: 0, label: 'None' },
-            { id: 1, label: 'Frozen' },
+            { id: 1, label: 'Ambient' },
             { id: 2, label: 'Chilled' },
-            { id: 3, label: 'Ambient' },
+            { id: 3, label: 'Frozen' },
           ],
           deliveryStates: [
             { id: 0, label: 'None' },
-            { id: 1, label: 'Frozen' },
+            { id: 1, label: 'Ambient' },
             { id: 2, label: 'Chilled' },
-            { id: 3, label: 'Ambient' },
+            { id: 3, label: 'Frozen' },
           ],
           pickupBoxDiscounts: [],
         },
@@ -258,7 +258,7 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await expect(page.getByText(/run #41/)).toHaveCount(0);
   });
 
-  test('Storage state label on DEPOT card uses backend seed mapping (id=1 -> Frozen)', async ({ page }) => {
+  test('Storage state label on DEPOT card uses backend seed mapping (id=1 -> Ambient)', async ({ page }) => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
@@ -266,13 +266,13 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await page.getByRole('button', { name: 'Route', exact: true }).click();
 
     // DEPOT card summary uses the backend seed mapping for storage
-    // state. Backend seed 1=Frozen; the earlier bug was that the
+    // state. Backend seed 1=Ambient; the earlier bug was that the
     // modal's hardcoded temperatureLabel reversed the mapping. The
-    // stubbed lookups payload carries the same 1=Frozen order.
-    await expect(page.getByText('Storage Frozen')).toBeVisible();
-    // Delivery state (id=1 -> Frozen) now surfaces in the editable
+    // stubbed lookups payload carries the same 1=Ambient order.
+    await expect(page.getByText('Storage Ambient')).toBeVisible();
+    // Delivery state (id=1 -> Ambient) now surfaces in the editable
     // "Advanced" collapsible section under the ChainBuilder. Expand it
-    // and assert the select's selected option is "Frozen".
+    // and assert the select's selected option is "Ambient".
     await page.getByRole('button', { name: /Advanced \(schedule speed/ }).click();
     const deliveryStateSelect = page.locator('label').filter({ hasText: 'Delivery state' }).locator('select');
     await expect(deliveryStateSelect).toHaveValue('1');
