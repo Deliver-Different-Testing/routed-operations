@@ -176,7 +176,7 @@ async function stubApis(page: Page) {
   await page.route('**/api/v2/schedules/*', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response: V2_DETAIL }) }),
   );
-  await page.route('**/api/v2/schedule-groups', (route: Route) =>
+  await page.route('**/api/v2/schedule-bundles', (route: Route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response: [] }) }),
   );
   await page.route('**/api/recurring-routes', (route: Route) =>

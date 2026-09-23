@@ -37,13 +37,21 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<ScheduleClient> ScheduleClients { get; set; }
     public virtual DbSet<SchedulePostcode> SchedulePostcodes { get; set; }
     public virtual DbSet<SchedulePolygon> SchedulePolygons { get; set; }
-    // Schedule Groups (Dane's bundle-of-schedules concept). Added
-    // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables. The link
-    // table (ScheduleClients) stays the sole record of who uses what;
-    // attaching a client to a group writes one link row per non-default
-    // member schedule.
-    public virtual DbSet<BulkRunScheduleGroup> BulkRunScheduleGroups { get; set; }
-    public virtual DbSet<BulkRunScheduleGroupMember> BulkRunScheduleGroupMembers { get; set; }
+    // Schedule Bundles (Dane's bundle-of-schedules concept). Added
+    // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables; renamed
+    // 2026-09-22 by RenameScheduleGroupToBundle per Steve F18. The
+    // link table (ScheduleClients) stays the sole record of who uses
+    // what; attaching a client to a bundle writes one link row per
+    // non-default member schedule.
+    public virtual DbSet<BulkRunScheduleBundle> BulkRunScheduleBundles { get; set; }
+    public virtual DbSet<BulkRunScheduleBundleMember> BulkRunScheduleBundleMembers { get; set; }
+    // Client override delta table (Steve F1, 2026-09-22 by
+    // AddClientOverrideDeltas). Stores per-client differences against a
+    // schedule instead of cloning the whole schedule via BaseScheduleId.
+    // Read path: dbo.fnScheduleForClient (inline TVF) joins overrides
+    // to base values via COALESCE. Clustered on
+    // (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek).
+    public virtual DbSet<BulkRunScheduleOverride> BulkRunScheduleOverrides { get; set; }
     // Route module (Stage 2 - C.1'/C.2'). Shared with Configurator - same
     // Route / ZipPolygon / Dispatch_RouteRoster tables; RouteZipcodes is an
     // implicit many-to-many junction configured in OnModelCreating below.
@@ -281,18 +289,37 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         {
             entity.HasKey(e => new { e.ScheduleName, e.PolygonId });
         });
-        // Schedule Groups (Dane's bundle-of-schedules concept, added
-        // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables). Group
+        // Schedule Bundles (Dane's bundle-of-schedules concept, added
+        // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables and
+        // renamed 2026-09-22 by RenameScheduleGroupToBundle). Bundle
         // header has an IDENTITY PK; member table is a composite
-        // (GroupId, ScheduleId).
-        modelBuilder.Entity<BulkRunScheduleGroup>(entity =>
+        // (BundleId, ScheduleId).
+        modelBuilder.Entity<BulkRunScheduleBundle>(entity =>
         {
-            entity.HasKey(e => e.GroupId);
+            entity.HasKey(e => e.BundleId);
         });
-        modelBuilder.Entity<BulkRunScheduleGroupMember>(entity =>
+        modelBuilder.Entity<BulkRunScheduleBundleMember>(entity =>
         {
-            entity.HasKey(e => new { e.GroupId, e.ScheduleId });
+            entity.HasKey(e => new { e.BundleId, e.ScheduleId });
         });
+        // Override delta table (Steve F1, 2026-09-22). Surrogate PK
+        // OverrideId is IDENTITY; the useful lookup key is the clustered
+        // index (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek) which
+        // SQL Server maintains via the CX_tblBulkRunScheduleOverride index
+        // created in the migration. EF only sees the surrogate; the
+        // service layer builds the lookup key via LINQ.
+        modelBuilder.Entity<BulkRunScheduleOverride>(entity =>
+        {
+            entity.HasKey(e => e.OverrideId);
+            entity.HasOne<BulkRunScheduleHeader>()
+                  .WithMany()
+                  .HasForeignKey(e => e.ScheduleId)
+                  .HasPrincipalKey(h => h.ScheduleId);
+        });
+        // Header rowversion is a byte[] concurrency token. EF handles it
+        // automatically thanks to [Timestamp] on the property; no fluent
+        // config needed. Same for the new nullable string columns and
+        // OverrideCount (int default 0).
 
         modelBuilder.Entity<TblBulkJobItems>(entity =>
         {

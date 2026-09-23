@@ -358,6 +358,7 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 // Schedules module (nightly booking templates + territory maintenance).
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleOverrideService>();
 // Driver Scheduling module (2026-09-07 port from CourierManager). Two
 // per-tenant abstractions live behind the service - PhoneNormaliser
 // reads the CountryCode auth claim, HubUrlProvider reads DriverHubUrl.

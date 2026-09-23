@@ -72,6 +72,19 @@ public class ScheduleGroupUpsertRequest
     public List<int> PostcodeIds { get; set; } = new();
     /// <summary>Coverage polygons bound to this schedule (M:N via tblSchedulePolygon).</summary>
     public List<int> PolygonIds { get; set; } = new();
+    /// <summary>Client-facing display name shown on the customer booking
+    /// page. Empty string from the form is normalised to NULL on write so
+    /// "cleared" and "unset" are distinguishable. Added 2026-09-22 (Steve F13).</summary>
+    public string DisplayName { get; set; }
+    /// <summary>Long-form description that pairs with DisplayName on the
+    /// customer booking page. Empty string normalises to NULL on write.
+    /// Added 2026-09-22 (Steve F13).</summary>
+    public string DisplayDescription { get; set; }
+    /// <summary>Whether the schedule can be booked at all (independent of
+    /// AutoBook). Optional; unset defaults to true on both create and
+    /// update paths so callers that don't know about the field keep the
+    /// pre-F21 behaviour. Added 2026-09-22 (Steve F21).</summary>
+    public bool? IsActive { get; set; }
 }
 
 /// <summary>

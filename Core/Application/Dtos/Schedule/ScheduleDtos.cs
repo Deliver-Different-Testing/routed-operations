@@ -55,7 +55,17 @@ public record ScheduleGroupDto(
     /// <summary>tblScheduleClient.CreatedUtc for each ClientId, parallel-indexed. Null when the link row lacks a timestamp (legacy backfill rows). Feeds the "since YYYY-MM-DD" hint on the Clients tab per Steve's mockup.</summary>
     List<DateTime?> ClientLinkedUtcs,
     /// <summary>Full client name (tucClient.UcclName) resolved from ClientIds. Same order. Null when the client lacks a name. Renders as the first column in the Attached Clients row per Steve's mockup: "Full Name . CODE . id".</summary>
-    List<string> ClientNames);
+    List<string> ClientNames,
+    /// <summary>Client-facing display name shown on booking / job pages.
+    /// NULL falls back to Name. Added 2026-09-22 (Steve F13).</summary>
+    string DisplayName,
+    /// <summary>Long-form description that pairs with DisplayName on the
+    /// customer booking page. Added 2026-09-22 (Steve F13).</summary>
+    string DisplayDescription,
+    /// <summary>True if this schedule can be booked at all. Separate from
+    /// AutoBook (which controls book-immediately vs stage). Added
+    /// 2026-09-22 (Steve F21).</summary>
+    bool IsActive);
 
 /// <summary>
 /// A single day-window entry within a schedule group. One tblBulkRunSchedule
@@ -159,39 +169,38 @@ public record ScheduleGroupSummaryDto(
     /// scoped field. Powers the "differs on: Cut-off, Speed" hint under
     /// the nested override row per Steve's brief §2 Schedules-tab item
     /// "the fields that differ".</summary>
-    string[] OverriddenFields);
+    string[] OverriddenFields,
+    /// <summary>Client-facing display name (Steve F13, 2026-09-22).
+    /// NULL falls back to Name.</summary>
+    string DisplayName,
+    /// <summary>Long-form description that pairs with DisplayName on the
+    /// customer booking page (Steve F13, 2026-09-22).</summary>
+    string DisplayDescription,
+    /// <summary>True if this schedule can be booked at all. Independent of
+    /// AutoBook (which is book-immediately vs stage). Steve F21,
+    /// 2026-09-22.</summary>
+    bool IsActive);
 
 /// <summary>
-/// One schedule group (Dane's bundle-of-schedules concept). Row shape
-/// for the Schedules NEW Groups tab. Client counts are aggregated
+/// One schedule bundle (Dane's bundle-of-schedules concept). Row shape
+/// for the Schedules NEW Bundles tab. Client counts are aggregated
 /// across every non-default member schedule so operators see the
 /// "total clients this bundle touches" chip up front.
-/// Added 2026-09-14 alongside AddBaseScheduleIdAndScheduleGroupTables.
+/// Added 2026-09-14 alongside AddBaseScheduleIdAndScheduleGroupTables;
+/// renamed 2026-09-22 by RenameScheduleGroupToBundle per Steve F18.
 /// </summary>
-public record ScheduleGroupBundleDto(
-    int GroupId,
+public record ScheduleBundleDto(
+    int BundleId,
     string Name,
     string Description,
     bool IsActive,
     int ScheduleCount,
     int ClientCount,
-    /// <summary>ScheduleIds of the group's members in ID order.</summary>
+    /// <summary>ScheduleIds of the bundle's members in ID order.</summary>
     int[] ScheduleIds,
-    /// <summary>Names of the group's members in ID order. Same length as
-    /// ScheduleIds. Useful for the Groups tab expanded-row chips.</summary>
+    /// <summary>Names of the bundle's members in ID order. Same length as
+    /// ScheduleIds. Useful for the Bundles tab expanded-row chips.</summary>
     string[] ScheduleNames);
-
-/// <summary>
-/// Compact row for the /api/v2/schedules/{id}/overrides read path.
-/// One entry per client that owns an override of the given base
-/// schedule. Feeds the "has own override #123" hint in the Attach
-/// Clients modal so operators do not double-bind a client that already
-/// has a client-specific variant.
-/// </summary>
-public record OverrideRefDto(
-    int ScheduleId,
-    int ClientId,
-    string ClientCode);
 
 /// <summary>
 /// One row of "the schedules this client can actually book" per Steve's

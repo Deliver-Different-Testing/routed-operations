@@ -9,7 +9,7 @@ import type { ScheduleGroup, ScheduleGroupSummary, ScheduleGroupUpsertBody } fro
 // endpoints will live here too - the legacy /api/schedules controller
 // stays frozen at its current surface.
 
-export type SchedulesV2Type = 'all' | 'default' | 'shared' | 'override';
+export type SchedulesV2Type = 'all' | 'default' | 'shared';
 
 export interface SchedulesV2Filters {
   type?: SchedulesV2Type;
@@ -37,10 +37,10 @@ export interface SchedulesV2Page {
   pageSize: number;
 }
 
-/** Bundle row for the Schedule Groups tab. Shape mirrors
- *  ScheduleGroupBundleDto on the backend. */
-export interface ScheduleGroupBundle {
-  groupId: number;
+/** Bundle row for the Schedule Bundles tab. Shape mirrors
+ *  ScheduleBundleDto on the backend. */
+export interface ScheduleBundle {
+  bundleId: number;
   name: string;
   description: string | null;
   isActive: boolean;
@@ -51,10 +51,7 @@ export interface ScheduleGroupBundle {
 }
 
 export const schedulesV2Service = {
-  /** GET /api/v2/schedules?type=&q= - the Schedules tab list.
-   *  `type=override` returns empty today; the BaseScheduleId column
-   *  has not shipped yet and the controller short-circuits so the UI
-   *  can render an empty state rather than a schema error. */
+  /** GET /api/v2/schedules?type=&q= - the Schedules tab list. */
   list: (filters?: SchedulesV2Filters) =>
     request<{ response: SchedulesV2Page }>(
       `/v2/schedules${buildQuery({
@@ -69,11 +66,12 @@ export const schedulesV2Service = {
       })}`,
     ).then((r) => r.response),
 
-  /** GET /api/v2/schedule-groups - Dane's bundle-of-schedules concept.
+  /** GET /api/v2/schedule-bundles - Dane's bundle-of-schedules concept.
    *  Returns empty until the 20260914140000 migration applies (the
-   *  underlying tables don't exist pre-migration). */
-  listGroups: () =>
-    request<{ response: ScheduleGroupBundle[] }>('/v2/schedule-groups')
+   *  underlying tables don't exist pre-migration). Renamed 2026-09-22
+   *  from /schedule-groups per Steve F18. */
+  listBundles: () =>
+    request<{ response: ScheduleBundle[] }>('/v2/schedule-bundles')
       .then((r) => r.response),
 
   /** GET /api/v2/schedules/{id} - one schedule with day windows,
@@ -85,12 +83,21 @@ export const schedulesV2Service = {
       `/v2/schedules/${scheduleId}`,
     ).then((r) => r.response),
 
-  /** GET /api/v2/schedules/{id}/overrides - lightweight list of the
-   *  overrides pointing at this base + the client each owns. Powers
-   *  the AttachClientsModal's "has own override #<id>" hint. */
+  /** GET /api/v2/schedules/{id}/overrides - every client's delta on
+   *  this schedule. One entry per client with schedule / collection /
+   *  delivery scope blocks. Clients with no delta rows are excluded.
+   *  Backed by tblBulkRunScheduleOverride (Steve F1 2026-09-22). */
   listOverrides: (scheduleId: number) =>
-    request<{ response: OverrideRef[] }>(
+    request<{ response: ScheduleOverride[] }>(
       `/v2/schedules/${scheduleId}/overrides`,
+    ).then((r) => r.response),
+
+  /** GET /api/v2/clients/{clientId}/overrides - every schedule this
+   *  client owns a delta on. Compact list; the details are on the
+   *  schedule's Client Overrides tab. */
+  clientOverrides: (clientId: number) =>
+    request<{ response: ClientOverrideRef[] }>(
+      `/v2/clients/${clientId}/overrides`,
     ).then((r) => r.response),
 
   /** POST /api/v2/schedules/{id}/clients - attach one or more clients. */
@@ -107,11 +114,22 @@ export const schedulesV2Service = {
       { method: 'DELETE' },
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedules/{id}/overrides - create a client override. */
-  createOverride: (scheduleId: number, clientId: number) =>
-    request<{ response: { scheduleId: number } }>(
-      `/v2/schedules/${scheduleId}/overrides`,
-      { method: 'POST', body: JSON.stringify({ clientId }) },
+  /** PUT /api/v2/schedules/{id}/overrides/{clientId} - full replace of
+   *  one client's delta on this schedule. An empty body deletes every
+   *  scope for the client (returns to base schedule). Steve F1. */
+  putOverride: (scheduleId: number, clientId: number, body: ScheduleOverridePutBody) =>
+    request<{ response: ScheduleOverride | null }>(
+      `/v2/schedules/${scheduleId}/overrides/${clientId}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ).then((r) => r.response),
+
+  /** DELETE /api/v2/schedules/{id}/overrides/{clientId} - remove every
+   *  delta row for this client on this schedule. Client returns to the
+   *  base. Steve F1. */
+  deleteOverride: (scheduleId: number, clientId: number) =>
+    request<{ response: { deleted: boolean } }>(
+      `/v2/schedules/${scheduleId}/overrides/${clientId}`,
+      { method: 'DELETE' },
     ).then((r) => r.response),
 
   /** POST /api/v2/schedules - create a fresh schedule (header + day rows + junctions). */
@@ -142,25 +160,34 @@ export const schedulesV2Service = {
       { method: 'POST' },
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedule-groups - create a Schedule Group. */
-  createGroup: (body: { name: string; description?: string; scheduleIds: number[] }) =>
-    request<{ response: { groupId: number } }>(
-      '/v2/schedule-groups',
+  /** POST /api/v2/schedules/{id}/is-active - set the header IsActive
+   *  flag directly (not a toggle - caller sends the desired state).
+   *  Independent of `autoBook`. Steve F21 (2026-09-22). */
+  toggleIsActive: (scheduleId: number, isActive: boolean) =>
+    request<{ response: { isActive: boolean } }>(
+      `/v2/schedules/${scheduleId}/is-active`,
+      { method: 'POST', body: JSON.stringify({ isActive }) },
+    ).then((r) => r.response),
+
+  /** POST /api/v2/schedule-bundles - create a Schedule Bundle. */
+  createBundle: (body: { name: string; description?: string; scheduleIds: number[] }) =>
+    request<{ response: { bundleId: number } }>(
+      '/v2/schedule-bundles',
       { method: 'POST', body: JSON.stringify(body) },
     ).then((r) => r.response),
 
-  /** DELETE /api/v2/schedule-groups/{id} - hard-delete. */
-  deleteGroup: (groupId: number) =>
+  /** DELETE /api/v2/schedule-bundles/{id} - hard-delete. */
+  deleteBundle: (bundleId: number) =>
     request<{ response: string }>(
-      `/v2/schedule-groups/${groupId}`,
+      `/v2/schedule-bundles/${bundleId}`,
       { method: 'DELETE' },
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedule-groups/{id}/clients - attach clients to
-   *  every non-default member schedule of the group. */
-  attachClientsToGroup: (groupId: number, clientIds: number[]) =>
+  /** POST /api/v2/schedule-bundles/{id}/clients - attach clients to
+   *  every non-default member schedule of the bundle. */
+  attachClientsToBundle: (bundleId: number, clientIds: number[]) =>
     request<{ response: { added: number } }>(
-      `/v2/schedule-groups/${groupId}/clients`,
+      `/v2/schedule-bundles/${bundleId}/clients`,
       { method: 'POST', body: JSON.stringify({ clientIds }) },
     ).then((r) => r.response),
 
@@ -171,10 +198,10 @@ export const schedulesV2Service = {
       { method: 'POST', body: JSON.stringify({ newName, clientIds }) },
     ).then((r) => r.response),
 
-  /** PUT /api/v2/schedule-groups/{id} - rename / redescribe. */
-  updateGroup: (groupId: number, body: { name: string; description?: string }) =>
+  /** PUT /api/v2/schedule-bundles/{id} - rename / redescribe. */
+  updateBundle: (bundleId: number, body: { name: string; description?: string }) =>
     request<{ response: string }>(
-      `/v2/schedule-groups/${groupId}`,
+      `/v2/schedule-bundles/${bundleId}`,
       { method: 'PUT', body: JSON.stringify(body) },
     ).then((r) => r.response),
 
@@ -186,27 +213,74 @@ export const schedulesV2Service = {
       `/v2/clients/${clientId}/schedules`,
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedule-groups/{id}/members - add schedules. */
-  addGroupMembers: (groupId: number, scheduleIds: number[]) =>
+  /** POST /api/v2/schedule-bundles/{id}/members - add schedules. */
+  addBundleMembers: (bundleId: number, scheduleIds: number[]) =>
     request<{ response: { added: number } }>(
-      `/v2/schedule-groups/${groupId}/members`,
+      `/v2/schedule-bundles/${bundleId}/members`,
       { method: 'POST', body: JSON.stringify({ scheduleIds }) },
     ).then((r) => r.response),
 
-  /** DELETE /api/v2/schedule-groups/{id}/members/{scheduleId}. */
-  removeGroupMember: (groupId: number, scheduleId: number) =>
+  /** DELETE /api/v2/schedule-bundles/{id}/members/{scheduleId}. */
+  removeBundleMember: (bundleId: number, scheduleId: number) =>
     request<{ response: { removed: number } }>(
-      `/v2/schedule-groups/${groupId}/members/${scheduleId}`,
+      `/v2/schedule-bundles/${bundleId}/members/${scheduleId}`,
       { method: 'DELETE' },
     ).then((r) => r.response),
 };
 
-/** Shape of one override reference returned by
- *  GET /v2/schedules/{id}/overrides. */
-export interface OverrideRef {
+/** Schedule-scope delta fields (cut-off + weekdays + display copy).
+ *  Every field is nullable: NULL means "inherit from base". */
+export interface ScheduleScopeOverride {
+  cutoffHours: number | null;
+  cutoffDay: number | null;
+  cutoffTime: string | null;
+  weekDays: string | null;
+  isActive: boolean | null;
+  displayName: string | null;
+  displayDescription: string | null;
+}
+
+/** Leg-scope delta fields (used for both collection and delivery). */
+export interface LegScopeOverride {
+  speedId: number | null;
+  zoneGroupId: number | null;
+  pickupTimeMode: string | null;
+  pickupWindowStart: string | null;
+  pickupWindowEnd: string | null;
+  additionalItemChargingLogic: string | null;
+}
+
+/** One client's full delta on one schedule (Steve F1 2026-09-22).
+ *  Rendered as a per-client card in the schedule's Client Overrides
+ *  tab. Any of the three scope blocks may be null. */
+export interface ScheduleOverride {
   scheduleId: number;
   clientId: number;
   clientCode: string | null;
+  clientName: string | null;
+  schedule: ScheduleScopeOverride | null;
+  collection: LegScopeOverride | null;
+  delivery: LegScopeOverride | null;
+  updatedUtc: string;
+  updatedBy: string | null;
+}
+
+/** PUT body for /v2/schedules/{id}/overrides/{clientId}. Every scope
+ *  block may be null (removes that scope's row); an empty body deletes
+ *  the client's override entirely. */
+export interface ScheduleOverridePutBody {
+  schedule: ScheduleScopeOverride | null;
+  collection: LegScopeOverride | null;
+  delivery: LegScopeOverride | null;
+}
+
+/** One row from GET /v2/clients/{clientId}/overrides. Feeds the
+ *  client-first "differs from N schedules" view. */
+export interface ClientOverrideRef {
+  scheduleId: number;
+  scheduleName: string;
+  scopes: string[];
+  updatedUtc: string;
 }
 
 /** One row from GET /v2/clients/{clientId}/schedules. Tags each

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   schedulesV2Keys,
-  useSchedulesV2Groups,
+  useSchedulesV2Bundles,
   useSchedulesV2List,
 } from '../hooks/queries/useSchedulesV2';
 import { useAuth } from '../context/AuthContext';
@@ -11,7 +11,7 @@ import { useToast } from '../context/ToastContext';
 import { useConfirm } from '../context/ConfirmContext';
 import {
   schedulesV2Service,
-  type ScheduleGroupBundle,
+  type ScheduleBundle,
   type SchedulesV2Type,
 } from '../services/schedulesV2Service';
 import {
@@ -44,7 +44,7 @@ import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal
 //    the error immediately instead of blocking the spinner for the
 //    full retry backoff.
 
-type Tab = 'schedules' | 'groups' | 'routes';
+type Tab = 'schedules' | 'bundles' | 'routes';
 
 const DAY_LABELS: Array<{ n: number; label: string }> = [
   { n: 1, label: 'M' },
@@ -91,17 +91,17 @@ export default function SchedulesNew() {
   //   means we don't fetch the whole list just for the count; the
   //   Schedules tab itself has its own list query with the full
   //   pageSize=50, so this doesn't duplicate work meaningfully).
-  // - Schedule Groups + Recurring Routes: full-list length. Both are
+  // - Schedule Bundles + Recurring Routes: full-list length. Both are
   //   small enough (dozens, not thousands) that this is cheap.
   const schedulesCountQuery = useSchedulesV2List({ page: 0, pageSize: 1 });
-  const groupsCountQuery = useSchedulesV2Groups();
+  const bundlesCountQuery = useSchedulesV2Bundles();
   const routesCountQuery = useQuery({
     queryKey: ['schedules-v2-recurring-routes-count'],
     queryFn: () => recurringRouteService.list().then((r) => r.response),
     staleTime: 30_000,
   });
   const schedulesCount = schedulesCountQuery.data?.total ?? null;
-  const groupsCount = groupsCountQuery.data?.length ?? null;
+  const bundlesCount = bundlesCountQuery.data?.length ?? null;
   const routesCount = routesCountQuery.data?.length ?? null;
 
   return (
@@ -133,8 +133,8 @@ export default function SchedulesNew() {
           <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')} count={schedulesCount}>
             Schedules
           </TabButton>
-          <TabButton active={tab === 'groups'} onClick={() => setTab('groups')} count={groupsCount}>
-            Schedule Groups
+          <TabButton active={tab === 'bundles'} onClick={() => setTab('bundles')} count={bundlesCount}>
+            Schedule Bundles
           </TabButton>
           <TabButton active={tab === 'routes'} onClick={() => setTab('routes')} count={routesCount}>
             Recurring Routes
@@ -148,7 +148,7 @@ export default function SchedulesNew() {
           onAttachClients={setAttachScheduleId}
         />
       )}
-      {tab === 'groups' && <ScheduleGroupsTab onScheduleClick={setOpenScheduleId} />}
+      {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={setOpenScheduleId} />}
       {tab === 'routes' && <RecurringRoutesTab />}
 
       <ScheduleDetailModal
@@ -270,6 +270,39 @@ function SchedulesTab({
   });
   const handleToggleAutoBook = (row: ScheduleGroupSummary) => autoBookMut.mutate(row.scheduleId);
 
+  // F21 (Steve 2026-09-20): row-level Active toggle. Independent of the
+  // AutoBook toggle above. Optimistic pattern mirrors AutoBook: flip
+  // the cache immediately, roll back on failure, invalidate on settle.
+  const isActiveMut = useMutation({
+    mutationFn: ({ id, isActive }: { id: number; isActive: boolean }) =>
+      schedulesV2Service.toggleIsActive(id, isActive),
+    onMutate: async ({ id, isActive }) => {
+      await qc.cancelQueries({ queryKey: schedulesV2Keys.listAll(tenantId)});
+      const previous = qc.getQueriesData<{ rows: ScheduleGroupSummary[]; total: number }>(
+        { queryKey: schedulesV2Keys.listAll(tenantId)},
+      );
+      for (const [key, data] of previous) {
+        if (!data) continue;
+        qc.setQueryData(key, {
+          ...data,
+          rows: data.rows.map((r) =>
+            r.scheduleId === id ? { ...r, isActive } : r,
+          ),
+        });
+      }
+      return { previous };
+    },
+    onError: (e: Error, _vars, ctx) => {
+      if (ctx?.previous) for (const [key, data] of ctx.previous) qc.setQueryData(key, data);
+      toast.show(`Toggle failed: ${e.message}`, 'error');
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId)});
+    },
+  });
+  const handleToggleIsActive = (row: ScheduleGroupSummary) =>
+    isActiveMut.mutate({ id: row.scheduleId, isActive: !row.isActive });
+
   // Copy is triggered via CopyScheduleModal (rendered below). The row
   // action just puts the source row into state; the modal owns the
   // mutation + POST wire.
@@ -328,12 +361,10 @@ function SchedulesTab({
     );
   }, [serverRows, depotFilter]);
 
-  const nested = useMemo(() => nestOverrides(filtered), [filtered]);
-
   // Server pagination: total from server, page rows from current fetch.
   const pageCount = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
   const boundedPage = Math.min(page, pageCount - 1);
-  const pageRows = nested;
+  const pageRows = filtered;
 
   return (
     <div className="space-y-3 bg-surface-white border border-border rounded-lg p-4">
@@ -372,7 +403,6 @@ function SchedulesTab({
           <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); setDepotFilter([]); }}>All</SegmentPill>
           <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); setDepotFilter([]); }}>Defaults</SegmentPill>
           <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); setDepotFilter([]); }}>Shared</SegmentPill>
-          <SegmentPill active={type === 'override'} onClick={() => { setType('override'); setPage(0); setDepotFilter([]); }}>Overrides</SegmentPill>
         </div>
 
         <div className="flex items-center gap-2">
@@ -406,9 +436,7 @@ function SchedulesTab({
       )}
       {query.data && filtered.length === 0 && (
         <div className="text-sm text-text-muted py-8 text-center">
-          {type === 'override'
-            ? 'No overrides yet. Overrides appear here once a base schedule has a client-specific variant (BaseScheduleId).'
-            : 'No schedules match this filter.'}
+          No schedules match this filter.
         </div>
       )}
       {pageRows.length > 0 && (
@@ -425,6 +453,8 @@ function SchedulesTab({
             // fire concurrent mutations that race. Disable the toggle
             // for whichever id is currently in flight.
             autoBookPendingId={autoBookMut.isPending ? autoBookMut.variables : null}
+            onToggleIsActive={handleToggleIsActive}
+            isActivePendingId={isActiveMut.isPending ? isActiveMut.variables?.id ?? null : null}
           />
           <Pager
             page={boundedPage}
@@ -500,53 +530,6 @@ function PagerBtn({
 
 // ─── Table + row rendering ──────────────────────────────────────────
 
-type NestedRow = { row: ScheduleGroupSummary; isOverride: boolean };
-
-// Walks the BaseScheduleId chain to nest overrides under their base(s)
-// transitively. Previously only 1 level was handled: an override-of-an-
-// override (C -> B -> A) landed as an orphan when B was on the same
-// page as A. Audit item CRITICAL #3 in the 2026-09-17 review. We now
-// walk each override up to its true root using childrenByBase; the
-// isOverride flag stays true for every non-root node so styling is
-// unchanged.
-function nestOverrides(rows: ScheduleGroupSummary[]): NestedRow[] {
-  const byId = new Map<number, ScheduleGroupSummary>();
-  rows.forEach((r) => byId.set(r.scheduleId, r));
-  const childrenByBase = new Map<number, ScheduleGroupSummary[]>();
-  const roots: ScheduleGroupSummary[] = [];
-  for (const r of rows) {
-    if (r.baseScheduleId != null && byId.has(r.baseScheduleId)) {
-      const list = childrenByBase.get(r.baseScheduleId) ?? [];
-      list.push(r);
-      childrenByBase.set(r.baseScheduleId, list);
-    } else {
-      // Either a genuine base (no BaseScheduleId) or an orphan override
-      // whose base is off-page. Orphan overrides bubble to top-level so
-      // they still render, with the isOverride flag preserved via the
-      // r.baseScheduleId != null check when we push out.
-      roots.push(r);
-    }
-  }
-  const out: NestedRow[] = [];
-  const visited = new Set<number>();
-  const walk = (node: ScheduleGroupSummary) => {
-    // Cycle guard: BaseScheduleId chains should be acyclic but a bad
-    // backfill or hand-edit could produce one; visiting a node twice
-    // would loop forever otherwise.
-    if (visited.has(node.scheduleId)) return;
-    visited.add(node.scheduleId);
-    out.push({ row: node, isOverride: node.baseScheduleId != null });
-    for (const child of childrenByBase.get(node.scheduleId) ?? []) walk(child);
-  };
-  for (const root of roots) walk(root);
-  // Anything left un-visited is part of a cycle or unreachable island.
-  // Emit them anyway so operators can still see (and fix) them.
-  for (const r of rows) if (!visited.has(r.scheduleId)) {
-    out.push({ row: r, isOverride: r.baseScheduleId != null });
-  }
-  return out;
-}
-
 function SchedulesTable({
   rows,
   sourceByScheduleId,
@@ -556,8 +539,10 @@ function SchedulesTable({
   onCopy,
   onToggleAutoBook,
   autoBookPendingId,
+  onToggleIsActive,
+  isActivePendingId,
 }: {
-  rows: NestedRow[];
+  rows: ScheduleGroupSummary[];
   sourceByScheduleId?: Map<number, 'override' | 'shared' | 'default'> | null;
   onRowClick: (id: number) => void;
   onAttachClients: (id: number) => void;
@@ -565,6 +550,8 @@ function SchedulesTable({
   onCopy: (row: ScheduleGroupSummary) => void;
   onToggleAutoBook: (row: ScheduleGroupSummary) => void;
   autoBookPendingId: number | null | undefined;
+  onToggleIsActive: (row: ScheduleGroupSummary) => void;
+  isActivePendingId: number | null | undefined;
 }) {
   return (
     // Scroll container gives the sticky <thead> something to stick
@@ -577,20 +564,21 @@ function SchedulesTable({
             previously had a horizontal scrollbar). Percentages sum >100
             deliberately; table-fixed distributes the shortfall. */}
         <colgroup>
-          {/* Rebalanced to sum to 100% (was 104%). Audit HIGH #1 in
-              the 2026-09-17 review. table-fixed uses these verbatim
-              so any over-100 was silently redistributed by shrinking
-              every column ~1-2px; now the math is honest. */}
-          <col style={{ width: '24%' }} />
-          <col style={{ width: '10%' }} />
+          {/* Column widths sum to 100%. Active column (Steve F21) added
+              alongside AutoBook: Active gates whether the schedule is
+              bookable at all; AutoBook gates book-now vs stage. Sizes
+              trimmed from Name / Clients / Roster to make room. */}
+          <col style={{ width: '22%' }} />
+          <col style={{ width: '9%' }} />
           <col style={{ width: '8%' }} />
           <col style={{ width: '8%' }} />
           <col style={{ width: '8%' }} />
           <col style={{ width: '6%' }} />
-          <col style={{ width: '12%' }} />
-          <col style={{ width: '9%' }} />
-          <col style={{ width: '7%' }} />
+          <col style={{ width: '11%' }} />
           <col style={{ width: '8%' }} />
+          <col style={{ width: '6%' }} />
+          <col style={{ width: '7%' }} />
+          <col style={{ width: '7%' }} />
         </colgroup>
         {/* Sticky header per audit HIGH #2 (2026-09-17). Was scrolling
             out of view once operators paged past ~15 rows. Wrapper div
@@ -605,16 +593,16 @@ function SchedulesTable({
             <th className="py-1.5 pr-2 font-medium">Cut-off</th>
             <th className="py-1.5 pr-2 font-medium">Clients</th>
             <th className="py-1.5 pr-2 font-medium">Roster</th>
+            <th className="py-1.5 pr-2 font-medium">Active</th>
             <th className="py-1.5 pr-2 font-medium">AutoBook</th>
             <th className="py-1.5 pr-2 font-medium">Actions</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ row: s, isOverride }) => (
+          {rows.map((s) => (
             <ScheduleRow
               key={s.scheduleId}
               row={s}
-              isOverride={isOverride}
               sourceTag={sourceByScheduleId?.get(s.scheduleId) ?? null}
               onOpen={onRowClick}
               onAttachClients={onAttachClients}
@@ -622,6 +610,8 @@ function SchedulesTable({
               onCopy={onCopy}
               onToggleAutoBook={onToggleAutoBook}
               autoBookPending={autoBookPendingId === s.scheduleId}
+              onToggleIsActive={onToggleIsActive}
+              isActivePending={isActivePendingId === s.scheduleId}
             />
           ))}
         </tbody>
@@ -632,7 +622,6 @@ function SchedulesTable({
 
 function ScheduleRow({
   row: s,
-  isOverride,
   sourceTag,
   onOpen,
   onAttachClients,
@@ -640,9 +629,10 @@ function ScheduleRow({
   onCopy,
   onToggleAutoBook,
   autoBookPending,
+  onToggleIsActive,
+  isActivePending,
 }: {
   row: ScheduleGroupSummary;
-  isOverride: boolean;
   sourceTag: 'override' | 'shared' | 'default' | null;
   onOpen: (id: number) => void;
   onAttachClients: (id: number) => void;
@@ -650,69 +640,48 @@ function ScheduleRow({
   onCopy: (row: ScheduleGroupSummary) => void;
   onToggleAutoBook: (row: ScheduleGroupSummary) => void;
   autoBookPending: boolean;
+  onToggleIsActive: (row: ScheduleGroupSummary) => void;
+  isActivePending: boolean;
 }) {
   const window = s.windowStart && s.windowEnd ? `${s.windowStart}-${s.windowEnd}` : '-';
   const cutoff = formatCutoff(s.monCutoffHours, s.otherCutoffHours);
   return (
     <tr
       onClick={() => onOpen(s.scheduleId)}
-      className={`border-b border-border/60 cursor-pointer align-top ${
-        // Hover replaces the base bg-color entirely under Tailwind's
-        // ordering, so the warning tint would disappear on hover for
-        // override rows and re-appear on leave, breaking the visual
-        // hierarchy. Use a warning-tinted hover for override rows so
-        // it stays flagged. Audit MEDIUM #9 (2026-09-17).
-        isOverride ? 'bg-warning-bg/10 hover:bg-warning-bg/20' : 'hover:bg-surface-light'
-      }`}
+      className="border-b border-border/60 cursor-pointer align-top hover:bg-surface-light"
     >
-      <td className={`py-1.5 pr-2 ${isOverride ? 'pl-4' : ''}`}>
+      <td className="py-1.5 pr-2">
         <div className="flex items-center gap-2">
-          {isOverride && (
-            <span
-              title="Client override"
-              className="text-[9px] font-bold w-3.5 h-3.5 flex items-center justify-center rounded-full bg-warning text-white shrink-0"
-            >
-              O
-            </span>
-          )}
           <span className="text-xs font-semibold text-text-primary">{s.name ?? '(unnamed)'}</span>
-          {!isOverride && s.overrideCount > 0 && (
-            <span
-              title={`${s.overrideCount} override${s.overrideCount === 1 ? '' : 's'}`}
-              className="text-[9px] font-medium px-1 py-px rounded bg-brand-cyan/15 text-brand-cyan"
-            >
-              +{s.overrideCount}
-            </span>
-          )}
           {sourceTag && <SourceTag source={sourceTag} />}
         </div>
-        <div className={`text-[11px] mt-0.5 leading-tight ${isOverride ? 'text-warning' : 'text-text-muted'}`}>
-          {isOverride && s.baseScheduleId != null
-            ? `Based on #${s.baseScheduleId}${s.description ? ` · ${s.description}` : ''}`
-            : `#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
+        <div className="text-[11px] mt-0.5 leading-tight text-text-muted">
+          {`#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
         </div>
-        {isOverride && s.overriddenFields && s.overriddenFields.length > 0 && (
-          <div className="text-[10px] mt-0.5 leading-tight text-warning/80">
-            differs on: <span className="font-medium">{s.overriddenFields.join(', ')}</span>
-          </div>
-        )}
       </td>
       <td className="py-1.5 pr-2">
-        {isOverride ? <span className="text-text-muted">-</span> : <DayPills active={s.activeDays} />}
+        <DayPills active={s.activeDays} />
       </td>
       <td className="py-1.5 pr-2 text-text-secondary">
-        {isOverride ? <span className="text-text-muted">-</span> : (s.pickupDepotName ?? 'Client address')}
+        {s.pickupDepotName ?? 'Client address'}
       </td>
-      <td className="py-1.5 pr-2 text-text-secondary">{isOverride ? <span className="text-text-muted">-</span> : (s.regionName ?? <span className="text-text-muted">-</span>)}</td>
+      <td className="py-1.5 pr-2 text-text-secondary">{s.regionName ?? <span className="text-text-muted">-</span>}</td>
       <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{window}</td>
       <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{cutoff}</td>
       <td className="py-1.5 pr-2"><ClientChips row={s} /></td>
       <td className="py-1.5 pr-2">
-        {isOverride ? (
-          <span className="text-[11px] text-text-muted">as base</span>
-        ) : (
-          <RosterChips routeCount={s.routeCount} linehaulHint={s.linehaulHint} />
-        )}
+        <RosterChips routeCount={s.routeCount} linehaulHint={s.linehaulHint} />
+      </td>
+      <td
+        className="py-1.5 pr-2"
+        onClick={(e) => e.stopPropagation()}
+        data-testid={`schedule-active-cell-${s.scheduleId}`}
+      >
+        <ToggleSwitch
+          on={s.isActive === true}
+          onClick={() => onToggleIsActive(s)}
+          disabled={isActivePending}
+        />
       </td>
       <td className="py-1.5 pr-2" onClick={(e) => e.stopPropagation()}>
         <ToggleSwitch
@@ -987,18 +956,18 @@ function SegmentPill({
   );
 }
 
-// ─── Schedule Groups tab ────────────────────────────────────────────
+// ─── Schedule Bundles tab ───────────────────────────────────────────
 
-function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) => void }) {
+function ScheduleBundlesTab({ onScheduleClick }: { onScheduleClick: (id: number) => void }) {
   const user = useAuth();
   const tenantId = user.currentTenantId ?? 0;
-  const query = useSchedulesV2Groups();
+  const query = useSchedulesV2Bundles();
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
-  const [attachGroupId, setAttachGroupId] = useState<number | null>(null);
+  const [attachBundleId, setAttachBundleId] = useState<number | null>(null);
   const toggle = (id: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -1008,53 +977,53 @@ function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) 
     });
   };
 
-  const invalidateGroups = () =>
-    qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
+  const invalidateBundles = () =>
+    qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
 
   const deleteMut = useMutation({
-    mutationFn: (groupId: number) => schedulesV2Service.deleteGroup(groupId),
-    onSuccess: () => { invalidateGroups(); toast.show('Group deleted.', 'success'); },
+    mutationFn: (bundleId: number) => schedulesV2Service.deleteBundle(bundleId),
+    onSuccess: () => { invalidateBundles(); toast.show('Bundle deleted.', 'success'); },
     onError: (e: Error) => toast.show(`Delete failed: ${e.message}`, 'error'),
   });
   const renameMut = useMutation({
-    mutationFn: (args: { groupId: number; name: string; description?: string }) =>
-      schedulesV2Service.updateGroup(args.groupId, { name: args.name, description: args.description }),
-    onSuccess: () => { invalidateGroups(); toast.show('Group updated.', 'success'); },
+    mutationFn: (args: { bundleId: number; name: string; description?: string }) =>
+      schedulesV2Service.updateBundle(args.bundleId, { name: args.name, description: args.description }),
+    onSuccess: () => { invalidateBundles(); toast.show('Bundle updated.', 'success'); },
     onError: (e: Error) => toast.show(`Rename failed: ${e.message}`, 'error'),
   });
   const addMemberMut = useMutation({
-    mutationFn: (args: { groupId: number; scheduleIds: number[] }) =>
-      schedulesV2Service.addGroupMembers(args.groupId, args.scheduleIds),
-    onSuccess: () => { invalidateGroups(); toast.show('Member added.', 'success'); },
+    mutationFn: (args: { bundleId: number; scheduleIds: number[] }) =>
+      schedulesV2Service.addBundleMembers(args.bundleId, args.scheduleIds),
+    onSuccess: () => { invalidateBundles(); toast.show('Member added.', 'success'); },
     onError: (e: Error) => toast.show(`Add member failed: ${e.message}`, 'error'),
   });
   const removeMemberMut = useMutation({
-    mutationFn: (args: { groupId: number; scheduleId: number }) =>
-      schedulesV2Service.removeGroupMember(args.groupId, args.scheduleId),
-    onSuccess: () => { invalidateGroups(); toast.show('Member removed.', 'success'); },
+    mutationFn: (args: { bundleId: number; scheduleId: number }) =>
+      schedulesV2Service.removeBundleMember(args.bundleId, args.scheduleId),
+    onSuccess: () => { invalidateBundles(); toast.show('Member removed.', 'success'); },
     onError: (e: Error) => toast.show(`Remove failed: ${e.message}`, 'error'),
   });
 
-  const handleDelete = async (g: ScheduleGroupBundle) => {
+  const handleDelete = async (b: ScheduleBundle) => {
     const ok = await confirm({
-      title: 'Delete group?',
-      message: `Delete "${g.name}" (${g.scheduleCount} schedule${g.scheduleCount === 1 ? '' : 's'})? The underlying schedules and their link rows are NOT touched - only the bundle metadata is removed.`,
+      title: 'Delete bundle?',
+      message: `Delete "${b.name}" (${b.scheduleCount} schedule${b.scheduleCount === 1 ? '' : 's'})? The underlying schedules and their link rows are NOT touched - only the bundle metadata is removed.`,
       confirmLabel: 'Delete',
       danger: true,
     });
     if (!ok) return;
-    deleteMut.mutate(g.groupId);
+    deleteMut.mutate(b.bundleId);
   };
 
-  const handleRename = (g: ScheduleGroupBundle) => {
-    const next = window.prompt(`Rename "${g.name}":`, g.name);
-    if (!next || next.trim() === g.name) return;
-    renameMut.mutate({ groupId: g.groupId, name: next.trim(), description: g.description ?? '' });
+  const handleRename = (b: ScheduleBundle) => {
+    const next = window.prompt(`Rename "${b.name}":`, b.name);
+    if (!next || next.trim() === b.name) return;
+    renameMut.mutate({ bundleId: b.bundleId, name: next.trim(), description: b.description ?? '' });
   };
 
-  const handleAddMember = (g: ScheduleGroupBundle) => {
+  const handleAddMember = (b: ScheduleBundle) => {
     const raw = window.prompt(
-      `Add a schedule to "${g.name}". Enter the schedule id (from #ScheduleId in the Schedules tab):`,
+      `Add a schedule to "${b.name}". Enter the schedule id (from #ScheduleId in the Schedules tab):`,
       '',
     );
     if (!raw) return;
@@ -1063,25 +1032,25 @@ function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) 
       toast.show('Invalid schedule id.', 'error');
       return;
     }
-    addMemberMut.mutate({ groupId: g.groupId, scheduleIds: [id] });
+    addMemberMut.mutate({ bundleId: b.bundleId, scheduleIds: [id] });
   };
 
-  const handleRemoveMember = async (groupId: number, scheduleId: number) => {
+  const handleRemoveMember = async (bundleId: number, scheduleId: number) => {
     const ok = await confirm({
       title: 'Remove member?',
-      message: `Remove schedule #${scheduleId} from the group?`,
+      message: `Remove schedule #${scheduleId} from the bundle?`,
       confirmLabel: 'Remove',
       danger: true,
     });
     if (!ok) return;
-    removeMemberMut.mutate({ groupId, scheduleId });
+    removeMemberMut.mutate({ bundleId, scheduleId });
   };
 
   return (
     <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
       <div className="flex items-center justify-between">
         <p className="text-xs text-text-muted italic max-w-3xl">
-          A group is a named bundle of schedules. Attaching a client to a group
+          A bundle is a named collection of schedules. Attaching a client to a bundle
           writes one link row per non-default member; the link table stays the
           only record of who uses what.
         </p>
@@ -1090,64 +1059,64 @@ function ScheduleGroupsTab({ onScheduleClick }: { onScheduleClick: (id: number) 
           onClick={() => setCreateOpen(true)}
           className="shrink-0 px-3 py-1.5 text-sm font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
         >
-          + New group
+          + New bundle
         </button>
       </div>
 
       {query.isLoading && (
-        <div className="text-sm text-text-muted py-8 text-center">Loading groups...</div>
+        <div className="text-sm text-text-muted py-8 text-center">Loading bundles...</div>
       )}
       {query.isError && (
         <div className="text-sm text-error py-8 text-center">
-          Failed to load groups: {(query.error as Error).message}
+          Failed to load bundles: {(query.error as Error).message}
         </div>
       )}
       {query.data && query.data.length === 0 && (
         <div className="text-sm text-text-muted py-8 text-center">
-          No schedule groups yet. Click <strong>+ New group</strong> to create one.
+          No schedule bundles yet. Click <strong>+ New bundle</strong> to create one.
         </div>
       )}
       {query.data && query.data.length > 0 && (
         <ul className="space-y-2">
-          {query.data.map((g) => (
-            <GroupCard
-              key={g.groupId}
-              group={g}
-              expanded={expanded.has(g.groupId)}
-              onToggle={() => toggle(g.groupId)}
+          {query.data.map((b) => (
+            <BundleCard
+              key={b.bundleId}
+              bundle={b}
+              expanded={expanded.has(b.bundleId)}
+              onToggle={() => toggle(b.bundleId)}
               onScheduleClick={onScheduleClick}
-              onDelete={() => handleDelete(g)}
-              onRename={() => handleRename(g)}
-              onAttachClients={() => setAttachGroupId(g.groupId)}
-              onAddMember={() => handleAddMember(g)}
-              onRemoveMember={(id) => handleRemoveMember(g.groupId, id)}
+              onDelete={() => handleDelete(b)}
+              onRename={() => handleRename(b)}
+              onAttachClients={() => setAttachBundleId(b.bundleId)}
+              onAddMember={() => handleAddMember(b)}
+              onRemoveMember={(id) => handleRemoveMember(b.bundleId, id)}
             />
           ))}
         </ul>
       )}
 
-      <CreateGroupModal
+      <CreateBundleModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
-          qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
+          qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
           setCreateOpen(false);
-          toast.show('Group created.', 'success');
+          toast.show('Bundle created.', 'success');
         }}
       />
-      <GroupAttachClientsModal
-        groupId={attachGroupId}
-        onClose={() => setAttachGroupId(null)}
+      <BundleAttachClientsModal
+        bundleId={attachBundleId}
+        onClose={() => setAttachBundleId(null)}
       />
     </div>
   );
 }
 
-function GroupAttachClientsModal({
-  groupId,
+function BundleAttachClientsModal({
+  bundleId,
   onClose,
 }: {
-  groupId: number | null;
+  bundleId: number | null;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -1157,21 +1126,21 @@ function GroupAttachClientsModal({
   const [selected, setSelected] = useState<number[]>([]);
   const attachMut = useMutation({
     mutationFn: (ids: number[]) =>
-      schedulesV2Service.attachClientsToGroup(groupId!, ids),
+      schedulesV2Service.attachClientsToBundle(bundleId!, ids),
     onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: schedulesV2Keys.groups(tenantId)});
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
       toast.show(`Attached to ${r.added} member link row${r.added === 1 ? '' : 's'}.`, 'success');
       setSelected([]);
       onClose();
     },
     onError: (e: Error) => toast.show(`Attach failed: ${e.message}`, 'error'),
   });
-  if (groupId == null) return null;
+  if (bundleId == null) return null;
   return (
     <div className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40" onClick={onClose}>
       <div className="bg-surface-white rounded-lg shadow-lg max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-border-light">
-          <h3 className="text-base font-semibold text-text-primary">Attach clients to group #{groupId}</h3>
+          <h3 className="text-base font-semibold text-text-primary">Attach clients to bundle #{bundleId}</h3>
           <p className="text-xs text-text-muted mt-1">
             Each ticked client gets one link row per non-default member schedule.
             Default members (all-clients schedules) are skipped.
@@ -1213,7 +1182,7 @@ function GroupAttachClientsModal({
   );
 }
 
-function CreateGroupModal({
+function CreateBundleModal({
   open,
   onClose,
   onCreated,
@@ -1229,7 +1198,7 @@ function CreateGroupModal({
 
   const createMut = useMutation({
     mutationFn: () =>
-      schedulesV2Service.createGroup({
+      schedulesV2Service.createBundle({
         name: name.trim(),
         description: description.trim() || undefined,
         scheduleIds: [],
@@ -1248,7 +1217,7 @@ function CreateGroupModal({
     <div className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40" onClick={onClose}>
       <div className="bg-surface-white rounded-lg shadow-lg max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-border-light">
-          <h3 className="text-base font-semibold text-text-primary">New schedule group</h3>
+          <h3 className="text-base font-semibold text-text-primary">New schedule bundle</h3>
         </div>
         <div className="px-4 py-4 space-y-3">
           {error && (
@@ -1279,7 +1248,7 @@ function CreateGroupModal({
           </label>
           <p className="text-xs text-text-muted italic">
             Members can be added via a follow-up "Add schedule" step - or attach clients
-            in bulk from the group card once members are linked.
+            in bulk from the bundle card once members are linked.
           </p>
         </div>
         <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex justify-end gap-2">
@@ -1296,7 +1265,7 @@ function CreateGroupModal({
             disabled={createMut.isPending || name.trim().length === 0}
             className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
           >
-            {createMut.isPending ? 'Creating...' : 'Create group'}
+            {createMut.isPending ? 'Creating...' : 'Create bundle'}
           </button>
         </div>
       </div>
@@ -1306,8 +1275,8 @@ function CreateGroupModal({
   void toast;
 }
 
-function GroupCard({
-  group,
+function BundleCard({
+  bundle,
   expanded,
   onToggle,
   onScheduleClick,
@@ -1317,7 +1286,7 @@ function GroupCard({
   onAddMember,
   onRemoveMember,
 }: {
-  group: ScheduleGroupBundle;
+  bundle: ScheduleBundle;
   expanded: boolean;
   onToggle: () => void;
   onScheduleClick: (id: number) => void;
@@ -1338,24 +1307,24 @@ function GroupCard({
           <div>
             <div className="text-sm font-medium text-text-primary flex items-center gap-2">
               <span className={`text-xs transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
-              {group.name}
+              {bundle.name}
             </div>
-            {group.description && (
-              <div className="text-xs text-text-muted mt-0.5">{group.description}</div>
+            {bundle.description && (
+              <div className="text-xs text-text-muted mt-0.5">{bundle.description}</div>
             )}
           </div>
         </button>
         <div className="flex items-center gap-6 text-xs text-text-muted">
-          <span>{group.scheduleCount} schedules</span>
-          <span>{group.clientCount} clients</span>
+          <span>{bundle.scheduleCount} schedules</span>
+          <span>{bundle.clientCount} clients</span>
           <span
             className={`px-2 py-0.5 rounded ${
-              group.isActive
+              bundle.isActive
                 ? 'bg-success-bg text-success border border-success/30'
                 : 'bg-surface-light text-text-muted border border-border'
             }`}
           >
-            {group.isActive ? 'Active' : 'Inactive'}
+            {bundle.isActive ? 'Active' : 'Inactive'}
           </span>
           <button
             type="button"
@@ -1376,7 +1345,7 @@ function GroupCard({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            title="Delete group"
+            title="Delete bundle"
             className="text-error hover:text-error-dark hover:underline"
           >
             Delete
@@ -1386,26 +1355,26 @@ function GroupCard({
       {expanded && (
         <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
           <ul className="space-y-1">
-            {group.scheduleIds.map((id, i) => (
+            {bundle.scheduleIds.map((id, i) => (
               <li key={id} className="flex items-center justify-between text-xs">
                 <button
                   type="button"
                   onClick={() => onScheduleClick(id)}
                   className="text-text-secondary hover:text-brand-cyan text-left"
                 >
-                  #{id} - {group.scheduleNames[i] ?? '(unknown)'}
+                  #{id} - {bundle.scheduleNames[i] ?? '(unknown)'}
                 </button>
                 <button
                   type="button"
                   onClick={() => onRemoveMember(id)}
-                  title="Remove from group"
+                  title="Remove from bundle"
                   className="text-error hover:text-error-dark hover:underline"
                 >
                   Remove
                 </button>
               </li>
             ))}
-            {group.scheduleIds.length === 0 && (
+            {bundle.scheduleIds.length === 0 && (
               <li className="text-xs text-text-muted italic">
                 No members yet. Add one below.
               </li>
