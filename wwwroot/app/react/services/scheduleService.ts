@@ -109,6 +109,15 @@ export interface ScheduleGroupSummary {
    *  its template matches the base verbatim. Powers the "differs on:"
    *  hint under nested override rows per Steve's §2 brief. */
   overriddenFields: string[];
+  /** Client-facing display name shown on the booking page. NULL falls
+   *  back to `name`. Steve F13 (2026-09-22). */
+  displayName: string | null;
+  /** Long-form description that pairs with `displayName` on the customer
+   *  booking page. Steve F13 (2026-09-22). */
+  displayDescription: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
+  isActive: boolean;
 }
 
 export interface ScheduleGroup {
@@ -162,6 +171,15 @@ export interface ScheduleGroup {
   clientLinkedUtcs: (string | null)[];
   postcodeIds: number[];
   polygonIds: number[];
+  /** Client-facing display name shown on the booking page. NULL falls
+   *  back to `name`. Steve F13 (2026-09-22). */
+  displayName: string | null;
+  /** Long-form description that pairs with `displayName` on the customer
+   *  booking page. Steve F13 (2026-09-22). */
+  displayDescription: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
+  isActive: boolean;
 }
 
 export interface LookupItem {
@@ -223,7 +241,13 @@ export interface ScheduleGroupUpsertBody {
     endTime: string;
     cutoffHours: number;
   }>;
-  zones: Array<{ zone: number; active: boolean | null }>;
+  /** Steve F7 (2026-09-20): null = "leave existing zone rows alone",
+   *  [] = "clear all zones", [...] = "replace with this set". The
+   *  frontend sends null when the operator hasn't touched the zone
+   *  picker so the backend null-guard preserves seeded zones (see
+   *  ScheduleService.SaveAsync). */
+  zones: Array<{ zone: number; active: boolean | null }> | null;
+  /** Steve F7 (2026-09-20): same null-vs-empty semantics as `zones`. */
   linehauls: Array<{
     name: string | null;
     active: boolean | null;
@@ -242,7 +266,7 @@ export interface ScheduleGroupUpsertBody {
     dropOffLocationId: number | null;
     /** Per-leg service class override. Null = inherit. */
     speedId: number | null;
-  }>;
+  }> | null;
   /** Legacy id-based fallback. Consulted only when `clientCodes` is
    *  null in the request body. The NewScheduleModal + `ClientMultiPicker`
    *  only know client ids, so their create path sends `clientCodes: null`
@@ -257,6 +281,17 @@ export interface ScheduleGroupUpsertBody {
   clientCodes: string[] | null;
   postcodeIds: number[];
   polygonIds: number[];
+  /** Client-facing display name. Empty string from the form should be
+   *  sent as NULL (not '') so the backend can distinguish "cleared" from
+   *  "unset". Steve F13 (2026-09-22). */
+  displayName?: string | null;
+  /** Long-form display description paired with `displayName`. Same
+   *  empty-string -> NULL rule. Steve F13 (2026-09-22). */
+  displayDescription?: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook`. Omit to keep the existing value on update paths;
+   *  defaults to true on create when unset. Steve F21 (2026-09-22). */
+  isActive?: boolean;
 }
 
 export interface ScheduleCopyBody {

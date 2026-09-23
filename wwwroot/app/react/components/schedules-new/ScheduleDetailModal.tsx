@@ -17,7 +17,8 @@ import {
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { ChainBuilder, type Leg } from './ChainBuilder';
-import { CreateOverrideModal } from './CreateOverrideModal';
+import { ClientOverrideEditor } from './ClientOverrideEditor';
+import type { ScheduleOverride } from '../../services/schedulesV2Service';
 import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
@@ -61,6 +62,76 @@ function seedDaysFromDto(dtoDays: ScheduleGroup['dayWindows']): DayForm[] {
       ? { id: d.id, enabled: true, startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours }
       : { ...EMPTY_DAY, enabled: false };
   });
+}
+
+// Canonical projection of a linehaul upsert row used ONLY for dirty
+// detection (F7 Steve 2026-09-20). Not sent on the wire. Keeping the
+// key set + ordering stable lets us JSON.stringify + compare the
+// seed's derived output against the current derived output; a mismatch
+// means the operator touched a linehaul leg somewhere in the chain.
+function canonicalLinehaul(l: LinehaulUpsertRow): string {
+  return JSON.stringify({
+    name: l.name ?? null, active: l.active ?? null,
+    amount: l.amount ?? null, amountPercentage: l.amountPercentage ?? null,
+    fromDepotId: l.fromDepotId ?? null, toDepotId: l.toDepotId ?? null,
+    minutes: l.minutes ?? null, linehaulRunId: l.linehaulRunId ?? null,
+    insertToBulk: l.insertToBulk ?? null, applyDiscount: l.applyDiscount ?? null,
+    applyAddOnPercentage: l.applyAddOnPercentage ?? null,
+    weekDay: l.weekDay ?? [],
+    departureAdvanceDays: l.departureAdvanceDays ?? null,
+    fromClientAddress: l.fromClientAddress ?? null,
+    dropOffLocationId: l.dropOffLocationId ?? null,
+    speedId: l.speedId ?? null,
+  });
+}
+
+// Non-null linehaul row shape - used inline by deriveFromLegs' local
+// array and by canonicalLinehaul. Same as one element of
+// ScheduleGroupUpsertBody['linehauls'] with the wrapping null stripped.
+type LinehaulUpsertRow = NonNullable<ScheduleGroupUpsertBody['linehauls']>[number];
+
+// Walks the leg chain, mirroring the `derived` useMemo body inside the
+// component. Extracted so both the seed useEffect and the render
+// memo run the SAME derivation logic - a mismatch between the two
+// would produce a false "dirty" signal on first render (see F7).
+function deriveFromLegs(legs: Leg[], days: DayForm[]) {
+  let pickupDepotId: number | null = null;
+  let pickupRatingSpeed: number | null = null;
+  let regionId = 0;
+  let speedId: number | null = null;
+  let postcodeGroupId: number | null = null;
+  let storageState: number | null = null;
+  const linehauls: LinehaulUpsertRow[] = [];
+  const zones: number[] = [];
+  for (const leg of legs) {
+    if (leg.type === 'collection') {
+      pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+      pickupRatingSpeed = leg.speedId;
+    } else if (leg.type === 'depot') {
+      storageState = leg.storageState;
+    } else if (leg.type === 'linehaul') {
+      linehauls.push({
+        name: leg.name, active: leg.active,
+        amount: leg.amount, amountPercentage: leg.amountPercentage,
+        fromDepotId: leg.fromDepotId, toDepotId: leg.toDepotId,
+        minutes: leg.transitMinutes || null,
+        linehaulRunId: leg.linehaulRunId,
+        insertToBulk: leg.insertToBulk, applyDiscount: leg.applyDiscount,
+        applyAddOnPercentage: leg.applyAddOnPercentage,
+        weekDay: leg.weekDay ?? days.map((d) => (d.enabled ? 1 : 0)),
+        departureAdvanceDays: leg.dayOffset,
+        fromClientAddress: leg.fromClientAddress, dropOffLocationId: leg.dropOffLocationId,
+        speedId: leg.speedId,
+      });
+    } else if (leg.type === 'delivery') {
+      regionId = leg.regionId;
+      speedId = leg.speedId;
+      postcodeGroupId = leg.postcodeGroupId;
+      for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
+    }
+  }
+  zones.sort((a, b) => a - b);
+  return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
 }
 
 function seedLegsFromDto(d: ScheduleGroup): Leg[] {
@@ -139,24 +210,37 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       onClose();
     }
   }, [scheduleId, query.isLoading, query.isFetching, query.data, query.isError, toast, onClose]);
-  // Create-override modal state lives here (not on ClientsTab) so it
-  // survives tab switches and renders as a sibling of the parent Modal
-  // instead of nested inside its overflow-auto content div - a nested
-  // fixed-positioned modal was rendering but getting clipped by the
-  // parent modal's stacking context, so the button felt like a no-op.
-  const [showCreateOverride, setShowCreateOverride] = useState(false);
+  // Client-override editor state lives here (not on ClientsTab) so it
+  // survives tab switches and renders as a sibling of the parent Modal.
+  // Steve F1 (2026-09-22): the editor writes deltas via
+  // PUT /api/v2/schedules/{id}/overrides/{clientId} instead of cloning
+  // the base schedule via the old CreateOverride API.
+  const [overrideEditor, setOverrideEditor] = useState<{
+    clientId: number;
+    clientCode: string | null;
+    clientName: string | null;
+    existing: ScheduleOverride | null;
+  } | null>(null);
 
-  // Reset showCreateOverride when the parent modal closes (scheduleId
-  // becomes null) so a subsequent open on a different schedule doesn't
-  // resurface the child modal bound to the previous base. Audit HIGH
-  // #5 (2026-09-17).
+  // Reset editor state when the parent modal closes (scheduleId becomes
+  // null) so a subsequent open on a different schedule doesn't resurface
+  // an editor bound to the previous base.
   useEffect(() => {
-    if (scheduleId == null) setShowCreateOverride(false);
+    if (scheduleId == null) setOverrideEditor(null);
   }, [scheduleId]);
 
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formAutoBook, setFormAutoBook] = useState(true);
+  // F21 (Steve 2026-09-20): header-level bookable flag. Separate from
+  // AutoBook - IsActive gates whether the schedule can be booked at all;
+  // AutoBook gates book-immediately vs stage. Default true so freshly
+  // seeded schedules with no explicit value stay bookable.
+  const [formIsActive, setFormIsActive] = useState(true);
+  // F13 (Steve 2026-09-20): client-facing display copy. Empty string is
+  // saved as NULL so the backend can distinguish "cleared" from "unset".
+  const [formDisplayName, setFormDisplayName] = useState('');
+  const [formDisplayDescription, setFormDisplayDescription] = useState('');
   const [formLegs, setFormLegs] = useState<Leg[]>([]);
   const [formDays, setFormDays] = useState<DayForm[]>(() => seedDaysFromDto([]));
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -179,10 +263,21 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
   // the "migration to a link row happens on next save" side effect,
   // so we gate Save on the form actually differing from the seed.
   const [initialSnapshot, setInitialSnapshot] = useState<string>('');
+  // F7 (Steve 2026-09-20): canonical seeded projections for zones +
+  // linehauls, captured at seed time. Compared against derived.* on
+  // save so we can send `null` (preserve) when the operator did not
+  // touch that array, vs `[...]` (replace) when they did. Prevents the
+  // save payload from silently wiping BulkZoneSchedule rows when the
+  // operator only edits e.g. the description on a schedule that has
+  // its delivery geography stored as zone rows.
+  const [seededZonesJson, setSeededZonesJson] = useState<string | null>(null);
+  const [seededLinehaulsJson, setSeededLinehaulsJson] = useState<string | null>(null);
 
   const currentSnapshot = useMemo(
     () => JSON.stringify({
       name: formName, description: formDescription, autoBook: formAutoBook,
+      isActive: formIsActive,
+      displayName: formDisplayName, displayDescription: formDisplayDescription,
       legs: formLegs, days: formDays,
       pickupPostcodeGroupId: formPickupPostcodeGroupId,
       parentSpeedId: formParentSpeedId,
@@ -195,7 +290,8 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
-    [formName, formDescription, formAutoBook, formLegs, formDays,
+    [formName, formDescription, formAutoBook, formIsActive,
+     formDisplayName, formDisplayDescription, formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
      formPickupBoxDiscount, formDropOffLocationId, formApplyPickupCutoff,
      formPickupCutoff, formBookPickup, formPostcodeIds, formPolygonIds],
@@ -213,8 +309,16 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     const seedName = data.name ?? '';
     const seedDescription = data.description ?? '';
     const seedAutoBook = data.autoBook ?? true;
+    const seedIsActive = data.isActive ?? true;
+    const seedDisplayName = data.displayName ?? '';
+    const seedDisplayDescription = data.displayDescription ?? '';
     const seedLegs = seedLegsFromDto(data);
     const seedDays = seedDaysFromDto(data.dayWindows);
+    // F7 (Steve 2026-09-20): run the same derivation the render memo
+    // uses so the seeded canonical string and the first-render current
+    // canonical string agree. Any mismatch after seed = the operator
+    // touched a zone / linehaul leg in the chain builder.
+    const initialDerived = deriveFromLegs(seedLegs, seedDays);
     const seedPickupPostcodeGroupId = data.pickupPostcodeGroupId ?? null;
     const seedParentSpeedId = data.parentSpeedId ?? null;
     const seedDeliveryState = data.deliveryState ?? null;
@@ -228,6 +332,9 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     setFormName(seedName);
     setFormDescription(seedDescription);
     setFormAutoBook(seedAutoBook);
+    setFormIsActive(seedIsActive);
+    setFormDisplayName(seedDisplayName);
+    setFormDisplayDescription(seedDisplayDescription);
     setFormLegs(seedLegs);
     setFormDays(seedDays);
     setFormPickupPostcodeGroupId(seedPickupPostcodeGroupId);
@@ -242,8 +349,14 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     setFormPolygonIds(seedPolygonIds);
     setSaveError(null);
     setSeededForId(data.scheduleId);
+    // F7: cache canonical seed for zones + linehauls. Compared against
+    // current derived on save to decide null (preserve) vs [...] (replace).
+    setSeededZonesJson(JSON.stringify(initialDerived.zones));
+    setSeededLinehaulsJson(JSON.stringify(initialDerived.linehauls.map(canonicalLinehaul)));
     setInitialSnapshot(JSON.stringify({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
+      isActive: seedIsActive,
+      displayName: seedDisplayName, displayDescription: seedDisplayDescription,
       legs: seedLegs, days: seedDays,
       pickupPostcodeGroupId: seedPickupPostcodeGroupId,
       parentSpeedId: seedParentSpeedId,
@@ -264,6 +377,8 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     if (scheduleId == null) {
       setSeededForId(null);
       setInitialSnapshot('');
+      setSeededZonesJson(null);
+      setSeededLinehaulsJson(null);
     }
   }, [scheduleId]);
 
@@ -305,46 +420,24 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     setFormPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
   // Walk the leg chain to pull the flat fields the backend upsert
-  // needs. Same rules as NewScheduleModal.derived.
-  const derived = useMemo(() => {
-    let pickupDepotId: number | null = null;
-    let pickupRatingSpeed: number | null = null;
-    let regionId = 0;
-    let speedId: number | null = null;
-    let postcodeGroupId: number | null = null;
-    let storageState: number | null = null;
-    const linehauls: ScheduleGroupUpsertBody['linehauls'] = [];
-    const zones: number[] = [];
-    for (const leg of formLegs) {
-      if (leg.type === 'collection') {
-        pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
-        pickupRatingSpeed = leg.speedId;
-      } else if (leg.type === 'depot') {
-        storageState = leg.storageState;
-      } else if (leg.type === 'linehaul') {
-        linehauls.push({
-          name: leg.name, active: leg.active,
-          amount: leg.amount, amountPercentage: leg.amountPercentage,
-          fromDepotId: leg.fromDepotId, toDepotId: leg.toDepotId,
-          minutes: leg.transitMinutes || null,
-          linehaulRunId: leg.linehaulRunId,
-          insertToBulk: leg.insertToBulk, applyDiscount: leg.applyDiscount,
-          applyAddOnPercentage: leg.applyAddOnPercentage,
-          weekDay: leg.weekDay ?? formDays.map((d) => (d.enabled ? 1 : 0)),
-          departureAdvanceDays: leg.dayOffset,
-          fromClientAddress: leg.fromClientAddress, dropOffLocationId: leg.dropOffLocationId,
-          speedId: leg.speedId,
-        });
-      } else if (leg.type === 'delivery') {
-        regionId = leg.regionId;
-        speedId = leg.speedId;
-        postcodeGroupId = leg.postcodeGroupId;
-        for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
-      }
-    }
-    zones.sort((a, b) => a - b);
-    return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
-  }, [formLegs, formDays]);
+  // needs. Same rules as NewScheduleModal.derived. Extracted to
+  // `deriveFromLegs` so the seed useEffect can run the identical
+  // derivation on the seeded legs and cache the initial output for
+  // F7 dirty-detection.
+  const derived = useMemo(() => deriveFromLegs(formLegs, formDays), [formLegs, formDays]);
+
+  // F7 (Steve 2026-09-20): compare current derived output against the
+  // seeded canonical strings so we can send `null` on unchanged
+  // collections. seededXJson is set inside the seed useEffect; before
+  // the first seed lands, both flags stay false so the empty payload
+  // never wins.
+  const currentZonesJson = useMemo(() => JSON.stringify(derived.zones), [derived.zones]);
+  const currentLinehaulsJson = useMemo(
+    () => JSON.stringify(derived.linehauls.map(canonicalLinehaul)),
+    [derived.linehauls],
+  );
+  const zonesDirty = seededZonesJson !== null && seededZonesJson !== currentZonesJson;
+  const linehaulsDirty = seededLinehaulsJson !== null && seededLinehaulsJson !== currentLinehaulsJson;
 
   const saveMut = useMutation({
     mutationFn: (body: ScheduleGroupUpsertBody) =>
@@ -375,6 +468,13 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       scheduleId: data.scheduleId,
       name: formName.trim(),
       description: formDescription.trim() || null,
+      // F13: empty display name/description are sent as NULL so the
+      // backend can distinguish "operator cleared it" from "operator
+      // never touched it".
+      displayName: formDisplayName.trim() || null,
+      displayDescription: formDisplayDescription.trim() || null,
+      // F21: header-level bookable flag.
+      isActive: formIsActive,
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
@@ -390,14 +490,29 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       deliveryState: formDeliveryState,
       pickupBoxDiscount: formPickupBoxDiscount,
       dropOffLocationId: formDropOffLocationId,
+      // F8 (Steve 2026-09-20): per-day CutoffHours. Each enabled day
+       // carries its own d.cutoffHours; DayWindowDto flows this through
+       // to tblBulkRunSchedule per-row without flattening. Audit found
+       // 452 NZ schedules had disagreeing per-day cutoffs; this
+       // frontend was not the flatten path (seedDaysFromDto reads
+       // per-day and this write preserves per-day).
       dayWindows: formDays
         .map((d, i) => ({
           id: d.id, dayOfWeek: i + 1,
           startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours,
         }))
         .filter((_d, i) => formDays[i].enabled),
-      zones: derived.zones.map((z) => ({ zone: z, active: true })),
-      linehauls: derived.linehauls,
+      // F7 (Steve 2026-09-20): send null when the operator did not
+      // touch zones/linehauls so the backend null-guard preserves the
+      // existing BulkZoneSchedule / TblBulkScheduleLinehaul rows.
+      // Sending [] would wipe them; sending [...] with the seeded set
+      // would over-write with the seeded shape (mostly a no-op, but
+      // triggers change tracking on every unrelated save). Null is
+      // the cleanest signal.
+      zones: zonesDirty
+        ? derived.zones.map((z) => ({ zone: z, active: true }))
+        : null,
+      linehauls: linehaulsDirty ? derived.linehauls : null,
       // Client link rows are managed via the Clients tab attach/detach
       // endpoints, not upsert. Preserve the current set so the backend
       // does not clear links on an unrelated route/days save.
@@ -479,20 +594,40 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
                 className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
               />
             </label>
-            <label className="flex items-center gap-3 mt-6">
-              <input
-                type="checkbox"
-                checked={formAutoBook}
-                onChange={(e) => setFormAutoBook(e.target.checked)}
-                className="accent-brand-cyan"
-              />
-              <span className="text-sm">
-                Book immediately
-                <span className="ml-2 text-xs text-text-muted">
-                  job creates now instead of staging into bulk
+            <div className="flex flex-col gap-2 mt-6">
+              {/* F21: Active flag - independent of Book immediately.
+                  Active = schedule can be booked at all; Book immediately
+                  = job creates now instead of staging. */}
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={formIsActive}
+                  onChange={(e) => setFormIsActive(e.target.checked)}
+                  className="accent-brand-cyan"
+                  data-testid="schedule-is-active-checkbox"
+                />
+                <span className="text-sm">
+                  Active
+                  <span className="ml-2 text-xs text-text-muted">
+                    schedule is bookable at all
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={formAutoBook}
+                  onChange={(e) => setFormAutoBook(e.target.checked)}
+                  className="accent-brand-cyan"
+                />
+                <span className="text-sm">
+                  Book immediately
+                  <span className="ml-2 text-xs text-text-muted">
+                    job creates now instead of staging into bulk
+                  </span>
+                </span>
+              </label>
+            </div>
             <label className="col-span-2 block">
               <span className="text-xs uppercase tracking-wide text-text-muted">Description</span>
               <input
@@ -500,6 +635,41 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
                 value={formDescription}
                 onChange={(e) => setFormDescription(e.target.value)}
                 className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+              />
+            </label>
+
+            {/* F13: client-facing display copy shown on the booking /
+                job pages. Empty values save as NULL (fall back to Name). */}
+            <label className="block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">
+                Display name
+                <span className="ml-2 text-text-muted normal-case">
+                  (client-facing; blank = use Name)
+                </span>
+              </span>
+              <input
+                type="text"
+                value={formDisplayName}
+                onChange={(e) => setFormDisplayName(e.target.value)}
+                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                placeholder="Next Business Day"
+                data-testid="schedule-display-name-input"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">
+                Display description
+                <span className="ml-2 text-text-muted normal-case">
+                  (client-facing subtitle)
+                </span>
+              </span>
+              <input
+                type="text"
+                value={formDisplayDescription}
+                onChange={(e) => setFormDisplayDescription(e.target.value)}
+                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                placeholder="Order by 3pm, delivered next business day"
+                data-testid="schedule-display-description-input"
               />
             </label>
           </div>
@@ -530,7 +700,7 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               data={data}
               onAttachClients={onAttachClients}
               onOpenSchedule={onOpenSchedule}
-              onOpenCreateOverride={() => setShowCreateOverride(true)}
+              onOpenOverrideEditor={(entry) => setOverrideEditor(entry)}
             />
           )}
           {tab === 'route' && (
@@ -587,21 +757,15 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
         the parent's stacking context cleanly. Also survives tab
         switches: state lives at the ScheduleDetailModal level, not
         inside ClientsTab which unmounts on tab change. */}
-    {data && (
-      <CreateOverrideModal
-        baseScheduleId={showCreateOverride ? data.scheduleId : null}
-        baseName={data.name}
-        attachedClientIds={data.clientIds}
-        onCreated={(newId) => {
-          setShowCreateOverride(false);
-          // Steve's design: after creating an override, pop the newly
-          // created override in the detail modal so the operator can
-          // immediately edit its differing fields. onOpenSchedule
-          // navigates the ?edit=<id> deep-link, which drives this same
-          // ScheduleDetailModal to reload for the new id.
-          onOpenSchedule(newId);
-        }}
-        onClose={() => setShowCreateOverride(false)}
+    {data && overrideEditor && (
+      <ClientOverrideEditor
+        scheduleId={data.scheduleId}
+        scheduleName={data.name}
+        clientId={overrideEditor.clientId}
+        clientCode={overrideEditor.clientCode}
+        clientName={overrideEditor.clientName}
+        existing={overrideEditor.existing}
+        onClose={() => setOverrideEditor(null)}
       />
     )}
     </>
@@ -614,10 +778,15 @@ interface ClientsTabProps {
   data: ScheduleGroup;
   onAttachClients: (scheduleId: number) => void;
   onOpenSchedule: (scheduleId: number) => void;
-  onOpenCreateOverride: () => void;
+  onOpenOverrideEditor: (entry: {
+    clientId: number;
+    clientCode: string | null;
+    clientName: string | null;
+    existing: ScheduleOverride | null;
+  }) => void;
 }
 
-function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverride }: ClientsTabProps) {
+function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverrideEditor }: ClientsTabProps) {
   const qc = useQueryClient();
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
@@ -666,8 +835,10 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverrid
           />
         </div>
 
-        {/* Client overrides section per Steve's mockup - lives on the
-            left column under the radio picker. */}
+        {/* Client overrides section per Steve F1 (2026-09-20). Deltas
+            live in tblBulkRunScheduleOverride; the base schedule is
+            never cloned. One card per client with at least one delta
+            row. */}
         <div className="mt-6 pt-4 border-t border-border">
           <h3 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2">
             Client overrides
@@ -680,53 +851,58 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverrid
           )}
           {!overridesQuery.isLoading && overrides.length === 0 && (
             <p className="text-xs text-text-muted italic mt-2">
-              No client overrides for this schedule.
+              No client differs from this schedule yet.
             </p>
           )}
           {overrides.length > 0 && (
-            <ul className="mt-2 space-y-1">
-              {overrides.map((o) => (
-                <li
-                  key={o.scheduleId}
-                  className="flex items-center gap-3 text-sm px-3 py-2 border border-border rounded"
-                >
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-warning-bg text-warning text-[10px] font-semibold">
-                    O
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onOpenSchedule(o.scheduleId)}
-                    className="text-xs font-mono text-brand-cyan hover:underline"
-                    title="Open the override schedule"
+            <ul className="mt-2 space-y-1" data-testid="client-overrides-list">
+              {overrides.map((o) => {
+                const scopeChips: string[] = [];
+                if (o.schedule) scopeChips.push('schedule');
+                if (o.collection) scopeChips.push('collection');
+                if (o.delivery) scopeChips.push('delivery');
+                return (
+                  <li
+                    key={o.clientId}
+                    className="flex items-center gap-3 text-sm px-3 py-2 border border-border rounded"
+                    data-testid={`client-override-row-${o.clientId}`}
                   >
-                    #{o.scheduleId}
-                  </button>
-                  <span className="font-medium text-text-primary">{o.clientCode}</span>
-                  <span className="text-xs text-text-muted ml-auto italic">
-                    override of #{data.scheduleId}
-                  </span>
-                </li>
-              ))}
+                    <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-warning-bg text-warning text-[10px] font-semibold">
+                      O
+                    </span>
+                    <span className="font-medium text-text-primary">
+                      {o.clientCode ?? `Client #${o.clientId}`}
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      differs on: {scopeChips.join(', ')}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenOverrideEditor({
+                          clientId: o.clientId,
+                          clientCode: o.clientCode,
+                          clientName: o.clientName,
+                          existing: o,
+                        })
+                      }
+                      className="ml-auto text-xs text-brand-cyan hover:underline"
+                      data-testid={`client-override-edit-${o.clientId}`}
+                    >
+                      Edit
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
           <p className="mt-3 text-xs text-text-muted">
-            An override is a new schedule with <span className="font-mono">BaseScheduleId = #{data.scheduleId}</span>.
-            The client's link row moves from this schedule to the override, so it is never on both.
+            An override records only the fields this client differs on. The base schedule
+            stays untouched and the client stays attached to it.
           </p>
-          <button
-            type="button"
-            onClick={onOpenCreateOverride}
-            disabled={isDefault}
-            title={isDefault
-              ? 'Overrides derive from a specific-client schedule. Attach a client first.'
-              : 'Create a new schedule based on this one for a single client.'}
-            className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded border border-border hover:bg-surface-light text-text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Create override for a client...
-          </button>
+          {/* "Create override" is per-client. Rendered inline on each
+              attached client row below (see Attached clients column).
+              Left button removed by Steve F1 (2026-09-22). */}
         </div>
       </section>
 
@@ -755,6 +931,7 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverrid
             const sinceLabel = linkedUtc ? formatSinceDate(linkedUtc) : null;
             const clientId = data.clientIds[i];
             const name = data.clientNames?.[i] ?? null;
+            const existingOverride = overrides.find((o) => o.clientId === clientId) ?? null;
             return (
               <li
                 key={`${code}-${i}`}
@@ -768,10 +945,33 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenCreateOverrid
                   <span className={name ? 'text-text-secondary' : 'font-medium text-text-primary'}>{code}</span>
                   <span className="text-text-muted">·</span>
                   <span className="text-xs text-text-muted font-mono">{clientId ?? '?'}</span>
+                  {existingOverride && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning-bg text-warning font-semibold uppercase tracking-wide">
+                      override
+                    </span>
+                  )}
                 </span>
                 {sinceLabel && (
                   <span className="text-xs text-text-muted mr-3">since {sinceLabel}</span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (clientId == null) return;
+                    onOpenOverrideEditor({
+                      clientId,
+                      clientCode: code,
+                      clientName: name,
+                      existing: existingOverride,
+                    });
+                  }}
+                  disabled={clientId == null}
+                  className="text-xs text-brand-cyan hover:underline mr-3 disabled:opacity-40"
+                  title={existingOverride ? 'Edit this client\'s override' : 'Configure an override for this client'}
+                  data-testid={`configure-override-${clientId}`}
+                >
+                  {existingOverride ? 'Edit override' : 'Configure override'}
+                </button>
                 <button
                   type="button"
                   onClick={() => {

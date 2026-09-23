@@ -67,7 +67,16 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const tenantId = auth.currentTenantId ?? 0;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [autoBook, setAutoBook] = useState(true);
+  const [autoBook, setAutoBook] = useState(false);
+  // F21 (Steve 2026-09-20): header-level bookable flag. Defaults to true
+  // on create so new schedules are immediately bookable; independent of
+  // AutoBook (which is off by default because staging into bulk is the
+  // safer default for a brand-new schedule).
+  const [isActive, setIsActive] = useState(true);
+  // F13: client-facing display copy. Empty strings are saved as NULL so
+  // the backend can distinguish "cleared" from "unset".
+  const [displayName, setDisplayName] = useState('');
+  const [displayDescription, setDisplayDescription] = useState('');
   // Booking mode per Steve's brief §2 Creating-a-schedule item 1:
   //   "booking mode radio Fixed Time / Window"
   // Fixed Time = single despatch time (drivers pick up at the same
@@ -129,7 +138,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const resetAndClose = () => {
     setName('');
     setDescription('');
-    setAutoBook(true);
+    setAutoBook(false);
+    setIsActive(true);
+    setDisplayName('');
+    setDisplayDescription('');
     setBookingMode('window');
     setLegs([]);
     setDays([1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...DEFAULT_DAY, enabled: n <= 5 })));
@@ -235,6 +247,12 @@ export function NewScheduleModal({ open, onClose }: Props) {
       scheduleId: null,   // create
       name: name.trim(),
       description: description.trim() || null,
+      // F13: send NULL when the operator leaves the display fields
+      // blank so the backend can distinguish "cleared" from "unset".
+      displayName: displayName.trim() || null,
+      displayDescription: displayDescription.trim() || null,
+      // F21: header-level bookable flag.
+      isActive: isActive,
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
@@ -250,6 +268,13 @@ export function NewScheduleModal({ open, onClose }: Props) {
       deliveryState: deliveryState,
       pickupBoxDiscount: pickupBoxDiscount,
       dropOffLocationId: dropOffLocationId,
+      // F8 (Steve 2026-09-20): per-day CutoffHours. Each enabled day
+       // carries its own d.cutoffHours; DayWindowDto flows this through
+       // to tblBulkRunSchedule per-row without flattening. Audit found
+       // 452 NZ schedules had disagreeing per-day cutoffs that the old
+       // read+write path silently flattened; this frontend never
+       // introduced that path (seedDaysFromDto reads per-day, submit
+       // writes per-day).
       dayWindows: days.map((d, i) => ({
         id: null,
         dayOfWeek: i + 1,
@@ -257,8 +282,15 @@ export function NewScheduleModal({ open, onClose }: Props) {
         endTime: d.endTime,
         cutoffHours: d.cutoffHours,
       })).filter((_d, i) => days[i].enabled),
-      zones: derived.zones.map((z) => ({ zone: z, active: true })),
-      linehauls: derived.linehauls,
+      // F7 (Steve 2026-09-20): send null when the operator did not
+      // populate zones/linehauls, so the backend's null-guard preserves
+      // any existing rows (moot on create since there are none, but
+      // keeps the send-shape consistent with ScheduleDetailModal for
+      // the backend contract).
+      zones: derived.zones.length > 0
+        ? derived.zones.map((z) => ({ zone: z, active: true }))
+        : null,
+      linehauls: derived.linehauls.length > 0 ? derived.linehauls : null,
       // "Specific" mode uses the id-based fallback: `clientCodes: null`
       // tells the backend to consult `clientIds`. "All" mode sends an
       // explicit empty `clientCodes: []` which reads as "no link rows"
@@ -317,20 +349,41 @@ export function NewScheduleModal({ open, onClose }: Props) {
             placeholder="AKL > CHCH Pre 10am Medical"
           />
         </label>
-        <label className="flex items-center gap-3 mt-6">
-          <input
-            type="checkbox"
-            checked={autoBook}
-            onChange={(e) => setAutoBook(e.target.checked)}
-            className="accent-brand-cyan"
-          />
-          <span className="text-sm">
-            Book immediately
-            <span className="ml-2 text-xs text-text-muted">
-              job creates now instead of staging into bulk
+        <div className="flex flex-col gap-2 mt-6">
+          {/* F21: Active flag - independent of Book immediately. Active
+              gates whether the schedule can be booked at all; Book
+              immediately gates book-now vs stage-into-bulk. Defaults:
+              active=true (bookable), autoBook=false (stages by default). */}
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={isActive}
+              onChange={(e) => setIsActive(e.target.checked)}
+              className="accent-brand-cyan"
+              data-testid="new-schedule-is-active-checkbox"
+            />
+            <span className="text-sm">
+              Active
+              <span className="ml-2 text-xs text-text-muted">
+                schedule is bookable at all
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={autoBook}
+              onChange={(e) => setAutoBook(e.target.checked)}
+              className="accent-brand-cyan"
+            />
+            <span className="text-sm">
+              Book immediately
+              <span className="ml-2 text-xs text-text-muted">
+                job creates now instead of staging into bulk
+              </span>
+            </span>
+          </label>
+        </div>
 
         <fieldset className="col-span-2 flex items-center gap-4 mt-2">
           <legend className="text-xs uppercase tracking-wide text-text-muted mr-2">Booking mode</legend>
@@ -373,6 +426,41 @@ export function NewScheduleModal({ open, onClose }: Props) {
             onChange={(e) => setDescription(e.target.value)}
             className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 h-16 resize-y"
             placeholder="Book by 3 pm. Next business day service to Christchurch."
+          />
+        </label>
+
+        {/* F13: client-facing display copy shown on the booking / job
+            pages. Blank -> NULL on save (falls back to Name). */}
+        <label className="block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Display name
+            <span className="ml-2 text-text-muted normal-case">
+              (client-facing; blank = use Name)
+            </span>
+          </span>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+            placeholder="Next Business Day"
+            data-testid="new-schedule-display-name-input"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Display description
+            <span className="ml-2 text-text-muted normal-case">
+              (client-facing subtitle)
+            </span>
+          </span>
+          <input
+            type="text"
+            value={displayDescription}
+            onChange={(e) => setDisplayDescription(e.target.value)}
+            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+            placeholder="Order by 3pm, delivered next business day"
+            data-testid="new-schedule-display-description-input"
           />
         </label>
 

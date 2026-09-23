@@ -281,9 +281,44 @@ public class ScheduleService(
                 })
                 .ToListAsync();
         });
-        await Task.WhenAll(linkRowsTask, rowBasesTask);
+        // F3 (2026-09-23): "differs on" hint for the list-view badge is
+        // now derived server-side from the delta table. One DISTINCT
+        // fetch of (ScheduleId, Scope) - bounded by
+        // #schedules * (schedule|collection|delivery|depot) worst case,
+        // in practice a few hundred rows even on the biggest tenants.
+        // Consumers render a friendly comma-joined list.
+        var overrideScopeRowsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkRunScheduleOverrides.AsNoTracking()
+                .Where(o => liveHeaderIds.Contains(o.ScheduleId))
+                .Select(o => new { o.ScheduleId, o.Scope })
+                .Distinct()
+                .ToListAsync();
+        });
+        await Task.WhenAll(linkRowsTask, rowBasesTask, overrideScopeRowsTask);
         var (linkRows, w2LinkMs) = linkRowsTask.Result;
         var (rowBases, w2RowsMs) = rowBasesTask.Result;
+        var (overrideScopeRows, w2OverrideScopeMs) = overrideScopeRowsTask.Result;
+
+        // (ScheduleId -> ordered scope list) for the list-view "differs
+        // on:" badge. Scopes ordered schedule/collection/depot/delivery
+        // so the badge reads left to right by chain position.
+        var overrideScopesByScheduleId = overrideScopeRows
+            .GroupBy(r => r.ScheduleId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(r => r.Scope)
+                      .Distinct()
+                      .OrderBy(s => s switch
+                      {
+                          "schedule"   => 0,
+                          "collection" => 1,
+                          "depot"      => 2,
+                          "delivery"   => 3,
+                          _ => 99,
+                      })
+                      .ToArray());
 
         var linkClientsByHeaderId = linkRows
             .GroupBy(x => x.ScheduleId)
@@ -302,13 +337,6 @@ public class ScheduleService(
         //     "N routes"; a small overcount is acceptable trade for a
         //     100x wire-payload reduction.
         var dayRowToHeader = rowBases.ToDictionary(r => r.BulkRunScheduleId, r => r.ScheduleId);
-
-        // Override count per base header. Steve's mockup renders "+N"
-        // next to a base schedule's Name when N overrides exist.
-        var overrideCountByBaseId = headers
-            .Where(h => h.BaseScheduleId.HasValue && liveHeaderIds.Contains(h.BaseScheduleId.Value))
-            .GroupBy(h => h.BaseScheduleId!.Value)
-            .ToDictionary(g => g.Key, g => g.Count());
 
         // ─── Wave 3: merged client codes (single TucClients round-trip). ─
         var legacyClientIds = headers
@@ -352,42 +380,6 @@ public class ScheduleService(
             w1ZoneMs, w1LinehaulMs, w1RouteMs, w1RunsMs,
             w2LinkMs, w2RowsMs, w3ClientMs,
             headers.Count, rowBases.Count);
-
-        // Base-template lookup for override rows. Steve's brief §2 says
-        // an override row must render "differs on: <field list>". We
-        // diff the override's own template (region / origin depot / speed
-        // / window / Monday cutoff / other cutoff / active days) against
-        // its base's template and emit the field names that differ.
-        var templateByHeaderId = rowBases
-            .GroupBy(r => r.ScheduleId)
-            .Where(g => headersById.ContainsKey(g.Key))
-            .ToDictionary(g => g.Key, g =>
-            {
-                var first = g.First();
-                var starts = g.Where(x => x.StartTime.HasValue).Select(x => x.StartTime!.Value).ToArray();
-                var ends = g.Where(x => x.EndTime.HasValue).Select(x => x.EndTime!.Value).ToArray();
-                var days = g.Select(x => (int)(x.DayOfWeek ?? 0))
-                    .Where(d => d > 0).Distinct().OrderBy(d => d).ToArray();
-                var monRow = g.FirstOrDefault(x => x.DayOfWeek == 1);
-                var otherCutoffs = g
-                    .Where(x => x.DayOfWeek != 1 && x.DayOfWeek.HasValue)
-                    .Select(x => (int?)x.CutoffHours)
-                    .ToArray();
-                int? otherC = otherCutoffs.Length == 0
-                    ? null
-                    : otherCutoffs.GroupBy(v => v).OrderByDescending(gg => gg.Count()).First().Key;
-                return new
-                {
-                    RegionId = first.Region,
-                    PickupDepotId = g.FirstOrDefault(x => x.PickupDepotId.HasValue)?.PickupDepotId,
-                    SpeedId = first.SpeedId,
-                    WindowStart = starts.Length > 0 ? starts.Min().ToString(@"hh\:mm") : null,
-                    WindowEnd = ends.Length > 0 ? ends.Max().ToString(@"hh\:mm") : null,
-                    MonCutoff = monRow?.CutoffHours,
-                    OtherCutoff = otherC,
-                    ActiveDays = days,
-                };
-            });
 
         // Group day rows by ScheduleId (their header FK).
         // Each header emits one summary row.
@@ -449,7 +441,13 @@ public class ScheduleService(
 
                 var description = g.Select(x => x.Description).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
 
-                var overrideCount = overrideCountByBaseId.TryGetValue(header.ScheduleId, out var oc) ? oc : 0;
+                // F1 delta model (2026-09-22): override count comes
+                // straight off the header row, populated transactionally
+                // by ScheduleOverrideService when a client's delta is
+                // added / removed. The old "group headers by
+                // BaseScheduleId" derivation was retired alongside the
+                // clone-based CreateOverrideAsync flow.
+                var overrideCount = header.OverrideCount;
                 // Sum the per-day-row distinct-RouteId counts. A route
                 // typically binds to one day-row per header, so this
                 // matches the pre-refactor "distinct RouteIds across day
@@ -486,24 +484,16 @@ public class ScheduleService(
                 var postcodeCount = postcodeCountByName.TryGetValue(header.Name, out var pc) ? pc : 0;
                 var polygonCount = polygonCountByName.TryGetValue(header.Name, out var poc) ? poc : 0;
 
-                // Compute overriddenFields when this row is an override
-                // (has a BaseScheduleId that points to a live header we
-                // have a template for). Compare field-by-field against the
-                // base's template using the operator's own labels so the
-                // hint reads naturally: "differs on: Cut-off, Speed".
-                string[] overriddenFields = Array.Empty<string>();
-                if (header.BaseScheduleId.HasValue
-                    && templateByHeaderId.TryGetValue(header.BaseScheduleId.Value, out var baseTpl))
-                {
-                    var diffs = new List<string>();
-                    if (first.Region != baseTpl.RegionId) diffs.Add("Destination depot");
-                    if ((g.FirstOrDefault(x => x.PickupDepotId.HasValue)?.PickupDepotId) != baseTpl.PickupDepotId) diffs.Add("Origin depot");
-                    if (first.SpeedId != baseTpl.SpeedId) diffs.Add("Speed");
-                    if (windowStart != baseTpl.WindowStart || windowEnd != baseTpl.WindowEnd) diffs.Add("Window");
-                    if (monCutoff != baseTpl.MonCutoff || otherCutoff != baseTpl.OtherCutoff) diffs.Add("Cut-off");
-                    if (!activeDays.SequenceEqual(baseTpl.ActiveDays)) diffs.Add("Days");
-                    overriddenFields = diffs.ToArray();
-                }
+                // F3 (2026-09-23): derived server-side from the delta
+                // table. The list-view badge renders e.g.
+                // "differs on: schedule, delivery" - aggregated across
+                // every client's delta on this schedule, showing which
+                // scopes have any override at all. Per-client detail is
+                // still on ScheduleDetailModal's Client Overrides tab.
+                string[] overriddenFields = overrideScopesByScheduleId
+                    .TryGetValue(header.ScheduleId, out var scopes)
+                    ? scopes
+                    : Array.Empty<string>();
 
                 var legacyCode = header.LegacyClientId.HasValue
                     && legacyClientCodes.TryGetValue(header.LegacyClientId.Value, out var code)
@@ -542,7 +532,10 @@ public class ScheduleService(
                     overrideCount,
                     routeCount,
                     linehaulHint,
-                    overriddenFields);
+                    overriddenFields,
+                    header.DisplayName,
+                    header.DisplayDescription,
+                    header.IsActive);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -587,18 +580,18 @@ public class ScheduleService(
     }
 
     /// <summary>
-    /// Read-only list of schedule bundles (Dane's Schedule Groups).
+    /// Read-only list of schedule bundles (Dane's Schedule Bundles).
     /// Aggregates member schedule count + total unique clients bound
-    /// across the members' link rows. Only surfaces active groups
+    /// across the members' link rows. Only surfaces active bundles
     /// (IsActive = 1). Sorted alphabetically by name for a stable
     /// browse experience.
     ///
     /// Ships empty until the 20260914140000 migration applies (the
-    /// tblBulkRunScheduleGroup + tblBulkRunScheduleGroupMember tables
+    /// tblBulkRunScheduleBundle + tblBulkRunScheduleBundleMember tables
     /// don't exist pre-migration). EF Core handles the empty DbSet
     /// gracefully; no code branch needed.
     /// </summary>
-    public async Task<List<ScheduleGroupBundleDto>> ListScheduleGroupsAsync()
+    public async Task<List<ScheduleBundleDto>> ListScheduleBundlesAsync()
     {
         // OrderBy with a StringComparer cannot translate to SQL - EF Core
         // throws `The LINQ expression ... could not be translated`. Fetch
@@ -606,16 +599,16 @@ public class ScheduleService(
         // comparer client-side. Matches the pattern already used at the
         // end of ListSummaryAsync (line ~229) and by every other .OrderBy
         // (StringComparer) call in this service.
-        var groups = (await Context.BulkRunScheduleGroups.AsNoTracking()
-            .Where(g => g.IsActive)
+        var bundles = (await Context.BulkRunScheduleBundles.AsNoTracking()
+            .Where(b => b.IsActive)
             .ToListAsync())
-            .OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(b => b.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (groups.Count == 0) return new List<ScheduleGroupBundleDto>();
+        if (bundles.Count == 0) return new List<ScheduleBundleDto>();
 
-        var groupIds = groups.Select(g => g.GroupId).ToList();
-        var memberRows = await Context.BulkRunScheduleGroupMembers.AsNoTracking()
-            .Where(m => groupIds.Contains(m.GroupId))
+        var bundleIds = bundles.Select(b => b.BundleId).ToList();
+        var memberRows = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => bundleIds.Contains(m.BundleId))
             .ToListAsync();
         var scheduleIds = memberRows.Select(m => m.ScheduleId).Distinct().ToList();
 
@@ -627,7 +620,7 @@ public class ScheduleService(
         // Client count = union of link rows across every non-default
         // member. Default headers do not carry link rows so they add
         // zero to the client count, matching Steve's brief section 2
-        // Schedule Groups tab semantics ("Attach clients to group -
+        // Schedule Bundles tab semantics ("Attach clients to bundle -
         // one link row per client per member; members that are
         // defaults are skipped").
         var nonDefaultMemberIds = headers
@@ -642,12 +635,12 @@ public class ScheduleService(
                 .ToListAsync())
                 .Select(x => (x.ScheduleId, x.ClientId))
                 .ToList();
-        var membersByGroup = memberRows.GroupBy(m => m.GroupId)
+        var membersByBundle = memberRows.GroupBy(m => m.BundleId)
             .ToDictionary(g => g.Key, g => g.Select(m => m.ScheduleId).ToArray());
 
-        return groups.Select(g =>
+        return bundles.Select(b =>
         {
-            var members = membersByGroup.TryGetValue(g.GroupId, out var ms) ? ms : Array.Empty<int>();
+            var members = membersByBundle.TryGetValue(b.BundleId, out var ms) ? ms : Array.Empty<int>();
             var liveMembers = members.Where(id => headersById.ContainsKey(id)).ToArray();
             var uniqueClients = liveMembers
                 .Where(id => nonDefaultMemberIds.Contains(id))
@@ -657,8 +650,8 @@ public class ScheduleService(
             var names = liveMembers
                 .Select(id => headersById.TryGetValue(id, out var h) ? h.Name : $"#{id}")
                 .ToArray();
-            return new ScheduleGroupBundleDto(
-                g.GroupId, g.Name, g.Description, g.IsActive,
+            return new ScheduleBundleDto(
+                b.BundleId, b.Name, b.Description, b.IsActive,
                 liveMembers.Length, uniqueClients, liveMembers, names);
         }).ToList();
     }
@@ -1023,6 +1016,18 @@ public class ScheduleService(
 
         BulkRunScheduleHeader header;
         List<TblBulkRunSchedule> existing;
+        // F13 (Steve 2026-09-20): normalise empty/whitespace-only display
+        // strings from the form to NULL on write so the backend can tell
+        // "operator cleared it" (NULL, fall back to Name) apart from
+        // "operator never touched it" (also NULL). The frontend also sends
+        // NULL explicitly on clear, but this is a defensive server-side
+        // fold in case a raw empty string leaks through.
+        var displayName = string.IsNullOrWhiteSpace(req.DisplayName) ? null : req.DisplayName.Trim();
+        var displayDescription = string.IsNullOrWhiteSpace(req.DisplayDescription) ? null : req.DisplayDescription.Trim();
+        // F21: bool? Unset = true (pre-F21 callers keep their behaviour
+        // where every schedule is bookable). Frontend always sends the
+        // explicit boolean once the field ships.
+        var isActive = req.IsActive ?? true;
         if (req.ScheduleId.HasValue && req.ScheduleId.Value > 0)
         {
             header = await Context.BulkRunScheduleHeaders
@@ -1030,6 +1035,9 @@ public class ScheduleService(
                 ?? throw new InvalidOperationException($"Schedule id {req.ScheduleId.Value} not found or retired.");
             if (!string.Equals(header.Name, name, StringComparison.Ordinal))
                 header.Name = name;
+            header.DisplayName = displayName;
+            header.DisplayDescription = displayDescription;
+            header.IsActive = isActive;
             existing = await Context.TblBulkRunSchedules
                 .Include(s => s.BulkZoneSchedules)
                 .Include(s => s.TblBulkScheduleLinehauls)
@@ -1046,6 +1054,9 @@ public class ScheduleService(
                 LegacyClientId = null,
                 CreatedUtc = DateTime.UtcNow,
                 CreatedBy = "RoutedOps",
+                DisplayName = displayName,
+                DisplayDescription = displayDescription,
+                IsActive = isActive,
             };
             Context.BulkRunScheduleHeaders.Add(header);
             existing = new List<TblBulkRunSchedule>();
@@ -1387,6 +1398,27 @@ public class ScheduleService(
         return await ToggleAutoBookAsync(header.ScheduleId);
     }
 
+    /// <summary>Set the header-level IsActive flag (Steve F21 2026-09-22).
+    /// Independent of AutoBook: IsActive gates whether the schedule can be
+    /// booked at all; AutoBook gates book-immediately vs stage. Writes the
+    /// new value verbatim (not a toggle) so the caller controls the
+    /// desired state; mirrors the row-column shape the SchedulesTable
+    /// switch renders.</summary>
+    public async Task<bool> ToggleIsActiveAsync(int scheduleId, bool isActive)
+    {
+        var header = await Context.BulkRunScheduleHeaders
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
+            ?? throw new InvalidOperationException("Schedule not found.");
+        var previous = header.IsActive;
+        header.IsActive = isActive;
+        await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
+        _logger.LogInformation(
+            "ToggleIsActive: scheduleId={ScheduleId} {Previous} -> {Next}",
+            scheduleId, previous, isActive);
+        return isActive;
+    }
+
     // ─── HELPERS ───────────────────────────────────────────────────────────
 
     /// <summary>
@@ -1600,7 +1632,8 @@ public class ScheduleService(
             t.Description,
             dayWindows, zones, linehauls,
             clientIds, clientCodesForGroup, postcodeIds, polygonIds,
-            clientLinkedUtcs, clientNamesForGroup);
+            clientLinkedUtcs, clientNamesForGroup,
+            header.DisplayName, header.DisplayDescription, header.IsActive);
     }
 
     private static string FormatTime(TimeSpan? t) =>
@@ -1692,9 +1725,9 @@ public class ScheduleService(
     /// <summary>
     /// Attach one or more clients to a schedule via the link table.
     /// Idempotent: already-attached client ids are silently skipped.
-    /// Blocks attaching a client that has its own override of this base
-    /// (Steve's brief section 5 "a client is on the base OR on one
-    /// override, never both").
+    /// Under the F1 delta model a client keeps its base link and adds
+    /// a delta row when it needs an override; there is no exclusivity
+    /// between base attach and override anymore.
     /// </summary>
     public async Task<int> AttachClientsAsync(int scheduleId, IEnumerable<int> clientIds)
     {
@@ -1726,25 +1759,9 @@ public class ScheduleService(
             .ToListAsync();
         var already = new HashSet<int>(existing);
 
-        // Block ids that own an override of this base (their link row
-        // lives on the override, not the base).
-        var overrideOwners = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .Where(h => h.BaseScheduleId == scheduleId && h.RetiredUtc == null)
-            .Select(h => h.ScheduleId)
-            .ToListAsync();
-        var overrideClientIds = new HashSet<int>();
-        if (overrideOwners.Count > 0)
-        {
-            var list = await Context.ScheduleClients.AsNoTracking()
-                .Where(sc => overrideOwners.Contains(sc.ScheduleId) && ids.Contains(sc.ClientId))
-                .Select(sc => sc.ClientId)
-                .ToListAsync();
-            overrideClientIds = new HashSet<int>(list);
-        }
-
         var now = DateTime.UtcNow;
         var toAdd = ids
-            .Where(id => !already.Contains(id) && !overrideClientIds.Contains(id))
+            .Where(id => !already.Contains(id))
             .Select(id => new ScheduleClient
             {
                 ScheduleId = scheduleId,
@@ -1763,8 +1780,9 @@ public class ScheduleService(
 
     /// <summary>
     /// Full replace of a schedule's link rows. Adds every id not already
-    /// linked; removes every current link not in the new set. Skips
-    /// clients that own an override of this base (Steve section 5).
+    /// linked; removes every current link not in the new set. Under the
+    /// F1 delta model there is no per-client exclusivity - a client can
+    /// hold a base link and a delta row simultaneously.
     /// </summary>
     public async Task<(int Added, int Removed)> ReplaceClientsAsync(int scheduleId, IEnumerable<int> clientIds)
     {
@@ -1784,21 +1802,6 @@ public class ScheduleService(
             if (missing.Count > 0)
                 throw new InvalidOperationException(
                     $"Client id(s) {string.Join(", ", missing)} do not exist. Refresh and try again.");
-
-            var overrideOwners = await Context.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => h.BaseScheduleId == scheduleId && h.RetiredUtc == null)
-                .Select(h => h.ScheduleId)
-                .ToListAsync();
-            if (overrideOwners.Count > 0)
-            {
-                var blocked = await Context.ScheduleClients.AsNoTracking()
-                    .Where(sc => overrideOwners.Contains(sc.ScheduleId) && desired.Contains(sc.ClientId))
-                    .Select(sc => sc.ClientId)
-                    .ToListAsync();
-                if (blocked.Count > 0)
-                    throw new InvalidOperationException(
-                        $"Client id(s) {string.Join(", ", blocked)} own an override of this base and cannot be attached to the base as well.");
-            }
         }
 
         var current = await Context.ScheduleClients
@@ -1845,185 +1848,21 @@ public class ScheduleService(
         return 1;
     }
 
-    /// <summary>
-    /// Create an override header pointing at the base. Copies the base's
-    /// day rows verbatim; the client's link row moves from the base to
-    /// the override (Steve's brief section 5 invariant).
-    /// </summary>
-    public async Task<int> CreateOverrideAsync(int baseScheduleId, int clientId)
-    {
-        var baseHeader = await Context.BulkRunScheduleHeaders
-            .FirstOrDefaultAsync(h => h.ScheduleId == baseScheduleId && h.RetiredUtc == null)
-            ?? throw new InvalidOperationException($"Base schedule {baseScheduleId} not found or retired.");
-        if (baseHeader.BaseScheduleId != null)
-            throw new InvalidOperationException("Cannot create an override on top of an override. Pick the base schedule.");
-
-        var alreadyOverrides = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .Where(h => h.BaseScheduleId == baseScheduleId && h.RetiredUtc == null)
-            .Select(h => h.ScheduleId)
-            .ToListAsync();
-        if (alreadyOverrides.Count > 0)
-        {
-            var owned = await Context.ScheduleClients.AsNoTracking()
-                .AnyAsync(sc => alreadyOverrides.Contains(sc.ScheduleId) && sc.ClientId == clientId);
-            if (owned)
-                throw new InvalidOperationException(
-                    $"Client {clientId} already owns an override of schedule {baseScheduleId}.");
-        }
-
-        // Pull base day rows WITH zones + linehauls so the override
-        // clone gets a complete route. Audit MEDIUM #19 (2026-09-17):
-        // pre-fix code claimed to include these but did not, so any
-        // fresh override shipped without zones or linehaul routing and
-        // any client hitting the override immediately lost delivery.
-        var baseRows = await Context.TblBulkRunSchedules
-            .Include(s => s.BulkZoneSchedules)
-            .Include(s => s.TblBulkScheduleLinehauls)
-            .Where(s => s.ScheduleId == baseScheduleId)
-            .ToListAsync();
-        if (baseRows.Count == 0)
-            throw new InvalidOperationException(
-                $"Base schedule {baseScheduleId} has no day rows to clone into an override.");
-
-        // Audit CRITICAL #2 (2026-09-17): the pre-fix code called
-        // SaveChangesAsync twice (once to realise the override header
-        // id, once for day rows + link move). A failure between the two
-        // saves left an orphan header with zero day rows. Wrap the whole
-        // sequence in an explicit transaction and use EF's Header nav
-        // to let the id fill in on a single Save.
-        await using var tx = await Context.Database.BeginTransactionAsync();
-
-        var now = DateTime.UtcNow;
-        var overrideHeader = new BulkRunScheduleHeader
-        {
-            Name = baseHeader.Name,
-            IsDefault = false,
-            LegacyClientId = null,
-            BaseScheduleId = baseScheduleId,
-            CreatedUtc = now,
-            CreatedBy = "RoutedOps:override-create",
-        };
-        Context.BulkRunScheduleHeaders.Add(overrideHeader);
-
-        foreach (var src in baseRows)
-        {
-            var copy = new TblBulkRunSchedule
-            {
-                // Header nav lets EF resolve ScheduleId on save without
-                // an intermediate flush.
-                Header = overrideHeader,
-                Name = src.Name,
-                DayOfWeek = src.DayOfWeek,
-                ClientId = src.ClientId,
-                SpeedId = src.SpeedId,
-                Region = src.Region,
-                StartTime = src.StartTime,
-                EndTime = src.EndTime,
-                AutoBook = src.AutoBook,
-                ApplyPickupCutoff = src.ApplyPickupCutoff,
-                PickupCutoff = src.PickupCutoff,
-                BookPickup = src.BookPickup,
-                PickupDepotId = src.PickupDepotId,
-                CutoffHours = src.CutoffHours,
-                Description = src.Description,
-                MaxJobs = src.MaxJobs,
-                PickupRatingSpeed = src.PickupRatingSpeed,
-                PickupPostcodeGroupId = src.PickupPostcodeGroupId,
-                ParentSpeedId = src.ParentSpeedId,
-                PickupBoxDiscount = src.PickupBoxDiscount,
-                PostcodeGroupId = src.PostcodeGroupId,
-                StorageState = src.StorageState,
-                DeliveryState = src.DeliveryState,
-                DropOffLocationId = src.DropOffLocationId,
-            };
-            foreach (var z in src.BulkZoneSchedules)
-                copy.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
-            foreach (var l in src.TblBulkScheduleLinehauls)
-                copy.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
-                {
-                    Name = l.Name, Active = l.Active,
-                    Amount = l.Amount, AmountPercentage = l.AmountPercentage,
-                    FromDepotId = l.FromDepotId, ToDepotId = l.ToDepotId,
-                    InsertToBulk = l.InsertToBulk, Minutes = l.Minutes,
-                    LinehaulRunId = l.LinehaulRunId,
-                    ApplyDiscount = l.ApplyDiscount, ApplyAddOnPercentage = l.ApplyAddOnPercentage,
-                    WeekDay = l.WeekDay, DepartureAdvanceDays = l.DepartureAdvanceDays,
-                    FromClientAddress = l.FromClientAddress, DropOffLocationId = l.DropOffLocationId,
-                });
-            Context.TblBulkRunSchedules.Add(copy);
-        }
-
-        // Move the client's link row from base to override. If the
-        // client isn't on the base's link table (edge case - they were
-        // relying on the default fallback), just create the link on the
-        // override.
-        var baseLink = await Context.ScheduleClients
-            .FirstOrDefaultAsync(sc => sc.ScheduleId == baseScheduleId && sc.ClientId == clientId);
-        if (baseLink != null) Context.ScheduleClients.Remove(baseLink);
-        Context.ScheduleClients.Add(new ScheduleClient
-        {
-            Header = overrideHeader,
-            ClientId = clientId,
-            CreatedUtc = now,
-            CreatedBy = "RoutedOps:override-create",
-        });
-
-        await Context.SaveChangesAsync();
-        await tx.CommitAsync();
-        InvalidateListSummaryCache();
-        return overrideHeader.ScheduleId;
-    }
-
-    /// <summary>
-    /// List overrides of a base header + the client each override owns.
-    /// Used by the AttachClientsModal's "has own override #id" hint so
-    /// operators can see which candidate clients are unavailable to
-    /// attach directly to the base.
-    /// </summary>
-    public async Task<List<OverrideRefDto>> ListOverridesAsync(int baseScheduleId)
-    {
-        var overrideHeaders = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .Where(h => h.BaseScheduleId == baseScheduleId && h.RetiredUtc == null)
-            .Select(h => new { h.ScheduleId, h.Name })
-            .ToListAsync();
-        if (overrideHeaders.Count == 0) return new List<OverrideRefDto>();
-
-        var overrideIds = overrideHeaders.Select(o => o.ScheduleId).ToList();
-        var links = await Context.ScheduleClients.AsNoTracking()
-            .Where(sc => overrideIds.Contains(sc.ScheduleId))
-            .Select(sc => new { sc.ScheduleId, sc.ClientId })
-            .ToListAsync();
-
-        var clientIds = links.Select(l => l.ClientId).Distinct().ToList();
-        var codes = clientIds.Count == 0
-            ? new Dictionary<int, string>()
-            : await Context.TucClients.AsNoTracking()
-                .Where(c => clientIds.Contains(c.UcclId) && c.UcclCode != null)
-                .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
-
-        return links
-            .Select(l => new OverrideRefDto(
-                l.ScheduleId,
-                l.ClientId,
-                codes.TryGetValue(l.ClientId, out var code) ? code : null))
-            .ToList();
-    }
-
-    // ─── Schedule Groups writes (Phase 4 per Steve's brief; Kevin
+    // ─── Schedule Bundles writes (Phase 4 per Steve's brief; Kevin
     // asked for these on 2026-09-15 to complete Phase 1 shipping) ──
 
     /// <summary>
-    /// Create a new Schedule Group with an initial member list.
-    /// Members are validated to exist as live headers. Groups are
+    /// Create a new Schedule Bundle with an initial member list.
+    /// Members are validated to exist as live headers. Bundles are
     /// active by default; description is optional.
     /// </summary>
-    public async Task<int> CreateGroupAsync(string name, string description, IEnumerable<int> scheduleIds)
+    public async Task<int> CreateBundleAsync(string name, string description, IEnumerable<int> scheduleIds)
     {
         if (string.IsNullOrWhiteSpace(name))
-            throw new InvalidOperationException("Group name is required.");
+            throw new InvalidOperationException("Bundle name is required.");
         var trimmedName = name.Trim();
-        if (await Context.BulkRunScheduleGroups.AsNoTracking().AnyAsync(g => g.Name == trimmedName))
-            throw new InvalidOperationException($"A group named '{trimmedName}' already exists.");
+        if (await Context.BulkRunScheduleBundles.AsNoTracking().AnyAsync(b => b.Name == trimmedName))
+            throw new InvalidOperationException($"A bundle named '{trimmedName}' already exists.");
 
         var memberIds = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (memberIds.Count > 0)
@@ -2037,73 +1876,73 @@ public class ScheduleService(
                 throw new InvalidOperationException($"Schedule ids not found or retired: {string.Join(", ", missing)}.");
         }
 
-        var group = new BulkRunScheduleGroup
+        var bundle = new BulkRunScheduleBundle
         {
             Name = trimmedName,
             Description = description?.Trim() ?? string.Empty,
             IsActive = true,
             CreatedUtc = DateTime.UtcNow,
-            CreatedBy = "RoutedOps:group-create",
+            CreatedBy = "RoutedOps:bundle-create",
         };
-        Context.BulkRunScheduleGroups.Add(group);
+        Context.BulkRunScheduleBundles.Add(bundle);
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
 
         foreach (var id in memberIds)
         {
-            Context.BulkRunScheduleGroupMembers.Add(new BulkRunScheduleGroupMember
+            Context.BulkRunScheduleBundleMembers.Add(new BulkRunScheduleBundleMember
             {
-                GroupId = group.GroupId,
+                BundleId = bundle.BundleId,
                 ScheduleId = id,
             });
         }
         if (memberIds.Count > 0) { await Context.SaveChangesAsync(); InvalidateListSummaryCache(); }
 
-        return group.GroupId;
+        return bundle.BundleId;
     }
 
     /// <summary>
-    /// Hard-delete a Schedule Group + all its members (FK is CASCADE
+    /// Hard-delete a Schedule Bundle + all its members (FK is CASCADE
     /// per migration 20260914140000). Does NOT touch the underlying
     /// schedules or their link rows - only the bundle metadata.
     /// </summary>
-    public async Task DeleteGroupAsync(int groupId)
+    public async Task DeleteBundleAsync(int bundleId)
     {
-        var group = await Context.BulkRunScheduleGroups
-            .FirstOrDefaultAsync(g => g.GroupId == groupId)
-            ?? throw new InvalidOperationException($"Group {groupId} not found.");
-        Context.BulkRunScheduleGroups.Remove(group);
+        var bundle = await Context.BulkRunScheduleBundles
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
+        Context.BulkRunScheduleBundles.Remove(bundle);
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
     }
 
-    /// <summary>Rename / redescribe a Schedule Group.</summary>
-    public async Task UpdateGroupAsync(int groupId, string name, string description)
+    /// <summary>Rename / redescribe a Schedule Bundle.</summary>
+    public async Task UpdateBundleAsync(int bundleId, string name, string description)
     {
         if (string.IsNullOrWhiteSpace(name))
-            throw new InvalidOperationException("Group name is required.");
+            throw new InvalidOperationException("Bundle name is required.");
         var trimmedName = name.Trim();
-        var group = await Context.BulkRunScheduleGroups
-            .FirstOrDefaultAsync(g => g.GroupId == groupId)
-            ?? throw new InvalidOperationException($"Group {groupId} not found.");
-        if (group.Name != trimmedName
-            && await Context.BulkRunScheduleGroups.AsNoTracking()
-                .AnyAsync(g => g.Name == trimmedName && g.GroupId != groupId))
-            throw new InvalidOperationException($"A group named '{trimmedName}' already exists.");
-        group.Name = trimmedName;
-        group.Description = description?.Trim() ?? string.Empty;
+        var bundle = await Context.BulkRunScheduleBundles
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
+        if (bundle.Name != trimmedName
+            && await Context.BulkRunScheduleBundles.AsNoTracking()
+                .AnyAsync(b => b.Name == trimmedName && b.BundleId != bundleId))
+            throw new InvalidOperationException($"A bundle named '{trimmedName}' already exists.");
+        bundle.Name = trimmedName;
+        bundle.Description = description?.Trim() ?? string.Empty;
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
     }
 
-    /// <summary>Add member schedules to a group. Idempotent.</summary>
-    public async Task<int> AddGroupMembersAsync(int groupId, IEnumerable<int> scheduleIds)
+    /// <summary>Add member schedules to a bundle. Idempotent.</summary>
+    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds)
     {
         var ids = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (ids.Count == 0) return 0;
-        _ = await Context.BulkRunScheduleGroups.AsNoTracking()
-            .FirstOrDefaultAsync(g => g.GroupId == groupId)
-            ?? throw new InvalidOperationException($"Group {groupId} not found.");
+        _ = await Context.BulkRunScheduleBundles.AsNoTracking()
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
 
         var liveIds = await Context.BulkRunScheduleHeaders.AsNoTracking()
             .Where(h => ids.Contains(h.ScheduleId) && h.RetiredUtc == null)
@@ -2113,29 +1952,29 @@ public class ScheduleService(
         if (missing.Count > 0)
             throw new InvalidOperationException($"Schedule ids not found or retired: {string.Join(", ", missing)}.");
 
-        var existing = await Context.BulkRunScheduleGroupMembers.AsNoTracking()
-            .Where(m => m.GroupId == groupId && ids.Contains(m.ScheduleId))
+        var existing = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId && ids.Contains(m.ScheduleId))
             .Select(m => m.ScheduleId)
             .ToListAsync();
         var already = new HashSet<int>(existing);
 
         var toAdd = ids.Where(id => !already.Contains(id))
-            .Select(id => new BulkRunScheduleGroupMember { GroupId = groupId, ScheduleId = id })
+            .Select(id => new BulkRunScheduleBundleMember { BundleId = bundleId, ScheduleId = id })
             .ToList();
         if (toAdd.Count == 0) return 0;
-        Context.BulkRunScheduleGroupMembers.AddRange(toAdd);
+        Context.BulkRunScheduleBundleMembers.AddRange(toAdd);
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
         return toAdd.Count;
     }
 
-    /// <summary>Remove a schedule from a group.</summary>
-    public async Task<int> RemoveGroupMemberAsync(int groupId, int scheduleId)
+    /// <summary>Remove a schedule from a bundle.</summary>
+    public async Task<int> RemoveBundleMemberAsync(int bundleId, int scheduleId)
     {
-        var row = await Context.BulkRunScheduleGroupMembers
-            .FirstOrDefaultAsync(m => m.GroupId == groupId && m.ScheduleId == scheduleId);
+        var row = await Context.BulkRunScheduleBundleMembers
+            .FirstOrDefaultAsync(m => m.BundleId == bundleId && m.ScheduleId == scheduleId);
         if (row == null) return 0;
-        Context.BulkRunScheduleGroupMembers.Remove(row);
+        Context.BulkRunScheduleBundleMembers.Remove(row);
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
         return 1;
@@ -2143,22 +1982,22 @@ public class ScheduleService(
 
     /// <summary>
     /// Attach one or more clients to every non-default member schedule
-    /// of a group. Default members (IsDefault = 1) are skipped per
+    /// of a bundle. Default members (IsDefault = 1) are skipped per
     /// Steve's brief section 2 semantics: the link table is the sole
     /// record of who uses what, and defaults do not need per-client
     /// rows. Returns the total number of link rows added.
     /// </summary>
-    public async Task<int> AttachClientsToGroupAsync(int groupId, IEnumerable<int> clientIds)
+    public async Task<int> AttachClientsToBundleAsync(int bundleId, IEnumerable<int> clientIds)
     {
         var ids = (clientIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (ids.Count == 0) return 0;
 
-        var memberScheduleIds = await Context.BulkRunScheduleGroupMembers.AsNoTracking()
-            .Where(m => m.GroupId == groupId)
+        var memberScheduleIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
             .Select(m => m.ScheduleId)
             .ToListAsync();
         if (memberScheduleIds.Count == 0)
-            throw new InvalidOperationException($"Group {groupId} has no members.");
+            throw new InvalidOperationException($"Bundle {bundleId} has no members.");
 
         var nonDefaultMembers = await Context.BulkRunScheduleHeaders.AsNoTracking()
             .Where(h => memberScheduleIds.Contains(h.ScheduleId)
@@ -2188,7 +2027,7 @@ public class ScheduleService(
                     ScheduleId = sid,
                     ClientId = cid,
                     CreatedUtc = now,
-                    CreatedBy = $"RoutedOps:group-attach:{groupId}",
+                    CreatedBy = $"RoutedOps:bundle-attach:{bundleId}",
                 });
             }
         }
