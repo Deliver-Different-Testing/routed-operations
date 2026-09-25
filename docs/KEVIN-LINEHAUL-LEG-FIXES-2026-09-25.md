@@ -24,7 +24,7 @@ The NEOGE families above show US cumulative timing, so they came through the DD 
 | 2 | Linehaul legs carry the pickup route's `RouteId`, then inherit the pickup route's roster courier | Linehaul (incl. flight) legs can be dispatched to the pickup driver | Same SP, LH insert + RouteId / courier cascades |
 | 3 | Recurring Linehaul reads `tblBulkJob.LinehaulRunId`; straight-to-live legs are on `tucJob.LinehaulRunID` | Linehaul run job lists and stop counts empty for live legs | `RecurringLinehaulJobsService`, `RecurringLinehaulService`, `TucJob` entity |
 | 4 | Delivery-side route resolution passes zip only, no coords / schedule, and uses the booking time | Polygon-defined delivery routes never match `DEL`; multi-candidate tie-break uses the wrong schedule and time | `UTL_stpJob_InsertFromTblBulkJob` (FunnelRestamp), `DD_stpBulkScheduleJob_InsertChildJobs` (ChildLegRestamp) |
-| 5 | (Feature) No route direction: final-mile `DEL` legs cannot land on an outbound run from a depot or client site; Route Viewer Inbound / Outbound cannot filter runs | Outbound view shows every pickup route | `Routes` schema, resolver, the three callers, `RVW_stpBulkRuns_2` / `RVW_stpBulkRunJobs`, Recurring Routes UI |
+| 5 | (Feature) No route direction: final-mile `DEL` legs cannot land on an outbound run from a depot or pickup address; Route Viewer Inbound / Outbound cannot filter runs | Outbound view shows every pickup route | `Routes` schema, resolver, the three callers, `RVW_stpBulkRuns_2` / `RVW_stpBulkRunJobs`, Recurring Routes UI |
 
 ---
 
@@ -207,33 +207,40 @@ The resolver has no notion of direction: pickup and delivery both search all act
 
 Steve decision 2026-09-25: ship Direction now in the SPs so the final-mile (outbound delivery) leg works, alongside Bugs 1-4. The C# resolver (lift plan P2) replaces this later; keep the SP changes additive and backward compatible. Design: `FINAL-MILE-RECURRING-ROUTES-SPEC-2026-09-25.md`.
 
-**A final-mile route fans out from exactly one origin** (Steve 2026-09-25). The origin is not always a depot; it may be a client's site. It is never variable:
+**A final-mile route fans out from exactly one origin** (Steve 2026-09-25). The origin is not always a depot; it may be a pickup address - the client's own site, another of its sites, or a third-party address the client has us collect from. The origin address is **not bound to the client** (client addresses live on `tucClient`; the route stores its own). It is never variable:
 
 | Final-mile origin | Set on the route | Claims, by delivery area | Example |
 |---|---|---|---|
 | Depot | `DepotId` | `DEL` legs that leave that depot | NEOGE "Burbank to Lab" (depot 38) |
-| Client site | `OriginClientId` | jobs / `DEL` legs picked up at that client's site, including unsplit single-leg jobs | Outbound fan-out from a customer's warehouse |
+| Pickup address | origin **address** on the route (geocoded) | jobs / `DEL` legs picked up at that address, including unsplit single-leg jobs | Outbound fan-out from a customer's warehouse, or a third-party site they use |
 
-Today a client-site fan-out has no home: every job is picked up in the client's zip, so the pickup resolver puts the whole fan-out on the one pickup route covering that zip. A client-origin final-mile route splits it by delivery area instead.
+Today a fan-out from a pickup address has no home: every job is picked up in the same zip, so the pickup resolver puts the whole fan-out on the one pickup route covering that zip. A pickup-address final-mile route splits it by delivery area instead.
 
 ### 5.1 Schema (DBMigrationV2)
 
 ```sql
 ALTER TABLE dbo.Routes ADD
-    Direction tinyint NOT NULL CONSTRAINT DF_Routes_Direction DEFAULT (1),  -- 1 = First mile, 2 = Final mile
-    DepotId        int NULL CONSTRAINT FK_Routes_DepotId REFERENCES dbo.tblBulkRegion (BulkRegionID),
-    OriginClientId int NULL CONSTRAINT FK_Routes_OriginClientId REFERENCES dbo.tucClient (ucclID);
+    Direction       tinyint       NOT NULL CONSTRAINT DF_Routes_Direction DEFAULT (1),  -- 1 = First mile, 2 = Final mile
+    DepotId         int           NULL CONSTRAINT FK_Routes_DepotId REFERENCES dbo.tblBulkRegion (BulkRegionID),
+    -- Pickup-address origin (final mile only). A standalone address, not bound to a
+    -- client: may be a client site or a third-party site (Steve 2026-09-25).
+    OriginName      nvarchar(150) NULL,   -- e.g. "Acme - Penrose warehouse"
+    OriginAddress   nvarchar(250) NULL,   -- display address
+    OriginZip       varchar(10)   NULL,   -- normalised, same rules as UTL_stpRouteAutoAssign_NormalizeZip
+    OriginLatitude  decimal(9,6)  NULL,
+    OriginLongitude decimal(9,6)  NULL,
+    OriginRadiusM   int           NULL CONSTRAINT DF_Routes_OriginRadiusM DEFAULT (150);  -- pickup-point match tolerance
 
--- First mile: DepotId optional (the depot it feeds), OriginClientId not used.
--- Final mile: exactly one origin - a depot or a client site.
+-- Final mile: exactly one origin - a depot, or a geocoded pickup address.
 ALTER TABLE dbo.Routes ADD CONSTRAINT CK_Routes_Direction CHECK (
     Direction IN (1, 2)
-    AND (Direction = 1 AND OriginClientId IS NULL
-         OR Direction = 2 AND (CASE WHEN DepotId IS NULL THEN 0 ELSE 1 END
-                             + CASE WHEN OriginClientId IS NULL THEN 0 ELSE 1 END) = 1));
+    AND (   (Direction = 1 AND OriginLatitude IS NULL)
+         OR (Direction = 2 AND DepotId IS NOT NULL AND OriginLatitude IS NULL)
+         OR (Direction = 2 AND DepotId IS NULL AND OriginLatitude IS NOT NULL AND OriginLongitude IS NOT NULL)));
 ```
 
-Open (Q5): is client id enough to identify the origin site, or do clients with several sites need a specific pickup address? If the latter, add `OriginAddressId` (FK to the client address table) and match on it instead.
+- The origin address is geocoded on save (same geocoder Bulk Import uses) and stored on the route. Matching is by the job's pickup point being within `OriginRadiusM` of the origin, not by address text.
+- To limit a pickup-address route to certain clients (e.g. a shared third-party warehouse), bind it to their schedules via `tblRouteSchedule`; resolver Rule 4 already prefers schedule-bound routes. No client column on the route.
 
 Existing routes default to First mile: no behaviour change until a route is flagged Final mile. `Routes` is shared with Configurator (DF Admin); the columns are additive and defaulted so it keeps working.
 
@@ -244,13 +251,19 @@ Existing routes default to First mile: no behaviour change until a route is flag
 ```sql
     @Direction      TINYINT = NULL,  -- NULL = legacy (any route)
     @DepotId        INT     = NULL,  -- only routes with this DepotId
-    @OriginClientId INT     = NULL   -- only routes originating at this client's site
+    @MatchOrigin     BIT          = 0,     -- pickup-address routes: match the job's pickup point to the route origin
+    @PickupLatitude  DECIMAL(9,6) = NULL,
+    @PickupLongitude DECIMAL(9,6) = NULL
 ...
         INNER JOIN dbo.Routes r
                 ON r.RouteId = rp.RouteId AND r.Active = 1
                AND (@Direction      IS NULL OR r.Direction      = @Direction)
                AND (@DepotId        IS NULL OR r.DepotId        = @DepotId)
-               AND (@OriginClientId IS NULL OR r.OriginClientId = @OriginClientId)
+               AND (@MatchOrigin = 0
+                    OR (    r.OriginLatitude IS NOT NULL
+                        AND geography::Point(r.OriginLatitude, r.OriginLongitude, 4326)
+                              .STDistance(geography::Point(@PickupLatitude, @PickupLongitude, 4326))
+                            <= ISNULL(r.OriginRadiusM, 150)))
 ```
 
 `UTL_stpRouteAutoAssign_Resolve` - add `@DeliveryOriginDepotId INT = NULL` and `@DeliveryAtLocal DATETIME = NULL`:
@@ -258,9 +271,9 @@ Existing routes default to First mile: no behaviour change until a route is flag
 - **Pickup side:** call `_ResolveOneSide` with `@Direction = 1`. Final-mile routes never claim a pickup.
 - **Delivery side**, first hit wins (time = `ISNULL(@DeliveryAtLocal, @PickupAtLocal)` for attempts 1-2):
   1. **Depot-specific final mile** - only if `@DeliveryOriginDepotId IS NOT NULL`: `@Direction = 2, @DepotId = @DeliveryOriginDepotId`.
-  2. **Client-site final mile** - only if the leg has no origin depot (picked up at the client): `@Direction = 2, @OriginClientId = <job's client>`.
+  2. **Pickup-address final mile** - only if the leg has no origin depot (picked up at an address): `@Direction = 2, @MatchOrigin = 1` with the job's pickup lat/lng. Matches the route whose origin address is within `OriginRadiusM` of the pickup point; schedule binding (`@SourceScheduleId`) decides between routes sharing an address.
   3. **Legacy fallback** - today's call (`@Direction = NULL`). Preserves the NZ "split route" behaviour where a `DEL` resolves to an ordinary route covering its delivery zip.
-- Log one `Side = 'Delivery'` row with the winning attempt's outcome. Suggest appending the attempt to `TriggerSource` (e.g. `FunnelRestamp:FM-Depot`, `:FM-Client`, `:Legacy`, within the 30-char limit) so the Auto-Assign Log shows which rule fired.
+- Log one `Side = 'Delivery'` row with the winning attempt's outcome. Suggest appending the attempt to `TriggerSource` (e.g. `FunnelRestamp:FM-Depot`, `:FM-Addr`, `:Legacy`, within the 30-char limit) so the Auto-Assign Log shows which rule fired.
 - Also pass delivery coords and `@SourceScheduleId` through (Bug 4).
 
 ### 5.3 Callers: work out the DEL leg's origin
@@ -269,9 +282,9 @@ Origin depot of a `DEL` leg, first non-null:
 
 1. **Terminal depot of the schedule's linehaul chain**: the `ToDepotId` that is not any other active leg's `FromDepotId`.
 2. The schedule's `PickupDepotId` (no linehaul chain; goods consolidated at a depot).
-3. NULL - the leg is picked up at the client's site. Attempt 1 is skipped; attempt 2 (client-site final mile, matched on the job's client) and the legacy fallback apply.
+3. NULL - the leg is picked up at an address (client or third party). Attempt 1 is skipped; attempt 2 (pickup-address final mile, matched on the job's pickup point against route origin addresses) and the legacy fallback apply.
 
-**Unsplit single-leg jobs** (no `LHP` / `LH` / `DEL` family) currently get only the pickup-side route. When the job's client has an active client-site final-mile route, run the delivery side too (attempt 2) and let a hit take precedence over the pickup route. Opt-in by configuration: no client-site final-mile route, no change.
+**Unsplit single-leg jobs** (no `LHP` / `LH` / `DEL` family) currently get only the pickup-side route. When the job's pickup point is within the radius of an active pickup-address final-mile route, run the delivery side too (attempt 2) and let a hit take precedence over the pickup route. Opt-in by configuration: no pickup-address final-mile route near the pickup, no change.
 
 ```sql
 DECLARE @DelOriginDepotId int =
@@ -283,7 +296,7 @@ DECLARE @DelOriginDepotId int =
                          AND n.FromDepotId = l.ToDepotId));
 IF @DelOriginDepotId IS NULL
     SELECT @DelOriginDepotId = PickupDepotId FROM tblBulkRunSchedule WHERE BulkRunScheduleId = @ScheduleID;
--- may still be NULL: client-site origin
+-- may still be NULL: picked up at an address (pickup-address origin)
 ```
 
 Pass `@DeliveryOriginDepotId = @DelOriginDepotId`, delivery lat/lng, `@SourceScheduleId` and the `DEL` leg's date/time to `UTL_stpRouteAutoAssign_Resolve` in:
@@ -298,7 +311,7 @@ For NEOGE all chains end at Burbank (38), so `DEL` legs resolve to route 15 "Bur
 - `RVW_stpBulkRuns_2` and `RVW_stpBulkRunJobs`: add `@Group nvarchar(16) = NULL`. NULL / `Combined` = today's behaviour.
   - **Outbound:** synthetic route runs with `Routes.Direction = 2`, `DEL` legs only. With a region filter, include a route when:
     - `Routes.DepotId IN @Regions`, or
-    - `Routes.OriginClientId IN @ClientIDs` (client-site routes have no depot, so they follow the client filter; with no region filter they always show).
+    - pickup-address routes (`Routes.DepotId IS NULL`): no depot, so they follow the client filter (any of the route's `DEL` / single-leg jobs belong to those clients); with no region filter they always show. Run label shows `OriginName`.
   - **Inbound:** synthetic route runs where `Routes.Direction = 1`; `LHP` legs whose `DepotId IN @Regions` (existing rule).
   - In Inbound / Outbound, drop the `tblBulkJob.RegionID IN @Regions` branch for non-`LHP` legs (it matches every leg of the booking).
 - `RVW_stpGetMissingJobRuns`: add the client / region filters it currently ignores.
@@ -307,9 +320,9 @@ For NEOGE all chains end at Burbank (38), so `DEL` legs resolve to route 15 "Bur
 ### 5.5 Recurring Routes UI / API
 
 - `Route` entity: `Direction` (`byte`), `DepotId` (`int?`). `RecurringRouteDtos` / `RouteDtos`: same two fields.
-- Route editor: Direction selector "First mile (inbound)" / "Final mile (outbound)" For Final mile, an "Origin" choice: **Depot** (`tblBulkRegion` picker) or **Client site** (client picker). Exactly one is required.
-- `RecurringRouteService` save validation: reject a Final-mile route whose coverage (zips, or polygon intersect) overlaps another active Final-mile route with the **same origin** (same `DepotId`, or same `OriginClientId`). Name the conflicting route.
-- `Route` entity / DTOs also gain `OriginClientId` (`int?`).
+- Route editor: Direction selector "First mile (inbound)" / "Final mile (outbound)" For Final mile, an "Origin" choice: **Depot** (`tblBulkRegion` picker) or **Pickup address** (enter or pick an address - suggestions from recent pickup addresses on the tenant's jobs, not limited to one client; geocoded and shown on the map with the match radius). Exactly one is required.
+- `RecurringRouteService` save validation: reject a Final-mile route whose coverage (zips, or polygon intersect) overlaps another active Final-mile route with the **same origin** (same `DepotId`, or pickup-address origins within each other's match radius and not bound to different schedules). Name the conflicting route.
+- `Route` entity / DTOs also gain `OriginName`, `OriginAddress`, `OriginZip`, `OriginLatitude`, `OriginLongitude`, `OriginRadiusM`.
 - `SchedulesNew.tsx` Recurring Routes tab: replace the name regex in `routeKind` (~line 1453) with `Direction` from the API. `RouteTypeChip`: First / Final / Middle.
 
 ### 5.6 Data (Medical) - Steve to approve before running
@@ -320,7 +333,7 @@ For NEOGE all chains end at Burbank (38), so `DEL` legs resolve to route 15 "Bur
 ### 5.7 Acceptance
 
 - New NEOGE booking: `LHP` on its pickup route; `LH` legs `RouteId` NULL with `LinehaulRunID`; `DEL` on route 15 with its roster courier. `RouteAutoAssignLog` shows `Side = 'Delivery'`, `ResolvedRouteId = 15`, attempt `FM-Depot`.
-- Client-site final-mile routes (e.g. two routes from client X's warehouse with disjoint delivery zips): client X's jobs picked up at the site split across them by delivery area (attempt `FM-Client`); another client's jobs in the same delivery zips are unaffected.
+- Pickup-address final-mile routes (e.g. two routes from a warehouse with disjoint delivery zips): jobs picked up at that warehouse split across them by delivery area (attempt `FM-Addr`), whichever client booked them unless the routes are schedule-bound; jobs picked up elsewhere, including the same client's other sites, are unaffected.
 - Route Viewer, Region Burbank: **Outbound** shows one run, "Burbank to Lab"; **Inbound** shows no NEOGE pickup routes (they feed Reno / Sacramento / Hayward); **Combined** unchanged.
 - A tenant with no Final-mile routes: resolver output identical to today (`Legacy` attempt, same `ResolvedRouteId`).
 
@@ -341,4 +354,4 @@ For NEOGE all chains end at Burbank (38), so `DEL` legs resolve to route 15 "Bur
 - **Q2.** Remediation of already-generated future jobs (re-number / re-time / clear LH `RouteId`): run a script, or let them roll off?
 - **Q3.** Resolved: all related SPs reviewed 2026-09-25 (`DD_` / `WS_stpBulkScheduleJob_InsertChildJobs`, `UTL_stpJob_InsertFromTblBulkJob`, `WS_stpJob_Insert_FromParent`, `UTL_stpRouteAutoAssign_Resolve`, `_ResolveOneSide`).
 - **Q4.** These fixes are the last planned changes to the booking-generation SPs. Longer term the leg planning and route resolution move to C# (`ROUTED-OPERATIONS-LIFT-PLAN-REPRIORITISED-2026-09-25.md`). Keep the SP diffs minimal.
-- **Q5.** Client-site final-mile origin: is the client id enough, or do clients with several sites need a specific pickup address (`OriginAddressId`)? Steve to confirm before 5.1 ships.
+- **Q5.** Resolved 2026-09-25: the non-depot origin is a standalone pickup address stored on the route (geocoded, matched by radius), not bound to a client or to `tucClient`'s address - it may be a third-party site. Client scoping, when needed, is via schedule binding.
