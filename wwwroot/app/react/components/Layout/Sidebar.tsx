@@ -42,6 +42,10 @@ const items: NavItem[] = [
   // Dane's visual builder + client link tables + BaseScheduleId
   // overrides. Both stay live throughout Phase 1..5 of the workstream.
   { to: '/schedules-new', label: 'Schedules', badge: 'NEW' },
+  // Client-first override view (F1 UI polish, 2026-09-24). Pick a client,
+  // see every schedule they differ from - the view ops actually wanted,
+  // impossible on the schedule-first surface without opening 2,725 rows.
+  { to: '/client-overrides', label: 'Client Overrides' },
   // Driver Scheduling module (2026-09-07 port from CourierManager).
   // Distinct from Schedules above - that's booking / prebook
   // templates, this is courier availability rosters + time slots +

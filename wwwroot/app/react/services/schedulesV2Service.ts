@@ -229,9 +229,11 @@ export const schedulesV2Service = {
 };
 
 /** Schedule-scope delta fields (cut-off + weekdays + display copy).
- *  Every field is nullable: NULL means "inherit from base". */
+ *  Every field is nullable: NULL means "inherit from base".
+ *  F11 Phase C (2026-09-24): cutoffHours dropped from the wire in favour
+ *  of the absolute (cutoffDay, cutoffTime) pair. Tenant SPs coalesce the
+ *  new pair over the legacy CutoffHours column on the row itself. */
 export interface ScheduleScopeOverride {
-  cutoffHours: number | null;
   cutoffDay: number | null;
   cutoffTime: string | null;
   weekDays: string | null;

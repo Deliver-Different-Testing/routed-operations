@@ -55,13 +55,16 @@ const SAMPLE_GROUP_DETAIL = {
   storageState: null, deliveryState: null, pickupBoxDiscount: null,
   dropOffLocationId: null, dropOffLocationName: null,
   description: 'Nationwide overnight',
-  // Five day-windows with per-day cutoff (matches real staging shape).
+  // Five day-windows with per-day absolute cutoff pair (F11 Phase C,
+  // 2026-09-24 - replaces integer cutoffHours). Monday cutoff is a
+  // 15:00 same-day; other days use a 04:00 same-day cutoff so the
+  // "Mon differs from other days" summary shape stays exercised.
   dayWindows: [
-    { id: 1, dayOfWeek: 1, startTime: '08:00', endTime: '17:00', cutoffHours: 2 },
-    { id: 2, dayOfWeek: 2, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-    { id: 3, dayOfWeek: 3, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-    { id: 4, dayOfWeek: 4, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
-    { id: 5, dayOfWeek: 5, startTime: '08:00', endTime: '17:00', cutoffHours: 13 },
+    { id: 1, dayOfWeek: 1, startTime: '08:00', endTime: '17:00', cutoffDay: 1, cutoffTime: '15:00' },
+    { id: 2, dayOfWeek: 2, startTime: '08:00', endTime: '17:00', cutoffDay: 2, cutoffTime: '04:00' },
+    { id: 3, dayOfWeek: 3, startTime: '08:00', endTime: '17:00', cutoffDay: 3, cutoffTime: '04:00' },
+    { id: 4, dayOfWeek: 4, startTime: '08:00', endTime: '17:00', cutoffDay: 4, cutoffTime: '04:00' },
+    { id: 5, dayOfWeek: 5, startTime: '08:00', endTime: '17:00', cutoffDay: 5, cutoffTime: '04:00' },
   ],
   zones: [
     { id: 1, scheduleId: 1, zone: 1, active: true },

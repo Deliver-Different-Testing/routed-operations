@@ -424,5 +424,10 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     displayName: g.displayName ?? null,
     displayDescription: g.displayDescription ?? null,
     isActive: g.isActive ?? true,
+    // Legacy Schedules page does not surface nested override rows; the
+    // Schedules NEW page owns that render. Keep the field so the shape
+    // stays a superset of the wire DTO. Steve nested-override brief
+    // (2026-09-24).
+    overrides: [],
   };
 }

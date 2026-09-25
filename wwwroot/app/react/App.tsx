@@ -10,6 +10,10 @@ import Schedules from './pages/Schedules';
 // alongside the legacy tuple-keyed Schedules page above until ops sign
 // off. Both routes read the same tblBulkRunSchedule day rows.
 import SchedulesNew from './pages/SchedulesNew';
+// Client-first override view (Steve F1 UI polish, 2026-09-24). Ops pick
+// a client and see every schedule they own a delta on. Same backend
+// endpoint the Schedules NEW detail modal uses for its Overrides tab.
+import ClientOverrides from './pages/ClientOverrides';
 // Driver Scheduling module (2026-09-07 port from CourierManager). Sits
 // adjacent to Schedules - different domain (courier availability rosters
 // vs booking templates), different DB neighbourhood, different sidebar
@@ -58,6 +62,9 @@ export default function App() {
              backend service + dbmigrationsv2 header + junction tables
              are added. */}
         <Route path="/schedules-new" element={<SchedulesNew />} />
+        {/* Client-first override view (F1 UI polish, 2026-09-24) - one
+             client, every schedule they differ from. */}
+        <Route path="/client-overrides" element={<ClientOverrides />} />
         {/* Driver Scheduling module (2026-09-07) - operator-facing
              courier availability + time slots + SMS notifications. */}
         <Route path="/driver-scheduling" element={<DriverScheduling />} />

@@ -52,6 +52,12 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     // to base values via COALESCE. Clustered on
     // (ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek).
     public virtual DbSet<BulkRunScheduleOverride> BulkRunScheduleOverrides { get; set; }
+    // Holiday calendar (added 2026-09-24 for Steve F19b). Direct EF read
+    // instead of routing through UTL_IsHoliday SP - Steve's call, no
+    // wrapper. Existing SP readers unchanged. F19b's next-available-
+    // collection resolver reads this + honours per-booking
+    // tucJobBooking.HolidayDeliveryOption on top of the calendar.
+    public virtual DbSet<TblHoliday> TblHolidays { get; set; }
     // Route module (Stage 2 - C.1'/C.2'). Shared with Configurator - same
     // Route / ZipPolygon / Dispatch_RouteRoster tables; RouteZipcodes is an
     // implicit many-to-many junction configured in OnModelCreating below.
@@ -248,6 +254,13 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         {
             entity.HasKey(e => e.DropOffLocationId);
             entity.ToTable("tblDropOffLocation");
+        });
+
+        // Holiday calendar (Steve F19b 2026-09-24). Direct EF read,
+        // no wrapper. Legacy SPs continue to read via UTL_IsHoliday.
+        modelBuilder.Entity<TblHoliday>(entity =>
+        {
+            entity.HasKey(e => e.HolidayID);
         });
 
         // Schedules module tables.
