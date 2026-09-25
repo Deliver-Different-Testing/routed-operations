@@ -130,7 +130,14 @@ public class DayWindowUpsertRequest
     /// <summary>"HH:mm" e.g. "08:30". Required.</summary>
     [Required] public string StartTime { get; set; } = string.Empty;
     [Required] public string EndTime { get; set; } = string.Empty;
-    public int CutoffHours { get; set; }
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+    /// (1=Mon..7=Sun). NULL leaves the row on the legacy CutoffHours
+    /// offset, which the service derives on write.</summary>
+    public int? CutoffDay { get; set; }
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff wall-clock time
+    /// as "HH:mm". NULL leaves the row on the legacy CutoffHours
+    /// offset.</summary>
+    public string CutoffTime { get; set; }
 }
 
 public class ScheduleZoneUpsertRequest

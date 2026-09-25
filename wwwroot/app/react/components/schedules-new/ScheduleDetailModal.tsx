@@ -17,8 +17,17 @@ import {
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { ChainBuilder, type Leg } from './ChainBuilder';
-import { ClientOverrideEditor } from './ClientOverrideEditor';
-import type { ScheduleOverride } from '../../services/schedulesV2Service';
+// Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
+// entry point (both nested-row click on the Schedules list and the
+// Clients tab "Edit / Configure override" buttons now re-open this
+// same modal in override-edit mode). The ClientOverrideEditor.tsx
+// file is left on disk untouched; nothing imports or renders it.
+import type {
+  ScheduleOverride,
+  ScheduleOverridePutBody,
+  ScheduleScopeOverride,
+  LegScopeOverride,
+} from '../../services/schedulesV2Service';
 import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
@@ -44,14 +53,23 @@ interface DayForm {
   enabled: boolean;
   startTime: string;
   endTime: string;
-  cutoffHours: number;
+  /** F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+   *  (1=Mon..7=Sun). NULL until the operator picks. */
+  cutoffDay: number | null;
+  /** F11 Phase C (2026-09-24). Absolute cutoff wall-clock time as
+   *  "HH:mm". */
+  cutoffTime: string | null;
 }
 
+// F11 Phase C default: same-day 06:00 cutoff. cutoffDay stays null in
+// the shared shape; seedDaysFromDto pulls the DTO value and
+// setDayActive-style enable handlers seed it to the day's own dayOfWeek.
 const EMPTY_DAY: Omit<DayForm, 'enabled'> = {
   id: null,
   startTime: '08:00',
   endTime: '17:00',
-  cutoffHours: 2,
+  cutoffDay: null,
+  cutoffTime: '06:00',
 };
 
 function seedDaysFromDto(dtoDays: ScheduleGroup['dayWindows']): DayForm[] {
@@ -59,7 +77,17 @@ function seedDaysFromDto(dtoDays: ScheduleGroup['dayWindows']): DayForm[] {
   return [1, 2, 3, 4, 5, 6, 7].map((n) => {
     const d = byDay.get(n);
     return d
-      ? { id: d.id, enabled: true, startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours }
+      ? {
+          id: d.id,
+          enabled: true,
+          startTime: d.startTime,
+          endTime: d.endTime,
+          // F11 Phase C: seed the absolute pair straight from the DTO.
+          // Legacy rows return null-null here and stay on the CutoffHours
+          // fallback the backend derives on write.
+          cutoffDay: d.cutoffDay,
+          cutoffTime: d.cutoffTime,
+        }
       : { ...EMPTY_DAY, enabled: false };
   });
 }
@@ -134,6 +162,48 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
 }
 
+// ─── Override-mode helpers (Kevin 2026-09-25) ──────────────────────
+// Convert a 7-char WeekDays mask (Mon=0..Sun=6) to a set of ISO day
+// numbers (1=Mon..7=Sun). Any non-'1' char reads as "not chosen".
+// Unusable input returns an empty set.
+function parseMaskToDays(mask: string | null): number[] {
+  if (!mask || mask.length !== 7) return [];
+  const chosen: number[] = [];
+  for (let i = 0; i < 7; i++) {
+    if (mask[i] === '1') chosen.push(i + 1);
+  }
+  return chosen;
+}
+
+// Inverse: set of ISO day numbers -> 7-char mask. Empty set yields
+// '0000000' which the caller then folds to NULL before sending.
+function daysToMask(days: number[]): string {
+  const buf = ['0', '0', '0', '0', '0', '0', '0'];
+  for (const n of days) {
+    if (n >= 1 && n <= 7) buf[n - 1] = '1';
+  }
+  return buf.join('');
+}
+
+// Sorted-array equality, tolerant of input order. Used for the WeekDays
+// override delta check ({1,2,3,4,5} equal to a base of [3,2,1,4,5]).
+function arraysEqual(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const s = [...a].sort((x, y) => x - y);
+  const t = [...b].sort((x, y) => x - y);
+  for (let i = 0; i < s.length; i++) if (s[i] !== t[i]) return false;
+  return true;
+}
+
+// Empty-string-safe accessor. Empty and whitespace-only strings both
+// resolve to null so the operator's "clear the field" gesture and
+// "leave it untouched" gesture converge on the same null wire value.
+function nzOrNull(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const trimmed = v.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   const legs: Leg[] = [];
   legs.push({
@@ -176,6 +246,28 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   return legs;
 }
 
+/** Override-edit mode context (Kevin 2026-09-25). When set, the same
+ *  modal renders as a per-client override editor: structure fields lock
+ *  (read-only for context), only the fields backed by
+ *  tblBulkRunScheduleOverride columns are editable, and Save routes to
+ *  the override PUT endpoint instead of the base upsert.
+ *
+ *  Two entry paths converge here:
+ *   1. Clicking a nested override row on the Schedules NEW list
+ *      (SchedulesNew.tsx OverrideNestedRow row-click).
+ *   2. Clicking "Edit override" or "Configure override" next to an
+ *      attached client on a BASE schedule's Clients tab.
+ *  Both trigger the parent's onOpenOverride callback with this payload. */
+export interface OverrideEditContext {
+  clientId: number;
+  clientCode: string;
+  clientName: string;
+  /** Field labels the client differs on ("Auto-book off (base on);
+   *  Cut-off 24 all days" etc.). Empty when there is no existing
+   *  override for this client yet ("Configure override" entry). */
+  deltaLabels: string[];
+}
+
 interface Props {
   scheduleId: number | null;
   onClose: () => void;
@@ -188,9 +280,28 @@ interface Props {
    *  a base schedule to one of its overrides via the Client Overrides
    *  section). Updates the ?edit=<id> URL param via the parent. */
   onOpenSchedule: (scheduleId: number) => void;
+  /** Re-open this modal in override-edit mode for a specific client.
+   *  Called from the Clients tab "Edit override" / "Configure override"
+   *  buttons and from any other place that wants to jump straight into
+   *  a delta edit. The parent swaps its open-target state so the same
+   *  modal instance re-renders as an override editor. */
+  onOpenOverride: (scheduleId: number, client: OverrideEditContext) => void;
+  /** When set, the modal opens in override-edit mode for the named
+   *  client. Structure is locked; only fields backed by
+   *  tblBulkRunScheduleOverride columns are editable; Save routes to
+   *  the override PUT endpoint instead of the base upsert. */
+  overrideMode?: OverrideEditContext | null;
 }
 
-export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOpenSchedule }: Props) {
+export function ScheduleDetailModal({
+  scheduleId,
+  onClose,
+  onAttachClients,
+  onOpenSchedule,
+  onOpenOverride,
+  overrideMode = null,
+}: Props) {
+  const isOverride = overrideMode != null;
   const [tab, setTab] = useState<ModalTab>('clients');
   const query = useSchedulesV2Detail(scheduleId);
   const data = query.data;
@@ -210,24 +321,13 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       onClose();
     }
   }, [scheduleId, query.isLoading, query.isFetching, query.data, query.isError, toast, onClose]);
-  // Client-override editor state lives here (not on ClientsTab) so it
-  // survives tab switches and renders as a sibling of the parent Modal.
-  // Steve F1 (2026-09-22): the editor writes deltas via
-  // PUT /api/v2/schedules/{id}/overrides/{clientId} instead of cloning
-  // the base schedule via the old CreateOverride API.
-  const [overrideEditor, setOverrideEditor] = useState<{
-    clientId: number;
-    clientCode: string | null;
-    clientName: string | null;
-    existing: ScheduleOverride | null;
-  } | null>(null);
-
-  // Reset editor state when the parent modal closes (scheduleId becomes
-  // null) so a subsequent open on a different schedule doesn't resurface
-  // an editor bound to the previous base.
-  useEffect(() => {
-    if (scheduleId == null) setOverrideEditor(null);
-  }, [scheduleId]);
+  // Kevin 2026-09-25: the compact `<ClientOverrideEditor>` popup is
+  // retired as an entry point. Both the nested-row click on the Schedules
+  // list and the "Edit override" / "Configure override" buttons on the
+  // Clients tab of a BASE schedule now re-open this same modal in
+  // override-edit mode (see `overrideMode` prop + `onOpenOverride`
+  // callback above). The ClientOverrideEditor.tsx file is left on disk
+  // untouched; nothing renders it.
 
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
@@ -258,6 +358,42 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
   const [formBookPickup, setFormBookPickup] = useState(false);
   const [formPostcodeIds, setFormPostcodeIds] = useState<number[]>([]);
   const [formPolygonIds, setFormPolygonIds] = useState<number[]>([]);
+  // ─── Override-mode state (Kevin 2026-09-25) ──────────────────────
+  // When `overrideMode != null`, the modal renders as a per-client
+  // delta editor. Each state variable below shadows a column on
+  // tblBulkRunScheduleOverride. All start `null` / empty ("inherit
+  // from base") and get seeded from the existing override row (if any)
+  // once the listOverrides query resolves. On save we ship the current
+  // value only when it differs from the base seeded value; otherwise
+  // ship `null` so the override row drops that column (client falls
+  // back to the base). See computeOverridePutBody() below.
+  const [ovIsActive, setOvIsActive] = useState<boolean | null>(null);
+  const [ovDisplayName, setOvDisplayName] = useState<string>('');
+  const [ovDisplayDescription, setOvDisplayDescription] = useState<string>('');
+  // WeekDays override lives as a set of ISO day numbers (1=Mon..7=Sun);
+  // converted to the 7-char mask on save via daysToMask().
+  const [ovWeekDays, setOvWeekDays] = useState<number[]>([]);
+  const [ovCutoffDay, setOvCutoffDay] = useState<number | null>(null);
+  const [ovCutoffTime, setOvCutoffTime] = useState<string>('');
+  // Collection-scope override fields (five columns; the remaining
+  // "additionalItemChargingLogic" column is not yet surfaced in the UI
+  // and is preserved on save via the existing override row).
+  const [ovCollSpeedId, setOvCollSpeedId] = useState<number | null>(null);
+  const [ovCollZoneGroupId, setOvCollZoneGroupId] = useState<number | null>(null);
+  const [ovCollPickupTimeMode, setOvCollPickupTimeMode] = useState<string>('');
+  const [ovCollPickupWindowStart, setOvCollPickupWindowStart] = useState<string>('');
+  const [ovCollPickupWindowEnd, setOvCollPickupWindowEnd] = useState<string>('');
+  // Delivery-scope override fields (two columns).
+  const [ovDelSpeedId, setOvDelSpeedId] = useState<number | null>(null);
+  const [ovDelZoneGroupId, setOvDelZoneGroupId] = useState<number | null>(null);
+  // Seeded existing override row for this client, or null if none exists
+  // yet ("Configure override" entry). Populated from a filtered
+  // listOverrides call because the backend has no single-client GET
+  // endpoint today (checked schedulesV2Service; only list + PUT +
+  // DELETE). Cheap because listOverrides is already fetched by the
+  // Clients tab under the same query key.
+  const [ovSeeded, setOvSeeded] = useState<boolean>(false);
+
   // Snapshot of the seeded form state for dirty-state tracking.
   // A no-op Save on a legacy per-client schedule would still trigger
   // the "migration to a link row happens on next save" side effect,
@@ -379,8 +515,16 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       setInitialSnapshot('');
       setSeededZonesJson(null);
       setSeededLinehaulsJson(null);
+      setOvSeeded(false);
     }
   }, [scheduleId]);
+
+  // Reset the override-mode seed flag when the modal transitions in or
+  // out of override mode, or the target client changes, so the next
+  // ovListQuery success reseeds cleanly.
+  useEffect(() => {
+    setOvSeeded(false);
+  }, [isOverride, overrideMode?.clientId]);
 
   const lookupsQuery = useQuery({
     queryKey: schedulesV2Keys.lookups(tenantId),
@@ -413,6 +557,60 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     staleTime: 5 * 60_000,
     enabled: scheduleId != null,
   });
+
+  // Override-mode: fetch every override on this schedule and pick out
+  // the one for our client, if any. No single-client GET endpoint
+  // exists yet, so we filter the list response. Cheap because the
+  // Clients tab already fetches this under the same query key.
+  const ovListQuery = useQuery({
+    queryKey: schedulesV2Keys.overrides(tenantId, scheduleId ?? 0),
+    queryFn: () => schedulesV2Service.listOverrides(scheduleId!),
+    enabled: isOverride && scheduleId != null,
+    staleTime: 30_000,
+  });
+  const ovExisting = useMemo<ScheduleOverride | null>(() => {
+    if (!isOverride || !overrideMode || !ovListQuery.data) return null;
+    return ovListQuery.data.find((o) => o.clientId === overrideMode.clientId) ?? null;
+  }, [isOverride, overrideMode, ovListQuery.data]);
+
+  // Seed override state from the existing delta row (if any). Runs once
+  // per override-mode session per client; every field falls back to the
+  // base schedule value when the override row is missing that column,
+  // so the initial form matches what the client actually resolves to
+  // today. Placed here (after ovListQuery + ovExisting) so its deps
+  // resolve without a use-before-declaration.
+  useEffect(() => {
+    if (!isOverride || !overrideMode || !data) return;
+    if (ovListQuery.isLoading || ovListQuery.isFetching) return;
+    if (ovSeeded) return;
+    const ex = ovExisting;
+    // Schedule scope.
+    setOvIsActive(ex?.schedule?.isActive ?? data.isActive);
+    setOvDisplayName(ex?.schedule?.displayName ?? data.displayName ?? '');
+    setOvDisplayDescription(ex?.schedule?.displayDescription ?? data.displayDescription ?? '');
+    const maskDays = ex?.schedule?.weekDays
+      ? parseMaskToDays(ex.schedule.weekDays)
+      : data.dayWindows.map((d) => d.dayOfWeek);
+    setOvWeekDays(maskDays);
+    // The base has per-day cutoffs; the override has ONE shared pair.
+    // Seed the shared pair from the override if set, otherwise from
+    // the first enabled base day (falling back to today's default).
+    const firstDay = data.dayWindows[0] ?? null;
+    setOvCutoffDay(ex?.schedule?.cutoffDay ?? firstDay?.cutoffDay ?? null);
+    setOvCutoffTime(ex?.schedule?.cutoffTime ?? firstDay?.cutoffTime ?? '');
+    // Collection scope. Seed from override row first; if the override
+    // has no value for a field, use the base's equivalent so the input
+    // shows what the client would resolve to today.
+    setOvCollSpeedId(ex?.collection?.speedId ?? data.pickupRatingSpeed ?? null);
+    setOvCollZoneGroupId(ex?.collection?.zoneGroupId ?? data.pickupPostcodeGroupId ?? null);
+    setOvCollPickupTimeMode(ex?.collection?.pickupTimeMode ?? '');
+    setOvCollPickupWindowStart(ex?.collection?.pickupWindowStart ?? '');
+    setOvCollPickupWindowEnd(ex?.collection?.pickupWindowEnd ?? '');
+    // Delivery scope.
+    setOvDelSpeedId(ex?.delivery?.speedId ?? data.speedId ?? null);
+    setOvDelZoneGroupId(ex?.delivery?.zoneGroupId ?? data.postcodeGroupId ?? null);
+    setOvSeeded(true);
+  }, [isOverride, overrideMode, data, ovExisting, ovListQuery.isLoading, ovListQuery.isFetching, ovSeeded]);
 
   // Postcode add/remove now owned by PostcodeLookupInput; the parent
   // only receives the final ids via onPostcodeIdsChange.
@@ -454,8 +652,120 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     onError: (e: Error) => setSaveError(e.message),
   });
 
+  // Override-mode save: PUT the delta rather than upserting the base.
+  // Body is computed by comparing current override state against the
+  // base seeded values; matching fields ship as `null` (removes that
+  // column from the delta row) and differing fields ship the operator's
+  // value. Empty scope blocks ship as `null` so the whole scope row is
+  // dropped.
+  const ovSaveMut = useMutation({
+    mutationFn: (body: ScheduleOverridePutBody) =>
+      schedulesV2Service.putOverride(scheduleId!, overrideMode!.clientId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.detailAll(tenantId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.overridesAll(tenantId) });
+      toast.show('Client override saved.', 'success');
+      onClose();
+    },
+    onError: (e: Error) => {
+      setSaveError(e.message);
+      toast.show(`Save failed: ${e.message}`, 'error');
+    },
+  });
+
+  // Build the override PUT body from current ov* state vs the base
+  // seeded values. Each field ships as `null` when it equals base
+  // (client falls back to base); otherwise ships the operator's value.
+  // Empty-string / 0 / null in the operator's UI collapse into a
+  // single "no override" nullish read via nzOrNull() so the "cleared"
+  // input state and the "never touched" input state both resolve to
+  // inherit-from-base.
+  const buildOverridePutBody = (): ScheduleOverridePutBody => {
+    if (!data || !overrideMode) {
+      return { schedule: null, collection: null, delivery: null };
+    }
+    // Schedule scope.
+    const baseWeekDays = data.dayWindows.map((d) => d.dayOfWeek);
+    const weekDaysDiffers = !arraysEqual(ovWeekDays, baseWeekDays);
+    const baseFirstDay = data.dayWindows[0] ?? null;
+    const cutoffDayDiffers = ovCutoffDay !== (baseFirstDay?.cutoffDay ?? null);
+    const cutoffTimeDiffers =
+      (nzOrNull(ovCutoffTime) ?? null) !== (nzOrNull(baseFirstDay?.cutoffTime ?? null) ?? null);
+    const isActiveDiffers = ovIsActive !== null && ovIsActive !== data.isActive;
+    const displayNameDiffers = (nzOrNull(ovDisplayName) ?? null) !== (nzOrNull(data.displayName) ?? null);
+    const displayDescDiffers =
+      (nzOrNull(ovDisplayDescription) ?? null) !== (nzOrNull(data.displayDescription) ?? null);
+    const scheduleScope: ScheduleScopeOverride = {
+      cutoffDay: cutoffDayDiffers ? ovCutoffDay : null,
+      cutoffTime: cutoffTimeDiffers ? nzOrNull(ovCutoffTime) : null,
+      weekDays: weekDaysDiffers ? daysToMask(ovWeekDays) : null,
+      isActive: isActiveDiffers ? ovIsActive : null,
+      displayName: displayNameDiffers ? nzOrNull(ovDisplayName) : null,
+      displayDescription: displayDescDiffers ? nzOrNull(ovDisplayDescription) : null,
+    };
+    const scheduleHasValues =
+      scheduleScope.cutoffDay != null
+      || scheduleScope.cutoffTime != null
+      || scheduleScope.weekDays != null
+      || scheduleScope.isActive != null
+      || scheduleScope.displayName != null
+      || scheduleScope.displayDescription != null;
+    // Collection scope.
+    const collSpeedDiffers = ovCollSpeedId !== (data.pickupRatingSpeed ?? null);
+    const collZoneDiffers = ovCollZoneGroupId !== (data.pickupPostcodeGroupId ?? null);
+    // Pickup-time-mode / windows are new override-only fields (no base
+    // schedule columns to compare to). Ship non-empty values; empty
+    // means "inherit from base".
+    const collTimeModeVal = nzOrNull(ovCollPickupTimeMode);
+    const collWindowStartVal = nzOrNull(ovCollPickupWindowStart);
+    const collWindowEndVal = nzOrNull(ovCollPickupWindowEnd);
+    const collectionScope: LegScopeOverride = {
+      speedId: collSpeedDiffers ? ovCollSpeedId : null,
+      zoneGroupId: collZoneDiffers ? ovCollZoneGroupId : null,
+      pickupTimeMode: collTimeModeVal,
+      pickupWindowStart: collWindowStartVal,
+      pickupWindowEnd: collWindowEndVal,
+      // Preserve the existing override's additionalItemChargingLogic
+      // (there is no UI for it yet); null when there was none.
+      additionalItemChargingLogic: ovExisting?.collection?.additionalItemChargingLogic ?? null,
+    };
+    const collectionHasValues =
+      collectionScope.speedId != null
+      || collectionScope.zoneGroupId != null
+      || collectionScope.pickupTimeMode != null
+      || collectionScope.pickupWindowStart != null
+      || collectionScope.pickupWindowEnd != null
+      || collectionScope.additionalItemChargingLogic != null;
+    // Delivery scope.
+    const delSpeedDiffers = ovDelSpeedId !== (data.speedId ?? null);
+    const delZoneDiffers = ovDelZoneGroupId !== (data.postcodeGroupId ?? null);
+    const deliveryScope: LegScopeOverride = {
+      speedId: delSpeedDiffers ? ovDelSpeedId : null,
+      zoneGroupId: delZoneDiffers ? ovDelZoneGroupId : null,
+      pickupTimeMode: null,
+      pickupWindowStart: null,
+      pickupWindowEnd: null,
+      additionalItemChargingLogic: null,
+    };
+    const deliveryHasValues = deliveryScope.speedId != null || deliveryScope.zoneGroupId != null;
+    return {
+      schedule: scheduleHasValues ? scheduleScope : null,
+      collection: collectionHasValues ? collectionScope : null,
+      delivery: deliveryHasValues ? deliveryScope : null,
+    };
+  };
+
   const submit = () => {
     if (!data) return;
+    // Override-mode save routes to the delta PUT and skips the base
+    // upsert validations entirely (name / region / days apply to the
+    // base schedule; overrides layer on top).
+    if (isOverride && overrideMode) {
+      setSaveError(null);
+      ovSaveMut.mutate(buildOverridePutBody());
+      return;
+    }
     if (!formName.trim()) { setSaveError('Name is required.'); return; }
     if (!derived.regionId || derived.regionId <= 0) {
       setSaveError('Add a Delivery leg with a region to set the destination.'); return;
@@ -490,16 +800,15 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       deliveryState: formDeliveryState,
       pickupBoxDiscount: formPickupBoxDiscount,
       dropOffLocationId: formDropOffLocationId,
-      // F8 (Steve 2026-09-20): per-day CutoffHours. Each enabled day
-       // carries its own d.cutoffHours; DayWindowDto flows this through
-       // to tblBulkRunSchedule per-row without flattening. Audit found
-       // 452 NZ schedules had disagreeing per-day cutoffs; this
-       // frontend was not the flatten path (seedDaysFromDto reads
-       // per-day and this write preserves per-day).
+      // F11 Phase C (Steve 2026-09-24): absolute per-day cutoff pair
+       // (cutoffDay + cutoffTime). Replaces the integer cutoffHours field.
+       // The backend derives a legacy CutoffHours on write so downstream
+       // consumers that still read the old column keep working.
       dayWindows: formDays
         .map((d, i) => ({
           id: d.id, dayOfWeek: i + 1,
-          startTime: d.startTime, endTime: d.endTime, cutoffHours: d.cutoffHours,
+          startTime: d.startTime, endTime: d.endTime,
+          cutoffDay: d.cutoffDay, cutoffTime: d.cutoffTime,
         }))
         .filter((_d, i) => formDays[i].enabled),
       // F7 (Steve 2026-09-20): send null when the operator did not
@@ -524,9 +833,36 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
     saveMut.mutate(body);
   };
 
-  const title = data
-    ? data.name ?? `Schedule #${data.scheduleId}`
-    : 'Schedule';
+  const baseName = data ? (data.name ?? `Schedule #${data.scheduleId}`) : 'Schedule';
+  // Header line 1 uses the same base scheduleId for both slots because
+  // the Steve F1 override model has no separate override header row
+  // (unlike the aspirational mockup, which presumes an independent
+  // override id). The two slots stay in the copy so operators can spot
+  // if that ever changes in a future model iteration.
+  const title = isOverride && data
+    ? `Schedule #${data.scheduleId} - override of #${data.scheduleId} - ${baseName}`
+    : baseName;
+
+  // Save button gating differs by mode.
+  //  - Base mode: existing dirty-state check (form vs seed).
+  //  - Override mode: always enabled once data loads. The delta body
+  //    itself may be empty (all-null), which means "no delta" and the
+  //    backend will clear any existing override row for this client
+  //    (semantically equivalent to Delete). Operators expect Save to
+  //    persist that intent even without a "change", so no dirty gate.
+  const savePending = isOverride ? ovSaveMut.isPending : saveMut.isPending;
+  const saveDisabled = isOverride
+    ? !data || ovSaveMut.isPending || !ovSeeded
+    : !data || saveMut.isPending || !isDirty;
+  const saveTitle = isOverride
+    ? !data
+      ? 'Loading schedule...'
+      : 'Save this client override.'
+    : !data
+      ? 'Loading schedule...'
+      : !isDirty
+        ? 'No changes to save.'
+        : 'Save changes.';
 
   return (
     <>
@@ -535,8 +871,8 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
       onClose={onClose}
       title={title}
       size="6xl"
-      loading={query.isLoading || saveMut.isPending}
-      loadingMessage={saveMut.isPending ? 'Saving schedule...' : 'Loading schedule detail...'}
+      loading={query.isLoading || savePending}
+      loadingMessage={savePending ? 'Saving...' : 'Loading schedule detail...'}
       footer={
         <div className="flex items-center justify-end gap-2 w-full">
           {saveError && (
@@ -547,20 +883,15 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
             onClick={onClose}
             className="px-4 py-2 text-sm rounded border border-border hover:bg-surface-light"
           >
-            Close
+            Cancel
           </button>
           <button
             type="button"
             onClick={submit}
-            disabled={!data || saveMut.isPending || !isDirty}
-            title={
-              !data
-                ? 'Loading schedule...'
-                : !isDirty
-                  ? 'No changes to save.'
-                  : 'Save changes.'
-            }
+            disabled={saveDisabled}
+            title={saveTitle}
             className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
+            data-testid={isOverride ? 'override-modal-save' : 'schedule-modal-save'}
           >
             Save
           </button>
@@ -577,12 +908,51 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
         <>
           <div className="mb-4 flex items-center gap-3">
             <span className="text-xs text-text-muted">Schedule #{data.scheduleId}</span>
+            {isOverride && (
+              <span
+                className="text-xs bg-warning-bg/40 text-warning border border-warning/30 px-2 py-0.5 rounded font-semibold uppercase tracking-wide"
+                data-testid="override-badge"
+              >
+                Override
+              </span>
+            )}
             {data.legacyClientCode && (
               <span className="text-xs bg-warning-bg text-warning px-2 py-0.5 rounded">
                 Legacy per-client: {data.legacyClientCode}
               </span>
             )}
           </div>
+
+          {isOverride && overrideMode && (
+            // Orange info banner spanning the full width per the mockup.
+            // Copy differs based on whether the client already has an
+            // override delta or is being configured for the first time
+            // ("no fields differ yet - set any override field below").
+            <div
+              className="mb-4 rounded border border-warning/30 bg-warning-bg/40 text-warning px-3 py-2 text-xs"
+              data-testid="override-info-banner"
+            >
+              <span className="font-semibold">Editing client override</span>
+              {' - '}
+              <span className="font-semibold">{overrideMode.clientName}</span>
+              {' - based on '}
+              <span className="font-medium">{baseName}</span>{' #'}
+              <span className="font-mono">{data.scheduleId}</span>
+              {'. '}
+              {overrideMode.deltaLabels.length > 0
+                ? (
+                  <>
+                    Structure is locked; only the override fields differ:{' '}
+                    <span className="font-medium">{overrideMode.deltaLabels.join('; ')}</span>.
+                  </>
+                )
+                : (
+                  <>
+                    Structure is locked; no fields differ yet - set any override field below.
+                  </>
+                )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4 mb-4">
             <label className="block">
@@ -591,25 +961,33 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
                 type="text"
                 value={formName}
                 onChange={(e) => setFormName(e.target.value)}
-                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                disabled={isOverride}
+                title={isOverride ? 'Structure field - locked in override mode.' : undefined}
+                className={`mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 ${
+                  isOverride ? 'bg-surface-light text-text-muted cursor-not-allowed' : ''
+                }`}
               />
             </label>
             <div className="flex flex-col gap-2 mt-6">
               {/* F21: Active flag - independent of Book immediately.
                   Active = schedule can be booked at all; Book immediately
-                  = job creates now instead of staging. */}
+                  = job creates now instead of staging.
+                  In override mode this checkbox is bound to ovIsActive
+                  (the delta value) instead of formIsActive. */}
               <label className="flex items-center gap-3">
                 <input
                   type="checkbox"
-                  checked={formIsActive}
-                  onChange={(e) => setFormIsActive(e.target.checked)}
+                  checked={isOverride ? (ovIsActive ?? data.isActive) : formIsActive}
+                  onChange={(e) =>
+                    isOverride ? setOvIsActive(e.target.checked) : setFormIsActive(e.target.checked)
+                  }
                   className="accent-brand-cyan"
                   data-testid="schedule-is-active-checkbox"
                 />
                 <span className="text-sm">
                   Active
                   <span className="ml-2 text-xs text-text-muted">
-                    schedule is bookable at all
+                    {isOverride ? 'override this client\'s active state' : 'schedule is bookable at all'}
                   </span>
                 </span>
               </label>
@@ -618,12 +996,16 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
                   type="checkbox"
                   checked={formAutoBook}
                   onChange={(e) => setFormAutoBook(e.target.checked)}
-                  className="accent-brand-cyan"
+                  disabled={isOverride}
+                  title={isOverride ? 'Book immediately is not overridable per client.' : undefined}
+                  className={`accent-brand-cyan ${isOverride ? 'cursor-not-allowed' : ''}`}
                 />
                 <span className="text-sm">
                   Book immediately
                   <span className="ml-2 text-xs text-text-muted">
-                    job creates now instead of staging into bulk
+                    {isOverride
+                      ? 'locked - AutoBook is not an override column'
+                      : 'job creates now instead of staging into bulk'}
                   </span>
                 </span>
               </label>
@@ -634,23 +1016,31 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
                 type="text"
                 value={formDescription}
                 onChange={(e) => setFormDescription(e.target.value)}
-                className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                disabled={isOverride}
+                title={isOverride ? 'Structure field - locked in override mode.' : undefined}
+                className={`mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 ${
+                  isOverride ? 'bg-surface-light text-text-muted cursor-not-allowed' : ''
+                }`}
               />
             </label>
 
             {/* F13: client-facing display copy shown on the booking /
-                job pages. Empty values save as NULL (fall back to Name). */}
+                job pages. Empty values save as NULL (fall back to Name).
+                In override mode this is an override column - bind to
+                ovDisplayName / ovDisplayDescription. */}
             <label className="block">
               <span className="text-xs uppercase tracking-wide text-text-muted">
                 Display name
                 <span className="ml-2 text-text-muted normal-case">
-                  (client-facing; blank = use Name)
+                  {isOverride ? '(override for this client)' : '(client-facing; blank = use Name)'}
                 </span>
               </span>
               <input
                 type="text"
-                value={formDisplayName}
-                onChange={(e) => setFormDisplayName(e.target.value)}
+                value={isOverride ? ovDisplayName : formDisplayName}
+                onChange={(e) =>
+                  isOverride ? setOvDisplayName(e.target.value) : setFormDisplayName(e.target.value)
+                }
                 className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
                 placeholder="Next Business Day"
                 data-testid="schedule-display-name-input"
@@ -660,13 +1050,17 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               <span className="text-xs uppercase tracking-wide text-text-muted">
                 Display description
                 <span className="ml-2 text-text-muted normal-case">
-                  (client-facing subtitle)
+                  {isOverride ? '(override for this client)' : '(client-facing subtitle)'}
                 </span>
               </span>
               <input
                 type="text"
-                value={formDisplayDescription}
-                onChange={(e) => setFormDisplayDescription(e.target.value)}
+                value={isOverride ? ovDisplayDescription : formDisplayDescription}
+                onChange={(e) =>
+                  isOverride
+                    ? setOvDisplayDescription(e.target.value)
+                    : setFormDisplayDescription(e.target.value)
+                }
                 className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
                 placeholder="Order by 3pm, delivered next business day"
                 data-testid="schedule-display-description-input"
@@ -700,7 +1094,8 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               data={data}
               onAttachClients={onAttachClients}
               onOpenSchedule={onOpenSchedule}
-              onOpenOverrideEditor={(entry) => setOverrideEditor(entry)}
+              onOpenOverride={onOpenOverride}
+              overrideMode={overrideMode}
             />
           )}
           {tab === 'route' && (
@@ -709,6 +1104,16 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               legs={formLegs}
               onLegsChange={setFormLegs}
               lookups={lookups}
+              readOnly={isOverride}
+              overrideMode={isOverride ? {
+                ovCollSpeedId, setOvCollSpeedId,
+                ovCollZoneGroupId, setOvCollZoneGroupId,
+                ovCollPickupTimeMode, setOvCollPickupTimeMode,
+                ovCollPickupWindowStart, setOvCollPickupWindowStart,
+                ovCollPickupWindowEnd, setOvCollPickupWindowEnd,
+                ovDelSpeedId, setOvDelSpeedId,
+                ovDelZoneGroupId, setOvDelZoneGroupId,
+              } : null}
               advanced={{
                 parentSpeedId: formParentSpeedId, onParentSpeedIdChange: setFormParentSpeedId,
                 deliveryState: formDeliveryState, onDeliveryStateChange: setFormDeliveryState,
@@ -722,52 +1127,53 @@ export function ScheduleDetailModal({ scheduleId, onClose, onAttachClients, onOp
               }}
             />
           )}
-          {tab === 'days' && <DaysTab days={formDays} onChange={setFormDays} scheduleId={data.scheduleId} />}
-          {tab === 'coverage' && (
-            <CoverageTab
-              postcodeIds={formPostcodeIds}
-              onPostcodeIdsChange={setFormPostcodeIds}
-              polygonIds={formPolygonIds}
-              onTogglePolygon={togglePolygon}
-              polygons={polygonsQuery.data ?? []}
-              polygonsError={polygonsQuery.error ? (polygonsQuery.error as Error).message : null}
-              polygonsLoading={polygonsQuery.isLoading}
-              // destinationDepotId here MUST be a depot id (used by the
-              // /territory/postcodesForSchedule resolver for zone-derived
-              // zip polygons). derived.regionId is a REGION id, not a
-              // depot - on US tenants the two differ and the zone layer
-              // silently returned wrong/empty data. Until we plumb a
-              // proper delivery-depot id through, prefer pickupDepotId
-              // (which IS a depot fk); null when both are absent. Audit
-              // CRITICAL #5 in the 2026-09-17 review.
-              destinationDepotId={derived.pickupDepotId ?? null}
-              activeZones={derived.zones}
-              isUsTenant={auth.isUsTenant}
-              googleMapsKey={auth.googleMapsKey}
-              scheduleKey={data.scheduleId}
+          {tab === 'days' && (
+            <DaysTab
+              days={formDays}
+              onChange={setFormDays}
+              scheduleId={data.scheduleId}
+              readOnly={isOverride}
+              overrideMode={isOverride ? {
+                ovWeekDays, setOvWeekDays,
+                ovCutoffDay, setOvCutoffDay,
+                ovCutoffTime, setOvCutoffTime,
+              } : null}
             />
           )}
-          {tab === 'roster' && <RosterTab data={data} />}
+          {tab === 'coverage' && (
+            <div className={isOverride ? 'pointer-events-none opacity-60' : undefined}>
+              <CoverageTab
+                postcodeIds={formPostcodeIds}
+                onPostcodeIdsChange={setFormPostcodeIds}
+                polygonIds={formPolygonIds}
+                onTogglePolygon={togglePolygon}
+                polygons={polygonsQuery.data ?? []}
+                polygonsError={polygonsQuery.error ? (polygonsQuery.error as Error).message : null}
+                polygonsLoading={polygonsQuery.isLoading}
+                // destinationDepotId here MUST be a depot id (used by the
+                // /territory/postcodesForSchedule resolver for zone-derived
+                // zip polygons). derived.regionId is a REGION id, not a
+                // depot - on US tenants the two differ and the zone layer
+                // silently returned wrong/empty data. Until we plumb a
+                // proper delivery-depot id through, prefer pickupDepotId
+                // (which IS a depot fk); null when both are absent. Audit
+                // CRITICAL #5 in the 2026-09-17 review.
+                destinationDepotId={derived.pickupDepotId ?? null}
+                activeZones={derived.zones}
+                isUsTenant={auth.isUsTenant}
+                googleMapsKey={auth.googleMapsKey}
+                scheduleKey={data.scheduleId}
+              />
+            </div>
+          )}
+          {tab === 'roster' && (
+            <div className={isOverride ? 'pointer-events-none opacity-60' : undefined}>
+              <RosterTab data={data} />
+            </div>
+          )}
         </>
       )}
     </Modal>
-
-    {/* Rendered as a sibling of the parent Modal (not nested inside its
-        overflow-auto content) so its fixed-position backdrop escapes
-        the parent's stacking context cleanly. Also survives tab
-        switches: state lives at the ScheduleDetailModal level, not
-        inside ClientsTab which unmounts on tab change. */}
-    {data && overrideEditor && (
-      <ClientOverrideEditor
-        scheduleId={data.scheduleId}
-        scheduleName={data.name}
-        clientId={overrideEditor.clientId}
-        clientCode={overrideEditor.clientCode}
-        clientName={overrideEditor.clientName}
-        existing={overrideEditor.existing}
-        onClose={() => setOverrideEditor(null)}
-      />
-    )}
     </>
   );
 }
@@ -778,15 +1184,17 @@ interface ClientsTabProps {
   data: ScheduleGroup;
   onAttachClients: (scheduleId: number) => void;
   onOpenSchedule: (scheduleId: number) => void;
-  onOpenOverrideEditor: (entry: {
-    clientId: number;
-    clientCode: string | null;
-    clientName: string | null;
-    existing: ScheduleOverride | null;
-  }) => void;
+  /** Open THIS modal in override-edit mode for the named client.
+   *  Kevin 2026-09-25: replaces the retired ClientOverrideEditor popup;
+   *  both "Edit override" and "Configure override" now converge here. */
+  onOpenOverride: (scheduleId: number, client: OverrideEditContext) => void;
+  /** When set, this ClientsTab is being rendered inside an override-edit
+   *  session. Renders a stripped view: only the override client, no
+   *  radios, no attach button, no client-overrides list. */
+  overrideMode: OverrideEditContext | null;
 }
 
-function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverrideEditor }: ClientsTabProps) {
+function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode }: ClientsTabProps) {
   const qc = useQueryClient();
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
@@ -815,6 +1223,74 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverrideEdito
     staleTime: 30_000,
   });
   const overrides = overridesQuery.data ?? [];
+
+  // Kevin 2026-09-25: derive per-client delta labels from the override's
+  // scope blocks. The "differs on:" hint in the base-mode row is the
+  // authoritative source, so we reuse it verbatim here and pass it into
+  // the override-edit modal so the info banner text is consistent
+  // regardless of which entry path the operator took.
+  const deltaLabelsFor = (o: ScheduleOverride): string[] => {
+    const labels: string[] = [];
+    if (o.schedule) labels.push('schedule');
+    if (o.collection) labels.push('collection');
+    if (o.delivery) labels.push('delivery');
+    return labels;
+  };
+  const handleOpenOverride = (
+    clientId: number,
+    clientCode: string,
+    clientName: string,
+    existing: ScheduleOverride | null,
+  ) => {
+    onOpenOverride(data.scheduleId, {
+      clientId,
+      clientCode,
+      clientName,
+      // "Configure override" case (no existing delta): empty array -
+      // the modal renders "no fields differ yet - set any override
+      // field below" instead of the delta-labels sentence.
+      deltaLabels: existing ? deltaLabelsFor(existing) : [],
+    });
+  };
+
+  // Override-mode render: strip the layout down to a single "Attached
+  // clients" section with the one override client. No radios, no
+  // client-overrides list, no attach button, no per-client action
+  // buttons - this modal IS the override edit.
+  if (overrideMode) {
+    return (
+      <div className="grid grid-cols-1">
+        <section>
+          <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
+            Attached client
+            <span className="text-xs text-text-muted font-normal">
+              this override applies to
+            </span>
+          </h3>
+          <ul className="space-y-1" data-testid="override-attached-client">
+            <li
+              className="flex items-center justify-between text-sm px-3 py-2 border border-border rounded"
+            >
+              <span className="flex-1 flex items-center gap-2">
+                <span className="font-medium text-text-primary">{overrideMode.clientName}</span>
+                <span className="text-text-muted">·</span>
+                <span className="text-text-secondary">{overrideMode.clientCode}</span>
+                <span className="text-text-muted">·</span>
+                <span className="text-xs text-text-muted font-mono">{overrideMode.clientId}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning-bg text-warning font-semibold uppercase tracking-wide">
+                  override
+                </span>
+              </span>
+            </li>
+          </ul>
+          <p className="mt-3 text-xs text-text-muted italic">
+            Only fields backed by tblBulkRunScheduleOverride columns are
+            editable in this modal. Structure fields stay locked.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -879,12 +1355,12 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverrideEdito
                     <button
                       type="button"
                       onClick={() =>
-                        onOpenOverrideEditor({
-                          clientId: o.clientId,
-                          clientCode: o.clientCode,
-                          clientName: o.clientName,
-                          existing: o,
-                        })
+                        handleOpenOverride(
+                          o.clientId,
+                          o.clientCode ?? `#${o.clientId}`,
+                          o.clientName ?? o.clientCode ?? `Client #${o.clientId}`,
+                          o,
+                        )
                       }
                       className="ml-auto text-xs text-brand-cyan hover:underline"
                       data-testid={`client-override-edit-${o.clientId}`}
@@ -958,12 +1434,12 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverrideEdito
                   type="button"
                   onClick={() => {
                     if (clientId == null) return;
-                    onOpenOverrideEditor({
+                    handleOpenOverride(
                       clientId,
-                      clientCode: code,
-                      clientName: name,
-                      existing: existingOverride,
-                    });
+                      code,
+                      name ?? code,
+                      existingOverride,
+                    );
                   }}
                   disabled={clientId == null}
                   className="text-xs text-brand-cyan hover:underline mr-3 disabled:opacity-40"
@@ -1050,27 +1526,168 @@ interface RouteTabProps {
     onPickupCutoffChange: (v: number | null) => void;
     pickupDepotId: number | null;
   };
+  /** Structural read-only. In override mode the ChainBuilder locks the
+   *  whole route + Advanced block is disabled, and the "Override values"
+   *  panel renders below for the collection + delivery leg-scope deltas. */
+  readOnly?: boolean;
+  overrideMode?: {
+    ovCollSpeedId: number | null;
+    setOvCollSpeedId: (v: number | null) => void;
+    ovCollZoneGroupId: number | null;
+    setOvCollZoneGroupId: (v: number | null) => void;
+    ovCollPickupTimeMode: string;
+    setOvCollPickupTimeMode: (v: string) => void;
+    ovCollPickupWindowStart: string;
+    setOvCollPickupWindowStart: (v: string) => void;
+    ovCollPickupWindowEnd: string;
+    setOvCollPickupWindowEnd: (v: string) => void;
+    ovDelSpeedId: number | null;
+    setOvDelSpeedId: (v: number | null) => void;
+    ovDelZoneGroupId: number | null;
+    setOvDelZoneGroupId: (v: number | null) => void;
+  } | null;
 }
 
-function RouteTab({ data, legs, onLegsChange, lookups, advanced }: RouteTabProps) {
+function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = false, overrideMode = null }: RouteTabProps) {
   const [advOpen, setAdvOpen] = useState(false);
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-text-primary">Route</h3>
         <span className="text-xs text-text-muted italic">
-          Dane's vertical leg builder - edit inline; Save persists via /api/schedules
+          {readOnly
+            ? 'Structure is locked - edit the override values below'
+            : 'Dane\'s vertical leg builder - edit inline; Save persists via /api/schedules'}
         </span>
       </div>
-      <ChainBuilder
-        legs={legs}
-        onChange={onLegsChange}
-        lookups={lookups}
-        pickupBoxDiscount={advanced.pickupBoxDiscount}
-        onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
-      />
+      <div className={readOnly ? 'pointer-events-none opacity-60' : undefined}>
+        <ChainBuilder
+          legs={legs}
+          onChange={onLegsChange}
+          lookups={lookups}
+          readOnly={readOnly}
+          pickupBoxDiscount={advanced.pickupBoxDiscount}
+          onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
+        />
+      </div>
 
-      <section className="pt-4 border-t border-border">
+      {overrideMode && (
+        <section className="pt-4 border-t border-border space-y-3" data-testid="override-route-deltas">
+          <div className="flex items-center gap-2">
+            <h4 className="text-xs uppercase tracking-wide text-text-muted font-semibold">
+              Override values
+            </h4>
+            <span className="text-[11px] text-text-muted italic">
+              only these leg-scope fields are per-client overridable
+            </span>
+          </div>
+
+          {/* Collection scope. Five columns: Speed, Zone group,
+              Pickup time mode, Pickup window start, Pickup window end. */}
+          <div className="border border-border rounded p-3 bg-surface-light">
+            <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold mb-2">
+              Collection
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-xs">
+                Speed
+                <select
+                  value={overrideMode.ovCollSpeedId ?? ''}
+                  onChange={(e) => overrideMode.setOvCollSpeedId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-collection-speed"
+                >
+                  <option value="">- inherit -</option>
+                  {lookups.speeds.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Zone group
+                <select
+                  value={overrideMode.ovCollZoneGroupId ?? ''}
+                  onChange={(e) => overrideMode.setOvCollZoneGroupId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-collection-zone-group"
+                >
+                  <option value="">- inherit -</option>
+                  {lookups.postcodeGroups.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Pickup time mode
+                <select
+                  value={overrideMode.ovCollPickupTimeMode}
+                  onChange={(e) => overrideMode.setOvCollPickupTimeMode(e.target.value)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-collection-pickup-time-mode"
+                >
+                  <option value="">- inherit -</option>
+                  <option value="window">Window</option>
+                  <option value="fixed">Fixed</option>
+                  <option value="on_demand">On demand</option>
+                </select>
+              </label>
+              <div />
+              <label className="block text-xs">
+                Pickup window start
+                <input
+                  type="time"
+                  value={overrideMode.ovCollPickupWindowStart}
+                  onChange={(e) => overrideMode.setOvCollPickupWindowStart(e.target.value)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-collection-pickup-window-start"
+                />
+              </label>
+              <label className="block text-xs">
+                Pickup window end
+                <input
+                  type="time"
+                  value={overrideMode.ovCollPickupWindowEnd}
+                  onChange={(e) => overrideMode.setOvCollPickupWindowEnd(e.target.value)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-collection-pickup-window-end"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Delivery scope. Two columns: Speed, Zone group. */}
+          <div className="border border-border rounded p-3 bg-surface-light">
+            <div className="text-[10px] uppercase tracking-wide text-text-muted font-semibold mb-2">
+              Delivery
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block text-xs">
+                Speed
+                <select
+                  value={overrideMode.ovDelSpeedId ?? ''}
+                  onChange={(e) => overrideMode.setOvDelSpeedId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-delivery-speed"
+                >
+                  <option value="">- inherit -</option>
+                  {lookups.speeds.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                Zone group
+                <select
+                  value={overrideMode.ovDelZoneGroupId ?? ''}
+                  onChange={(e) => overrideMode.setOvDelZoneGroupId(e.target.value ? Number(e.target.value) : null)}
+                  className="mt-1 w-full px-2 py-1 border border-border rounded"
+                  data-testid="override-delivery-zone-group"
+                >
+                  <option value="">- inherit -</option>
+                  {lookups.postcodeGroups.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+                </select>
+              </label>
+            </div>
+          </div>
+        </section>
+      )}
+
+
+      <section className={`pt-4 border-t border-border ${readOnly ? 'pointer-events-none opacity-60' : ''}`}>
         <button
           type="button"
           onClick={() => setAdvOpen((v) => !v)}
@@ -1299,72 +1916,187 @@ interface DaysTabProps {
   days: DayForm[];
   onChange: (days: DayForm[]) => void;
   scheduleId: number;
+  /** Structural read-only. Locks per-day window + cutoff inputs; the
+   *  day-toggle checkbox stays interactive because the day set itself
+   *  is a per-client overridable value. */
+  readOnly?: boolean;
+  /** Override-mode payload: day toggles write to ovWeekDays instead of
+   *  formDays; an override cutoff pair panel renders below the grid. */
+  overrideMode?: {
+    ovWeekDays: number[];
+    setOvWeekDays: (v: number[]) => void;
+    ovCutoffDay: number | null;
+    setOvCutoffDay: (v: number | null) => void;
+    ovCutoffTime: string;
+    setOvCutoffTime: (v: string) => void;
+  } | null;
 }
 
-function DaysTab({ days, onChange, scheduleId }: DaysTabProps) {
-  const toggle = (i: number) =>
-    onChange(days.map((d, idx) => (idx === i ? { ...d, enabled: !d.enabled } : d)));
+function DaysTab({ days, onChange, scheduleId, readOnly = false, overrideMode = null }: DaysTabProps) {
+  // F11 Phase C: when the operator enables a day, seed cutoffDay to the
+  // day's own dayOfWeek so the default is a same-day cutoff. Leaves an
+  // existing pick untouched.
+  //
+  // Override mode branch: the day-toggle click updates the shared
+  // ovWeekDays set instead of the per-day formDays.enabled bits. The
+  // per-day cutoff pickers stay disabled; the operator edits ONE shared
+  // cutoff pair below the grid.
+  const toggle = (i: number) => {
+    if (overrideMode) {
+      const dayN = i + 1;
+      const already = overrideMode.ovWeekDays.includes(dayN);
+      const next = already
+        ? overrideMode.ovWeekDays.filter((n) => n !== dayN)
+        : [...overrideMode.ovWeekDays, dayN].sort((a, b) => a - b);
+      overrideMode.setOvWeekDays(next);
+      return;
+    }
+    onChange(days.map((d, idx) =>
+      idx === i
+        ? {
+            ...d,
+            enabled: !d.enabled,
+            cutoffDay: !d.enabled && d.cutoffDay == null ? i + 1 : d.cutoffDay,
+          }
+        : d));
+  };
   const patch = (i: number, p: Partial<DayForm>) =>
     onChange(days.map((d, idx) => (idx === i ? { ...d, ...p } : d)));
+
+  const isDayEnabled = (i: number): boolean => {
+    if (overrideMode) return overrideMode.ovWeekDays.includes(i + 1);
+    return days[i]?.enabled === true;
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-text-primary">Operating days</h3>
         <span className="text-xs text-text-muted italic">
-          cut-off is per day, hours before the window
+          {overrideMode
+            ? 'toggle days to override which days this client can book; window + per-day cut-off are locked'
+            : 'cut-off is the exact day + time bookings close for this day\'s collection'}
         </span>
       </div>
       <div className="grid grid-cols-7 gap-2">
         {[1, 2, 3, 4, 5, 6, 7].map((n) => {
           const i = n - 1;
           const d = days[i];
+          const dayEnabled = isDayEnabled(i);
+          // In override mode the per-day window + cutoff inputs render
+          // ONLY on days that are ENABLED IN THE BASE (d.enabled) so the
+          // operator sees the base context; they're always disabled. A
+          // day the base doesn't run stays as a plain checkbox row.
+          const showBaseDetails = overrideMode ? d.enabled : dayEnabled;
           return (
             <div
               key={n}
               className={`border rounded p-2 text-center ${
-                d.enabled ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border bg-surface-light'
+                dayEnabled ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border bg-surface-light'
               }`}
             >
               <label className="flex items-center gap-1 text-xs font-medium justify-center">
                 <input
                   type="checkbox"
-                  checked={d.enabled}
+                  checked={dayEnabled}
                   onChange={() => toggle(i)}
                   className="accent-brand-cyan"
+                  data-testid={`days-tab-toggle-${n}`}
                 />
                 {DAY_NAMES[n]}
               </label>
-              {d.enabled && (
+              {showBaseDetails && (
                 <div className="mt-1 space-y-1">
+                  <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Window</span>
                   <input
                     type="time"
                     value={d.startTime}
                     onChange={(e) => patch(i, { startTime: e.target.value })}
-                    className="w-full text-xs border border-border rounded px-1"
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
                   />
                   <input
                     type="time"
                     value={d.endTime}
                     onChange={(e) => patch(i, { endTime: e.target.value })}
-                    className="w-full text-xs border border-border rounded px-1"
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
                   />
-                  <div className="flex items-center gap-1 text-xs">
-                    <input
-                      type="number"
-                      min={0}
-                      value={d.cutoffHours}
-                      onChange={(e) => patch(i, { cutoffHours: Number(e.target.value) })}
-                      className="w-12 border border-border rounded px-1"
-                    />
-                    <span>h</span>
-                  </div>
+                  {/* F11 Phase C (2026-09-24): absolute cutoff pair.
+                      Labelled + matched to the Window inputs' shape so
+                      operators know they're editing the cut-off day+time,
+                      not a second window pair. In override mode these are
+                      locked - one shared override pair renders below the
+                      grid. */}
+                  <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Cut-off</span>
+                  <select
+                    value={d.cutoffDay ?? ''}
+                    onChange={(e) => patch(i, {
+                      cutoffDay: e.target.value === '' ? null : Number(e.target.value),
+                    })}
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
+                    title="Cut-off day"
+                  >
+                    <option value="">- day -</option>
+                    {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                      <option key={n} value={n}>{DAY_NAMES[n]}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="time"
+                    value={d.cutoffTime ?? ''}
+                    onChange={(e) => patch(i, {
+                      cutoffTime: e.target.value === '' ? null : e.target.value,
+                    })}
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
+                    title="Cut-off time"
+                  />
                 </div>
               )}
             </div>
           );
         })}
       </div>
+      {overrideMode && (
+        <section className="pt-4 border-t border-border" data-testid="override-cutoff-panel">
+          <div className="flex items-center gap-2 mb-2">
+            <h4 className="text-xs uppercase tracking-wide text-text-muted font-semibold">
+              Override cut-off
+            </h4>
+            <span className="text-[11px] text-text-muted italic">
+              one shared pair applies to every enabled day for this client
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 border border-border rounded p-3 bg-surface-light">
+            <label className="block text-xs">
+              Cut-off day
+              <select
+                value={overrideMode.ovCutoffDay ?? ''}
+                onChange={(e) => overrideMode.setOvCutoffDay(e.target.value === '' ? null : Number(e.target.value))}
+                className="mt-1 w-full px-2 py-1 border border-border rounded"
+                data-testid="override-cutoff-day"
+              >
+                <option value="">- inherit -</option>
+                {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                  <option key={n} value={n}>{DAY_NAMES[n]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs">
+              Cut-off time
+              <input
+                type="time"
+                value={overrideMode.ovCutoffTime}
+                onChange={(e) => overrideMode.setOvCutoffTime(e.target.value)}
+                className="mt-1 w-full px-2 py-1 border border-border rounded"
+                data-testid="override-cutoff-time"
+              />
+            </label>
+          </div>
+        </section>
+      )}
       <p className="text-xs text-text-muted italic">
         Each enabled day is one tblBulkRunSchedule row carrying ScheduleId #{scheduleId}.
       </p>
@@ -1429,7 +2161,7 @@ function WeeklyStrip({
           >
             <div className="uppercase tracking-wide text-[9px] opacity-70">{label}</div>
             <div className="mt-0.5 truncate font-medium">
-              {name ?? '—'}
+              {name ?? '-'}
             </div>
           </div>
         );

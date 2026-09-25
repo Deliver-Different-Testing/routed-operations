@@ -285,7 +285,12 @@ public class ScheduleOverrideService(
         int scheduleId, int clientId, ScheduleScopeOverrideDto scope, DateTime now, string actor)
     {
         if (scope == null) return null;
-        if (scope.CutoffHours == null && scope.CutoffDay == null && scope.CutoffTime == null
+        // F11 Phase C (2026-09-24): CutoffHours dropped from the DTO;
+        // schedule-scope rows now identify a cutoff via the absolute
+        // (CutoffDay, CutoffTime) pair only. The delta table's CutoffHours
+        // column stays on the entity for read-back on legacy rows, but
+        // RoutedOps no longer writes it.
+        if (scope.CutoffDay == null && scope.CutoffTime == null
             && string.IsNullOrEmpty(scope.WeekDays) && scope.IsActive == null
             && string.IsNullOrEmpty(scope.DisplayName) && string.IsNullOrEmpty(scope.DisplayDescription))
         {
@@ -298,7 +303,6 @@ public class ScheduleOverrideService(
             Scope              = BulkRunScheduleOverride.ScopeSchedule,
             LegOrdinal         = 0,
             DayOfWeek          = 0,
-            CutoffHours        = scope.CutoffHours,
             CutoffDay          = scope.CutoffDay.HasValue ? (byte?)scope.CutoffDay.Value : null,
             CutoffTime         = ParseNullableTime(scope.CutoffTime),
             WeekDays           = string.IsNullOrEmpty(scope.WeekDays) ? null : scope.WeekDays,
@@ -356,8 +360,10 @@ public class ScheduleOverrideService(
     private static ScheduleScopeOverrideDto MapScheduleScope(BulkRunScheduleOverride row)
     {
         if (row == null) return null;
+        // F11 Phase C (2026-09-24): CutoffHours dropped from the DTO. The
+        // entity column stays for legacy read-back but does not project
+        // into the wire shape.
         return new ScheduleScopeOverrideDto(
-            row.CutoffHours,
             row.CutoffDay.HasValue ? (int?)row.CutoffDay.Value : null,
             FormatNullableTime(row.CutoffTime),
             row.WeekDays,

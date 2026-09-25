@@ -277,6 +277,11 @@ public class ScheduleService(
                     s.StartTime,
                     s.EndTime,
                     s.CutoffHours,
+                    s.CutoffDay,
+                    s.CutoffTime,
+                    s.PickupRatingSpeed,
+                    s.PostcodeGroupId,
+                    s.PickupPostcodeGroupId,
                     s.Description,
                 })
                 .ToListAsync();
@@ -296,10 +301,37 @@ public class ScheduleService(
                 .Distinct()
                 .ToListAsync();
         });
-        await Task.WhenAll(linkRowsTask, rowBasesTask, overrideScopeRowsTask);
+        // 2026-09-24: full override rows for the nested-override rendering
+        // in the Schedules NEW list. One row per (Schedule, Client, Scope);
+        // consumers group by (Schedule, Client) and diff each column
+        // against the base to produce the "Cut-off Fri 13:00 (base Fri
+        // 15:00)" delta labels shown as xs muted text under the nested
+        // <tr>. Bounded by the number of overriding clients across the
+        // tenant, which stays in the low thousands even on the busiest
+        // tenants (most schedules have zero overrides).
+        var overrideFullRowsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkRunScheduleOverrides.AsNoTracking()
+                .Where(o => liveHeaderIds.Contains(o.ScheduleId))
+                .ToListAsync();
+        });
+        // Lookup for zone-group names, needed for the "Pickup zone group
+        // X (base Y)" delta labels. Small table (dozens per tenant) so a
+        // full-table fetch is cheaper than a scoped query.
+        var postcodeGroupNamesTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkZonePostcodeGroups.AsNoTracking()
+                .ToDictionaryAsync(g => g.Id, g => g.Name);
+        });
+        await Task.WhenAll(linkRowsTask, rowBasesTask, overrideScopeRowsTask,
+            overrideFullRowsTask, postcodeGroupNamesTask);
         var (linkRows, w2LinkMs) = linkRowsTask.Result;
         var (rowBases, w2RowsMs) = rowBasesTask.Result;
         var (overrideScopeRows, w2OverrideScopeMs) = overrideScopeRowsTask.Result;
+        var (overrideFullRows, w2OverrideFullMs) = overrideFullRowsTask.Result;
+        var (postcodeGroupNames, w2PostcodeGroupMs) = postcodeGroupNamesTask.Result;
 
         // (ScheduleId -> ordered scope list) for the list-view "differs
         // on:" badge. Scopes ordered schedule/collection/depot/delivery
@@ -338,28 +370,40 @@ public class ScheduleService(
         //     100x wire-payload reduction.
         var dayRowToHeader = rowBases.ToDictionary(r => r.BulkRunScheduleId, r => r.ScheduleId);
 
-        // ─── Wave 3: merged client codes (single TucClients round-trip). ─
+        // ─── Wave 3: merged client codes + names (single TucClients trip).
         var legacyClientIds = headers
             .Where(h => h.LegacyClientId.HasValue)
             .Select(h => h.LegacyClientId!.Value)
             .Distinct()
             .ToList();
+        var overrideClientIds = overrideFullRows
+            .Select(o => o.ClientId)
+            .Distinct()
+            .ToList();
         var allClientIdsForCodes = linkClientsByHeaderId.Values
             .SelectMany(s => s)
             .Concat(legacyClientIds)
+            .Concat(overrideClientIds)
             .Distinct()
             .ToList();
 
-        var clientCodesTask = Timed(async () =>
+        var clientLookupTask = Timed(async () =>
         {
             if (allClientIdsForCodes.Count == 0)
-                return new Dictionary<int, string>();
+                return new List<TucClientNameCode>();
             await using var ctx = await contextFactory.CreateDbContextAsync();
             return await ctx.TucClients.AsNoTracking()
-                .Where(c => allClientIdsForCodes.Contains(c.UcclId) && c.UcclCode != null)
-                .ToDictionaryAsync(c => c.UcclId, c => c.UcclCode);
+                .Where(c => allClientIdsForCodes.Contains(c.UcclId))
+                .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
+                .ToListAsync();
         });
-        var (clientCodes, w3ClientMs) = await clientCodesTask;
+        var (clientLookup, w3ClientMs) = await clientLookupTask;
+        var clientCodes = clientLookup
+            .Where(c => c.Code != null)
+            .ToDictionary(c => c.Id, c => c.Code);
+        var clientNames = clientLookup
+            .Where(c => c.Name != null)
+            .ToDictionary(c => c.Id, c => c.Name);
         // legacyClientCodes was a strict subset of clientCodes pre-refactor
         // (same table, different filter). Consumers below only ever look up
         // legacy ids via TryGetValue, so pointing them at the merged dict
@@ -372,14 +416,22 @@ public class ScheduleService(
             "w1[depot={W1DepotMs} speed={W1SpeedMs} headers={W1HeadersMs} " +
             "postcode={W1PostcodeMs} polygon={W1PolygonMs} zone={W1ZoneMs} " +
             "linehaul={W1LinehaulMs} route={W1RouteMs} runs={W1RunsMs}]ms | " +
-            "w2[link={W2LinkMs} rows={W2RowsMs}]ms | " +
+            "w2[link={W2LinkMs} rows={W2RowsMs} ovrScope={W2OvrScopeMs} " +
+            "ovrFull={W2OvrFullMs} pcGroup={W2PcGroupMs}]ms | " +
             "w3[client={W3ClientMs}]ms | " +
             "headers={HeaderCount} dayRows={DayRowCount}",
             totalSw.ElapsedMilliseconds,
             w1DepotMs, w1SpeedMs, w1HeadersMs, w1PostcodeMs, w1PolygonMs,
             w1ZoneMs, w1LinehaulMs, w1RouteMs, w1RunsMs,
-            w2LinkMs, w2RowsMs, w3ClientMs,
+            w2LinkMs, w2RowsMs, w2OverrideScopeMs, w2OverrideFullMs,
+            w2PostcodeGroupMs, w3ClientMs,
             headers.Count, rowBases.Count);
+
+        // 2026-09-24: group override rows by ScheduleId so each header can
+        // enumerate its per-client deltas without a nested Where per summary.
+        var overrideRowsByScheduleId = overrideFullRows
+            .GroupBy(o => o.ScheduleId)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
         // Group day rows by ScheduleId (their header FK).
         // Each header emits one summary row.
@@ -507,6 +559,27 @@ public class ScheduleService(
                          .OrderBy(cc => cc, StringComparer.OrdinalIgnoreCase)
                          .Take(3)
                          .ToArray();
+                // 2026-09-24: nested override rows. One per (Schedule,
+                // Client) pair; the DeltaLabels array carries the human-
+                // readable list of scope+field differences. Rendered by
+                // the frontend as nested <tr> under this base row.
+                var overridesForSchedule = overrideRowsByScheduleId.TryGetValue(header.ScheduleId, out var ovrRows)
+                    ? BuildOverrideRows(
+                        ovrRows,
+                        header,
+                        new OverrideBaseSnapshot(
+                            first.CutoffDay,
+                            first.CutoffTime,
+                            first.StartTime,
+                            first.EndTime,
+                            first.PickupDepotId,
+                            first.PickupRatingSpeed,
+                            first.PickupPostcodeGroupId,
+                            first.SpeedId,
+                            first.PostcodeGroupId),
+                        activeDays,
+                        clientCodes, clientNames, speedNames, postcodeGroupNames, depotNames)
+                    : new List<ScheduleOverrideRowDto>();
                 return new ScheduleGroupSummaryDto(
                     header.ScheduleId,
                     header.Name,
@@ -535,7 +608,8 @@ public class ScheduleService(
                     overriddenFields,
                     header.DisplayName,
                     header.DisplayDescription,
-                    header.IsActive);
+                    header.IsActive,
+                    overridesForSchedule);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -1121,7 +1195,14 @@ public class ScheduleService(
             row.DayOfWeek = w.DayOfWeek;
             row.StartTime = ParseTime(w.StartTime);
             row.EndTime = ParseTime(w.EndTime);
-            row.CutoffHours = w.CutoffHours;
+            // F11 Phase C (Steve 2026-09-24): absolute cutoff pair is the
+            // canonical shape. Legacy CutoffHours is still written so the
+            // list-card summary + any tenant SP not yet on Phase B fall
+            // through to a valid integer offset. DeriveLegacyCutoffHours
+            // produces the same offset the adhoc back-fill script uses.
+            row.CutoffDay = w.CutoffDay.HasValue ? (byte?)w.CutoffDay.Value : null;
+            row.CutoffTime = ParseNullableTime(w.CutoffTime);
+            row.CutoffHours = DeriveLegacyCutoffHours(row.CutoffDay, row.CutoffTime, row.DayOfWeek, row.StartTime);
         }
 
         // Zones + linehauls apply to every row in the group.
@@ -1327,6 +1408,11 @@ public class ScheduleService(
                 DayOfWeek = src.DayOfWeek,
                 StartTime = src.StartTime,
                 EndTime = src.EndTime,
+                // F11 Phase C (2026-09-24): copy the absolute pair plus
+                // the legacy offset. Source's derived CutoffHours is still
+                // valid so we carry it verbatim rather than re-deriving.
+                CutoffDay = src.CutoffDay,
+                CutoffTime = src.CutoffTime,
                 CutoffHours = src.CutoffHours,
                 MaxJobs = src.MaxJobs > 0 ? src.MaxJobs : 10000,
                 Region = src.Region,
@@ -1597,7 +1683,8 @@ public class ScheduleService(
                 r.DayOfWeek ?? 0,
                 FormatTime(r.StartTime),
                 FormatTime(r.EndTime),
-                r.CutoffHours))
+                r.CutoffDay.HasValue ? (int?)r.CutoffDay.Value : null,
+                FormatTime(r.CutoffTime)))
             .ToList();
 
         var zones = t.BulkZoneSchedules
@@ -1713,6 +1800,39 @@ public class ScheduleService(
     {
         if (TimeSpan.TryParse(hhmm, out var ts)) return ts;
         throw new InvalidOperationException($"Invalid time format: '{hhmm}'. Use HH:mm.");
+    }
+
+    /// <summary>F11 Phase C (2026-09-24). Parse a nullable HH:mm string
+    /// into a TimeSpan?. Mirrors ScheduleOverrideService.ParseNullableTime
+    /// so the cutoff-time write path is consistent across services.</summary>
+    private static TimeSpan? ParseNullableTime(string hhmm)
+    {
+        if (string.IsNullOrWhiteSpace(hhmm)) return null;
+        return TimeSpan.TryParse(hhmm, out var ts) ? ts : (TimeSpan?)null;
+    }
+
+    /// <summary>F11 Phase C (2026-09-24). Derive the legacy CutoffHours
+    /// integer offset from the absolute pair so downstream consumers that
+    /// still read the old column (the Schedules NEW list card's
+    /// MonCutoffHours/OtherCutoffHours, legacy tenant SPs not yet on
+    /// Phase B) keep working. Mirrors the adhoc back-fill script:
+    /// Absolute = midnight + StartTime - CutoffHours, so
+    /// CutoffHours = StartTime - (dayOffset * 24 + CutoffTime).
+    /// Returns 0 when the absolute pair is unset - the row is a legacy
+    /// row and CutoffHours is whatever the caller passes in.</summary>
+    private static int DeriveLegacyCutoffHours(byte? cutoffDay, TimeSpan? cutoffTime, short? dayOfWeek, TimeSpan? startTime)
+    {
+        if (!cutoffDay.HasValue || !cutoffTime.HasValue || !dayOfWeek.HasValue || !startTime.HasValue)
+        {
+            return 0;
+        }
+        // Day offset: 0 for same-day, -1 for one day prior, wrapping back
+        // to -6. Matches fnScheduleForClient's day-offset math.
+        int dayOffset = ((cutoffDay.Value - dayOfWeek.Value + 6) % 7) - 6;
+        var baselineHours = startTime.Value.TotalHours;
+        var cutoffMomentHours = (dayOffset * 24.0) + cutoffTime.Value.TotalHours;
+        var offsetHours = baselineHours - cutoffMomentHours;
+        return (int)Math.Round(offsetHours);
     }
 
     // ─── v2 write endpoints (Steve's 2026-09-08 KEVIN-NEW-SCHEDULES-VIEW ──
@@ -2047,4 +2167,221 @@ public class ScheduleService(
         public string Code { get; set; }
         public string Name { get; set; }
     }
+
+    /// <summary>Snapshot of a schedule's base values used to diff each
+    /// override row (Steve nested-override brief 2026-09-24). The
+    /// projection carries only the fields BuildOverrideRows consumes -
+    /// keeps the helper signature stable if the row projection grows
+    /// later.</summary>
+    private readonly record struct OverrideBaseSnapshot(
+        byte? CutoffDay,
+        TimeSpan? CutoffTime,
+        TimeSpan? StartTime,
+        TimeSpan? EndTime,
+        int? PickupDepotId,
+        int? PickupRatingSpeed,
+        int? PickupPostcodeGroupId,
+        int? DeliverySpeedId,
+        int? DeliveryPostcodeGroupId);
+
+    private static readonly string[] DayNames = { "", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+
+    /// <summary>
+    /// Build one <see cref="ScheduleOverrideRowDto"/> per client that owns
+    /// any delta row on a schedule (Steve nested-override brief 2026-09-24).
+    /// Each row's DeltaLabels array carries a human-readable label per
+    /// scope+field diff so operators can see what the client differs on
+    /// without opening the editor. Rows with no meaningful diff labels
+    /// are skipped so the list view stays tidy.
+    /// </summary>
+    private static List<ScheduleOverrideRowDto> BuildOverrideRows(
+        List<BulkRunScheduleOverride> rows,
+        BulkRunScheduleHeader header,
+        OverrideBaseSnapshot baseSnap,
+        int[] activeDays,
+        IReadOnlyDictionary<int, string> clientCodes,
+        IReadOnlyDictionary<int, string> clientNames,
+        IReadOnlyDictionary<int, string> speedNames,
+        IReadOnlyDictionary<int, string> postcodeGroupNames,
+        IReadOnlyDictionary<int, string> depotNames)
+    {
+        var results = new List<ScheduleOverrideRowDto>();
+        foreach (var g in rows.GroupBy(r => r.ClientId).OrderBy(g => clientCodes.TryGetValue(g.Key, out var cc) ? cc : $"#{g.Key}", StringComparer.OrdinalIgnoreCase))
+        {
+            var labels = new List<string>();
+            foreach (var row in g)
+            {
+                switch (row.Scope)
+                {
+                    case BulkRunScheduleOverride.ScopeSchedule:
+                        AddScheduleScopeLabels(labels, row, header, baseSnap, activeDays);
+                        break;
+                    case BulkRunScheduleOverride.ScopeCollection:
+                        AddLegScopeLabels(labels, row,
+                            baseSpeedId: baseSnap.PickupRatingSpeed,
+                            baseZoneGroupId: baseSnap.PickupPostcodeGroupId,
+                            baseWindowStart: baseSnap.StartTime,
+                            baseWindowEnd: baseSnap.EndTime,
+                            legLabel: "Pickup",
+                            speedNames: speedNames,
+                            groupNames: postcodeGroupNames);
+                        break;
+                    case BulkRunScheduleOverride.ScopeDelivery:
+                        AddLegScopeLabels(labels, row,
+                            baseSpeedId: baseSnap.DeliverySpeedId,
+                            baseZoneGroupId: baseSnap.DeliveryPostcodeGroupId,
+                            baseWindowStart: null,
+                            baseWindowEnd: null,
+                            legLabel: "Delivery",
+                            speedNames: speedNames,
+                            groupNames: postcodeGroupNames);
+                        break;
+                    case BulkRunScheduleOverride.ScopeDepot:
+                        // Depot scope is reserved by the delta table but has
+                        // no dedicated column today. The brief still asks
+                        // for a "Depot X (base Y)" label - reuse the leg
+                        // SpeedId slot as a placeholder for now; when the
+                        // depot column ships this branch swaps to that.
+                        if (row.SpeedId.HasValue && row.SpeedId != baseSnap.PickupDepotId)
+                        {
+                            var newName = depotNames.TryGetValue(row.SpeedId.Value, out var nn) ? nn : $"#{row.SpeedId.Value}";
+                            var baseName = baseSnap.PickupDepotId.HasValue && depotNames.TryGetValue(baseSnap.PickupDepotId.Value, out var bn) ? bn : "-";
+                            labels.Add($"Depot {newName} (base {baseName})");
+                        }
+                        break;
+                }
+            }
+            if (labels.Count == 0)
+            {
+                // No meaningful scoped diff. Per Steve, skip so the list
+                // view does not carry noise rows.
+                continue;
+            }
+            var code = clientCodes.TryGetValue(g.Key, out var cCode) ? cCode : null;
+            var name = clientNames.TryGetValue(g.Key, out var cName) ? cName : null;
+            results.Add(new ScheduleOverrideRowDto(g.Key, code, name, labels.ToArray()));
+        }
+        return results;
+    }
+
+    private static void AddScheduleScopeLabels(
+        List<string> labels,
+        BulkRunScheduleOverride row,
+        BulkRunScheduleHeader header,
+        OverrideBaseSnapshot baseSnap,
+        int[] activeDays)
+    {
+        // Cut-off pair diff. Show whenever either component differs; we
+        // format the shown value as "<Day> HH:mm" even when only one half
+        // moved so operators see the full new state alongside the base.
+        var overrideCutoffDay = row.CutoffDay;
+        var overrideCutoffTime = row.CutoffTime;
+        var basePairSet = baseSnap.CutoffDay.HasValue || baseSnap.CutoffTime.HasValue;
+        var overridePairSet = overrideCutoffDay.HasValue || overrideCutoffTime.HasValue;
+        if (overridePairSet
+            && (overrideCutoffDay != baseSnap.CutoffDay || overrideCutoffTime != baseSnap.CutoffTime))
+        {
+            var newLabel = FormatDayTime(overrideCutoffDay, overrideCutoffTime);
+            var baseLabel = basePairSet
+                ? FormatDayTime(baseSnap.CutoffDay, baseSnap.CutoffTime)
+                : "-";
+            labels.Add($"Cut-off {newLabel} (base {baseLabel})");
+        }
+
+        // WeekDays: override stores a 7-char mask, base derives from
+        // activeDays (1=Mon..7=Sun).
+        if (!string.IsNullOrEmpty(row.WeekDays))
+        {
+            var baseMask = ActiveDaysToMask(activeDays);
+            if (!string.Equals(row.WeekDays, baseMask, StringComparison.Ordinal))
+            {
+                labels.Add($"Days {row.WeekDays} (base {baseMask})");
+            }
+        }
+
+        if (!string.IsNullOrEmpty(row.DisplayName)
+            && !string.Equals(row.DisplayName, header.DisplayName, StringComparison.Ordinal))
+        {
+            var baseLabel = string.IsNullOrEmpty(header.DisplayName) ? header.Name : header.DisplayName;
+            labels.Add($"Display name {row.DisplayName} (base {baseLabel})");
+        }
+
+        if (!string.IsNullOrEmpty(row.DisplayDescription)
+            && !string.Equals(row.DisplayDescription, header.DisplayDescription, StringComparison.Ordinal))
+        {
+            // Long-text: avoid dumping full description text into the
+            // hint. Just note that the copy is overridden.
+            labels.Add("Display description overridden");
+        }
+
+        if (row.IsActive.HasValue && row.IsActive.Value != header.IsActive)
+        {
+            var newLabel = row.IsActive.Value ? "true" : "false";
+            var baseLabel = header.IsActive ? "true" : "false";
+            labels.Add($"Active {newLabel} (base {baseLabel})");
+        }
+    }
+
+    private static void AddLegScopeLabels(
+        List<string> labels,
+        BulkRunScheduleOverride row,
+        int? baseSpeedId,
+        int? baseZoneGroupId,
+        TimeSpan? baseWindowStart,
+        TimeSpan? baseWindowEnd,
+        string legLabel,
+        IReadOnlyDictionary<int, string> speedNames,
+        IReadOnlyDictionary<int, string> groupNames)
+    {
+        if (row.SpeedId.HasValue && row.SpeedId != baseSpeedId)
+        {
+            var newName = speedNames.TryGetValue(row.SpeedId.Value, out var nn) ? nn : $"#{row.SpeedId.Value}";
+            var baseName = baseSpeedId.HasValue && speedNames.TryGetValue(baseSpeedId.Value, out var bn) ? bn : "-";
+            labels.Add($"{legLabel} speed {newName} (base {baseName})");
+        }
+        if (row.ZoneGroupId.HasValue && row.ZoneGroupId != baseZoneGroupId)
+        {
+            var newName = groupNames.TryGetValue(row.ZoneGroupId.Value, out var nn) ? nn : $"#{row.ZoneGroupId.Value}";
+            var baseName = baseZoneGroupId.HasValue && groupNames.TryGetValue(baseZoneGroupId.Value, out var bn) ? bn : "-";
+            labels.Add($"{legLabel} zone group {newName} (base {baseName})");
+        }
+        if (!string.IsNullOrEmpty(row.PickupTimeMode))
+        {
+            // Base has no PickupTimeMode column so any override value is
+            // itself a delta from the implicit default.
+            labels.Add($"{legLabel} mode {row.PickupTimeMode} (base -)");
+        }
+        if (row.PickupWindowStart.HasValue || row.PickupWindowEnd.HasValue)
+        {
+            var newStart = FormatTimeOrDash(row.PickupWindowStart);
+            var newEnd = FormatTimeOrDash(row.PickupWindowEnd);
+            var baseStart = FormatTimeOrDash(baseWindowStart);
+            var baseEnd = FormatTimeOrDash(baseWindowEnd);
+            if (row.PickupWindowStart != baseWindowStart || row.PickupWindowEnd != baseWindowEnd)
+            {
+                labels.Add($"{legLabel} window {newStart}-{newEnd} (base {baseStart}-{baseEnd})");
+            }
+        }
+    }
+
+    private static string ActiveDaysToMask(int[] activeDays)
+    {
+        var buf = new char[7];
+        for (var i = 0; i < 7; i++) buf[i] = '0';
+        foreach (var d in activeDays)
+        {
+            if (d >= 1 && d <= 7) buf[d - 1] = '1';
+        }
+        return new string(buf);
+    }
+
+    private static string FormatDayTime(byte? day, TimeSpan? time)
+    {
+        var dayLabel = day.HasValue && day.Value >= 1 && day.Value <= 7 ? DayNames[day.Value] : "-";
+        var timeLabel = time.HasValue ? time.Value.ToString(@"hh\:mm") : "-";
+        return $"{dayLabel} {timeLabel}";
+    }
+
+    private static string FormatTimeOrDash(TimeSpan? time)
+        => time.HasValue ? time.Value.ToString(@"hh\:mm") : "-";
 }

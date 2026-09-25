@@ -359,6 +359,13 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneL
 // Schedules module (nightly booking templates + territory maintenance).
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleOverrideService>();
+// Steve F19b (2026-09-24) next-available-collection resolver. Interface
+// registration so callers depend on IScheduleAvailabilityResolver rather
+// than the concrete service - the wiring point for the eventual booking
+// flow is a service-layer only landing (no controller / endpoint yet).
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Schedule.IScheduleAvailabilityResolver,
+    RoutedOperations.Core.Application.Services.Schedule.ScheduleAvailabilityService>();
 // Driver Scheduling module (2026-09-07 port from CourierManager). Two
 // per-tenant abstractions live behind the service - PhoneNormaliser
 // reads the CountryCode auth claim, HubUrlProvider reads DriverHubUrl.

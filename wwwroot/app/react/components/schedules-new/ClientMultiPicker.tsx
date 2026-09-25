@@ -45,6 +45,12 @@ interface Props {
   triggerWidth?: string;
   /** Label rendered inside the panel header. */
   panelTitle?: string;
+  /** When true, renders the trigger button at DepotMultiPicker's compact
+   *  shape (text-xs / py-1) so a toolbar row that mixes both pickers
+   *  reads as one visual band. Off by default so existing callers keep
+   *  the standard py-1.5 / text-sm size. (Steve toolbar-alignment note
+   *  2026-09-24.) */
+  compact?: boolean;
 }
 
 export function ClientMultiPicker({
@@ -54,6 +60,7 @@ export function ClientMultiPicker({
   hintsById,
   triggerWidth = 'w-56',
   panelTitle,
+  compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -126,7 +133,11 @@ export function ClientMultiPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between pl-3 pr-2 py-1.5 text-sm border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+        className={
+          compact
+            ? 'w-full flex items-center justify-between pl-2 pr-1 py-1 text-xs border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40'
+            : 'w-full flex items-center justify-between pl-3 pr-2 py-1.5 text-sm border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40'
+        }
       >
         <span className={selected.length === 0 ? 'text-text-muted' : 'text-text-primary'}>
           {triggerLabel}

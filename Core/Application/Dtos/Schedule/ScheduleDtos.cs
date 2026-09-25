@@ -79,7 +79,14 @@ public record DayWindowDto(
     short DayOfWeek,
     string StartTime,
     string EndTime,
-    int CutoffHours);
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+    /// (1=Mon..7=Sun). NULL when the row still uses the legacy CutoffHours
+    /// offset; tenant SPs coalesce this over CutoffHours.</summary>
+    int? CutoffDay,
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff wall-clock time
+    /// as "HH:mm". NULL when the row still uses the legacy CutoffHours
+    /// offset.</summary>
+    string CutoffTime);
 
 public record ScheduleZoneDto(
     int Id,
@@ -179,7 +186,29 @@ public record ScheduleGroupSummaryDto(
     /// <summary>True if this schedule can be booked at all. Independent of
     /// AutoBook (which is book-immediately vs stage). Steve F21,
     /// 2026-09-22.</summary>
-    bool IsActive);
+    bool IsActive,
+    /// <summary>One row per override client on this schedule (2026-09-24
+    /// Steve). Each row carries the delta labels that describe how the
+    /// client's overrides diverge from the base schedule ("Cut-off Fri
+    /// 13:00 (base Fri 15:00)", etc). Empty when the schedule has no
+    /// overrides. Rendered as nested rows under the base in the Schedules
+    /// NEW list view. Appended so positional callers don't break.</summary>
+    List<ScheduleOverrideRowDto> Overrides);
+
+/// <summary>
+/// One nested override-row entry under a base schedule in the Schedules
+/// NEW list view. One row per client that owns any delta on the schedule.
+/// The DeltaLabels array describes each scope+field difference in a
+/// human-readable form ("Cut-off Fri 13:00 (base Fri 15:00)",
+/// "Delivery speed Overnight (base Standard)", ...) so the operator can
+/// see what this client differs on without opening the editor. Added
+/// 2026-09-24 (Steve nested-override brief).
+/// </summary>
+public record ScheduleOverrideRowDto(
+    int ClientId,
+    string ClientCode,
+    string ClientName,
+    string[] DeltaLabels);
 
 /// <summary>
 /// One schedule bundle (Dane's bundle-of-schedules concept). Row shape

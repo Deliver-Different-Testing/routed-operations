@@ -51,14 +51,25 @@ interface DayForm {
   enabled: boolean;
   startTime: string;
   endTime: string;
-  cutoffHours: number;
+  /** F11 Phase C (2026-09-24). Absolute cutoff day-of-week (1=Mon..7=Sun).
+   *  Null until the operator picks; toggleDay seeds this to the day's
+   *  own dayOfWeek so the default is "same-day cutoff". */
+  cutoffDay: number | null;
+  /** F11 Phase C (2026-09-24). Absolute cutoff wall-clock time as "HH:mm".
+   *  Defaults to 06:00 on a fresh row per the F11 spec. */
+  cutoffTime: string | null;
 }
 
+// F11 Phase C default: same-day cutoff at 06:00. cutoffDay stays null in
+// the shared default so the toggleDay handler can seed it to the day's
+// own dayOfWeek when the operator enables that day. cutoffTime defaults
+// to 06:00 (Kevin's judgment call on the choice offered in the spec).
 const DEFAULT_DAY: DayForm = {
   enabled: false,
   startTime: '08:00',
   endTime: '17:00',
-  cutoffHours: 2,
+  cutoffDay: null,
+  cutoffTime: '06:00',
 };
 
 export function NewScheduleModal({ open, onClose }: Props) {
@@ -166,7 +177,17 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
   const toggleDay = (i: number) => {
-    setDays((prev) => prev.map((d, idx) => idx === i ? { ...d, enabled: !d.enabled } : d));
+    // F11 Phase C: when the operator enables a day, seed cutoffDay to the
+    // day's own dayOfWeek so the default is a same-day cutoff. Leaves an
+    // existing pick untouched.
+    setDays((prev) => prev.map((d, idx) =>
+      idx === i
+        ? {
+            ...d,
+            enabled: !d.enabled,
+            cutoffDay: !d.enabled && d.cutoffDay == null ? i + 1 : d.cutoffDay,
+          }
+        : d));
   };
   const patchDay = (i: number, patch: Partial<DayForm>) => {
     setDays((prev) => prev.map((d, idx) => idx === i ? { ...d, ...patch } : d));
@@ -268,19 +289,18 @@ export function NewScheduleModal({ open, onClose }: Props) {
       deliveryState: deliveryState,
       pickupBoxDiscount: pickupBoxDiscount,
       dropOffLocationId: dropOffLocationId,
-      // F8 (Steve 2026-09-20): per-day CutoffHours. Each enabled day
-       // carries its own d.cutoffHours; DayWindowDto flows this through
-       // to tblBulkRunSchedule per-row without flattening. Audit found
-       // 452 NZ schedules had disagreeing per-day cutoffs that the old
-       // read+write path silently flattened; this frontend never
-       // introduced that path (seedDaysFromDto reads per-day, submit
-       // writes per-day).
+      // F11 Phase C (Steve 2026-09-24): absolute per-day cutoff pair
+       // (cutoffDay + cutoffTime). Replaces the integer cutoffHours field.
+       // Each enabled day carries its own pair; the backend derives a
+       // legacy CutoffHours from the pair on write so downstream consumers
+       // that still read the old column keep working.
       dayWindows: days.map((d, i) => ({
         id: null,
         dayOfWeek: i + 1,
         startTime: d.startTime,
         endTime: d.endTime,
-        cutoffHours: d.cutoffHours,
+        cutoffDay: d.cutoffDay,
+        cutoffTime: d.cutoffTime,
       })).filter((_d, i) => days[i].enabled),
       // F7 (Steve 2026-09-20): send null when the operator did not
       // populate zones/linehauls, so the backend's null-guard preserves
@@ -509,6 +529,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 </label>
                 {d.enabled && (
                   <div className="mt-1 space-y-1">
+                    <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Window</span>
                     <input
                       type="time"
                       value={d.startTime}
@@ -521,16 +542,33 @@ export function NewScheduleModal({ open, onClose }: Props) {
                       onChange={(e) => patchDay(i, { endTime: e.target.value })}
                       className="w-full text-xs border border-border rounded px-1"
                     />
-                    <div className="flex items-center gap-1 text-xs">
-                      <input
-                        type="number"
-                        min={0}
-                        value={d.cutoffHours}
-                        onChange={(e) => patchDay(i, { cutoffHours: Number(e.target.value) })}
-                        className="w-12 border border-border rounded px-1"
-                      />
-                      <span>h</span>
-                    </div>
+                    {/* F11 Phase C (2026-09-24): absolute cutoff pair.
+                        Labelled + matched to the Window inputs' shape so
+                        operators know they're editing the cut-off day+time,
+                        not a second window pair. */}
+                    <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Cut-off</span>
+                    <select
+                      value={d.cutoffDay ?? ''}
+                      onChange={(e) => patchDay(i, {
+                        cutoffDay: e.target.value === '' ? null : Number(e.target.value),
+                      })}
+                      className="w-full text-xs border border-border rounded px-1"
+                      title="Cut-off day"
+                    >
+                      <option value="">- day -</option>
+                      {DAYS.map((day) => (
+                        <option key={day.n} value={day.n}>{day.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="time"
+                      value={d.cutoffTime ?? ''}
+                      onChange={(e) => patchDay(i, {
+                        cutoffTime: e.target.value === '' ? null : e.target.value,
+                      })}
+                      className="w-full text-xs border border-border rounded px-1"
+                      title="Cut-off time"
+                    />
                   </div>
                 )}
               </div>

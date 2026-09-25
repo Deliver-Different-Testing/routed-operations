@@ -14,7 +14,13 @@ export interface DayWindow {
   /** "HH:mm" e.g. "08:30". */
   startTime: string;
   endTime: string;
-  cutoffHours: number;
+  /** F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+   *  (1=Mon..7=Sun). NULL leaves the row on the legacy CutoffHours
+   *  offset. */
+  cutoffDay: number | null;
+  /** F11 Phase C (2026-09-24). Absolute cutoff wall-clock time as
+   *  "HH:mm". NULL leaves the row on the legacy CutoffHours offset. */
+  cutoffTime: string | null;
 }
 
 export interface ScheduleZone {
@@ -118,6 +124,16 @@ export interface ScheduleGroupSummary {
   /** Whether the schedule can be booked at all. Independent of
    *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
   isActive: boolean;
+  /** Nested override rows for the Schedules NEW list (2026-09-24). One
+   *  entry per client that owns any delta on this schedule; each row
+   *  carries the delta labels the frontend joins with " . " under the
+   *  nested <tr>. Empty when the schedule has no overrides. */
+  overrides: Array<{
+    clientId: number;
+    clientCode: string;
+    clientName: string;
+    deltaLabels: string[];
+  }>;
 }
 
 export interface ScheduleGroup {
@@ -239,7 +255,9 @@ export interface ScheduleGroupUpsertBody {
     dayOfWeek: number;
     startTime: string;
     endTime: string;
-    cutoffHours: number;
+    /** F11 Phase C (2026-09-24). Absolute cutoff pair. */
+    cutoffDay: number | null;
+    cutoffTime: string | null;
   }>;
   /** Steve F7 (2026-09-20): null = "leave existing zone rows alone",
    *  [] = "clear all zones", [...] = "replace with this set". The
