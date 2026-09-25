@@ -102,7 +102,7 @@ ORDER BY o.Seq, l.Id;
 - If any leg ends with `Seq = 1000` (broken or branching chain), write a row to `RouteAutoAssignLog` or an existing error log so ops can see the schedule needs fixing. Do not fail the booking.
 - Numbering (`LH1..n`) and US cumulative timing are then correct without further change.
 
-**1b. US: respect the linehaul run's timetable.** Proposed rule: a leg departs at the **later of** (a) the previous leg's arrival (current cumulative time) and (b) the run's `StartTime` on or after that point. Today the flight leg is timed purely by accumulated minutes. _Decision for Steve (Q1)._
+**1b. US: respect the linehaul run's timetable.** A leg departs at the **later of** (a) the previous leg's arrival (current cumulative time) and (b) the run's `StartTime` on or after that point. Today the flight leg is timed purely by accumulated minutes. _Confirmed by Steve (Q1)._
 
 **1c. Existing future-dated jobs.** Families already generated with the wrong order keep wrong numbers and times. Options: re-time only (update `ucjbDate` / `ucjbTime` of undispatched future LH legs by the corrected order) or leave to roll off. Propose the script separately; **do not run against prod without Steve's sign-off.**
 
@@ -350,8 +350,8 @@ For NEOGE all chains end at Burbank (38), so `DEL` legs resolve to route 15 "Bur
 
 ## Open questions
 
-- **Q1.** US timing: should a leg wait for its linehaul run's `StartTime` (later of arrival and run start), or keep pure accumulated minutes?
-- **Q2.** Remediation of already-generated future jobs (re-number / re-time / clear LH `RouteId`): run a script, or let them roll off?
+- **Q1.** Resolved 2026-09-25 (Steve): **yes** - a leg departs at the later of its predecessor's arrival and its linehaul run's `StartTime`. Implement 1b.
+- **Q2.** Resolved 2026-09-25 (Steve): **no remediation for now.** Medical is still in testing and existing jobs may be cleared; skip 1c and the Bug 2 clean-up script.
 - **Q3.** Resolved: all related SPs reviewed 2026-09-25 (`DD_` / `WS_stpBulkScheduleJob_InsertChildJobs`, `UTL_stpJob_InsertFromTblBulkJob`, `WS_stpJob_Insert_FromParent`, `UTL_stpRouteAutoAssign_Resolve`, `_ResolveOneSide`).
 - **Q4.** These fixes are the last planned changes to the booking-generation SPs. Longer term the leg planning and route resolution move to C# (`ROUTED-OPERATIONS-LIFT-PLAN-REPRIORITISED-2026-09-25.md`). Keep the SP diffs minimal.
 - **Q5.** Resolved 2026-09-25: the non-depot origin is a standalone pickup address stored on the route (geocoded, matched by radius), not bound to a client or to `tucClient`'s address - it may be a third-party site. Client scoping, when needed, is via schedule binding.
