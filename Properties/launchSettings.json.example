@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "_readme": "Copy this file to launchSettings.json and fill in real values from your local .env / secret vault. The real launchSettings.json is gitignored - do not commit it.",
+  "profiles": {
+    "RoutedOperations": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "http://routedoperations.local.deliverdifferent.com:65243",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "SQLHealthCheckConnection": "Server=<YOUR-SQL-HOST>;database=master-controller-seed;uid=<DB-USER>;pwd=<DB-PASSWORD>;TrustServerCertificate=True",
+        "SQLCredentials": "user id=<DB-USER>;password=<DB-PASSWORD>;",
+        "Domain": "local.deliverdifferent.com",
+        "PublicPath": "https://hub.local.deliverdifferent.com/Account/login",
+        "RouteSavyID": "<ROUTE-SAVVY-APP-ID>",
+        "RedisConfig": "<REDIS-HOST>:<PORT>,password=<REDIS-PASSWORD>,ssl=true,abortConnect=false,sslprotocols=tls12",
+        "HeremapApiKey": "<HERE-MAPS-API-KEY>",
+        "GoogleMapsKey": "<GOOGLE-MAPS-JS-API-KEY>"
+      }
+    },
+    "IIS Express": {
+      "commandName": "IISExpress",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "SQLHealthCheckConnection": "Server=<YOUR-SQL-HOST>;database=master-controller-seed;uid=<DB-USER>;pwd=<DB-PASSWORD>;TrustServerCertificate=True",
+        "SQLCredentials": "user id=<DB-USER>;password=<DB-PASSWORD>;",
+        "Domain": "local.deliverdifferent.com",
+        "PublicPath": "https://hub.local.deliverdifferent.com/Account/login",
+        "RouteSavyID": "<ROUTE-SAVVY-APP-ID>",
+        "RedisConfig": "<REDIS-HOST>:<PORT>,password=<REDIS-PASSWORD>,ssl=true,abortConnect=false,sslprotocols=tls12",
+        "HeremapApiKey": "<HERE-MAPS-API-KEY>",
+        "GoogleMapsKey": "<GOOGLE-MAPS-JS-API-KEY>"
+      }
+    }
+  },
+  "iisSettings": {
+    "windowsAuthentication": false,
+    "anonymousAuthentication": true,
+    "iisExpress": {
+      "applicationUrl": "http://routedoperations.local.deliverdifferent.com:65243"
+    }
+  }
+}

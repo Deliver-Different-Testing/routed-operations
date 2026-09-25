@@ -1,32 +1,62 @@
-﻿@{
-    ViewBag.Title = "Run Builder";
+@model RoutedOperations.Controllers.AppUserBootstrap
+@inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment Env
+@{
+    var bootstrapJson = System.Text.Json.JsonSerializer.Serialize(Model, new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    });
+
+    // Cache-busting version stamp - uses the built bundle's mtime so a
+    // rebuild (via `npm run build:watch` or `npm run build`) automatically
+    // invalidates the browser cache on next page load. Falls back to app
+    // start time if the dist file isn't there yet (first build).
+    string BundleVersion(string relativePath)
+    {
+        try
+        {
+            var full = System.IO.Path.Combine(Env.WebRootPath, relativePath.TrimStart('/'));
+            if (System.IO.File.Exists(full))
+            {
+                return System.IO.File.GetLastWriteTimeUtc(full).Ticks.ToString();
+            }
+        }
+        catch { }
+        return DateTime.UtcNow.Ticks.ToString();
+    }
+    var jsVer = BundleVersion("dist/app.js");
+    var cssVer = BundleVersion("dist/app.css");
 }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Routed Operations</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="/dist/app.css?v=@cssVer" />
+    <!-- Phase 6 perf: hint the browser to start downloading the JS bundle
+         while the CSS parses, instead of waiting to discover the <script
+         type="module"> tag at the bottom of body. Saves ~100 ms on cold
+         page loads on average links. -->
+    <link rel="modulepreload" href="/dist/app.js?v=@jsVer" />
+    @if (!string.IsNullOrEmpty(Model?.GoogleMapsKey))
+    {
+        <!-- Google Maps SDK for the cockpit map surface. Only `places` is
+             loaded (needed by FixAddressesModal Autocomplete); Directions +
+             Geocoding SKUs are now served through backend HERE proxies (see
+             /api/routes/polyline and /api/address/*-geocode) so those SDK
+             libraries are no longer required. The async attribute lets the
+             SPA mount first; map components re-check window.google.maps
+             before rendering. -->
+        <script src="https://maps.googleapis.com/maps/api/js?key=@Model.GoogleMapsKey&libraries=places" async defer></script>
+    }
+</head>
+<body>
+    <div id="routed-operations-root"></div>
 
-<script>
-     @{
-         var timezone = ViewBag.TimeZone;
-         var isUsTenant = ViewBag.IsUsTenant;
-      }
-    var TimeZone = '@timezone';
-    var IsUsTenant = '@isUsTenant';
-</script>
-
-<div ng-app="uRuns">
-    <div class="ui-viewer" ui-view></div>
-</div>
-
-
-<!-- Angular & Dependencies 
-     This will be loaded from _Layout.cshtml
--->
-
-@section scripts
-{
-    <!-- Angular app -->
-    <script src="~/app/app.js"></script>
-    <script src="~/app/filters.js"></script>
-
-    <!-- Angular home -->
-    <script src="~/app/components/home/homeService.js"></script>
-    <script src="~/app/components/home/homeControl.js"></script>
-}
+    <script>
+        window.__APP_USER__ = @Html.Raw(bootstrapJson);
+    </script>
+    <script type="module" src="/dist/app.js?v=@jsVer"></script>
+</body>
+</html>

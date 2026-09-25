@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# Local test gate. Fires on `git push`; refuses the push if any step fails.
+# Mirrors DespatchWeb's pattern. The authoritative gate is the GitLab MR
+# pipeline (test:frontend:lint / test:frontend:unit / test:backend:unit);
+# this hook is a fast local check so the pipeline is not the first place a
+# bug surfaces.
+#
+# Bypass with `git push --no-verify` is technically possible but forbidden
+# by the global CLAUDE.md rule.
+
+echo "Local test gate: type-check..."
+# `npm run lint` was an alias to the same `tsc --noEmit`; running both
+# doubled local pre-push time for no signal. Type-check is the canonical
+# name.
+npm run type-check || { echo "Type check failed. Push aborted."; exit 1; }
+
+echo "Local test gate: frontend unit tests..."
+npm run test || { echo "Frontend unit tests failed. Push aborted."; exit 1; }
+
+echo "Local test gate: backend unit tests..."
+(cd tests/RoutedOperations.Tests && dotnet run --configuration Release) \
+  || { echo "Backend unit tests failed. Push aborted."; exit 1; }
+
+echo "Local gate passed. Pushing."

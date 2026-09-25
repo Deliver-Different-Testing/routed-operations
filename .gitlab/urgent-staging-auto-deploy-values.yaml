@@ -1,6 +1,5 @@
-# Default values for chart.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# Values for the urgent tenant RoutedOperations deployment.
+# Probes: /health/live (liveness/startup), /healthz (readiness, SqlServer).
 replicaCount: 1
 
 extraLabels:
@@ -16,7 +15,6 @@ affinity:
           values:
           - urgent
 
-
 tolerations:
   - key: tenant
     operator: Equal
@@ -27,14 +25,25 @@ hpa:
   enabled: true
   minReplicas: 1
   maxReplicas: 2
-  targetCPUUtilizationPercentage: 85
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 85
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
 
 ingress:
   tls:
     enabled: true
   annotations:
     kubernetes.io/tls-acme: "true"
-    kubernetes.io/ingress.class: "nginx"
     nginx.ingress.kubernetes.io/proxy-body-size: 32m
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
@@ -43,29 +52,32 @@ ingress:
   modSecurity:
     enabled: false
     secRuleEngine: "DetectionOnly"
+  spec:
+    ingressClassName: "nginx"
 service:
   externalPort: 5000
   internalPort: 8080
-
 startupProbe:
   enabled: true
   path: "/health/live"
   probeType: "httpGet"
   scheme: "HTTP"
-  initialDelaySeconds: 25
+  initialDelaySeconds: 20
   periodSeconds: 10
   failureThreshold: 30
-  timeoutSeconds: 15
+  timeoutSeconds: 10
 livenessProbe:
   path: "/health/live"
   initialDelaySeconds: 30
-  timeoutSeconds: 15
+  timeoutSeconds: 10
+  failureThreshold: 5
   scheme: "HTTP"
   probeType: "httpGet"
 readinessProbe:
   path: "/healthz"
   initialDelaySeconds: 30
-  timeoutSeconds: 5
+  timeoutSeconds: 10
+  failureThreshold: 5
   scheme: "HTTP"
   probeType: "httpGet"
 
@@ -76,3 +88,8 @@ resources:
   limits:
     memory: 512Mi
     cpu: 500m
+
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep 10"]

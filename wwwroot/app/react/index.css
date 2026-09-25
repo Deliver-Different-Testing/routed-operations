@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #routed-operations-root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f6f8fa;
+  color: #0d0c2c;
+}
+
+/* React Resizable Panels handle - shared between the Route Builder
+   cockpit and the Route Viewer cockpit. */
+[data-panel-resize-handle-enabled] {
+  background: #e8ecf1;
+  transition: background 0.15s ease;
+}
+[data-panel-resize-handle-enabled]:hover {
+  background: #43C7F4;
+}

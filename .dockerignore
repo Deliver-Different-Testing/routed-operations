@@ -1,0 +1,10 @@
+**/bin
+**/obj
+**/node_modules
+**/wwwroot/dist
+**/.vs
+**/.vscode
+**/.idea
+**/.git
+**/*.user
+Dockerfile

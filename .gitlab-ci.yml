@@ -2,3 +2,198 @@ include:
   - project: 'urgent-couriers/ci-templates'
     file: 'ci-template.yml'
     ref: 'main'
+
+variables:
+  DOTNET_VERSION: "10.0"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_NOLOGO: "true"
+
+  # nuget.config authenticates the private GitLab feeds (projects 797 + 809)
+  # with these. ci-templates/base.yml already sets them stack-wide, but
+  # base.yml is only included by the generated CHILD pipeline - the jobs below
+  # run in the PARENT, which includes ci-template.yml only. Without these the
+  # dotnet restore in test:backend:unit 401s the first time its rules fire,
+  # which is on merge to master, i.e. at release time rather than on the MR.
+  GITLAB_NUGET_USERNAME: "gitlab-ci-token"
+  GITLAB_NUGET_TOKEN: "${CI_JOB_TOKEN}"
+
+# Path-based rules: only run frontend jobs when frontend files change.
+# Backend-only MRs (a service edit, a migration bump) skip the ~11-min
+# vitest suite entirely. Pattern copied from DespatchWeb's .gitlab-ci.yml
+# which was written for exactly this "why is unrelated CI blocking my
+# small backend change" pain.
+.frontend-test-rules:
+  interruptible: true
+  rules:
+    # Any MR, whatever it targets. In a merge request pipeline rules:changes
+    # already compares the source branch against the target branch, so no
+    # compare_to is needed and this stays correct for MRs into develop and
+    # into master alike.
+    #
+    # The previous form matched only staging|master|main and pinned compare_to
+    # to master. After the 2026-09-18 branch inversion routine MRs target
+    # develop, so this rule never matched and every routine MR silently ran no
+    # frontend tests at all.
+    - if: $CI_MERGE_REQUEST_IID
+      changes:
+        paths:
+          - "wwwroot/**/*"
+          - "package.json"
+          - "package-lock.json"
+          - "tsconfig.json"
+          - "vitest.config.ts"
+          - "vite.config.ts"
+          - "index.html"
+          - ".gitlab-ci.yml"
+    # Branch pipelines. develop is the integration branch, master the released
+    # one. This GitLab merges semi-linearly (rebase first), so the merged SHA
+    # is not always the SHA the MR pipeline tested.
+    - if: $CI_COMMIT_BRANCH == "develop"
+    - if: $CI_COMMIT_BRANCH == "master"
+
+# Same idea for backend - skip the dotnet test job on pure-frontend MRs.
+.backend-test-rules:
+  interruptible: true
+  rules:
+    # Same rationale as .frontend-test-rules above: target-branch agnostic, no
+    # compare_to, plus branch pipelines on both develop and master.
+    - if: $CI_MERGE_REQUEST_IID
+      changes:
+        paths:
+          - "**/*.cs"
+          - "**/*.csproj"
+          - "**/*.sln"
+          - "nuget.config"
+          - "global.json"
+          - "coverlet.runsettings"
+          - ".gitlab-ci.yml"
+    - if: $CI_COMMIT_BRANCH == "develop"
+    - if: $CI_COMMIT_BRANCH == "master"
+
+# Cache node_modules keyed on package-lock so `npm ci` restores the
+# whole tree in seconds instead of ~90s per job. Fallback to master so
+# a fresh branch inherits the last-known-good install rather than a
+# cold registry fetch. .npm/ speeds up npm ci itself; node_modules/.vitest
+# caches vitest's module graph for the next shard.
+.npm-cache:
+  cache:
+    - key:
+        files:
+          - package-lock.json
+      paths:
+        - node_modules/
+        - .npm/
+      policy: pull-push
+      fallback_keys:
+        - npm-master
+    - key: vitest-cache-${CI_COMMIT_REF_SLUG}
+      paths:
+        - node_modules/.vitest/
+      policy: pull-push
+      fallback_keys:
+        - vitest-cache-master
+
+# Frontend lint + type-check. Blocking - a red run fails the pipeline.
+test:frontend:lint:
+  stage: templating
+  image: node:22-alpine
+  extends:
+    - .frontend-test-rules
+    - .npm-cache
+  allow_failure: false
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+    - npm run type-check
+
+# Frontend unit tests, MR path: sharded 3x, no coverage. Coverage is
+# expensive (v8 instrumentation ~30-50% overhead) and doesn't need to
+# gate every MR push - test:frontend:unit:coverage below runs it on
+# merge to master and gates the actual number. Combined with the
+# shard, an MR push runs in ~2-3 min instead of ~11-14.
+test:frontend:unit:
+  stage: templating
+  image: node:22-alpine
+  extends:
+    - .frontend-test-rules
+    - .npm-cache
+  allow_failure: false
+  parallel: 3
+  retry:
+    max: 2
+    when: runner_system_failure
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+    - npx vitest run --shard=$CI_NODE_INDEX/$CI_NODE_TOTAL --reporter=default --reporter=junit --outputFile=junit-frontend-$CI_NODE_INDEX.xml
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: junit-frontend-*.xml
+
+# Coverage job: runs on merge to master (gates the coverage threshold
+# for the codebase-wide number) and manually on any MR that wants to
+# see coverage before merge. Not blocking on MRs.
+test:frontend:unit:coverage:
+  stage: templating
+  image: node:22-alpine
+  extends: .npm-cache
+  allow_failure: false
+  interruptible: true
+  variables:
+    NODE_OPTIONS: "--max-old-space-size=4096"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+    - if: $CI_MERGE_REQUEST_IID
+      when: manual
+      allow_failure: true
+  script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+    - npm run test:ci
+  coverage: '/^Lines\s*:\s*([\d.]+)%/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - coverage/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+
+# Backend unit tests (xUnit.v3 via Microsoft Testing Platform). Blocking.
+# NuGet cache pulls from the branch key, falling back to master so a
+# fresh branch does not re-download every package.
+test:backend:unit:
+  stage: templating
+  image: mcr.microsoft.com/dotnet/sdk:10.0
+  extends: .backend-test-rules
+  allow_failure: false
+  retry:
+    max: 2
+    when: runner_system_failure
+  variables:
+    NUGET_PACKAGES: "${CI_PROJECT_DIR}/.nuget/packages"
+  cache:
+    key: nuget-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .nuget/packages/
+    policy: pull-push
+    fallback_keys:
+      - nuget-master
+  script:
+    - dotnet test tests/RoutedOperations.Tests/RoutedOperations.Tests.csproj --configuration Release --nologo -v minimal --collect:"XPlat Code Coverage" --settings coverlet.runsettings --results-directory ./coverage-backend
+    - 'find ./coverage-backend -name "coverage.cobertura.xml" -exec cp {} ./coverage-backend/cobertura.xml \;'
+  coverage: '/Total\s*\|\s*(\d+(?:\.\d+)?)\s*%/'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - coverage-backend/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-backend/cobertura.xml

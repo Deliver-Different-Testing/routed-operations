@@ -1,0 +1,116 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RoutedOperations</RootNamespace>
+    <AssemblyName>RoutedOperations</AssemblyName>
+    <UserSecretsId>routed-operations-dev-secrets</UserSecretsId>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- EF Core 10 -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.3">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+
+    <!-- Dapper (used for the SP-wrapping RunCommitService + HdJobSyncService) -->
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+
+    <!-- Redis distributed session + cache -->
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
+    <PackageReference Include="StackExchange.Redis" Version="2.9.11" />
+
+    <!-- MVC + Newtonsoft (matches Configurator JSON handling for existing consumers) -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="10.0.3" />
+
+    <!-- XLSX parsing for the Bulk Import server-side parse endpoint. Same
+         ClosedXML dep SetUp Dashboard uses so the two apps stay aligned. -->
+    <!-- Bumped 2026-09-18 from 0.104.2 to 0.105.0 to satisfy the
+         DeliverDifferent.AlertLabel.Data -> DeliverDifferentReporting
+         2.0.8 transitive requirement. -->
+    <PackageReference Include="ClosedXML" Version="0.105.0" />
+
+    <!-- AWS DataProtection (prod key ring shared with the rest of the DFRNT suite) -->
+    <PackageReference Include="Amazon.AspNetCore.DataProtection.SSM" Version="4.0.1" />
+    <!-- Security pin: DataProtection.SSM 4.0.1 transitively pulls AWSSDK.Core 4.0.3,
+         which is flagged by GHSA-9cvc-h2w8-phrp / CVE-2026-22611 (region input
+         validation, low severity; first fixed in 4.0.139.0). Direct-pin the patched
+         Core so the transitive resolve is lifted above the advisory. Bumped to
+         4.0.101 (current latest at 2026-08-13) to satisfy AWSSDK.SimpleEmail
+         4.0.100.8's `>= 4.0.101` transitive requirement; 4.0.100.5 was the
+         earlier latest and no longer satisfies SES post-P0. The 4.0.139.0 in
+         the advisory is the SDK release-train number, not this package's
+         version. -->
+    <PackageReference Include="AWSSDK.Core" Version="4.0.101" />
+    <!-- Route Viewer P0: S3 for POD photo + Client Intel image read
+         (Detail carousel + intel dialog); SES SDK for the P7 SendPOD
+         email path (wired in DI now so P7 only needs the service body).
+         Extensions.NETCore.Setup pinned to the version
+         DataProtection.SSM transitively requires. -->
+    <PackageReference Include="AWSSDK.S3" Version="4.0.10" />
+    <PackageReference Include="AWSSDK.SimpleEmail" Version="4.0.100.8" />
+    <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.3.11" />
+
+    <!-- Logging -->
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+
+    <!-- Health checks -->
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
+
+    <!-- FluentValidation (used by validators ported from BulkImportHyper) -->
+    <PackageReference Include="FluentValidation" Version="11.11.0" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.11.0" />
+    <!-- ASP.NET Core auto-validation integration (AddFluentValidationAutoValidation + client-side adapters). -->
+    <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
+
+    <!-- ExcelDataReader for BulkImport CSV/XLS parsing (ported from BulkImportHyper).
+         BulkImportHyper pinned 3.7.0; keeping the same version so behavior matches. -->
+    <PackageReference Include="ExcelDataReader" Version="3.7.0" />
+    <PackageReference Include="ExcelDataReader.DataSet" Version="3.7.0" />
+
+    <!-- EFCore.BulkExtensions - used by ProcessRoutedJobs at two spots to bulk-insert
+         TblBulkJob rows with FireTriggers + CheckConstraints options. 10.0.x targets
+         EF Core 10 (required after EF Core 10 removed IReadOnlyNavigationBase.IsCollection
+         which the 9.x line still called into via TableInfo.LoadData). -->
+    <PackageReference Include="EFCore.BulkExtensions" Version="10.0.1" />
+
+    <!-- GeoTimeZone - used by BulkImportJobFactory.GetTimeZoneCode to derive a
+         Windows-style timezone display name from lat/long for stpJob_Insert
+         @PickupTimeZone / @DeliverByTimeZone. Behavior kept identical to
+         BulkImportHyper. -->
+    <PackageReference Include="GeoTimeZone" Version="5.3.0" />
+
+    <!-- Route Viewer label rendering. Consumes IAlertLabelService for
+         PDF generation via the shared DeliverDifferent.AlertLabel.Data
+         package (GitLab project 809). Restore needs env vars
+         GITLAB_NUGET_USERNAME + GITLAB_NUGET_TOKEN - see NuGet.config
+         packageSourceCredentials for the gitlab-alertlabel feed. -->
+    <PackageReference Include="DeliverDifferent.AlertLabel.Data" Version="1.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Vite bundles the React SPA into wwwroot/dist/. wwwroot/app/react/ holds the source. -->
+    <Folder Include="wwwroot\app\react\" />
+    <Folder Include="wwwroot\dist\" />
+    <Folder Include="Migrations\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exclude the test project sources from the web project's default globs.
+         Sdk.Web recursively picks up **/*.cs by default; without these removes
+         the main project would try to compile tests/**/*.cs and fail because
+         it does not reference xUnit / NSubstitute. -->
+    <Compile Remove="tests\**" />
+    <Content Remove="tests\**" />
+    <None Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+  </ItemGroup>
+
+</Project>

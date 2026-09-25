@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Routed Operations - dev</title>
+    <script>
+      // Dev-only bootstrap so the SPA doesn't crash when running via `npm run dev`.
+      // The real bootstrap comes from Views/Home/Index.cshtml in prod.
+      window.__APP_USER__ = {
+        currentTenantId: null,
+        fullName: 'Dev User',
+        email: 'dev@example.com',
+        timeZone: 'Pacific/Auckland',
+        countryCode: 'NZ',
+        isUsTenant: false,
+        hereMapsApiKey: null,
+        googleMapsKey: null,
+      };
+    </script>
+  </head>
+  <body>
+    <div id="routed-operations-root"></div>
+    <script type="module" src="/wwwroot/app/react/index.tsx"></script>
+  </body>
+</html>
