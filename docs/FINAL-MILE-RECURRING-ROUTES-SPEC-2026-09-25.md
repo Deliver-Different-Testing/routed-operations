@@ -24,7 +24,7 @@ Reported case (Tenant 8 Medical, client NEOGE, run date 2026-10-02, Region = Bur
 | Route type | Matches legs by | Anchor | Route Viewer direction |
 |---|---|---|---|
 | First mile (pickup) - today's routes | pickup zip | delivers **to** a depot | Inbound |
-| **Final mile - new** | **delivery zip** | leaves **from** a depot (`DepotId`) | Outbound |
+| **Final mile - new** | **delivery area** | fans out from **one fixed origin**: a depot (`DepotId`) or a client site (`OriginClientId`) | Outbound |
 | Linehaul (middle mile) - existing `tblbulkLinehaulRun` | depot -> depot | both ends fixed | Linehaul module |
 
 Why final mile is not a linehaul leg: a linehaul is point-to-point. A final-mile route fans out from one depot to any address in a set of delivery zips. The NeoGenomics case (many pickups converging on one lab) is the degenerate case: one final-mile route with one zip. The general case is one depot feeding 20-30 final-mile routes with hundreds or thousands of drops.
@@ -71,7 +71,8 @@ Schema changes go in `C:\Gitlab\DBMigrationV2\DatabaseScripts\Migrations\` (not 
 | Column | Type | Notes |
 |---|---|---|
 | `Direction` | `tinyint NOT NULL DEFAULT 1` | 1 = **First mile** (inbound to depot; claims pickup-side legs by pickup area - today's behaviour), 2 = **Final mile** (outbound from depot; claims `DEL` legs by delivery area). Middle mile stays on `tblbulkLinehaulRun`. Tinyint rather than bit so it maps onto the UI's first/middle/final vocabulary and leaves room for more. |
-| `DepotId` | `int NULL` FK `tblBulkRegion(BulkRegionID)` | The depot the route runs into (Inbound) or out of (Outbound). Required when `Direction = 2`; optional but recommended for `Direction = 1` so Route Viewer Inbound can scope by route rather than by leg `DepotId`. |
+| `DepotId` | `int NULL` FK `tblBulkRegion(BulkRegionID)` | First mile: the depot the route feeds (optional, recommended). Final mile: the depot it fans out from, **or** NULL when the origin is a client site. |
+| `OriginClientId` | `int NULL` FK `tucClient(ucclID)` | Final mile only: the client site it fans out from. A final-mile route has exactly one origin: `DepotId` or `OriginClientId` (CHECK constraint). Never a variable origin (Steve 2026-09-25). |
 
 `Routes` is shared with Configurator (DF Admin -> Operations -> Recurring Routes). Both columns are additive and defaulted, so Configurator keeps working but will not show or edit them. Final-mile routes are maintained in Routed Operations only until Configurator is updated (open question Q3).
 
@@ -120,7 +121,7 @@ A `DEL` leg is claimed by final-mile route R when:
    - R has polygon(s): delivery lat/lng (`DeliveryLatitude` / `DeliveryLongitude`) inside the polygon (`STIntersects`). Delivery coordinates on `DEL` legs are reliable in the NEOGE data (all point at the lab); it is the pickup side that is not.
    - R has zips only: delivery zip in R's `RouteZipcodes`.
    - Delivery leg with no coordinates: fall back to delivery zip against polygon-derived zips, else unrouted.
-3. the leg's **origin depot** = `R.DepotId`.
+3. the leg's **origin** matches the route's single origin: origin depot = `R.DepotId`, or (no origin depot, picked up at the client's site) job client = `R.OriginClientId`. Unsplit single-leg jobs of a client with a client-site final-mile route are also eligible.
 
 When a `DEL` leg matches a final-mile route, the final-mile route wins and overwrites the inherited pickup `RouteId` on that leg only.
 
@@ -239,7 +240,7 @@ Plus two read-only queries for Medical prod: `LinehaulRunId` per leg for the P38
 
 ## 12. Open questions
 
-- **Q1.** Should a final-mile route also be allowed to start at a client pickup location (fan-out direct from a client with no depot), or is `DepotId` always a depot? Current design: always a depot; a client acting as hub is set up as a depot.
+- **Q1.** Resolved 2026-09-25: a final-mile route has one fixed origin, either a depot or a client site (`OriginClientId`); never variable pickup points. Open follow-up: client id vs specific site address for multi-site clients (Kevin doc Q5).
 - **Q2.** Should Route Viewer show the "Unrouted from <depot>" bucket in Outbound only, or also Combined?
 - **Q3.** Configurator (DF Admin) - add `Direction` / `DepotId` there too, or make Routed Operations the only editor for final-mile routes?
 - **Q4.** Resolved: Hayward reaches Burbank (38); see section 9 item 2.
