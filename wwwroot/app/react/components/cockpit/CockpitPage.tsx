@@ -145,6 +145,21 @@ export function CockpitPage() {
     }
   }, [dispatch, toast]);
 
+  /**
+   * Runs a mutation under the busy overlay. The 2026-09-22 report found the
+   * old bottom-left "Loading..." strip too easy to miss during 6-8s saves,
+   * so users thought the page had frozen. Counter-based, so nested calls
+   * (e.g. an assign that reloads) keep the overlay up until all settle.
+   */
+  const withBusy = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    dispatch({ type: 'BUSY_START' });
+    try {
+      return await fn();
+    } finally {
+      dispatch({ type: 'BUSY_END' });
+    }
+  }, [dispatch]);
+
   useEffect(() => {
     void loadLookups(state.filters.date);
   }, [loadLookups, state.filters.date]);
@@ -387,7 +402,7 @@ export function CockpitPage() {
     }
   };
 
-  const handleDeleteRun = async (runId: number) => {
+  const handleDeleteRun = (runId: number) => withBusy(async () => {
     try {
       const res = await runService.remove(runId);
       if (res.response.result === 'Success') {
@@ -400,9 +415,9 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
-  };
+  });
 
-  const handleAssignCourier = async (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => {
+  const handleAssignCourier =async (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => {
     const run = state.runs.find((r) => r.id === runId);
     if (!run) return;
     const courier = courierId ? allCouriers.find((c) => c.courierId === courierId) : null;
@@ -461,7 +476,7 @@ export function CockpitPage() {
     runId: number,
     jobIds: number[],
     opts: { deleteRunId?: number; silent?: boolean } = {},
-  ): Promise<boolean> => {
+  ): Promise<boolean> => withBusy(async () => {
     try {
       // Expand multibox families so assigning a parent takes its children too.
       const expanded = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
@@ -483,7 +498,7 @@ export function CockpitPage() {
     } finally {
       await loadJobsAndRuns(state.filters);
     }
-  }, [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast]);
+  }), [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast, withBusy]);
 
   const handleAssignSelectedJobs = (runId: number) => assignJobsToRun(runId, state.selectedJobIds);
   const handleDropJobs = (runId: number, jobIds: number[]) => assignJobsToRun(runId, jobIds);
@@ -1394,33 +1409,35 @@ export function CockpitPage() {
   const createRunFromGroup = async (groupLabel: string, jobIds: number[]) => {
     const ids = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
     if (ids.length === 0) return;
-    try {
-      const body: InsertOrUpdateRunBody = {
-        id: null,
-        name: groupLabel,
-        mins: 0,
-        kms: 0,
-        status: 0,
-        revenue: null,
-        payout: null,
-        courier: null,
-        courierPercent: null,
-        googleRouteResponse: null,
-        jobs: ids.map((bulkJobId) => ({ bulkJobId, builderIndex: null, jobNumber: null })),
-        despatchDateTime: state.filters.date,
-      };
-      const created = await runService.createWithJobs(body);
-      if (created.response.result !== 'Success') {
-        toast.show(created.response.message ?? 'Create run failed - no jobs were moved', 'error');
-        return;
+    await withBusy(async () => {
+      try {
+        const body: InsertOrUpdateRunBody = {
+          id: null,
+          name: groupLabel,
+          mins: 0,
+          kms: 0,
+          status: 0,
+          revenue: null,
+          payout: null,
+          courier: null,
+          courierPercent: null,
+          googleRouteResponse: null,
+          jobs: ids.map((bulkJobId) => ({ bulkJobId, builderIndex: null, jobNumber: null })),
+          despatchDateTime: state.filters.date,
+        };
+        const created = await runService.createWithJobs(body);
+        if (created.response.result !== 'Success') {
+          toast.show(created.response.message ?? 'Create run failed - no jobs were moved', 'error');
+          return;
+        }
+        dispatch({ type: 'CLEAR_MULTISELECT' });
+        toast.show(`Created run "${groupLabel}" with ${ids.length} job(s)`, 'success');
+      } catch (e) {
+        toast.show(`Create run failed - no jobs were moved. ${(e as Error).message}`, 'error');
+      } finally {
+        await loadJobsAndRuns(state.filters);
       }
-      dispatch({ type: 'CLEAR_MULTISELECT' });
-      toast.show(`Created run "${groupLabel}" with ${ids.length} job(s)`, 'success');
-    } catch (e) {
-      toast.show(`Create run failed - no jobs were moved. ${(e as Error).message}`, 'error');
-    } finally {
-      await loadJobsAndRuns(state.filters);
-    }
+    });
   };
 
   const runContextMenu = (run: Run, helpers: { startRename: () => void }): ContextMenuItem[] => {
@@ -1477,14 +1494,14 @@ export function CockpitPage() {
    * default (speed LabelId, then tblSetting.DefaultBulkLabelId); a label
    * size picker is a separate follow-up.
    */
-  const handlePrintJobLabel = async (job: BulkJob) => {
+  const handlePrintJobLabel = (job: BulkJob) => withBusy(async () => {
     try {
       const blob = await routeViewerService.printBulkJobLabelPdf(job.bulkJobId);
       window.open(URL.createObjectURL(blob), '_blank');
     } catch (e) {
       toast.show(`Print label failed: ${(e as Error).message}`, 'error');
     }
-  };
+  });
 
   // ---- hotkeys --------------------------------------------------------------
   // Ctrl+D dispatches (locked runs or selected jobs), Ctrl+A selects all
@@ -1595,7 +1612,7 @@ export function CockpitPage() {
   ];
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="relative h-full flex flex-col">
       <FiltersBar
         filters={state.filters}
         regions={state.regions}
@@ -1934,16 +1951,34 @@ export function CockpitPage() {
         }}
       />
 
-      {state.loading && (
-        <div className="px-3 py-1 text-xs text-text-muted bg-surface-cream border-t border-border-light">
-          Loading...
-        </div>
+      {(state.loading || state.busyCount > 0) && (
+        <BusyOverlay label={state.busyCount > 0 ? 'Working...' : 'Loading...'} />
       )}
       {state.error && (
         <div className="px-3 py-1 text-xs text-error bg-error-bg border-t border-error/30">
           {state.error}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cockpit-wide busy indicator: a ring spinner (same style as Modal's
+ * loading state) centred over the panels on a light backdrop. It swallows
+ * clicks while shown so a slow save can't be double-submitted.
+ */
+function BusyOverlay({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="absolute inset-0 z-40 flex items-center justify-center bg-white/50"
+    >
+      <div className="flex flex-col items-center gap-2 rounded-lg bg-surface-white px-6 py-4 shadow-lg border border-border-light">
+        <div className="w-10 h-10 border-4 border-brand-cyan/30 border-t-brand-cyan rounded-full animate-spin" />
+        <p className="text-sm text-text-primary">{label}</p>
+      </div>
     </div>
   );
 }
