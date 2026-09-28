@@ -185,6 +185,54 @@ export function ChainBuilder({
     onChange(next);
   };
 
+  // Bug 1 (Steve 2026-09-25): the array order of the linehaul legs IS the travel
+  // order. It is persisted as tblBulkScheduleLinehaul.LegOrder and read back by
+  // DD_/WS_stpBulkScheduleJob_InsertChildJobs to number (LH1..LHn) and, on the
+  // US branch, to time each hop. Before LegOrder existed those SPs ordered by
+  // clustered Id, i.e. the order the legs were first typed in, which is why hops
+  // were being dispatched before the freight reached them. Reordering here is
+  // therefore a real dispatch change, not a cosmetic one.
+  //
+  // Only linehaul legs move, and only into another linehaul's slot. The rest of
+  // the chain has a fixed shape - collection, optional depot, the linehauls,
+  // then delivery last - which addLeg already enforces, and dragging the
+  // delivery leg into the middle would break the family the SPs generate.
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  const canReorder = (i: number) => !readOnly && legs[i]?.type === 'linehaul';
+
+  const moveLeg = (from: number, to: number) => {
+    if (from === to) return;
+    if (!canReorder(from) || !canReorder(to)) return;
+    const next = [...legs];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    // Keep the open card following the leg it was opened on, not the index.
+    if (expanded === from) setExpanded(to);
+    else if (expanded !== null && from < expanded && to >= expanded) setExpanded(expanded - 1);
+    else if (expanded !== null && from > expanded && to <= expanded) setExpanded(expanded + 1);
+    onChange(next);
+  };
+
+  /** 1-based position among the linehaul legs, which is the LH number the
+   *  booking SPs will stamp on the generated job. Null for other leg types. */
+  const linehaulOrdinal = (i: number) =>
+    legs[i]?.type === 'linehaul'
+      ? legs.slice(0, i).filter((l) => l.type === 'linehaul').length + 1
+      : null;
+
+  const linehaulIndexes = legs.reduce<number[]>(
+    (acc, l, i) => (l.type === 'linehaul' ? [...acc, i] : acc), []);
+  const prevLinehaulIndex = (i: number) => {
+    const at = linehaulIndexes.indexOf(i);
+    return at > 0 ? linehaulIndexes[at - 1] : null;
+  };
+  const nextLinehaulIndex = (i: number) => {
+    const at = linehaulIndexes.indexOf(i);
+    return at >= 0 && at < linehaulIndexes.length - 1 ? linehaulIndexes[at + 1] : null;
+  };
+
   const hasDelivery = legs.some((l) => l.type === 'delivery');
   const hasCollection = legs.some((l) => l.type === 'collection');
   // Chooser stays visible whenever we're editable, so operators can add
@@ -205,13 +253,96 @@ export function ChainBuilder({
         const s = LEG_STYLE[leg.type];
         const isOpen = expanded === i;
         const isLast = i === legs.length - 1;
+        const ord = linehaulOrdinal(i);
+        const reorderable = canReorder(i);
+        const up = prevLinehaulIndex(i);
+        const down = nextLinehaulIndex(i);
+        const isDropTarget = reorderable && dragOverIndex === i && dragIndex !== null && dragIndex !== i;
         return (
           <div key={i}>
             {/* Leg card - solid coloured left strip + tag pill on the
                 left, summary in the middle, edit/remove on the right.
                 Matches Steve's schedules-module mockup layout. */}
-            <div className={`border ${s.border} ${s.bg} rounded flex overflow-hidden`}>
+            <div
+              className={`border ${s.border} ${s.bg} rounded flex overflow-hidden`
+                + (isDropTarget ? ' ring-2 ring-brand-cyan' : '')
+                + (dragIndex === i ? ' opacity-50' : '')}
+              draggable={reorderable}
+              onDragStart={(e) => {
+                if (!reorderable) return;
+                setDragIndex(i);
+                e.dataTransfer.effectAllowed = 'move';
+                // Firefox needs a payload set or the drag never starts.
+                e.dataTransfer.setData('text/plain', String(i));
+              }}
+              onDragOver={(e) => {
+                if (!reorderable || dragIndex === null) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverIndex !== i) setDragOverIndex(i);
+              }}
+              onDrop={(e) => {
+                if (!reorderable || dragIndex === null) return;
+                e.preventDefault();
+                moveLeg(dragIndex, i);
+                setDragIndex(null);
+                setDragOverIndex(null);
+              }}
+              onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+            >
               <div className={`w-1.5 shrink-0 ${s.strip}`} aria-hidden="true" />
+              {/* Travel-order gutter. Only linehaul legs have a position that
+                  means anything: LH{n} is literally the suffix the booking SPs
+                  will stamp on the generated job, and the order is persisted as
+                  tblBulkScheduleLinehaul.LegOrder. Drag the card, or use the
+                  arrows, to change which hop runs when. */}
+              {ord !== null && (
+                <div className="shrink-0 flex flex-col items-center justify-center gap-1 px-1.5 py-2 border-r border-border-light">
+                  {!readOnly && (
+                    <span
+                      className="cursor-grab active:cursor-grabbing text-text-muted"
+                      title="Drag to change the travel order of this hop"
+                      aria-hidden="true"
+                    >
+                      <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+                        <circle cx="2" cy="2" r="1.2" /><circle cx="8" cy="2" r="1.2" />
+                        <circle cx="2" cy="7" r="1.2" /><circle cx="8" cy="7" r="1.2" />
+                        <circle cx="2" cy="12" r="1.2" /><circle cx="8" cy="12" r="1.2" />
+                      </svg>
+                    </span>
+                  )}
+                  <span
+                    className="text-[10px] font-semibold text-text-primary leading-none tabular-nums"
+                    title={`Travel order ${ord}. The generated job number ends LH${ord}.`}
+                  >
+                    LH{ord}
+                  </span>
+                  {!readOnly && (up !== null || down !== null) && (
+                    <div className="flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => up !== null && moveLeg(i, up)}
+                        disabled={up === null}
+                        aria-label={`Move hop LH${ord} earlier`}
+                        title="Move earlier"
+                        className="text-[9px] leading-none px-1 text-text-muted hover:text-text-primary disabled:opacity-30 disabled:hover:text-text-muted"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => down !== null && moveLeg(i, down)}
+                        disabled={down === null}
+                        aria-label={`Move hop LH${ord} later`}
+                        title="Move later"
+                        className="text-[9px] leading-none px-1 text-text-muted hover:text-text-primary disabled:opacity-30 disabled:hover:text-text-muted"
+                      >
+                        ▼
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="flex-1 min-w-0">
                 <button
                   type="button"

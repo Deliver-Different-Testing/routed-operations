@@ -165,4 +165,13 @@ public class ScheduleLinehaulUpsertRequest
     public int? DropOffLocationId { get; set; }
     /// <summary>Per-leg service class override. Null = inherit from run / schedule.</summary>
     public int? SpeedId { get; set; }
+
+    /// <summary>
+    /// 1-based travel order of this leg within the schedule. The chain editor
+    /// sends the leg's position in the chain. When a caller omits it the
+    /// service falls back to this leg's position in the Linehauls array, so
+    /// any client that sends legs in chain order gets the right answer without
+    /// having to know about this field.
+    /// </summary>
+    public int? LegOrder { get; set; }
 }

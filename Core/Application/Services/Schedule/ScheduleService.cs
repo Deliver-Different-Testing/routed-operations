@@ -1225,9 +1225,15 @@ public class ScheduleService(
             }
             if (req.Linehauls != null)
             {
+                // Bug 1 (Steve 2026-09-25): this is a remove-and-re-add, so every
+                // leg gets a fresh identity Id and the backfilled LegOrder would be
+                // lost unless it is written back here. The ordinal is the leg's
+                // position in the request array, which the chain editor sends in
+                // travel order, so a caller that does not know about LegOrder still
+                // produces the right order just by sending legs in chain order.
                 Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
-                foreach (var l in req.Linehauls)
-                    row.TblBulkScheduleLinehauls.Add(MapLinehaulToEntity(l));
+                for (var i = 0; i < req.Linehauls.Count; i++)
+                    row.TblBulkScheduleLinehauls.Add(MapLinehaulToEntity(req.Linehauls[i], i + 1));
             }
         }
 
@@ -1445,6 +1451,17 @@ public class ScheduleService(
                     ApplyDiscount = l.ApplyDiscount, ApplyAddOnPercentage = l.ApplyAddOnPercentage,
                     WeekDay = l.WeekDay, DepartureAdvanceDays = l.DepartureAdvanceDays,
                     FromClientAddress = l.FromClientAddress, DropOffLocationId = l.DropOffLocationId,
+                    // Bug 1 (Steve 2026-09-25): carry the travel order, or the clone
+                    // would start life unordered and its first booking would number
+                    // and time the legs in Id order again.
+                    LegOrder = l.LegOrder,
+                    // 2026-09-28: SpeedId was missing from this initialiser since the
+                    // per-leg override shipped (20260619040000_LinehaulScheduleLegSpeedId),
+                    // so copying a schedule silently dropped every leg's service-class
+                    // override and the copy re-rated off the run / schedule speed.
+                    // Carrying it is a behaviour change to the copy path, made on
+                    // Kevin's explicit call 2026-09-28.
+                    SpeedId = l.SpeedId,
                 });
             Context.TblBulkRunSchedules.Add(clone);
         }
@@ -1691,15 +1708,22 @@ public class ScheduleService(
             .OrderBy(z => z.Zone)
             .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
             .ToList();
+        // Bug 1 (Steve 2026-09-25): order by travel order, not by Name. The
+        // chain editor renders legs in the order this list arrives, and the
+        // booking SPs walk the same LegOrder, so a Name sort would show the
+        // operator a different order from the one that actually gets
+        // dispatched. Legs with no LegOrder sort last, by Id, which mirrors
+        // the SPs' ISNULL(LegOrder, 2147483647), Id.
         var linehauls = t.TblBulkScheduleLinehauls
-            .OrderBy(l => l.Name)
+            .OrderBy(l => l.LegOrder ?? int.MaxValue)
+            .ThenBy(l => l.Id)
             .Select(l => new ScheduleLinehaulDto(
                 l.Id, l.Name, l.Active, l.Amount, l.AmountPercentage,
                 l.FromDepotId, l.ToDepotId, l.Minutes, l.LinehaulRunId,
                 l.InsertToBulk, l.ApplyDiscount, l.ApplyAddOnPercentage,
                 ParseWeekday(l.WeekDay), l.DepartureAdvanceDays,
                 l.FromClientAddress, l.DropOffLocationId,
-                l.SpeedId, LookupSpeed(l.SpeedId)))
+                l.SpeedId, LookupSpeed(l.SpeedId), l.LegOrder))
             .ToList();
 
         return new ScheduleGroupDto(
@@ -1775,7 +1799,11 @@ public class ScheduleService(
         return null;
     }
 
-    private static TblBulkScheduleLinehaul MapLinehaulToEntity(ScheduleLinehaulUpsertRequest l) =>
+    /// <param name="ordinal">
+    /// 1-based position of this leg in the request's Linehauls array, used as
+    /// the LegOrder fallback when the caller did not send one explicitly.
+    /// </param>
+    private static TblBulkScheduleLinehaul MapLinehaulToEntity(ScheduleLinehaulUpsertRequest l, int ordinal) =>
         new()
         {
             Name = l.Name,
@@ -1794,6 +1822,7 @@ public class ScheduleService(
             FromClientAddress = l.FromClientAddress,
             DropOffLocationId = l.DropOffLocationId,
             SpeedId = l.SpeedId,
+            LegOrder = l.LegOrder ?? ordinal,
         };
 
     private static TimeSpan ParseTime(string hhmm)

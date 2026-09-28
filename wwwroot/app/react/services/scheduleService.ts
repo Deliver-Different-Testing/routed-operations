@@ -51,6 +51,11 @@ export interface ScheduleLinehaul {
   speedId: number | null;
   /** Resolved speed name for display. Null when speedId is null. */
   speedName: string | null;
+  /** 1-based travel order within the schedule. The API returns linehauls
+   *  sorted by this, so the chain editor renders legs in travel order.
+   *  Null means the chain was never ordered (or was ambiguous at backfill
+   *  time) and the booking SPs fall back to Id order. */
+  legOrder: number | null;
 }
 
 /** Slim projection returned by GET /schedules for the list table.
@@ -284,6 +289,11 @@ export interface ScheduleGroupUpsertBody {
     dropOffLocationId: number | null;
     /** Per-leg service class override. Null = inherit. */
     speedId: number | null;
+    /** 1-based travel order within the schedule. The chain editor sends the
+     *  leg's position in the chain. Omitting it makes the backend fall back
+     *  to this row's position in the array, which is the same thing as long
+     *  as the caller sends legs in chain order. */
+    legOrder?: number | null;
   }> | null;
   /** Legacy id-based fallback. Consulted only when `clientCodes` is
    *  null in the request body. The NewScheduleModal + `ClientMultiPicker`

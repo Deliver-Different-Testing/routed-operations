@@ -212,6 +212,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
       applyAddOnPercentage: boolean | null; weekDay: number[];
       departureAdvanceDays: number | null; fromClientAddress: boolean | null;
       dropOffLocationId: number | null; speedId: number | null;
+      legOrder: number | null;
     }> = [];
     const zones: number[] = [];
     for (const leg of legs) {
@@ -240,6 +241,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
           fromClientAddress: leg.fromClientAddress,
           dropOffLocationId: leg.dropOffLocationId,
           speedId: leg.speedId,
+          // Bug 1 (Steve 2026-09-25): persist the leg's position in the chain
+          // so the booking SPs number and time legs in travel order instead of
+          // falling back to tblBulkScheduleLinehaul.Id order.
+          legOrder: linehauls.length + 1,
         });
       } else if (leg.type === 'delivery') {
         regionId = leg.regionId;
