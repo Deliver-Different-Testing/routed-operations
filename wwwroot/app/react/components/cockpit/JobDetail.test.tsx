@@ -113,15 +113,13 @@ describe('JobDetail', () => {
     expect(screen.getByText(/Detail for Job JOB-55/)).toBeInTheDocument();
   });
 
-  it('shows metric tiles including run + schedule + cubic', () => {
+  it('shows metric tiles including schedule + cubic', () => {
     const job = makeJob();
     renderWithProviders(
       <JobDetail job={job} speeds={speeds} onUpdateField={vi.fn(async () => {})} />
     );
     expect(screen.getByText('Pricing')).toBeInTheDocument();
     expect(screen.getByText('Ready')).toBeInTheDocument();
-    // "Run" appears twice (metric tile + info card row label); use getAllByText.
-    expect(screen.getAllByText('Run').length).toBeGreaterThan(0);
     expect(screen.getByText('Schedule')).toBeInTheDocument();
     expect(screen.getByText('Morning')).toBeInTheDocument();
     expect(screen.getByText('0.500 m3')).toBeInTheDocument();
@@ -140,6 +138,34 @@ describe('JobDetail', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Fix GPS' }));
     expect(onOpenGpsFix).toHaveBeenCalledWith(job);
+  });
+
+  it('puts Fix GPS in the header icon row, before Print', () => {
+    renderWithProviders(
+      <JobDetail
+        job={makeJob()}
+        speeds={speeds}
+        onUpdateField={vi.fn(async () => {})}
+        onOpenGpsFix={vi.fn()}
+      />
+    );
+    const fixGps = screen.getByRole('button', { name: 'Fix GPS' });
+    const print = screen.getByRole('button', { name: 'Print' });
+    expect(fixGps.parentElement).toBe(print.parentElement);
+    expect(fixGps.compareDocumentPosition(print) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows each field once: Run, Speed, delivery Email and Notes are not duplicated', () => {
+    renderWithProviders(
+      <JobDetail job={makeJob()} speeds={speeds} onUpdateField={vi.fn(async () => {})} />
+    );
+    expect(screen.getAllByText('Run')).toHaveLength(1);
+    expect(screen.getAllByText('Speed')).toHaveLength(1);
+    expect(screen.queryByText('Email')).not.toBeInTheDocument();
+    expect(screen.getByText('Track Email')).toBeInTheDocument();
+    expect(screen.getByText('Notes')).toBeInTheDocument();
+    expect(screen.queryByText('Pickup Notes')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delivery Notes')).not.toBeInTheDocument();
   });
 
   it('does NOT render Fix GPS button when onOpenGpsFix is undefined', () => {

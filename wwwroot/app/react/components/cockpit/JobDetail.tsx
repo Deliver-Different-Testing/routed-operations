@@ -13,12 +13,13 @@ interface Props {
 }
 
 /**
- * Route Builder Detail pane. Same visual layout as the Route Viewer
- * legacy-style Detail (dark header w/ icons + Transfer Route button +
- * metric strip + blue/green Pickup + Delivery cards + notes + 4-col
- * info strip) but every field remains click-to-edit. The Route Builder
- * doesn't have a scan-history sibling list, so the tab strip is
- * suppressed - everything else matches the Route Viewer exactly.
+ * Route Builder Detail pane: dark header w/ icons (Fix GPS / Print / Send)
+ * + metric strip + blue/green Pickup + Delivery cards + notes + info
+ * cards. Every field remains click-to-edit. The pane is narrow and
+ * resizable, so every grid is capped at 2 columns regardless of window
+ * width (2026-09-22 report: 4-7 columns overflowed), and fields that
+ * appeared twice (Run, Speed, delivery Email, the duplicated notes slot)
+ * are shown once.
  */
 export function JobDetail(props: Props) {
   const { speeds, onUpdateField, onOpenGpsFix, onPrint } = props;
@@ -88,8 +89,6 @@ export function JobDetail(props: Props) {
     setAddrMenu({ x: e.clientX, y: e.clientY, leg });
   };
 
-  const speedLabel = speeds.find((s) => s.id === job.speed)?.label ?? job.speedName ?? '-';
-
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Dark header */}
@@ -97,28 +96,19 @@ export function JobDetail(props: Props) {
         <div className="text-sm font-medium flex-1 truncate">
           Detail for Job {job.jobNumber ?? job.bulkJobId}
         </div>
+        {onOpenGpsFix && (
+          <IconButton title="Fix GPS" onClick={() => onOpenGpsFix(job)}><MapPinIcon /></IconButton>
+        )}
         <IconButton title="Print" onClick={onPrint ? () => onPrint(job) : undefined}><PrinterIcon /></IconButton>
         <IconButton title="Send"><SendIcon /></IconButton>
         <IconButton title="More"><KebabIcon /></IconButton>
       </div>
 
       <div className="flex-1 overflow-auto">
-        {/* Transfer Route / Fix GPS actions */}
-        <div className="flex justify-end gap-2 px-3 py-2 border-b border-border">
-          {onOpenGpsFix && (
-            <button
-              type="button"
-              onClick={() => onOpenGpsFix(job)}
-              className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium border border-brand-purple text-brand-purple rounded uppercase tracking-wide hover:bg-brand-purple/10"
-            >
-              Fix GPS
-            </button>
-          )}
-        </div>
-
         {/* Metric tiles - a mix of editable values (Pricing, Ready) and
-            readonly context values (Run / Schedule / Cubic). */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 border-b border-border">
+            readonly context values (Schedule / Cubic). Run lives in the
+            Courier card beside Run Order. */}
+        <div className="grid grid-cols-2 border-b border-border">
           <MetricCell label="Pricing">
             <EditableCell value={job.amount != null ? String(job.amount) : ''} onSave={(v) => save('Amount', v)} />
           </MetricCell>
@@ -139,7 +129,6 @@ export function JobDetail(props: Props) {
               onSave={(v) => save('Speed', v)}
             />
           </MetricCell>
-          <MetricCell label="Run">{job.runName ?? '-'}</MetricCell>
           <MetricCell label="Schedule">{job.scheduleName ?? '-'}</MetricCell>
           <MetricCell label="Cubic">
             {job.jobCubicM3 ? `${Number(job.jobCubicM3).toFixed(3)} m3` : '-'}
@@ -147,8 +136,8 @@ export function JobDetail(props: Props) {
         </div>
 
         {/* Pickup + Delivery cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2">
-          <div onContextMenu={(e) => openAddrMenu(e, 'FromAddress')}>
+        <div className="grid grid-cols-2 gap-2 p-2">
+          <div className="min-w-0" onContextMenu={(e) => openAddrMenu(e, 'FromAddress')}>
             <AddressCard side="pickup" title="Pickup">
               <AddressBlock
                 address={<EditableCell value={job.fromAddress ?? ''} onSave={(v) => save('FromAddress', v)} multiline />}
@@ -169,7 +158,7 @@ export function JobDetail(props: Props) {
             </AddressCard>
           </div>
 
-          <div onContextMenu={(e) => openAddrMenu(e, 'ToAddress')}>
+          <div className="min-w-0" onContextMenu={(e) => openAddrMenu(e, 'ToAddress')}>
             <AddressCard side="delivery" title="Delivery">
               <AddressBlock
                 address={<EditableCell value={job.toAddress ?? ''} onSave={(v) => save('ToAddress', v)} multiline />}
@@ -185,9 +174,6 @@ export function JobDetail(props: Props) {
               <AddressRow label={zipLabel}>
                 <EditableCell value={job.toPostCode?.toString() ?? ''} onSave={(v) => save('ToPostCode', v)} />
               </AddressRow>
-              <AddressRow label="Email">
-                <EditableCell value={job.trackingEmail ?? ''} onSave={(v) => save('TrackingEmail', v)} />
-              </AddressRow>
               <AddressRow label="GPS">
                 <span className={job.deliveryLatitude ? '' : 'text-error'}>
                   {job.deliveryLatitude ? `${job.deliveryLatitude}, ${job.deliveryLongitude}` : 'missing'}
@@ -197,25 +183,20 @@ export function JobDetail(props: Props) {
           </div>
         </div>
 
-        {/* Notes side-by-side. Route Builder has one notes stream so we
-            surface the same text under both slots - matches the
-            legacy Detail layout. */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 px-2 pb-2">
-          <NotesCard title="Pickup Notes">
-            <EditableCell value={job.notes ?? ''} onSave={(v) => save('Notes', v)} multiline />
-          </NotesCard>
-          <NotesCard title="Delivery Notes">
+        {/* Route Builder has one notes stream, so one full-width card
+            (it used to be shown twice as Pickup + Delivery Notes). */}
+        <div className="px-2 pb-2">
+          <NotesCard title="Notes">
             <EditableCell value={job.notes ?? ''} onSave={(v) => save('Notes', v)} multiline />
           </NotesCard>
         </div>
 
         {/* Info strip: Package / Job / Tracking + POD / Courier */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 px-2 pb-2">
+        <div className="grid grid-cols-2 gap-2 px-2 pb-2">
           <InfoCard title="Package">
             <InfoRow label="Size"><EditableCell value={String(job.size ?? '')} onSave={(v) => save('Size', v)} /></InfoRow>
             <InfoRow label="Items"><EditableCell value={String(job.qty ?? '')} onSave={(v) => save('Qty', v)} /></InfoRow>
             <InfoRow label="Weight"><EditableCell value={String(job.weight ?? '')} onSave={(v) => save('Weight', v)} /></InfoRow>
-            <InfoRow label="Speed"><span>{speedLabel}</span></InfoRow>
             <InfoRow label="Sig not req">
               <BooleanCheckbox
                 value={job.okToLeave ?? false}
@@ -292,6 +273,14 @@ function IconButton({ title, onClick, children }: { title: string; onClick?: () 
     </button>
   );
 }
+function MapPinIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
 function PrinterIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -349,7 +338,7 @@ function ArrowDownIcon() {
 
 function MetricCell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="px-3 py-2 border-r border-border last:border-r-0 text-center">
+    <div className="min-w-0 px-3 py-2 border-r border-b border-border even:border-r-0 [&:nth-last-child(-n+2)]:border-b-0 text-center">
       <div className="text-[10px] uppercase tracking-wide text-text-muted">{label}</div>
       <div className="text-sm text-text-primary mt-1 truncate">{children}</div>
     </div>
@@ -360,7 +349,7 @@ function AddressCard({ side, title, children }: { side: 'pickup' | 'delivery'; t
   const headerBg = side === 'pickup' ? 'bg-blue-500' : 'bg-green-500';
   const Arrow = side === 'pickup' ? ArrowUpIcon : ArrowDownIcon;
   return (
-    <div className="border border-border rounded overflow-hidden bg-white">
+    <div className="min-w-0 border border-border rounded overflow-hidden bg-white">
       <div className={`${headerBg} text-white flex items-center gap-2 px-3 py-1.5 font-medium uppercase tracking-wide text-xs`}>
         <Arrow /> {title}
       </div>
@@ -371,8 +360,8 @@ function AddressCard({ side, title, children }: { side: 'pickup' | 'delivery'; t
 function AddressBlock({ address, addressSub }: { address: React.ReactNode; addressSub: React.ReactNode }) {
   return (
     <div className="px-3 py-2 border-b border-border">
-      <div className="text-sm text-text-primary">{address}</div>
-      <div className="text-xs text-text-muted mt-0.5">{addressSub}</div>
+      <div className="text-sm text-text-primary break-words">{address}</div>
+      <div className="text-xs text-text-muted mt-0.5 break-words">{addressSub}</div>
     </div>
   );
 }
@@ -383,7 +372,7 @@ function AddressRow({ label, children, icon }: { label: string; children: React.
         {icon}
         {label}
       </div>
-      <div className="text-sm text-text-primary mt-0.5">{children}</div>
+      <div className="text-sm text-text-primary mt-0.5 break-words">{children}</div>
     </div>
   );
 }
@@ -393,7 +382,7 @@ function NotesCard({ title, children }: { title: string; children: React.ReactNo
       <div className="px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wide text-text-muted font-medium">
         {title}
       </div>
-      <div className="px-3 py-2 text-sm text-text-primary">
+      <div className="px-3 py-2 text-sm text-text-primary break-words">
         {children}
       </div>
     </div>
@@ -401,7 +390,7 @@ function NotesCard({ title, children }: { title: string; children: React.ReactNo
 }
 function InfoCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded bg-white">
+    <div className="min-w-0 border border-border rounded bg-white">
       <div className="px-3 py-1.5 border-b border-border text-[11px] font-semibold text-text-muted uppercase tracking-wide bg-surface-cream/60">
         {title}
       </div>
@@ -411,9 +400,9 @@ function InfoCard({ title, children }: { title: string; children: React.ReactNod
 }
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between px-3 py-1.5 text-sm">
-      <span className="text-[11px] uppercase tracking-wide text-text-muted">{label}</span>
-      <span className="text-text-primary text-right">{children}</span>
+    <div className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm">
+      <span className="shrink-0 text-[11px] uppercase tracking-wide text-text-muted">{label}</span>
+      <span className="min-w-0 text-text-primary text-right break-words">{children}</span>
     </div>
   );
 }
@@ -449,8 +438,8 @@ function EditableCell({
     return (
       <span
         onClick={() => { setDraft(value); setEditing(true); }}
-        className="cursor-pointer border-b border-dashed border-transparent hover:border-brand-cyan inline-block max-w-full"
-        title="Click to edit"
+        className="cursor-pointer border-b border-dashed border-transparent hover:border-brand-cyan inline-block max-w-full break-words"
+        title={value ? `${value} (click to edit)` : 'Click to edit'}
       >
         {value || <em className="text-text-muted">-</em>}
       </span>
