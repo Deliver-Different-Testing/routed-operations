@@ -41,6 +41,11 @@ export interface DepotBucket {
   // the bucket so the operator can see them, but it cannot be ticked or
   // imported.
   noService?: boolean;
+  // NZ: source row index -> postcode to send instead of the raw one. Set
+  // only for rows the raw postcode left unmatched but the geocoder's
+  // suggested postcode (fixedPostCodes) placed in this depot, so the job is
+  // booked against the postcode it was grouped by.
+  postCodeOverrides?: Record<number, string>;
 }
 
 export interface PerDepotResult {
@@ -81,6 +86,10 @@ export interface WizardState {
   options: WizardOptions;
   fixedZips: Record<string, string>;                   // bad zip -> corrected
   fixedAddresses: Record<number, { lat: number; lng: number }>;
+  // NZ geocoder-suggested destination postcode keyed on rowIndex, recorded
+  // by FixAddressesModal when it differs from the row's own postcode. Depot
+  // grouping falls back to it when the raw postcode matches no depot.
+  fixedPostCodes: Record<number, string>;
   // Fixed FROM (pickup) coordinates keyed on rowIndex. On-demand batches
   // need accurate pickup coords for immediate dispatch; the FixAddresses
   // step lets the operator pin-correct any flagged row's origin the same
@@ -123,6 +132,9 @@ export interface WizardState {
   // deselected on the km-rated round for the "Unimported" list.
   kmRatedRows: BulkImportJobCreateDto[];
   kmRatedSelected: Set<number>;
+  // Source row index (into parsed.rows) per kmRatedRows entry, or null when
+  // the row could not be traced back. Drives the full-source-row export.
+  kmRatedSourceRows: (number | null)[];
   kmRatedConfirmed: boolean;
   failedImportJobs: BulkImportJobCreateDto[];
   // Pickup booking (Step 8). pickupJobPayload is the earliest-cutoff pickup
@@ -162,6 +174,7 @@ export function initialWizardState(): WizardState {
     },
     fixedZips: {},
     fixedAddresses: {},
+    fixedPostCodes: {},
     fixedFromAddresses: {},
     selectedRegions: new Set(),
     rateByDistanceDate: null,
@@ -176,6 +189,7 @@ export function initialWizardState(): WizardState {
     scheduleId: null,
     kmRatedRows: [],
     kmRatedSelected: new Set(),
+    kmRatedSourceRows: [],
     kmRatedConfirmed: false,
     failedImportJobs: [],
     pickupJobPayload: null,
@@ -194,6 +208,7 @@ export type WizardAction =
   | { type: 'SET_OPTIONS'; options: Partial<WizardOptions> }
   | { type: 'SET_FIXED_ZIP'; badZip: string; corrected: string }
   | { type: 'SET_FIXED_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
+  | { type: 'SET_FIXED_POSTCODE'; rowIndex: number; postCode: string }
   | { type: 'SET_FIXED_FROM_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
   | { type: 'SET_SELECTED_REGIONS'; regions: Set<string> }
   | { type: 'TOGGLE_REGION'; region: string }
@@ -216,7 +231,7 @@ export type WizardAction =
   | { type: 'MARK_DEPOT_DONE'; depotId: number }
   | { type: 'ADD_PER_DEPOT_RESULT'; result: PerDepotResult }
   | { type: 'RESET_PER_DEPOT_RESULTS' }
-  | { type: 'SET_KMRATED'; rows: BulkImportJobCreateDto[] }
+  | { type: 'SET_KMRATED'; rows: BulkImportJobCreateDto[]; sourceRows?: (number | null)[] }
   | { type: 'TOGGLE_KMRATED_ROW'; index: number }
   | { type: 'SET_ALL_KMRATED_SELECTED'; selected: boolean }
   | { type: 'SET_KMRATED_CONFIRMED'; value: boolean }
@@ -271,6 +286,11 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return {
         ...state,
         fixedAddresses: { ...state.fixedAddresses, [action.rowIndex]: action.coords },
+      };
+    case 'SET_FIXED_POSTCODE':
+      return {
+        ...state,
+        fixedPostCodes: { ...state.fixedPostCodes, [action.rowIndex]: action.postCode },
       };
     case 'SET_FIXED_FROM_ADDRESS':
       return {
@@ -356,7 +376,12 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       // checkUncheckAll behaviour at load time).
       const all = new Set<number>();
       for (let i = 0; i < action.rows.length; i++) all.add(i);
-      return { ...state, kmRatedRows: action.rows, kmRatedSelected: all };
+      return {
+        ...state,
+        kmRatedRows: action.rows,
+        kmRatedSelected: all,
+        kmRatedSourceRows: action.sourceRows ?? action.rows.map(() => null),
+      };
     }
     case 'TOGGLE_KMRATED_ROW': {
       const next = new Set(state.kmRatedSelected);
