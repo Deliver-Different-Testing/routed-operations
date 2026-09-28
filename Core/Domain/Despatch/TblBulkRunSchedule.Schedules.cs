@@ -22,6 +22,16 @@ public partial class TblBulkRunSchedule
     public int? PickupBoxDiscount { get; set; }
 
     /// <summary>
+    /// Absolute cutoff pair (F11 Phase C, 2026-09-24). Day-of-week 1-7
+    /// (Mon..Sun) plus wall-clock time. NULL on both = fall back to the
+    /// legacy CutoffHours integer offset (BulkImportEntityExtensions.cs).
+    /// Populated on write alongside CutoffHours so legacy consumers keep
+    /// working; the tenant SPs coalesce the new pair over the old field.
+    /// </summary>
+    public byte? CutoffDay { get; set; }
+    public TimeSpan? CutoffTime { get; set; }
+
+    /// <summary>
     /// Per-schedule zone activation rows. One row per (Zone, Active)
     /// pairing for this schedule. Wired in DespatchContext (see the
     /// TblBulkRunSchedule OnModelCreating block).

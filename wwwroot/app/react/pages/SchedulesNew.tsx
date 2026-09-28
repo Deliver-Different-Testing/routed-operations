@@ -20,7 +20,7 @@ import {
 } from '../services/scheduleService';
 import { recurringRouteService, type RecurringRoute } from '../services/recurringRouteService';
 import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
-import { ScheduleDetailModal } from '../components/schedules-new/ScheduleDetailModal';
+import { ScheduleDetailModal, type OverrideEditContext } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
 import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
@@ -81,6 +81,26 @@ export default function SchedulesNew() {
       },
       { replace: true },
     );
+  };
+  // Kevin 2026-09-25: modal open-mode. The base ?edit=<id> URL param
+  // still drives the schedule id; a separate piece of local state
+  // carries the override-mode client context (not URL-persisted because
+  // override state is transient and the client picker isn't sharable
+  // via a link today). Both nested-row clicks and the Clients tab
+  // "Edit / Configure override" buttons converge on setOverrideMode()
+  // together with the same setOpenScheduleId().
+  const [overrideMode, setOverrideMode] = useState<OverrideEditContext | null>(null);
+  const openBase = (id: number | null) => {
+    setOverrideMode(null);
+    setOpenScheduleId(id);
+  };
+  const openOverride = (id: number, client: OverrideEditContext) => {
+    setOverrideMode(client);
+    setOpenScheduleId(id);
+  };
+  const closeModal = () => {
+    setOverrideMode(null);
+    setOpenScheduleId(null);
   };
   const [attachScheduleId, setAttachScheduleId] = useState<number | null>(null);
   const [newScheduleOpen, setNewScheduleOpen] = useState(false);
@@ -144,18 +164,21 @@ export default function SchedulesNew() {
 
       {tab === 'schedules' && (
         <SchedulesTab
-          onRowClick={setOpenScheduleId}
+          onRowClick={openBase}
+          onOverrideRowClick={openOverride}
           onAttachClients={setAttachScheduleId}
         />
       )}
-      {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={setOpenScheduleId} />}
+      {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={openBase} />}
       {tab === 'routes' && <RecurringRoutesTab />}
 
       <ScheduleDetailModal
         scheduleId={openScheduleId}
-        onClose={() => setOpenScheduleId(null)}
+        onClose={closeModal}
         onAttachClients={setAttachScheduleId}
-        onOpenSchedule={setOpenScheduleId}
+        onOpenSchedule={openBase}
+        onOpenOverride={openOverride}
+        overrideMode={overrideMode}
       />
       <AttachClientsModal
         scheduleId={attachScheduleId}
@@ -173,14 +196,24 @@ export default function SchedulesNew() {
 
 function SchedulesTab({
   onRowClick,
+  onOverrideRowClick,
   onAttachClients,
 }: {
   onRowClick: (id: number) => void;
+  /** Kevin 2026-09-25: nested override row click. Opens the same
+   *  ScheduleDetailModal but in override-edit mode. */
+  onOverrideRowClick: (scheduleId: number, client: OverrideEditContext) => void;
   onAttachClients: (id: number) => void;
 }) {
   const user = useAuth();
   const tenantId = user.currentTenantId ?? 0;
-  const [type, setType] = useState<SchedulesV2Type>('all');
+  // `'overrides'` is a UI-only fourth chip layered over the three
+  // backend-recognised values in SchedulesV2Type. The server does not
+  // know about it - we ask the server for 'all' when it's active and
+  // then filter the returned rows client-side to those with at least
+  // one override row (same client-side-over-current-page pattern as
+  // the depot filter below). Kevin 2026-09-25.
+  const [type, setType] = useState<SchedulesV2Type | 'overrides'>('all');
   const [q, setQ] = useState('');
   // Debounced mirror of q, fed to the query key. Fires the backend
   // 250ms after the last keystroke instead of on every character.
@@ -200,7 +233,9 @@ function SchedulesTab({
   const [viewAsClientIds, setViewAsClientIds] = useState<number[]>([]);
   const [copySource, setCopySource] = useState<ScheduleGroupSummary | null>(null);
   const query = useSchedulesV2List({
-    type,
+    // 'overrides' is a client-side filter (not a backend value); ask
+    // the server for 'all' and prune below.
+    type: type === 'overrides' ? 'all' : type,
     q: debouncedQ || undefined,
     clientIds: viewAsClientIds.length > 0 ? viewAsClientIds : undefined,
     page,
@@ -352,14 +387,21 @@ function SchedulesTab({
   }, [lookupsQuery.data, serverRows]);
 
   const filtered = useMemo(() => {
-    if (depotFilter.length === 0) return serverRows;
+    let rows = serverRows;
+    // Overrides-only chip: keep just base schedules that have at least
+    // one nested override row. The base + its overrides stay together
+    // in the render because ScheduleRow emits its nested <tr>s inline.
+    if (type === 'overrides') {
+      rows = rows.filter((s) => (s.overrides?.length ?? 0) > 0);
+    }
+    if (depotFilter.length === 0) return rows;
     const wanted = new Set(depotFilter);
-    return serverRows.filter(
+    return rows.filter(
       (s) =>
         (s.pickupDepotName != null && wanted.has(s.pickupDepotName)) ||
         (s.regionName != null && wanted.has(s.regionName)),
     );
-  }, [serverRows, depotFilter]);
+  }, [serverRows, depotFilter, type]);
 
   // Server pagination: total from server, page rows from current fetch.
   const pageCount = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
@@ -392,6 +434,8 @@ function SchedulesTab({
             onChange={(ids) => { setViewAsClientIds(ids); setPage(0); setDepotFilter([]); }}
             placeholder="All schedules"
             panelTitle="View as clients"
+            triggerWidth="w-44"
+            compact
           />
         </div>
 
@@ -403,6 +447,7 @@ function SchedulesTab({
           <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); setDepotFilter([]); }}>All</SegmentPill>
           <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); setDepotFilter([]); }}>Defaults</SegmentPill>
           <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); setDepotFilter([]); }}>Shared</SegmentPill>
+          <SegmentPill active={type === 'overrides'} onClick={() => { setType('overrides'); setPage(0); setDepotFilter([]); }}>Overrides</SegmentPill>
         </div>
 
         <div className="flex items-center gap-2">
@@ -445,6 +490,7 @@ function SchedulesTab({
             rows={pageRows}
             sourceByScheduleId={singleClientId ? sourceByScheduleId : null}
             onRowClick={onRowClick}
+            onOverrideRowClick={onOverrideRowClick}
             onAttachClients={onAttachClients}
             onRetire={handleRetire}
             onCopy={handleCopy}
@@ -534,6 +580,7 @@ function SchedulesTable({
   rows,
   sourceByScheduleId,
   onRowClick,
+  onOverrideRowClick,
   onAttachClients,
   onRetire,
   onCopy,
@@ -545,6 +592,7 @@ function SchedulesTable({
   rows: ScheduleGroupSummary[];
   sourceByScheduleId?: Map<number, 'override' | 'shared' | 'default'> | null;
   onRowClick: (id: number) => void;
+  onOverrideRowClick: (scheduleId: number, client: OverrideEditContext) => void;
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
   onCopy: (row: ScheduleGroupSummary) => void;
@@ -605,6 +653,7 @@ function SchedulesTable({
               row={s}
               sourceTag={sourceByScheduleId?.get(s.scheduleId) ?? null}
               onOpen={onRowClick}
+              onOverrideOpen={onOverrideRowClick}
               onAttachClients={onAttachClients}
               onRetire={onRetire}
               onCopy={onCopy}
@@ -624,6 +673,7 @@ function ScheduleRow({
   row: s,
   sourceTag,
   onOpen,
+  onOverrideOpen,
   onAttachClients,
   onRetire,
   onCopy,
@@ -635,6 +685,7 @@ function ScheduleRow({
   row: ScheduleGroupSummary;
   sourceTag: 'override' | 'shared' | 'default' | null;
   onOpen: (id: number) => void;
+  onOverrideOpen: (scheduleId: number, client: OverrideEditContext) => void;
   onAttachClients: (id: number) => void;
   onRetire: (row: ScheduleGroupSummary) => void;
   onCopy: (row: ScheduleGroupSummary) => void;
@@ -645,7 +696,14 @@ function ScheduleRow({
 }) {
   const window = s.windowStart && s.windowEnd ? `${s.windowStart}-${s.windowEnd}` : '-';
   const cutoff = formatCutoff(s.monCutoffHours, s.otherCutoffHours);
+  // Nested override rows (Steve nested-override brief 2026-09-24). One
+  // per client that owns a delta on this schedule; each nested <tr>
+  // routes the operator back to the same detail modal so the Client
+  // Overrides tab is one click away. Falls through to [] on legacy
+  // rows that pre-date the field.
+  const overrides = s.overrides ?? [];
   return (
+    <>
     <tr
       onClick={() => onOpen(s.scheduleId)}
       className="border-b border-border/60 cursor-pointer align-top hover:bg-surface-light"
@@ -706,6 +764,132 @@ function ScheduleRow({
             label="Retire schedule"
             icon="trash"
             onClick={() => onRetire(s)}
+          />
+        </div>
+      </td>
+    </tr>
+    {overrides.map((o) => (
+      <OverrideNestedRow
+        key={`${s.scheduleId}-o-${o.clientId}`}
+        baseRow={s}
+        override={o}
+        onOpenOverride={onOverrideOpen}
+        onAttachClients={onAttachClients}
+        onCopy={onCopy}
+      />
+    ))}
+    </>
+  );
+}
+
+/**
+ * Nested override row under a base schedule (Steve nested-override brief
+ * 2026-09-24, Kevin mockup pass 2026-09-25).
+ *
+ * Layout:
+ *  - NAME  : indented; small "o" marker; line 1 repeats the base
+ *            schedule name; line 2 (xs muted) is "Based on #<baseId>"
+ *            plus the delta labels joined by " . " when present.
+ *  - DAYS / ORIGIN / DEST / WINDOW / CUT-OFF : all render "-" (a plain
+ *            hyphen). Overrides inherit these from the base today.
+ *  - CLIENTS: single client-code chip for the one client that owns
+ *            this override. Same neutral pill styling as base rows.
+ *  - ROSTER / ACTIVE / AUTOBOOK: "as base" placeholder text - the
+ *            override table has no independent fields for these yet.
+ *  - ACTIONS: same three icons as the base row, but Attach + Copy are
+ *            wired to the BASE (attach more clients / copy the base
+ *            schedule); Trash is greyed out because deleting from an
+ *            override row would misleadingly retire the whole base.
+ *
+ * Row click still opens the ScheduleDetailModal for the base
+ * scheduleId. Operators tab across to Clients from there to edit the
+ * specific override.
+ */
+function OverrideNestedRow({
+  baseRow: s,
+  override: o,
+  onOpenOverride,
+  onAttachClients,
+  onCopy,
+}: {
+  baseRow: ScheduleGroupSummary;
+  override: NonNullable<ScheduleGroupSummary['overrides']>[number];
+  /** Kevin 2026-09-25: opens the ScheduleDetailModal in override-edit
+   *  mode for this override's client, not the base schedule editor. */
+  onOpenOverride: (scheduleId: number, client: OverrideEditContext) => void;
+  onAttachClients: (id: number) => void;
+  onCopy: (row: ScheduleGroupSummary) => void;
+}) {
+  const baseScheduleId = s.scheduleId;
+  const subtitle = o.deltaLabels.length > 0
+    ? `Based on #${baseScheduleId} · ${o.deltaLabels.join(' · ')}`
+    : `Based on #${baseScheduleId}`;
+  const openThisOverride = () =>
+    onOpenOverride(baseScheduleId, {
+      clientId: o.clientId,
+      clientCode: o.clientCode,
+      clientName: o.clientName,
+      deltaLabels: o.deltaLabels,
+    });
+  return (
+    <tr
+      onClick={openThisOverride}
+      className="border-b border-border/60 cursor-pointer align-top hover:bg-surface-light bg-surface-cream/30"
+    >
+      <td className="py-1.5 pr-2 pl-6">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-brand-cyan/50 text-brand-cyan text-[10px] font-semibold shrink-0"
+            title="Client override"
+          >
+            o
+          </span>
+          <span className="text-xs font-semibold text-text-primary">
+            {s.name ?? '(unnamed)'}
+          </span>
+        </div>
+        <div className="text-[11px] mt-0.5 leading-tight text-text-muted">
+          {subtitle}
+        </div>
+      </td>
+      <td className="py-1.5 pr-2"><span className="text-text-muted">-</span></td>
+      <td className="py-1.5 pr-2"><span className="text-text-muted">-</span></td>
+      <td className="py-1.5 pr-2"><span className="text-text-muted">-</span></td>
+      <td className="py-1.5 pr-2"><span className="text-text-muted">-</span></td>
+      <td className="py-1.5 pr-2"><span className="text-text-muted">-</span></td>
+      <td className="py-1.5 pr-2">
+        <span
+          className="inline-block text-[10px] font-medium bg-surface-light text-text-secondary border border-border px-1.5 py-px rounded"
+          title={o.clientName ?? o.clientCode}
+        >
+          {o.clientCode ?? `#${o.clientId}`}
+        </span>
+      </td>
+      <td className="py-1.5 pr-2">
+        <span className="text-[11px] text-text-muted italic">as base</span>
+      </td>
+      <td className="py-1.5 pr-2">
+        <span className="text-[11px] text-text-muted italic">as base</span>
+      </td>
+      <td className="py-1.5 pr-2">
+        <span className="text-[11px] text-text-muted italic">as base</span>
+      </td>
+      <td className="py-1.5 pr-2">
+        <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+          <ActionIcon
+            label="Attach clients to base schedule"
+            icon="user"
+            onClick={() => onAttachClients(baseScheduleId)}
+          />
+          <ActionIcon
+            label="Copy base schedule"
+            icon="copy"
+            onClick={() => onCopy(s)}
+          />
+          <ActionIcon
+            label="Retire from base row - not available on override"
+            icon="trash"
+            disabled
           />
         </div>
       </td>
@@ -860,27 +1044,34 @@ function ActionIcon({
   label,
   icon,
   onClick,
+  disabled,
 }: {
   label: string;
   icon: 'user' | 'copy' | 'trash';
   onClick?: () => void;
+  /** Explicit disabled state for icons that render but should not be
+   *  clickable (e.g. Trash on an override row). Renders with an
+   *  opacity-40 muted look and swallows clicks. */
+  disabled?: boolean;
 }) {
   const path = icon === 'user'
     ? <><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-7 8-7s8 3 8 7" /></>
     : icon === 'copy'
     ? <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></>
     : <><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14" /></>;
-  const clickable = !!onClick;
+  const clickable = !!onClick && !disabled;
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={clickable ? onClick : undefined}
       disabled={!clickable}
       title={label}
       className={`w-6 h-6 rounded flex items-center justify-center hover:bg-surface-light ${
-        clickable
-          ? 'text-text-secondary hover:text-text-primary cursor-pointer'
-          : 'text-text-muted disabled:cursor-not-allowed'
+        disabled
+          ? 'opacity-40 cursor-not-allowed text-text-secondary'
+          : clickable
+            ? 'text-text-secondary hover:text-text-primary cursor-pointer'
+            : 'text-text-muted disabled:cursor-not-allowed'
       }`}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">

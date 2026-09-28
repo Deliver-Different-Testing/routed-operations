@@ -1,9 +1,12 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
 using RoutedOperations.Core.Application.Utilities;
+using RoutedOperations.Core.Domain;
+using RoutedOperations.Core.Domain.Despatch;
 
 namespace RoutedOperations.Tests.Services.Schedule;
 
@@ -33,14 +36,37 @@ public class ScheduleServiceTests
             cache);
     }
 
+    /// <summary>Constructs the service AND hands back the shared
+    /// DbContextOptions + a seed context so tests that need to plant
+    /// header + client + day-row + override rows before calling the
+    /// service can do so directly (mirrors ScheduleOverrideServiceTests'
+    /// NewSvc(out ..., out ...) pattern).</summary>
+    private static ScheduleService NewSvcWithSeed(
+        out DynamicDespatchDbContext seed,
+        out DbContextOptions<DespatchContext> opts)
+    {
+        opts = CockpitTestHarness.NewInMemoryOptions();
+        seed = CockpitTestHarness.Context(opts);
+        var cache = new TenantScopedCache(
+            new MemoryCache(new MemoryCacheOptions()),
+            new HttpContextAccessor());
+        return new ScheduleService(
+            CockpitTestHarness.Factory(opts),
+            NullLogger<ScheduleService>.Instance,
+            cache);
+    }
+
     private static ScheduleGroupUpsertRequest ValidRequest() => new()
     {
         Name = "Test Group",
         RegionId = 1,
         DayWindows = new List<DayWindowUpsertRequest>
         {
-            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffHours = 2 },
-            new() { DayOfWeek = 2, StartTime = "08:00", EndTime = "17:00", CutoffHours = 2 },
+            // F11 Phase C (2026-09-24): absolute cutoff pair replaces the
+            // integer CutoffHours field. Same-day 15:00 approximates a
+            // 2h-before-17:00-close cutoff.
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            new() { DayOfWeek = 2, StartTime = "08:00", EndTime = "17:00", CutoffDay = 2, CutoffTime = "15:00" },
         },
         Zones = new List<ScheduleZoneUpsertRequest>
         {
@@ -85,7 +111,7 @@ public class ScheduleServiceTests
     {
         var svc = NewSvc();
         var req = ValidRequest();
-        req.DayWindows.Add(new DayWindowUpsertRequest { DayOfWeek = 1, StartTime = "10:00", EndTime = "12:00", CutoffHours = 0 });
+        req.DayWindows.Add(new DayWindowUpsertRequest { DayOfWeek = 1, StartTime = "10:00", EndTime = "12:00", CutoffDay = null, CutoffTime = null });
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(req));
         Assert.Contains("Duplicate day-window", ex.Message);
     }
@@ -183,7 +209,7 @@ public class ScheduleServiceTests
         var second = ValidRequest();
         second.DayWindows = new List<DayWindowUpsertRequest>
         {
-            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffHours = 2 },
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
             // Day 2 removed
         };
         var result = await svc.UpsertAsync(second);
@@ -328,5 +354,85 @@ public class ScheduleServiceTests
 
         var remaining = await svc.GetAsync(clientId: null);
         Assert.DoesNotContain(remaining, g => g.Name == "Test Group");
+    }
+
+    [Fact]
+    public async Task ListSummaryAsync_populates_overrides_row_per_client_with_delta_labels()
+    {
+        // Steve nested-override brief (2026-09-24): each base schedule row
+        // in the Schedules NEW list carries its per-client delta rows so
+        // the frontend can render nested <tr>s under the base. Base row
+        // sets CutoffDay=Fri (5) / CutoffTime=15:00; two clients each own
+        // a schedule-scope override that changes CutoffTime to a
+        // different value. Expect one override row per client, each with
+        // one DeltaLabel matching the "Cut-off Fri HH:mm (base Fri 15:00)"
+        // format the backend produces.
+        const int ScheduleId = 42;
+        const int ClientA = 100;
+        const int ClientB = 200;
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        seed.BulkRunScheduleHeaders.Add(new BulkRunScheduleHeader
+        {
+            ScheduleId = ScheduleId,
+            Name = "Nested Test",
+            IsDefault = true,
+            IsActive = true,
+            OverrideCount = 2,
+            CreatedUtc = DateTime.UtcNow,
+            CreatedBy = "seed",
+        });
+        seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
+        {
+            Name = "Nested Test",
+            ScheduleId = ScheduleId,
+            DayOfWeek = 5,
+            StartTime = TimeSpan.Parse("08:00"),
+            EndTime = TimeSpan.Parse("17:00"),
+            CutoffDay = 5,
+            CutoffTime = TimeSpan.Parse("15:00"),
+            Region = 1,
+            MaxJobs = 10000,
+        });
+        seed.TucClients.Add(new TucClient { UcclId = ClientA, UcclCode = "AAA", UcclName = "Client A" });
+        seed.TucClients.Add(new TucClient { UcclId = ClientB, UcclCode = "BBB", UcclName = "Client B" });
+        seed.BulkRunScheduleOverrides.Add(new BulkRunScheduleOverride
+        {
+            ScheduleId = ScheduleId,
+            ClientId = ClientA,
+            Scope = BulkRunScheduleOverride.ScopeSchedule,
+            CutoffDay = 5,
+            CutoffTime = TimeSpan.Parse("14:00"),
+            CreatedUtc = DateTime.UtcNow,
+            CreatedBy = "seed",
+        });
+        seed.BulkRunScheduleOverrides.Add(new BulkRunScheduleOverride
+        {
+            ScheduleId = ScheduleId,
+            ClientId = ClientB,
+            Scope = BulkRunScheduleOverride.ScopeSchedule,
+            CutoffDay = 5,
+            CutoffTime = TimeSpan.Parse("13:00"),
+            CreatedUtc = DateTime.UtcNow,
+            CreatedBy = "seed",
+        });
+        await seed.SaveChangesAsync();
+
+        var summaries = await svc.ListSummaryAsync(
+            clientId: null, includeClientSpecific: false, includeAllLive: true);
+
+        var summary = Assert.Single(summaries.Where(s => s.ScheduleId == ScheduleId));
+        Assert.Equal(2, summary.Overrides.Count);
+        // Sorted alphabetically by client code so the assertion order is
+        // stable regardless of override-row insertion order.
+        var overrides = summary.Overrides.OrderBy(o => o.ClientCode).ToList();
+        Assert.Equal(ClientA, overrides[0].ClientId);
+        Assert.Equal("AAA", overrides[0].ClientCode);
+        Assert.Equal("Client A", overrides[0].ClientName);
+        Assert.Single(overrides[0].DeltaLabels);
+        Assert.Equal("Cut-off Fri 14:00 (base Fri 15:00)", overrides[0].DeltaLabels[0]);
+        Assert.Equal(ClientB, overrides[1].ClientId);
+        Assert.Equal("BBB", overrides[1].ClientCode);
+        Assert.Single(overrides[1].DeltaLabels);
+        Assert.Equal("Cut-off Fri 13:00 (base Fri 15:00)", overrides[1].DeltaLabels[0]);
     }
 }

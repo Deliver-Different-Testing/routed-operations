@@ -31,7 +31,6 @@ public record ScheduleOverrideDto(
 /// is the client having no schedule-scope delta row.
 /// </summary>
 public record ScheduleScopeOverrideDto(
-    int? CutoffHours,
     int? CutoffDay,
     string CutoffTime,
     string WeekDays,

@@ -76,13 +76,18 @@ public class ScheduleOverrideServiceTests
         await seed.SaveChangesAsync();
     }
 
+    // F11 Phase C (2026-09-24): CutoffHours dropped from the DTO in favour
+    // of the absolute (CutoffDay, CutoffTime) pair. Helper accepts the new
+    // shape; callers passing "cutoffDay: 4, cutoffTime: "15:00"" exercise
+    // the same schedule-scope row insert path.
     private static ScheduleScopeOverrideDto ScheduleScope(
-        int? cutoffHours = null,
+        int? cutoffDay = null,
+        string cutoffTime = null,
         string weekDays = null,
         bool? isActive = null,
         string displayName = null,
         string displayDescription = null)
-        => new(cutoffHours, null, null, weekDays, isActive, displayName, displayDescription);
+        => new(cutoffDay, cutoffTime, weekDays, isActive, displayName, displayDescription);
 
     private static LegScopeOverrideDto LegScope(
         int? speedId = null,
@@ -101,7 +106,7 @@ public class ScheduleOverrideServiceTests
         await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
 
         var req = new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3),
+            Schedule: ScheduleScope(cutoffDay: 3),
             Collection: null,
             Delivery: null);
         await svc.PutAsync(HeaderA, ClientA, req, Actor);
@@ -112,7 +117,10 @@ public class ScheduleOverrideServiceTests
             .ToListAsync();
         var single = Assert.Single(rows);
         Assert.Equal(BulkRunScheduleOverride.ScopeSchedule, single.Scope);
-        Assert.Equal(3, single.CutoffHours);
+        // F11 Phase C (2026-09-24): schedule-scope now identifies a cutoff
+        // via the absolute pair. RoutedOps no longer writes to CutoffHours,
+        // so we assert on CutoffDay instead.
+        Assert.Equal((byte?)3, single.CutoffDay);
         Assert.Equal(ClientA, single.ClientId);
         Assert.Equal(Actor, single.CreatedBy);
 
@@ -155,7 +163,7 @@ public class ScheduleOverrideServiceTests
 
         // First put: schedule-scope only.
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3, displayName: "Client A view"),
+            Schedule: ScheduleScope(cutoffDay: 3, displayName: "Client A view"),
             Collection: null,
             Delivery: null), Actor);
 
@@ -172,7 +180,9 @@ public class ScheduleOverrideServiceTests
         var single = Assert.Single(rows);
         Assert.Equal(BulkRunScheduleOverride.ScopeCollection, single.Scope);
         Assert.Equal(999, single.SpeedId);
-        Assert.Null(single.CutoffHours);
+        // F11 Phase C (2026-09-24): schedule row was replaced by the
+        // collection row on the second Put, so no CutoffDay carries over.
+        Assert.Null(single.CutoffDay);
         Assert.Null(single.DisplayName);
 
         var header = await read.BulkRunScheduleHeaders.SingleAsync(h => h.ScheduleId == HeaderA);
@@ -186,7 +196,7 @@ public class ScheduleOverrideServiceTests
         await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
 
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3),
+            Schedule: ScheduleScope(cutoffDay: 3),
             Collection: LegScope(speedId: 5),
             Delivery: null), Actor);
 
@@ -214,7 +224,7 @@ public class ScheduleOverrideServiceTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.PutAsync(9999, ClientA, new ScheduleOverridePutRequest(
-                Schedule: ScheduleScope(cutoffHours: 3),
+                Schedule: ScheduleScope(cutoffDay: 3),
                 Collection: null,
                 Delivery: null), Actor));
         Assert.Contains("Schedule 9999", ex.Message);
@@ -232,7 +242,7 @@ public class ScheduleOverrideServiceTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-                Schedule: ScheduleScope(cutoffHours: 3),
+                Schedule: ScheduleScope(cutoffDay: 3),
                 Collection: null,
                 Delivery: null), Actor));
         Assert.Contains("not found or retired", ex.Message);
@@ -246,7 +256,7 @@ public class ScheduleOverrideServiceTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.PutAsync(HeaderA, 4242, new ScheduleOverridePutRequest(
-                Schedule: ScheduleScope(cutoffHours: 3),
+                Schedule: ScheduleScope(cutoffDay: 3),
                 Collection: null,
                 Delivery: null), Actor));
         Assert.Contains("Client 4242", ex.Message);
@@ -262,11 +272,11 @@ public class ScheduleOverrideServiceTests
 
         // Two clients with deltas on the same header.
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3),
+            Schedule: ScheduleScope(cutoffDay: 3),
             Collection: LegScope(speedId: 5),
             Delivery: null), Actor);
         await svc.PutAsync(HeaderA, ClientB, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 4),
+            Schedule: ScheduleScope(cutoffDay: 4),
             Collection: null,
             Delivery: null), Actor);
 
@@ -299,7 +309,7 @@ public class ScheduleOverrideServiceTests
 
         // Client A: schedule + collection rows. Client B: delivery row only.
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3, displayName: "A view"),
+            Schedule: ScheduleScope(cutoffDay: 3, displayName: "A view"),
             Collection: LegScope(speedId: 5),
             Delivery: null), Actor);
         await svc.PutAsync(HeaderA, ClientB, new ScheduleOverridePutRequest(
@@ -312,7 +322,9 @@ public class ScheduleOverrideServiceTests
 
         var a = dtos.Single(d => d.ClientId == ClientA);
         Assert.NotNull(a.Schedule);
-        Assert.Equal(3, a.Schedule.CutoffHours);
+        // F11 Phase C (2026-09-24): DTO drops CutoffHours; assert on the
+        // absolute-pair CutoffDay instead.
+        Assert.Equal(3, a.Schedule.CutoffDay);
         Assert.Equal("A view", a.Schedule.DisplayName);
         Assert.NotNull(a.Collection);
         Assert.Equal(5, a.Collection.SpeedId);
@@ -347,7 +359,7 @@ public class ScheduleOverrideServiceTests
         await SeedAsync(seed, new[] { HeaderA, HeaderB }, new[] { ClientA });
 
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3),
+            Schedule: ScheduleScope(cutoffDay: 3),
             Collection: null,
             Delivery: null), Actor);
         await svc.PutAsync(HeaderB, ClientA, new ScheduleOverridePutRequest(
@@ -379,11 +391,11 @@ public class ScheduleOverrideServiceTests
 
         // HeaderA: two distinct clients.
         await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 3),
+            Schedule: ScheduleScope(cutoffDay: 3),
             Collection: null,
             Delivery: null), Actor);
         await svc.PutAsync(HeaderA, ClientB, new ScheduleOverridePutRequest(
-            Schedule: ScheduleScope(cutoffHours: 4),
+            Schedule: ScheduleScope(cutoffDay: 4),
             Collection: null,
             Delivery: null), Actor);
         // HeaderB: one client.
