@@ -848,6 +848,26 @@ export const routeViewerService = {
     return res.blob();
   },
 
+  /** Wraps GET /runviewer/labels/bulk?bulkJobId= (single bulk-job
+   *  Mode 2 label, server-default template) and returns the PDF as a
+   *  Blob. Route Builder jobs have no tucJob id yet, so they print via
+   *  this rather than `printSingleJobLabelPdf`. */
+  printBulkJobLabelPdf: async (bulkJobId: number): Promise<Blob> => {
+    const res = await fetch(`/api/runviewer/labels/bulk?bulkJobId=${bulkJobId}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const msg = body?.message ?? body?.messages?.[0]?.message ?? `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return res.blob();
+  },
+
   /** Email a POD photo to an operator-provided address. Proxies to
    *  the legacy /Home/SendPOD endpoint via the same env-var-gated
    *  proxy the label endpoints use. */

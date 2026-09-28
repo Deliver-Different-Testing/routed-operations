@@ -9,6 +9,7 @@ interface Props {
   speeds: Speed[];
   onUpdateField: (jobId: number, field: string, value: string) => Promise<void>;
   onOpenGpsFix?: (job: BulkJob, leg?: 'ToAddress' | 'FromAddress') => void;
+  onPrint?: (job: BulkJob) => void;
 }
 
 /**
@@ -20,7 +21,7 @@ interface Props {
  * suppressed - everything else matches the Route Viewer exactly.
  */
 export function JobDetail(props: Props) {
-  const { speeds, onUpdateField, onOpenGpsFix } = props;
+  const { speeds, onUpdateField, onOpenGpsFix, onPrint } = props;
   let job = props.job;
   const { isUsTenant } = useAuth();
   const zipLabel = postcodeLabel(isUsTenant, true);
@@ -96,7 +97,7 @@ export function JobDetail(props: Props) {
         <div className="text-sm font-medium flex-1 truncate">
           Detail for Job {job.jobNumber ?? job.bulkJobId}
         </div>
-        <IconButton title="Print"><PrinterIcon /></IconButton>
+        <IconButton title="Print" onClick={onPrint ? () => onPrint(job) : undefined}><PrinterIcon /></IconButton>
         <IconButton title="Send"><SendIcon /></IconButton>
         <IconButton title="More"><KebabIcon /></IconButton>
       </div>
@@ -278,11 +279,13 @@ export function JobDetail(props: Props) {
 
 // ---------- Icons (kept in-file so JobDetail is self-contained) --
 
-function IconButton({ title, children }: { title: string; children: React.ReactNode }) {
+function IconButton({ title, onClick, children }: { title: string; onClick?: () => void; children: React.ReactNode }) {
   return (
     <button
       type="button"
       title={title}
+      aria-label={title}
+      onClick={onClick}
       className="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-white"
     >
       {children}

@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -149,8 +150,16 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         //     Void Jobs run (IsVoidRun = 1, Status = 1) never surfaces via this
         //     branch either, which is correct - it's only visible when it has
         //     voided jobs to render.
+        //
+        // Only when no job-level filter is active, though. Runs carry no
+        // region / client / speed / ref of their own, so with a filter set the
+        // draft branch surfaced every other region's drafts as 0-job rows
+        // (reported 2026-09-22: Palmerston North filter listed Auckland runs).
+        // With a filter, a run shows only if it holds a matching job.
+        var hasJobFilter = clientIdSet.Count > 0 || regionIdSet.Count > 0
+                           || ourRefSet.Count > 0 || speedSet.Count > 0;
         var runQuery = Context.TblBulkRuns.AsNoTracking().AsQueryable();
-        if (dateTime.HasValue)
+        if (dateTime.HasValue && !hasJobFilter)
         {
             var d = dateTime.Value.Date;
             runQuery = runQuery.Where(r =>
@@ -411,6 +420,21 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         // failures - matches UTL_stpJob_tblBulkRun_Delete contract.
         if (run == null) return ("Success", "Run already deleted");
 
+        var released = await RemoveRunTrackedAsync(run);
+        await Context.SaveChangesAsync();
+
+        Log.Information("Run {RunName} (id {RunId}) deleted; released {JobCount} job(s) back to unbuilt",
+            run.Name, id, released);
+        return ("Success", "Deleted");
+    }
+
+    /// <summary>
+    /// Stages a run delete on the change tracker (no SaveChanges) so callers
+    /// can fold it into a wider transaction. Returns the released job count.
+    /// </summary>
+    private async Task<int> RemoveRunTrackedAsync(TblBulkRun run)
+    {
+        var id = run.Id;
         var jobRuns = await Context.TblBulkJobRuns
             .Where(jr => jr.RunId == id)
             .ToListAsync();
@@ -439,11 +463,154 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
         Context.TblBulkJobRuns.RemoveRange(jobRuns);
         Context.TblBulkRuns.Remove(run);
-        await Context.SaveChangesAsync();
+        return jobIds.Count;
+    }
 
-        Log.Information("Run {RunName} (id {RunId}) deleted; released {JobCount} job(s) back to unbuilt",
-            run.Name, id, jobIds.Count);
-        return ("Success", "Deleted");
+    /// <summary>
+    /// Create a run and assign its jobs in one transaction. Replaces the
+    /// cockpit's "create empty run, then N parallel assign calls" sequence,
+    /// which committed the run before any job moved and could leave a run with
+    /// half its jobs (or none) when an assign deadlocked. Reported 2026-09-22
+    /// ("Create Run from these xx jobs" lost every job). All-or-nothing: if any
+    /// job fails, the run insert rolls back too.
+    /// </summary>
+    public async Task<(string Result, string Message)> CreateRunWithJobsAsync(InsertOrUpdateRunRequest run)
+    {
+        if (run.Id is > 0) return ("Failed", "Create-with-jobs only creates new runs");
+
+        var items = run.Jobs
+            .GroupBy(j => j.BulkJobId)
+            .Select(g => new AssignJobItem { JobId = g.Key, PickRunOrder = g.First().BuilderIndex })
+            .ToList();
+        if (items.Count == 0) return ("Failed", "No jobs to assign");
+
+        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        try
+        {
+            run.Jobs = new List<RunJobDto>();
+            var (result, message) = await InsertOrUpdateRunAsync(run);
+            if (result != "Success") return (result, message);
+            var runId = int.Parse(message, CultureInfo.InvariantCulture);
+
+            var error = await StageJobAssignmentsAsync(runId, items);
+            if (error != null) return ("Failed", error); // dispose rolls back the run insert
+
+            await Context.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            Log.Information("Run {RunName} (id {RunId}) created with {JobCount} job(s)", run.Name, runId, items.Count);
+            return ("Success", runId.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "CreateRunWithJobs {RunName} failed and rolled back; job ids {JobIds}",
+                run.Name, items.Select(i => i.JobId));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Assign many jobs to an existing run in one transaction. With
+    /// deleteRunId set this is a merge: the source run is deleted in the same
+    /// transaction, so it only disappears if every job actually moved.
+    /// </summary>
+    public async Task<(string Result, string Message)> AssignJobsToRunAsync(
+        int runId, IReadOnlyList<AssignJobItem> jobs, int? deleteRunId = null)
+    {
+        var items = jobs.GroupBy(j => j.JobId).Select(g => g.First()).ToList();
+        if (items.Count == 0) return ("Failed", "No jobs to assign");
+        if (deleteRunId == runId) return ("Failed", "Cannot merge a run into itself");
+
+        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        try
+        {
+            var error = await StageJobAssignmentsAsync(runId, items);
+            if (error != null) return ("Failed", error);
+            await Context.SaveChangesAsync();
+
+            if (deleteRunId.HasValue)
+            {
+                var source = await Context.TblBulkRuns.FindAsync(deleteRunId.Value);
+                if (source != null)
+                {
+                    await RemoveRunTrackedAsync(source);
+                    await Context.SaveChangesAsync();
+                }
+            }
+
+            await tx.CommitAsync();
+
+            Log.Information("Assigned {JobCount} job(s) to run {RunId}; merged-from run {DeleteRunId}",
+                items.Count, runId, deleteRunId);
+            return ("Success", items.Count.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "AssignJobsToRun {RunId} failed and rolled back; job ids {JobIds}",
+                runId, items.Select(i => i.JobId));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// EF equivalent of the per-job tblBulkJobRun MERGE + tblBulkJob mirror
+    /// update, staged on the change tracker for the caller's transaction
+    /// (Serializable, matching the legacy HOLDLOCK). Returns an operator-facing
+    /// error (and logs the job ids) when the batch can't be applied as a whole;
+    /// null on success.
+    /// </summary>
+    private async Task<string?> StageJobAssignmentsAsync(int runId, IReadOnlyList<AssignJobItem> items)
+    {
+        if (!await Context.TblBulkRuns.AnyAsync(r => r.Id == runId))
+            return "Run not found. Please refresh.";
+
+        var ids = items.Select(i => i.JobId).ToList();
+        var jobs = await Context.TblBulkJobs.Where(j => ids.Contains(j.BulkJobId)).ToListAsync();
+        var missing = ids.Except(jobs.Select(j => j.BulkJobId)).ToList();
+        if (missing.Count > 0)
+        {
+            Log.Warning("Assign to run {RunId} aborted; bulk job ids not found: {JobIds}", runId, missing);
+            return $"{missing.Count} job(s) no longer exist. Please refresh.";
+        }
+
+        var links = await Context.TblBulkJobRuns
+            .Where(l => l.BulkJobId.HasValue && ids.Contains(l.BulkJobId.Value))
+            .ToListAsync();
+
+        // Same optimistic-concurrency rule as UpdateJobToRunAsync, applied to
+        // the whole batch: one stale job fails the lot.
+        var conflicts = items
+            .Where(i => i.FromRunId.HasValue)
+            .Where(i => links.FirstOrDefault(l => l.BulkJobId == i.JobId) is { } l && l.RunId != i.FromRunId)
+            .Select(i => i.JobId)
+            .ToList();
+        if (conflicts.Count > 0)
+        {
+            Log.Warning("Assign to run {RunId} aborted; jobs moved by another user: {JobIds}", runId, conflicts);
+            return "Job has been moved by another user. Please refresh.";
+        }
+
+        foreach (var item in items)
+        {
+            var jobLinks = links.Where(l => l.BulkJobId == item.JobId).ToList();
+            if (jobLinks.Count == 0)
+            {
+                Context.TblBulkJobRuns.Add(new TblBulkJobRun
+                {
+                    RunId = runId, BulkJobId = item.JobId, PickRunOrder = item.PickRunOrder
+                });
+            }
+            foreach (var link in jobLinks)
+            {
+                link.RunId = runId;
+                link.PickRunOrder = item.PickRunOrder;
+            }
+
+            var job = jobs.First(j => j.BulkJobId == item.JobId);
+            job.BulkRunId = runId;
+            job.RunOrder = item.PickRunOrder;
+        }
+        return null;
     }
 
     /// <summary>
