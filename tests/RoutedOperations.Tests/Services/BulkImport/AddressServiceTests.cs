@@ -310,6 +310,66 @@ public class AddressServiceTests
         Assert.Equal(new[] { "6011" }, byName["Wellington"]);
     }
 
+    // Tester report 2026-09-22: airline depots (rating-only zone rows)
+    // grabbed postcodes from the real delivery depot and showed up as
+    // importable depots with no service.
+    [Fact]
+    public async Task GetPostcodesByDepotAsync_WithClient_ResolvesDuplicatesToScheduledDepotAndFlagsNoService()
+    {
+        var svc = NewSvc(out var seed, countryCode: "NZ");
+        var chc = new TblBulkRegion { BulkRegionId = 1, Name = "Christchurch", Active = true };
+        var air = new TblBulkRegion { BulkRegionId = 2, Name = "Air NZ Cargo", Active = true };
+        var old = new TblBulkRegion { BulkRegionId = 3, Name = "Closed Depot", Active = false };
+        seed.TblBulkRegions.AddRange(chc, air, old);
+        seed.BulkZonePostcodes.AddRange(
+            // 8011 is claimed by both; airline row has the lower zone, so
+            // only the schedule preference keeps it with Christchurch.
+            new BulkZonePostcode { Id = 1, PostCode = 8011, Zone = 2, DepotId = 1, Depot = chc },
+            new BulkZonePostcode { Id = 2, PostCode = 8011, Zone = 1, DepotId = 2, Depot = air },
+            // 2022 is only covered by the airline depot.
+            new BulkZonePostcode { Id = 3, PostCode = 2022, Zone = 1, DepotId = 2, Depot = air },
+            // Inactive depot is ignored entirely.
+            new BulkZonePostcode { Id = 4, PostCode = 7010, Zone = 1, DepotId = 3, Depot = old });
+        seed.TblBulkRunSchedules.AddRange(
+            new TblBulkRunSchedule { BulkRunScheduleId = 1, Name = "CHC", ClientId = 5, Region = 1, DayOfWeek = 1 },
+            // Other client's schedule at the airline depot does not count.
+            new TblBulkRunSchedule { BulkRunScheduleId = 2, Name = "AIR", ClientId = 6, Region = 2, DayOfWeek = 1 });
+        await seed.SaveChangesAsync();
+
+        var resp = await svc.GetPostcodesByDepotAsync(Guid.NewGuid(), clientId: 5);
+
+        Assert.True(resp.Success);
+        var byName = resp.Depots.ToDictionary(d => d.Name);
+        Assert.Equal(new[] { "Air NZ Cargo", "Christchurch" }, byName.Keys.OrderBy(k => k).ToArray());
+        Assert.Equal(new[] { "8011" }, byName["Christchurch"].Postcodes.ToArray());
+        Assert.True(byName["Christchurch"].HasSchedules);
+        Assert.Equal(new[] { "2022" }, byName["Air NZ Cargo"].Postcodes.ToArray());
+        Assert.False(byName["Air NZ Cargo"].HasSchedules);
+    }
+
+    [Fact]
+    public async Task GetPostcodesByDepotAsync_WithoutClient_DeDuplicatesByZoneThenDepotId()
+    {
+        var svc = NewSvc(out var seed, countryCode: "NZ");
+        var a = new TblBulkRegion { BulkRegionId = 1, Name = "A" };
+        var b = new TblBulkRegion { BulkRegionId = 2, Name = "B" };
+        seed.TblBulkRegions.AddRange(a, b);
+        seed.BulkZonePostcodes.AddRange(
+            new BulkZonePostcode { Id = 1, PostCode = 1010, Zone = 3, DepotId = 1, Depot = a },
+            new BulkZonePostcode { Id = 2, PostCode = 1010, Zone = 1, DepotId = 2, Depot = b },
+            new BulkZonePostcode { Id = 3, PostCode = 1020, Zone = 1, DepotId = 2, Depot = b },
+            new BulkZonePostcode { Id = 4, PostCode = 1020, Zone = 1, DepotId = 1, Depot = a });
+        await seed.SaveChangesAsync();
+
+        var resp = await svc.GetPostcodesByDepotAsync(Guid.NewGuid());
+
+        // 1010 -> B (lower zone); 1020 -> A (zone tie, lower depot id).
+        var byName = resp.Depots.ToDictionary(d => d.Name, d => d.Postcodes.ToArray());
+        Assert.Equal(new[] { "1020" }, byName["A"]);
+        Assert.Equal(new[] { "1010" }, byName["B"]);
+        Assert.All(resp.Depots, d => Assert.True(d.HasSchedules));
+    }
+
     // ---------------- GetZipCodesByLocationAsync -----------------
 
     [Fact]

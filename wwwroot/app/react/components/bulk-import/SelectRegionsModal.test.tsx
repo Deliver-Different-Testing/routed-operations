@@ -57,11 +57,11 @@ describe('SelectRegionsModal - NZ tenant path', () => {
     );
     // Depot name renders inside the label with "(0 of 1 jobs imported)".
     await waitFor(() => expect(screen.getByText(/Auckland North.*0 of 1 jobs imported/)).toBeInTheDocument());
-    // SET_DEPOTS dispatched with one real bucket for depot id 1.
+    // SEED_DEPOTS dispatched with one real bucket for depot id 1.
     await waitFor(() => {
       expect(dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: 'SET_DEPOTS',
+          type: 'SEED_DEPOTS',
           depots: expect.arrayContaining([expect.objectContaining({ depotId: 1 })]),
         })
       );
@@ -165,6 +165,51 @@ describe('SelectRegionsModal - NZ tenant path', () => {
       />
     );
     await waitFor(() => expect(screen.getByText(/kaboom/)).toBeInTheDocument());
+  });
+
+  it('routed: depot with no schedules for the client is shown as a locked warning', async () => {
+    let requestedUrl = '';
+    server.use(
+      http.get('/api/address/depots/postcodes', ({ request }) => {
+        requestedUrl = request.url;
+        return HttpResponse.json({
+          ...env,
+          depots: [
+            { id: 1, name: 'Christchurch', postcodes: ['8011'], hasSchedules: true },
+            { id: 2, name: 'Air NZ Cargo', postcodes: ['2022'], hasSchedules: false },
+          ],
+        });
+      })
+    );
+    const dispatch = vi.fn();
+    const s = nzState([{ ToPostCode: '8011' }, { ToPostCode: '2022' }]);
+    s.importType = 'routed';
+    s.client = { id: 5, code: 'C', name: 'Client', isUsTenant: false };
+    renderWithProviders(
+      <SelectRegionsModal
+        open
+        state={s}
+        dispatch={dispatch}
+        onBack={vi.fn()}
+        onNext={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/Air NZ Cargo/)).toBeInTheDocument());
+    expect(requestedUrl).toContain('clientId=5');
+    expect(screen.getByText(/no service set up at this depot/)).toBeInTheDocument();
+    const airCheckbox = screen.getByText(/Air NZ Cargo/).closest('label')!.querySelector('input')!;
+    expect(airCheckbox).toBeDisabled();
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'SEED_DEPOTS',
+          depots: expect.arrayContaining([
+            expect.objectContaining({ depotId: 2, noService: true }),
+          ]),
+        })
+      );
+    });
   });
 
   it('toggling depot checkbox dispatches TOGGLE_REGION', async () => {

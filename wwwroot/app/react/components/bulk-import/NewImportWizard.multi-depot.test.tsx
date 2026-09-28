@@ -224,11 +224,14 @@ describe('NewImportWizard - multi-depot iteration', () => {
     await waitFor(() =>
       expect(screen.getByText(/2 of 2/)).toBeInTheDocument()
     );
-    // Manually pick the sole speed for depot 2 - SchedulePicker's auto-select
-    // effect keys on `speeds.length + speeds.map(id).join(',')` which is
-    // identical across both depots (both offer Standard/10), so the effect
-    // doesn't refire on advance and the reset leaves speedId=0. The operator
-    // picks manually in real life; the test mirrors that.
+    // Depot 2 opens blank: the previous depot's service / schedule must not
+    // carry over, and after the first depot the service is never
+    // auto-picked, so the operator confirms it per depot (tester report
+    // 2026-09-22, Christchurch).
+    expect((screen.getByLabelText('Service') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('Schedule') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByText('Pick a service first...')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Service'), { target: { value: '10' } });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
@@ -237,6 +240,61 @@ describe('NewImportWizard - multi-depot iteration', () => {
     await waitFor(() => expect(onImported).toHaveBeenCalled());
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(importCall).toBe(2);
+  });
+
+  it('Back after depot 1 imported then Next resumes at depot 2 (no double import)', async () => {
+    const importedDepots: number[] = [];
+    seedTwoDepotNzHandlers();
+    server.use(
+      http.post('/api/bulk-import/import', async ({ request }) => {
+        const body = (await request.json()) as { jobs: unknown[] };
+        importedDepots.push(body.jobs.length);
+        return HttpResponse.json({
+          ...env,
+          clientId: 1,
+          bookDate: '2026-08-13',
+          scheduleId: 100,
+          speedId: 10,
+          jobs: [],
+        });
+      })
+    );
+    const onImported = vi.fn();
+    renderWithProviders(
+      <NewImportWizard open onClose={vi.fn()} onImported={onImported} />
+    );
+    await waitFor(() => expect(screen.getByText('New Import')).toBeInTheDocument());
+    await driveToSelectRegions();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText(/1 of 2/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText(/2 of 2/)).toBeInTheDocument());
+    expect(importedDepots).toHaveLength(1);
+
+    // Back to Select Depots: Auckland is locked as imported, Wellington
+    // still ticked.
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(screen.getByText(/Select Depots/)).toBeInTheDocument());
+    const aucklandBox = screen.getByText(/Auckland/).closest('label')!.querySelector('input')!;
+    expect(aucklandBox).toBeDisabled();
+    expect(aucklandBox).toBeChecked();
+    const wellingtonBox = screen.getByText(/Wellington/).closest('label')!.querySelector('input')!;
+    expect(wellingtonBox).toBeChecked();
+
+    // Next resumes at Wellington, not Auckland.
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText(/2 of 2/)).toBeInTheDocument());
+    expect(screen.getByText(/Wellington/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Service'), { target: { value: '10' } });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(onImported).toHaveBeenCalled());
+    expect(importedDepots).toHaveLength(2);
   });
 
   it('surfaces per-depot summary when some rows fail across depots', async () => {

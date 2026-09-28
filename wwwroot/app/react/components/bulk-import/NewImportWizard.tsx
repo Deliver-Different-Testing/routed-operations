@@ -17,7 +17,13 @@ import { RateByDistanceModal } from './RateByDistanceModal';
 import { KmRatedReviewModal } from './KmRatedReviewModal';
 import { BookPickupModal } from './BookPickupModal';
 import { ImportSummaryModal } from './ImportSummaryModal';
-import { initialWizardState, wizardReducer, type WizardState } from './wizardState';
+import {
+  includedDepotBuckets,
+  initialWizardState,
+  nextPendingDepotIndex,
+  wizardReducer,
+  type WizardState,
+} from './wizardState';
 
 interface Props {
   open: boolean;
@@ -117,10 +123,9 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
 
   function includedBuckets() {
     // Real depots (id > 0) + US coverage-only bucket (id === -1) both
-    // participate in the per-depot loop. Unmatched (id === 0) is excluded.
-    return state.depots.filter(
-      (d) => d.depotId !== 0 && state.selectedRegions.has(String(d.depotId))
-    );
+    // participate in the per-depot loop. Unmatched (id === 0) and
+    // no-service depots are excluded.
+    return includedDepotBuckets(state);
   }
 
   async function saveTemplateIfRequested() {
@@ -198,9 +203,12 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     justAddedResult?: { imported: number; failed: number },
     justAddedPickup?: WizardState['pickupJobPayload']
   ) {
-    const included = includedBuckets();
-    if (nextIndex < included.length) {
-      dispatch({ type: 'SET_CURRENT_DEPOT', index: nextIndex });
+    // Skip depots already imported on an earlier pass (Back then Next).
+    // The bucket that just finished is before nextIndex, so the stale
+    // completedDepotIds in this closure cannot select it again.
+    const pendingIndex = nextPendingDepotIndex(state, nextIndex);
+    if (pendingIndex >= 0) {
+      dispatch({ type: 'SET_CURRENT_DEPOT', index: pendingIndex });
       // Reset km-rated state between buckets so the review modal doesn't
       // stick.
       dispatch({ type: 'SET_KMRATED', rows: [] });
@@ -243,6 +251,13 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     if (!payload) return;
     const included = includedBuckets();
     const bucket = included[state.currentDepotIndex];
+    // Belt and braces for the Back / Next double-import: never re-send a
+    // depot whose rows already went to /import. The km-rated second pass
+    // is the one legitimate repeat for the same depot.
+    if (!isKmRatedSecondPass && bucket && state.completedDepotIds.has(bucket.depotId)) {
+      toast.show(`${bucket.depotName} has already been imported.`, 'warning');
+      return;
+    }
     setImporting(true);
     try {
       const { response } = await bulkImportService.import(payload);
@@ -251,6 +266,10 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         toast.show(`Import failed: ${firstMsg ?? 'unknown error'}`, 'error');
         return;
       }
+      // Rows for this depot are now on the server (km-rated rows aside,
+      // which only go through the dedicated second pass). Mark it done so
+      // navigating Back and Next again cannot import it a second time.
+      if (bucket) dispatch({ type: 'MARK_DEPOT_DONE', depotId: bucket.depotId });
       // Accumulate earliest-cutoff pickup across depots (matches
       // homeControl.js:3226-3229 collapse).
       let effectivePickup = state.pickupJobPayload;
@@ -397,7 +416,10 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         state={state}
         dispatch={dispatch}
         onBack={() => dispatch({ type: 'GOTO', step: 'fixAddresses' })}
-        onNext={() => dispatch({ type: 'GOTO', step: 'schedulePicker' })}
+        onNext={() => {
+          dispatch({ type: 'START_PENDING_DEPOT' });
+          dispatch({ type: 'GOTO', step: 'schedulePicker' });
+        }}
         onCancel={handleClose}
       />
       <SchedulePickerModal

@@ -3,7 +3,12 @@ import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import type { ScheduleDto } from '../../services/clientsService';
-import type { WizardAction, WizardState } from './wizardState';
+import {
+  includedDepotBuckets,
+  nextPendingDepotIndex,
+  type WizardAction,
+  type WizardState,
+} from './wizardState';
 
 interface Props {
   open: boolean;
@@ -49,18 +54,17 @@ export function SchedulePickerModal({
   // BulkImportHyper homeView.html:514 `<h3>{{import.depot.name}}</h3>`).
   // Only real buckets (depotId > 0) that the operator ticked participate.
   const includedDepots = useMemo(
-    () =>
-      state.depots.filter(
-        (d) => d.depotId !== 0 && state.selectedRegions.has(String(d.depotId))
-      ),
+    () => includedDepotBuckets(state),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.depots, state.selectedRegions]
   );
-  // Prefer the cursor position; fall back to the first ticked bucket so the
-  // filter still narrows to a real depot even if state.currentDepotIndex is
-  // stale (e.g. operator reopened the wizard after SET_CURRENT_DEPOT never
-  // reran because SelectRegions closed too quickly).
+  // Prefer the cursor position; fall back to the first ticked bucket that
+  // has not been imported yet, so a stale cursor can never point the picker
+  // at a completed depot.
   const currentDepot =
-    includedDepots[state.currentDepotIndex] ?? includedDepots[0] ?? null;
+    includedDepots[state.currentDepotIndex]
+    ?? includedDepots[nextPendingDepotIndex(state, 0)]
+    ?? null;
   const depotCountLabel =
     includedDepots.length > 1
       ? ` (${state.currentDepotIndex + 1} of ${includedDepots.length})`
@@ -172,25 +176,21 @@ export function SchedulePickerModal({
       .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
   }, [isRouted, schedules, dayOfWeek, state.speedId, state.bookDate, currentDepot]);
 
-  // When the current depot changes (per-depot iteration advances), clear
-  // per-depot picks so the auto-select effect can re-pick from the new
-  // filtered lists. Legacy resetDepotOptions at homeControl.js:488-531
-  // clears speed, speedId, schedule, scheduleId, and (indirectly via the
-  // book-date change) bookTime. Speed cannot stay sticky between depots
-  // because the filtered service list changes per (depot, dayOfWeek) so
-  // the previous pick may not even be a valid option for the new depot.
-  useEffect(() => {
-    if (!open || !currentDepot) return;
-    dispatch({ type: 'SET_SPEED_ID', speedId: 0 });
-    dispatch({ type: 'SET_SCHEDULE_ID', scheduleId: null });
-    dispatch({ type: 'SET_BOOK_TIME', time: '' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, currentDepot?.depotId]);
+  // Per-depot picks (speed, schedule, book time) are cleared by the reducer
+  // in the same update that moves the cursor (SET_CURRENT_DEPOT /
+  // START_PENDING_DEPOT), mirroring legacy resetDepotOptions at
+  // homeControl.js:488-531. Doing it there rather than in an effect here
+  // means the auto-select effects below never see the new depot paired
+  // with the previous depot's service.
 
-  // Auto-select the single speed when only one is available. Also clears a
-  // stale speedId when it's no longer in the filtered list (e.g. operator
-  // changed the book date and the previously-picked service no longer runs
-  // on the new day-of-week for this depot).
+  // Auto-select the single speed when only one is available, but only for
+  // the first depot of the batch. Once a depot has been imported, later
+  // depots open on "Select a service..." so the operator confirms the
+  // service for each depot (tester feedback 2026-09-22, Christchurch).
+  // Also clears a stale speedId when it's no longer in the filtered list
+  // (e.g. operator changed the book date and the previously-picked service
+  // no longer runs on the new day-of-week for this depot).
+  const autoPickSpeed = state.completedDepotIds.size === 0;
   useEffect(() => {
     if (!open) return;
     if (state.speedId !== 0) {
@@ -198,7 +198,7 @@ export function SchedulePickerModal({
       if (!stillValid && speeds.length > 0) {
         // Not in the filtered list anymore. If exactly one option remains,
         // pick it; otherwise reset so the operator picks explicitly.
-        if (speeds.length === 1) {
+        if (speeds.length === 1 && autoPickSpeed) {
           dispatch({ type: 'SET_SPEED_ID', speedId: speeds[0].id });
         } else {
           dispatch({ type: 'SET_SPEED_ID', speedId: 0 });
@@ -207,7 +207,7 @@ export function SchedulePickerModal({
       }
       return;
     }
-    if (speeds.length === 1) {
+    if (speeds.length === 1 && autoPickSpeed) {
       dispatch({ type: 'SET_SPEED_ID', speedId: speeds[0].id });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

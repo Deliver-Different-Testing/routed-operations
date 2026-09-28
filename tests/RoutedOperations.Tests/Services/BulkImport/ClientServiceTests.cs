@@ -276,6 +276,48 @@ public class ClientServiceTests
         Assert.Equal("Rush", schedule.Speed.Name);
     }
 
+    // Tester report 2026-09-22 (Christchurch): the wizard offered retired
+    // and client-disabled schedules. GetSettings now applies header
+    // RetiredUtc / IsActive and the client's schedule-scope override.
+    [Fact]
+    public async Task GetSettings_ExcludesRetiredInactiveAndClientDisabledSchedules()
+    {
+        var svc = NewSvc(out var seed, countryCode: "NZ", internalClaim: "True");
+        seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
+        seed.BulkRunScheduleHeaders.AddRange(
+            new BulkRunScheduleHeader { ScheduleId = 100, Name = "Live", IsActive = true },
+            new BulkRunScheduleHeader { ScheduleId = 101, Name = "Retired", IsActive = true, RetiredUtc = DateTime.UtcNow },
+            new BulkRunScheduleHeader { ScheduleId = 102, Name = "Inactive", IsActive = false },
+            new BulkRunScheduleHeader { ScheduleId = 103, Name = "OffForClient", IsActive = true },
+            new BulkRunScheduleHeader { ScheduleId = 104, Name = "OnForClient", IsActive = false },
+            new BulkRunScheduleHeader { ScheduleId = 105, Name = "WeekdaysOnly", IsActive = true });
+        seed.BulkRunScheduleOverrides.AddRange(
+            new BulkRunScheduleOverride { OverrideId = 1, ScheduleId = 103, ClientId = 5, Scope = BulkRunScheduleOverride.ScopeSchedule, IsActive = false },
+            new BulkRunScheduleOverride { OverrideId = 2, ScheduleId = 104, ClientId = 5, Scope = BulkRunScheduleOverride.ScopeSchedule, IsActive = true },
+            // Another client's override must not leak.
+            new BulkRunScheduleOverride { OverrideId = 3, ScheduleId = 100, ClientId = 6, Scope = BulkRunScheduleOverride.ScopeSchedule, IsActive = false },
+            // Mon-Fri only for this client.
+            new BulkRunScheduleOverride { OverrideId = 4, ScheduleId = 105, ClientId = 5, Scope = BulkRunScheduleOverride.ScopeSchedule, WeekDays = "1111100" });
+        seed.TblBulkRunSchedules.AddRange(
+            new TblBulkRunSchedule { BulkRunScheduleId = 1, ScheduleId = 100, Name = "Live", ClientId = 5, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 2, ScheduleId = 101, Name = "Retired", ClientId = 5, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 3, ScheduleId = 102, Name = "Inactive", ClientId = 5, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 4, ScheduleId = 103, Name = "OffForClient", ClientId = null, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 5, ScheduleId = 104, Name = "OnForClient", ClientId = null, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 6, ScheduleId = 105, Name = "WeekdaysOnly Mon", ClientId = 5, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 7, ScheduleId = 105, Name = "WeekdaysOnly Sat", ClientId = 5, DayOfWeek = 6 },
+            // Pre-header legacy row (no header) stays bookable.
+            new TblBulkRunSchedule { BulkRunScheduleId = 8, ScheduleId = 999, Name = "Legacy", ClientId = 5, DayOfWeek = 1 });
+        await seed.SaveChangesAsync();
+
+        var resp = await svc.GetSettings(Guid.NewGuid(), contactId: 1, clientId: 5);
+
+        Assert.True(resp.Success);
+        Assert.Equal(
+            new[] { "Legacy", "Live", "OnForClient", "WeekdaysOnly Mon" },
+            resp.Settings.Schedules.Select(s => s.Name).OrderBy(n => n).ToArray());
+    }
+
     [Fact]
     public async Task GetSettings_NzTenant_ClaimOverridesParameter()
     {

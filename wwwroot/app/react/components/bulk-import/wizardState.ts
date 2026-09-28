@@ -36,6 +36,11 @@ export interface DepotBucket {
   depotId: number;
   depotName: string;
   jobIndexes: number[];
+  // True when the depot has no schedules for this client (routed only), e.g.
+  // an airline depot that only exists for air-freight rating. Rows land in
+  // the bucket so the operator can see them, but it cannot be ticked or
+  // imported.
+  noService?: boolean;
 }
 
 export interface PerDepotResult {
@@ -94,6 +99,10 @@ export interface WizardState {
   depots: DepotBucket[];
   currentDepotIndex: number;
   perDepotResults: PerDepotResult[];
+  // Depot ids whose rows have already been sent to /import. Legacy kept a
+  // per-bucket `done` flag (ROUTED-WIZARD-SPEC.md:1273-1276); navigating
+  // Back and Next again must skip these so a depot is never imported twice.
+  completedDepotIds: Set<number>;
   // Cached client settings loaded once in MapColumnsModal. Downstream picker
   // steps read schedules / speeds / stockSizes from here to avoid re-fetching.
   clientSettings: ClientSettingsDto | null;
@@ -159,6 +168,7 @@ export function initialWizardState(): WizardState {
     depots: [],
     currentDepotIndex: 0,
     perDepotResults: [],
+    completedDepotIds: new Set(),
     clientSettings: null,
     bookDate: defaultBookDate(),
     bookTime: '',
@@ -196,7 +206,14 @@ export type WizardAction =
   | { type: 'SET_ON_HOLD'; value: boolean }
   | { type: 'SET_NATIONWIDE_DOC'; value: boolean }
   | { type: 'SET_DEPOTS'; depots: DepotBucket[] }
+  // Store freshly computed buckets and reconcile the tick selection against
+  // them without discarding the operator's earlier unticks. See
+  // seedDepotSelection.
+  | { type: 'SEED_DEPOTS'; depots: DepotBucket[] }
   | { type: 'SET_CURRENT_DEPOT'; index: number }
+  // Point the cursor at the first ticked depot that has not been imported.
+  | { type: 'START_PENDING_DEPOT' }
+  | { type: 'MARK_DEPOT_DONE'; depotId: number }
   | { type: 'ADD_PER_DEPOT_RESULT'; result: PerDepotResult }
   | { type: 'RESET_PER_DEPOT_RESULTS' }
   | { type: 'SET_KMRATED'; rows: BulkImportJobCreateDto[] }
@@ -295,8 +312,41 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       };
     case 'SET_DEPOTS':
       return { ...state, depots: action.depots };
+    case 'SEED_DEPOTS':
+      return {
+        ...state,
+        depots: action.depots,
+        selectedRegions: seedDepotSelection(state, action.depots),
+      };
     case 'SET_CURRENT_DEPOT':
-      return { ...state, currentDepotIndex: action.index };
+      // Service / schedule / book time are per depot (legacy
+      // resetDepotOptions at homeControl.js:488-531). Clearing them in the
+      // same update as the cursor move means no render ever sees the new
+      // depot paired with the previous depot's picks. bookDate carries
+      // over on purpose, matching legacy.
+      return {
+        ...state,
+        currentDepotIndex: action.index,
+        speedId: 0,
+        scheduleId: null,
+        bookTime: '',
+      };
+    case 'START_PENDING_DEPOT': {
+      const index = nextPendingDepotIndex(state, 0);
+      return {
+        ...state,
+        currentDepotIndex: index < 0 ? 0 : index,
+        speedId: 0,
+        scheduleId: null,
+        bookTime: '',
+      };
+    }
+    case 'MARK_DEPOT_DONE': {
+      if (state.completedDepotIds.has(action.depotId)) return state;
+      const next = new Set(state.completedDepotIds);
+      next.add(action.depotId);
+      return { ...state, completedDepotIds: next };
+    }
     case 'ADD_PER_DEPOT_RESULT':
       return { ...state, perDepotResults: [...state.perDepotResults, action.result] };
     case 'RESET_PER_DEPOT_RESULTS':
@@ -335,6 +385,69 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     default:
       return state;
   }
+}
+
+function isSelectableBucket(b: DepotBucket): boolean {
+  // Unmatched (0) and no-service buckets can never be ticked. Real depots
+  // (> 0) and the US coverage-only bucket (-1) can.
+  return b.depotId !== 0 && !b.noService && b.jobIndexes.length > 0;
+}
+
+/**
+ * Reconcile the tick selection against a freshly computed bucket list.
+ *
+ * - A selectable depot that was not in the previous list is new, so it is
+ *   pre-ticked (legacy pre-selects every real bucket).
+ * - A depot that was already listed keeps whatever the operator chose, so
+ *   Back / Next round trips do not re-tick depots they unticked.
+ * - Completed depots stay ticked so the per-depot cursor still sees them.
+ * - Ids no longer in the list (or now unselectable) are pruned.
+ * - Non-numeric synthetic keys ('valid' / 'unmatched') pass through.
+ */
+export function seedDepotSelection(state: WizardState, depots: DepotBucket[]): Set<string> {
+  const previouslyListed = new Set(
+    state.depots.filter(isSelectableBucket).map((b) => String(b.depotId))
+  );
+  const next = new Set<string>();
+  for (const key of state.selectedRegions) {
+    if (!/^-?\d+$/.test(key)) next.add(key);
+  }
+  for (const b of depots) {
+    if (!isSelectableBucket(b)) continue;
+    const key = String(b.depotId);
+    if (
+      !previouslyListed.has(key)
+      || state.selectedRegions.has(key)
+      || state.completedDepotIds.has(b.depotId)
+    ) {
+      next.add(key);
+    }
+  }
+  return next;
+}
+
+/**
+ * Buckets that take part in the per-depot import loop: ticked, selectable
+ * buckets in display order. currentDepotIndex indexes into this list.
+ * Completed depots stay in the list (so "2 of 3" labels stay stable) and
+ * are skipped via nextPendingDepotIndex.
+ */
+export function includedDepotBuckets(state: WizardState): DepotBucket[] {
+  return state.depots.filter(
+    (d) => isSelectableBucket(d) && state.selectedRegions.has(String(d.depotId))
+  );
+}
+
+/**
+ * Index (into includedDepotBuckets) of the first depot at or after `from`
+ * that has not been imported yet, or -1 when none remain.
+ */
+export function nextPendingDepotIndex(state: WizardState, from: number): number {
+  const included = includedDepotBuckets(state);
+  for (let i = Math.max(0, from); i < included.length; i++) {
+    if (!state.completedDepotIds.has(included[i].depotId)) return i;
+  }
+  return -1;
 }
 
 // -----------------------------------------------------------------------------
