@@ -150,6 +150,11 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
         departureAdvanceDays: leg.dayOffset,
         fromClientAddress: leg.fromClientAddress, dropOffLocationId: leg.dropOffLocationId,
         speedId: leg.speedId,
+        // Bug 1 (Steve 2026-09-25): persist the leg's position in the chain.
+        // The save path deletes and re-inserts every linehaul row, so without
+        // this the backfilled travel order is wiped and the booking SPs fall
+        // back to Id order, i.e. the bug returns for this schedule.
+        legOrder: linehauls.length + 1,
       });
     } else if (leg.type === 'delivery') {
       regionId = leg.regionId;

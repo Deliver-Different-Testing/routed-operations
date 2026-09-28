@@ -262,7 +262,14 @@ public record ScheduleLinehaulDto(
     bool? FromClientAddress,
     int? DropOffLocationId,
     int? SpeedId,
-    string SpeedName);
+    string SpeedName,
+    /// <summary>
+    /// 1-based travel order within the schedule. NULL means the chain was
+    /// never ordered (or was ambiguous at backfill time) and the booking SPs
+    /// fall back to Id order. The list is returned in this order, so the
+    /// chain editor renders legs in travel order.
+    /// </summary>
+    int? LegOrder);
 
 /// <summary>
 /// Bundled lookup payload for the schedule edit modal. One roundtrip
