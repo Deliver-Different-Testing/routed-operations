@@ -115,16 +115,17 @@ public class AddressController(
         }
     }
 
-    // GET /api/address/depots/postcodes - NZ postcode-to-depot mapping.
-    // Returns [] for US tenants (checked inside the service).
+    // GET /api/address/depots/postcodes?clientId= - NZ postcode-to-depot
+    // mapping. clientId (optional) flags depots with no bookable schedule
+    // for that client. Returns [] for US tenants (checked inside the service).
     [HttpGet("depots/postcodes")]
-    public async Task<IActionResult> GetPostcodesByDepot()
+    public async Task<IActionResult> GetPostcodesByDepot([FromQuery] int? clientId = null)
     {
         try
         {
             var messageId = Guid.NewGuid();
             LogRequestStart(messageId);
-            return HandleBulkResponse(await addressService.GetPostcodesByDepotAsync(messageId));
+            return HandleBulkResponse(await addressService.GetPostcodesByDepotAsync(messageId, clientId));
         }
         catch (Exception e)
         {

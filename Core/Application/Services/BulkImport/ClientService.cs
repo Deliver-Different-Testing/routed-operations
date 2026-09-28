@@ -136,22 +136,9 @@ public class ClientService(
                             FirstName = c.Contact.UcctFirstname,
                             Surname = c.Contact.UcctSurname
                         }).ToList(),
-                    Schedules = Context.TblBulkRunSchedules
-                        .Where(s => (!s.ClientId.HasValue || s.ClientId == x.UcclId))
-                        .Select(s => new ScheduleDto()
-                        {
-                            Id = s.BulkRunScheduleId,
-                            Name = s.Name,
-                            DepotId = s.Region ?? 0,
-                            Speed = s.SpeedId == null ? null : new SpeedDto()
-                            {
-                                Id = s.SpeedId.Value,
-                                Name = null
-                            },
-                            DayOfWeek = s.DayOfWeek ?? 0,
-                            StartTime = s.StartTime ?? TimeSpan.Zero,
-                            CutoffHours = s.CutoffHours
-                        }).ToList(),
+                    // Schedules are loaded after this query via
+                    // BookableSchedules so retired / inactive headers and
+                    // client overrides are applied.
                     StockSizes = Context.TblGssstockSizes
                         .Where(s => !s.ClientId.HasValue || s.ClientId == x.UcclId)
                         .OrderBy(m => m.Sequence)
@@ -174,6 +161,22 @@ public class ClientService(
 
         if (clientSettings == null)
             return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client or contact.");
+
+        clientSettings.Schedules = (await BookableSchedules.LoadAsync(Context, clientId))
+            .Select(s => new ScheduleDto()
+            {
+                Id = s.BulkRunScheduleId,
+                Name = s.Name,
+                DepotId = s.Region ?? 0,
+                Speed = s.SpeedId == null ? null : new SpeedDto()
+                {
+                    Id = s.SpeedId.Value,
+                    Name = null
+                },
+                DayOfWeek = s.DayOfWeek ?? 0,
+                StartTime = s.StartTime ?? TimeSpan.Zero,
+                CutoffHours = s.CutoffHours
+            }).ToList();
 
         // Two-tier speed lookup: first try client-specific speeds, then fall back to default speeds
         var clientSpeeds = await Context.TblClientAvailableSpeeds
@@ -248,20 +251,12 @@ public class ClientService(
             ? (short)7
             : Convert.ToInt16(request.BookDate.DayOfWeek);
 
-        var scheduleRows = await Context.TblBulkRunSchedules
-            .Where(s => (!s.ClientId.HasValue || s.ClientId == request.ClientId)
-                && (!s.SpeedId.HasValue || s.SpeedId == request.SpeedId)
+        // Same retired / inactive / client-override rules as GetSettings.
+        var scheduleRows = (await BookableSchedules.LoadAsync(Context, request.ClientId))
+            .Where(s => (!s.SpeedId.HasValue || s.SpeedId == request.SpeedId)
                 && (request.DepotId == 0 || s.Region == request.DepotId)
                 && s.DayOfWeek == dayOfWeekShort)
-            .Select(s => new
-            {
-                s.BulkRunScheduleId,
-                s.Name,
-                s.StartTime,
-                s.CutoffHours,
-                s.SpeedId
-            })
-            .ToListAsync();
+            .ToList();
 
         // Backfill Speed name for the schedules we kept (see GetSettings for the
         // same pattern). Second query is cheaper than a nav-property join because
