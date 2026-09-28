@@ -70,6 +70,28 @@ public class RunsController(
         return Ok(new { response = new { Result = result, Message = message } });
     }
 
+    // POST /api/runs/with-jobs     body: InsertOrUpdateRunRequest (Id null, Jobs filled)
+    // Create run + assign all jobs in one transaction (Create Run from group).
+    [HttpPost("with-jobs")]
+    [Authorize(Policy = "RouteBuilder.Build")]
+    public async Task<IActionResult> CreateWithJobs([FromBody] InsertOrUpdateRunRequest body)
+    {
+        if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
+        var (result, message) = await runService.CreateRunWithJobsAsync(body);
+        return Ok(new { response = new { Result = result, Message = message } });
+    }
+
+    // POST /api/runs/{runId}/assign-many     body: AssignJobsToRunRequest
+    // Multi-job assign (and merge, via DeleteRunId) in one transaction.
+    [HttpPost("{runId:int}/assign-many")]
+    [Authorize(Policy = "RouteBuilder.Build")]
+    public async Task<IActionResult> AssignJobs(int runId, [FromBody] AssignJobsToRunRequest body)
+    {
+        if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
+        var (result, message) = await runService.AssignJobsToRunAsync(runId, body.Jobs, body.DeleteRunId);
+        return Ok(new { response = new { Result = result, Message = message } });
+    }
+
     // DELETE /api/runs/jobs/{jobId}
     [HttpDelete("jobs/{jobId:int}")]
     [Authorize(Policy = "RouteBuilder.Build")]

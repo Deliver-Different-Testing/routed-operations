@@ -99,6 +99,25 @@ public class UpdateJobToRunRequest
     public int RunId { get; set; }
 }
 
+/// <summary>
+/// Multi-job assign in one transaction (POST /api/runs/{runId}/assign-many).
+/// DeleteRunId turns it into a merge: the source run is removed in the same
+/// transaction, so it's only gone if every job actually moved.
+/// </summary>
+public class AssignJobsToRunRequest
+{
+    public List<AssignJobItem> Jobs { get; set; } = new();
+    public int? DeleteRunId { get; set; }
+}
+
+public class AssignJobItem
+{
+    public int JobId { get; set; }
+    // Optimistic-concurrency check, same contract as UpdateJobToRunRequest.
+    public int? FromRunId { get; set; }
+    public int? PickRunOrder { get; set; }
+}
+
 public class SetJobStartEndRequest
 {
     // Either flag can be null - service only updates the flags that are set.
