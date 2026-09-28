@@ -4,7 +4,7 @@ _Author: Steve Bonnici (with EasyEA) - 2026-09-28_
 _Branch: `fix/bulk-import-route-builder-0922` on the GitHub mirror, based on `27666a9` (GitLab `develop` sync)._
 _Source: "20260922 - Routed Operations Bulk Import / Route Builder issues report" (Urgent staging, Catherine's login, WOOP_Bookings_W574.xlsx)._
 
-This branch fixes the critical and functional items from the 22 Sep tester report (Batch A + B below). UI polish and export improvements (Batch C + D) follow on the same branch and will be added to this doc when committed.
+This branch fixes every item in the 22 Sep tester report: critical and functional items (Batch A + B), Route Builder UI polish (Batch C) and Bulk Import review / export improvements (Batch D). Batch C + D are frontend only.
 
 ## Kevin: what you need to do
 
@@ -26,6 +26,33 @@ This branch fixes the critical and functional items from the 22 Sep tester repor
 | A4 | Region filter (Palmerston North) still lists Auckland runs with 0 jobs | `GetBulkRunsAsync` draft branch added every unlocked run for the date regardless of job filters (runs have no region). | When any job-level filter (region / client / speed / our-ref) is set, only runs holding a matching job are returned. No filter = unchanged (empty drafts still show). | `RunService.cs` (~line 152) |
 | B1 | Print button in Job Details does nothing | `IconButton` had no `onClick`; no prop wired. | Print calls `GET /api/runviewer/labels/bulk?bulkJobId=` (new `printBulkJobLabelPdf`) and opens the PDF in a new tab. Uses the **server default template** (speed `LabelId` -> `DefaultBulkLabelId` -> first template). `RouteViewer.Read` has the same rule as `RouteBuilder.Read`, so builder users can print. | `JobDetail.tsx`, `CockpitPage.tsx`, `routeViewerService.ts` |
 | B2 | Next depot (Christchurch) pre-filled with Service / Schedule not available that day | One global `speedId` / `scheduleId` for the whole wizard; reset effect raced the auto-select effects. Schedule list ignored retired headers and client overrides. | `SET_CURRENT_DEPOT` clears Service, Schedule and Book Time in the reducer (Book Date still carries over, as legacy). New `BookableSchedules` helper drops retired headers and applies `COALESCE(override.IsActive, header.IsActive)` + client `WeekDays` mask; used by `GetClientSettings` and `GetSchedulesByBookDate`. | `wizardState.ts`, `SchedulePickerModal.tsx`, `BookableSchedules.cs` (new), `ClientService.cs` |
+
+## Batch C - Route Builder UI (frontend only)
+
+| # | Report item | Change | Files |
+|---|---|---|---|
+| C1 | Job Details fields misaligned / overflowing | All grids fixed at `grid-cols-2` (panel is narrow and resizable, so window breakpoints did not apply). `min-w-0` + `break-words` on cards; full value in hover title. Duplicates removed: **Run** metric tile (kept in Courier card beside Run Order), **Speed** row in Package card (editable Speed tile kept), **Email** row in Delivery card (same field as Track Email), Pickup Notes + Delivery Notes (same `notes` field) merged into one Notes card. | `JobDetail.tsx` |
+| C2 | Fix GPS button takes too much space | Map-pin icon in the header before Print / Send, same `onOpenGpsFix` handler. Right-click "Update GPS..." kept. | `JobDetail.tsx` |
+| C3 | "Loading" status too small | Centered ring spinner over a translucent backdrop (brand-cyan, same spinner as `Modal.tsx`). Driven by a `busyCount` (`BUSY_START` / `BUSY_END`) plus `withBusy` wrapper, so it covers loads **and** create run, assign (incl. drag-drop and merge), delete run and print. Label "Working..." for mutations, "Loading..." otherwise. Green success banner unchanged. | `CockpitPage.tsx`, `CockpitState.ts` |
+
+Batch C judgement calls:
+- The overlay **blocks clicks** while showing, to stop double-submits on a slow save.
+- Lock, rename, optimise and courier assign are not wrapped yet (one-line `withBusy` each if wanted).
+- No show-delay on the spinner, so very fast loads may flash it briefly.
+
+## Batch D - Bulk Import review / export (frontend only)
+
+| # | Report item | Change | Files |
+|---|---|---|---|
+| D1 | Unmatched depot row cannot be ticked, no way to see its jobs | Unmatched and no-service (e.g. airline) buckets now show a warning and a **View / export** button (no checkbox; still not importable). Opens `UnmatchedRowsModal` listing sheet row #, name / company, address, suburb / city, postcode / zip and a reason ("Postcode not covered by any depot", "Missing postcode", "column not mapped", "No service for this client at X"), with Export CSV. | `UnmatchedRowsModal.tsx` (new), `SelectRegionsModal.tsx` |
+| D2 | Exported CSV should be the whole source row | Both the unmatched and km-rated exports write the **whole original row** under the original headers, so the client can fix and re-import. Km-rated puts **Amount** in column A and shows the disclaimer "Amount shown is based on the current booking details as km-rate. Our system will re-evaluate the amount on re-import." Always-blank Cubic column gone. | `sourceRowExport.ts` (new), `KmRatedReviewModal.tsx` |
+| D3 | (Found in trace) fixes from Fix Addresses ignored when grouping | Depot grouping now applies earlier corrections: US `fixedZips`; NZ geocoder suggested postcode (previously discarded) stored as `fixedPostCodes`. | `FixAddressesModal.tsx`, `wizardState.ts`, `SelectRegionsModal.tsx`, `NewImportWizard.tsx` |
+
+Batch D judgement calls:
+- **NZ postcode fix is a fallback only.** A row's own postcode always wins; the geocoder postcode is used only if the original matches no depot. Rescued rows are booked with the corrected postcode via `DepotBucket.postCodeOverrides` (included in the bucket signature so A2 seeding still works).
+- **Km-rated rows are matched back to source rows client-side** (server rebuilds them from `TblBulkJob`, with no row index): job number (unless AUTOGENERATE), company, address, postcode (leading-zero tolerant), refs, contact; then address + postcode; each source row used once. Unmatched ones fall back to the mapped columns (unmapped columns blank). An exact server-side row index would need a backend change - worth doing if mismatches show up in testing.
+- Review opens as a nested modal over Select Depots (not a new wizard step) so the A2 depot / cursor state is untouched.
+- `ImportSummaryModal`'s "unimported jobs" export is unchanged.
 
 ## A1 detail - review this one
 
@@ -58,8 +85,9 @@ This branch fixes the critical and functional items from the 22 Sep tester repor
 | Suite | Result |
 |---|---|
 | Frontend `tsc --noEmit` | Clean |
-| Frontend vitest (full) | 1604 run, 1 failed - `bulkImportService.test.ts > uploadFile` (pre-existing; jsdom sends FormData as `text/plain`; file untouched) |
-| Bulk import vitest | 215 / 215 |
+| Frontend vitest (full, A-D merged) | 1619 run, 1 failed - `bulkImportService.test.ts > uploadFile` (pre-existing; jsdom sends FormData as `text/plain`; file untouched) |
+| Bulk import vitest (after D) | 227 / 227 |
+| Cockpit vitest (after C) | 376 / 376 |
 | Backend (with AlertLabel stub) | 1252 run, 24 failed - all Integration `BootstrapTests` / `AuthCookieTests` / `IndexViewRenderingTests` failing on `DirectoryNotFoundException` because `wwwroot/dist` was not built in the worktree. Pre-existing / environmental. |
 | `RunServiceTests` + `RunServiceAssignTests` | 31 / 31 |
 | `AddressServiceTests` + `ClientServiceTests` | 47 / 47 |
@@ -82,3 +110,8 @@ New frontend tests: Back preserves selection, no double import (reducer + wizard
 4. **Create Run (A1):** in Route Builder, right-click a group -> "Create Run from these xx jobs". Run appears with all xx jobs. Repeat with a large group (50+). Merge two runs: all jobs land in the target and the source disappears. To test failure: open the same date in two browsers, move a job in one, then merge in the other - expect "Job has been moved by another user", nothing moved, source run still there.
 5. **Region filter (A4):** date with runs in several regions, filter to Palmerston North. Only runs holding PN jobs show. Clear the filter: empty draft runs show again.
 6. **Print (B1):** select a job, click Print in Job Details. Label PDF opens in a new tab.
+7. **Job Details (C1 / C2):** panel shows 2 columns at any width, no overflow, no duplicated Run / Speed / Email / Notes; Fix GPS is an icon beside Print and opens the GPS fix dialog.
+8. **Busy overlay (C3):** spinner shows on refresh and during create / merge / delete / print, then clears.
+9. **Unmatched review (D1 / D2):** on Select Depots click View / export on Unmatched (and any no-service bucket). Rows and reasons listed; exported CSV has the original WOOP columns and headers and re-imports cleanly.
+10. **Km-rated export (D2):** at Confirm km-rated jobs, export. Column A is Amount, remaining columns are the original rows; disclaimer shown. Spot-check a few rows against the source file.
+11. **Postcode fixes (D3):** a row fixed in Fix Addresses whose original postcode matched no depot now lands in the right depot, not Unmatched.
