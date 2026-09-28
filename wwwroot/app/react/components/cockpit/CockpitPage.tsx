@@ -23,6 +23,7 @@ import { DEFAULT_LAYOUT, deleteLayout, loadLayouts, saveLayouts, upsertLayout, t
 import { deleteFilterPreset, loadFilterPresets, saveFilterPresets, upsertFilterPreset, type FilterPreset } from '../../lib/filterPresets';
 import { jobService } from '../../services/jobService';
 import { runService, type InsertOrUpdateRunBody } from '../../services/runService';
+import { routeViewerService } from '../../services/routeViewerService';
 import { regionService } from '../../services/regionService';
 import { speedService } from '../../services/speedService';
 import { courierService } from '../../services/courierService';
@@ -448,27 +449,39 @@ export function CockpitPage() {
     }
   };
 
-  const assignJobsToRun = useCallback(async (runId: number, jobIds: number[]) => {
+  /**
+   * Assigns jobs to a run in ONE server transaction (POST assign-many).
+   * Replaces N parallel POST /assign calls, which could deadlock and leave
+   * jobs half-moved with a success toast (2026-09-22 report). Pass
+   * `deleteRunId` to merge: the source run is only deleted if every job
+   * moved. Always reloads so the screen reflects what the server committed.
+   * Resolves true only on real success.
+   */
+  const assignJobsToRun = useCallback(async (
+    runId: number,
+    jobIds: number[],
+    opts: { deleteRunId?: number; silent?: boolean } = {},
+  ): Promise<boolean> => {
     try {
       // Expand multibox families so assigning a parent takes its children too.
-      const expanded = expandMultiboxSiblings(jobIds, state.jobs);
-      const results = await Promise.all(
-        expanded.map((jobId) => {
-          const currentJob = state.jobs.find((j) => j.bulkJobId === jobId);
-          const fromRunId = currentJob?.bulkRunId ?? null;
-          return runService.assignJob(runId, jobId, fromRunId);
-        })
-      );
-      const failures = results.filter((r) => r.response.result !== 'Success').length;
-      if (failures === 0) {
-        toast.show(`Assigned ${expanded.length} job(s)`, 'success');
-      } else {
-        toast.show(`${failures} of ${expanded.length} assignments failed`, 'warning');
+      const expanded = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
+      const jobs = expanded.map((jobId) => ({
+        jobId,
+        fromRunId: state.jobs.find((j) => j.bulkJobId === jobId)?.bulkRunId ?? null,
+      }));
+      const res = await runService.assignJobs(runId, jobs, opts.deleteRunId ?? null);
+      if (res.response.result !== 'Success') {
+        toast.show(res.response.message ?? 'Assign failed - no jobs were moved', 'error');
+        return false;
       }
+      if (!opts.silent) toast.show(`Assigned ${expanded.length} job(s)`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
-      await loadJobsAndRuns(state.filters);
+      return true;
     } catch (e) {
-      toast.show((e as Error).message, 'error');
+      toast.show(`Assign failed - no jobs were moved. ${(e as Error).message}`, 'error');
+      return false;
+    } finally {
+      await loadJobsAndRuns(state.filters);
     }
   }, [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast]);
 
@@ -1375,11 +1388,12 @@ export function CockpitPage() {
 
   /**
    * P1.5 helper. Creates a new run named after the group label (postcode)
-   * and immediately assigns the group's jobs to it. Uses the existing
-   * POST /api/runs + assign path so the flow matches manual create + drag.
+   * with the group's jobs in one server transaction (POST /api/runs/with-jobs),
+   * so a failure leaves neither an orphan run nor half-moved jobs.
    */
   const createRunFromGroup = async (groupLabel: string, jobIds: number[]) => {
-    if (jobIds.length === 0) return;
+    const ids = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
+    if (ids.length === 0) return;
     try {
       const body: InsertOrUpdateRunBody = {
         id: null,
@@ -1392,19 +1406,20 @@ export function CockpitPage() {
         courier: null,
         courierPercent: null,
         googleRouteResponse: null,
-        jobs: [],
+        jobs: ids.map((bulkJobId) => ({ bulkJobId, builderIndex: null, jobNumber: null })),
         despatchDateTime: state.filters.date,
       };
-      const created = await runService.insertOrUpdate(body);
+      const created = await runService.createWithJobs(body);
       if (created.response.result !== 'Success') {
-        toast.show(created.response.message ?? 'Create run failed', 'error');
+        toast.show(created.response.message ?? 'Create run failed - no jobs were moved', 'error');
         return;
       }
-      const runId = Number(created.response.message);
-      await assignJobsToRun(runId, jobIds);
-      toast.show(`Created run "${groupLabel}" with ${jobIds.length} job(s)`, 'success');
+      dispatch({ type: 'CLEAR_MULTISELECT' });
+      toast.show(`Created run "${groupLabel}" with ${ids.length} job(s)`, 'success');
     } catch (e) {
-      toast.show((e as Error).message, 'error');
+      toast.show(`Create run failed - no jobs were moved. ${(e as Error).message}`, 'error');
+    } finally {
+      await loadJobsAndRuns(state.filters);
     }
   };
 
@@ -1446,16 +1461,28 @@ export function CockpitPage() {
   const doMergeRun = async (source: Run, targetId: number) => {
     const target = state.runs.find((r) => r.id === targetId);
     if (!target) return;
+    // Move + source-run delete happen in one server transaction, so the
+    // source run survives if any job fails to move.
+    const jobIds = source.jobs.map((j) => j.bulkJobId);
+    const ok = await assignJobsToRun(target.id, jobIds, { deleteRunId: source.id, silent: true });
+    if (!ok) return;
+    toast.show(`Merged ${jobIds.length} job(s) from "${source.name}" into "${target.name}"`, 'success');
+    if (state.selectedRunId === source.id) dispatch({ type: 'SELECT_RUN', payload: target.id });
+    setMergeSource(null);
+  };
+
+  /**
+   * Job Details Print button. Route Builder jobs have no tucJob id yet, so
+   * this prints the bulk-job label (Mode 2). The template is the server
+   * default (speed LabelId, then tblSetting.DefaultBulkLabelId); a label
+   * size picker is a separate follow-up.
+   */
+  const handlePrintJobLabel = async (job: BulkJob) => {
     try {
-      const jobIds = source.jobs.map((j) => j.bulkJobId);
-      await assignJobsToRun(target.id, jobIds);
-      await runService.remove(source.id);
-      toast.show(`Merged ${jobIds.length} job(s) from "${source.name}" into "${target.name}"`, 'success');
-      if (state.selectedRunId === source.id) dispatch({ type: 'SELECT_RUN', payload: target.id });
-      setMergeSource(null);
-      await loadJobsAndRuns(state.filters);
+      const blob = await routeViewerService.printBulkJobLabelPdf(job.bulkJobId);
+      window.open(URL.createObjectURL(blob), '_blank');
     } catch (e) {
-      toast.show((e as Error).message, 'error');
+      toast.show(`Print label failed: ${(e as Error).message}`, 'error');
     }
   };
 
@@ -1695,6 +1722,7 @@ export function CockpitPage() {
                   speeds={state.speeds}
                   onUpdateField={handleUpdateJobField}
                   onOpenGpsFix={(j, leg) => setGpsFixJob({ job: j, leg })}
+                  onPrint={(j) => { void handlePrintJobLabel(j); }}
                 />
               </Panel>
             </PanelGroup>
