@@ -419,5 +419,15 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     routeCount: 0,
     linehaulHint: null,
     overriddenFields: [],
+    // Legacy page does not surface F13 / F21; keep the fields present
+    // so the type checks but leave them at their neutral defaults.
+    displayName: g.displayName ?? null,
+    displayDescription: g.displayDescription ?? null,
+    isActive: g.isActive ?? true,
+    // Legacy Schedules page does not surface nested override rows; the
+    // Schedules NEW page owns that render. Keep the field so the shape
+    // stays a superset of the wire DTO. Steve nested-override brief
+    // (2026-09-24).
+    overrides: [],
   };
 }

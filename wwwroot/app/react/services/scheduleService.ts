@@ -14,7 +14,13 @@ export interface DayWindow {
   /** "HH:mm" e.g. "08:30". */
   startTime: string;
   endTime: string;
-  cutoffHours: number;
+  /** F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+   *  (1=Mon..7=Sun). NULL leaves the row on the legacy CutoffHours
+   *  offset. */
+  cutoffDay: number | null;
+  /** F11 Phase C (2026-09-24). Absolute cutoff wall-clock time as
+   *  "HH:mm". NULL leaves the row on the legacy CutoffHours offset. */
+  cutoffTime: string | null;
 }
 
 export interface ScheduleZone {
@@ -45,6 +51,11 @@ export interface ScheduleLinehaul {
   speedId: number | null;
   /** Resolved speed name for display. Null when speedId is null. */
   speedName: string | null;
+  /** 1-based travel order within the schedule. The API returns linehauls
+   *  sorted by this, so the chain editor renders legs in travel order.
+   *  Null means the chain was never ordered (or was ambiguous at backfill
+   *  time) and the booking SPs fall back to Id order. */
+  legOrder: number | null;
 }
 
 /** Slim projection returned by GET /schedules for the list table.
@@ -109,6 +120,25 @@ export interface ScheduleGroupSummary {
    *  its template matches the base verbatim. Powers the "differs on:"
    *  hint under nested override rows per Steve's §2 brief. */
   overriddenFields: string[];
+  /** Client-facing display name shown on the booking page. NULL falls
+   *  back to `name`. Steve F13 (2026-09-22). */
+  displayName: string | null;
+  /** Long-form description that pairs with `displayName` on the customer
+   *  booking page. Steve F13 (2026-09-22). */
+  displayDescription: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
+  isActive: boolean;
+  /** Nested override rows for the Schedules NEW list (2026-09-24). One
+   *  entry per client that owns any delta on this schedule; each row
+   *  carries the delta labels the frontend joins with " . " under the
+   *  nested <tr>. Empty when the schedule has no overrides. */
+  overrides: Array<{
+    clientId: number;
+    clientCode: string;
+    clientName: string;
+    deltaLabels: string[];
+  }>;
 }
 
 export interface ScheduleGroup {
@@ -162,6 +192,15 @@ export interface ScheduleGroup {
   clientLinkedUtcs: (string | null)[];
   postcodeIds: number[];
   polygonIds: number[];
+  /** Client-facing display name shown on the booking page. NULL falls
+   *  back to `name`. Steve F13 (2026-09-22). */
+  displayName: string | null;
+  /** Long-form description that pairs with `displayName` on the customer
+   *  booking page. Steve F13 (2026-09-22). */
+  displayDescription: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
+  isActive: boolean;
 }
 
 export interface LookupItem {
@@ -221,9 +260,17 @@ export interface ScheduleGroupUpsertBody {
     dayOfWeek: number;
     startTime: string;
     endTime: string;
-    cutoffHours: number;
+    /** F11 Phase C (2026-09-24). Absolute cutoff pair. */
+    cutoffDay: number | null;
+    cutoffTime: string | null;
   }>;
-  zones: Array<{ zone: number; active: boolean | null }>;
+  /** Steve F7 (2026-09-20): null = "leave existing zone rows alone",
+   *  [] = "clear all zones", [...] = "replace with this set". The
+   *  frontend sends null when the operator hasn't touched the zone
+   *  picker so the backend null-guard preserves seeded zones (see
+   *  ScheduleService.SaveAsync). */
+  zones: Array<{ zone: number; active: boolean | null }> | null;
+  /** Steve F7 (2026-09-20): same null-vs-empty semantics as `zones`. */
   linehauls: Array<{
     name: string | null;
     active: boolean | null;
@@ -242,7 +289,12 @@ export interface ScheduleGroupUpsertBody {
     dropOffLocationId: number | null;
     /** Per-leg service class override. Null = inherit. */
     speedId: number | null;
-  }>;
+    /** 1-based travel order within the schedule. The chain editor sends the
+     *  leg's position in the chain. Omitting it makes the backend fall back
+     *  to this row's position in the array, which is the same thing as long
+     *  as the caller sends legs in chain order. */
+    legOrder?: number | null;
+  }> | null;
   /** Legacy id-based fallback. Consulted only when `clientCodes` is
    *  null in the request body. The NewScheduleModal + `ClientMultiPicker`
    *  only know client ids, so their create path sends `clientCodes: null`
@@ -257,6 +309,17 @@ export interface ScheduleGroupUpsertBody {
   clientCodes: string[] | null;
   postcodeIds: number[];
   polygonIds: number[];
+  /** Client-facing display name. Empty string from the form should be
+   *  sent as NULL (not '') so the backend can distinguish "cleared" from
+   *  "unset". Steve F13 (2026-09-22). */
+  displayName?: string | null;
+  /** Long-form display description paired with `displayName`. Same
+   *  empty-string -> NULL rule. Steve F13 (2026-09-22). */
+  displayDescription?: string | null;
+  /** Whether the schedule can be booked at all. Independent of
+   *  `autoBook`. Omit to keep the existing value on update paths;
+   *  defaults to true on create when unset. Steve F21 (2026-09-22). */
+  isActive?: boolean;
 }
 
 export interface ScheduleCopyBody {

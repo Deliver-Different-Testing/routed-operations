@@ -50,7 +50,7 @@ export const schedulesV2Keys = {
     page: number,
     pageSize: number,
   ) => ['schedules-v2-list', tenantId, type, q, clientId, clientIds, page, pageSize] as const,
-  groups: (tenantId: string | number) => ['schedules-v2-groups', tenantId] as const,
+  bundles: (tenantId: string | number) => ['schedules-v2-bundles', tenantId] as const,
   detail: (tenantId: string | number, scheduleId: number) =>
     ['schedules-v2-detail', tenantId, scheduleId] as const,
   overrides: (tenantId: string | number, baseScheduleId: number) =>
@@ -59,8 +59,6 @@ export const schedulesV2Keys = {
   lookups: (tenantId: string | number) => ['schedules-v2-lookups', tenantId] as const,
   clientScheduleSources: (tenantId: string | number, clientId: number) =>
     ['client-schedule-sources', tenantId, clientId] as const,
-  createOverrideSearch: (tenantId: string | number, debounced: string) =>
-    ['create-override-search', tenantId, debounced] as const,
 } as const;
 
 export function useSchedulesV2List(filters?: SchedulesV2Filters) {
@@ -91,12 +89,12 @@ export function useSchedulesV2List(filters?: SchedulesV2Filters) {
   });
 }
 
-/** Schedule Groups tab. Empty until 20260914140000 migration lands. */
-export function useSchedulesV2Groups() {
+/** Schedule Bundles tab. Empty until 20260914140000 migration lands. */
+export function useSchedulesV2Bundles() {
   const user = useAuth();
   return useQuery({
-    queryKey: schedulesV2Keys.groups(user.currentTenantId ?? 0),
-    queryFn: () => schedulesV2Service.listGroups(),
+    queryKey: schedulesV2Keys.bundles(user.currentTenantId ?? 0),
+    queryFn: () => schedulesV2Service.listBundles(),
     staleTime: 60_000,
   });
 }

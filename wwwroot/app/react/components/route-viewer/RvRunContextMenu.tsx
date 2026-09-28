@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useToast } from '../../context/ToastContext';
 import { routeViewerService } from '../../services/routeViewerService';
+import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
 import { AssignRouteDialog } from './AssignRouteDialog';
 import { TransferRouteDialog } from './TransferRouteDialog';
 
@@ -12,29 +13,45 @@ import { TransferRouteDialog } from './TransferRouteDialog';
 // carry negative ids), Validate Route stub, Create Courier Event stub.
 // The bulk-action items (Missing / Complete / Cancel) live on the
 // jobListMenu in P4b - this menu is run-scoped only.
+//
+// 2026-09-18: Assign Route now fetches the run's jobs itself, filters
+// them by the parent RunViewer's viewMode (via lib/runViewerViewMode.ts)
+// and hands the pre-scoped jobIds to AssignRouteDialog. Matches the
+// legacy Run Viewer pattern (RunViwer_Claude assignRouteDialogController.js
+// takes jobIds as an injected constructor param). Fixes George's
+// Medical-Prod report: previously the dialog re-fetched with a hardcoded
+// group='Combined', so Inbound/Outbound view selections were ignored.
 
 interface Props {
   x: number;
   y: number;
   runId: number;
   runDate: string;
+  /** Parent RunViewer's Combined/Inbound/Outbound state. Scopes the
+   *  Assign Route jobIds so only jobs matching the current view get
+   *  handed to the dialog. */
+  viewMode: ViewMode;
   onClose: () => void;
   onDone: () => void;
 }
 
-export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Props) {
+export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDone }: Props) {
   const user = useAuth();
   const confirm = useConfirm();
   const toast = useToast();
-  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [assignJobIds, setAssignJobIds] = useState<number[] | null>(null);
   const [transferOpen, setTransferOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const assignOpen = assignJobIds !== null;
 
   // Close on outside click / Esc. Skip while a child dialog is open so
   // the operator does not lose the whole flow on the first backdrop
-  // click of the dialog itself.
+  // click of the dialog itself. Also skip while the Assign Route fetch
+  // is in-flight so a stray mousedown does not abort the pending
+  // dialog open.
   useEffect(() => {
-    if (assignOpen || transferOpen) return;
+    if (assignOpen || transferOpen || assignLoading) return;
     const onDown = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
     };
@@ -45,7 +62,33 @@ export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Prop
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [onClose, assignOpen, transferOpen]);
+  }, [onClose, assignOpen, transferOpen, assignLoading]);
+
+  // Assign Route: fetch this run's jobs, filter by the parent's
+  // viewMode, then open the dialog with the pre-scoped jobIds. Legacy
+  // parity - homeControl.js runListMenu:2189 also pre-computes jobIds
+  // from run.jobs before opening the dialog.
+  const doAssign = async () => {
+    if (assignLoading || assignOpen) return;
+    setAssignLoading(true);
+    try {
+      const jobs = await routeViewerService.getRunJobs(runId, runDate);
+      const ids = jobs
+        .filter((j) => matchesViewMode(j, viewMode))
+        .map((j) => j.jobId)
+        .filter((id) => id > 0);
+      if (ids.length === 0) {
+        const scope = viewMode === 'Combined' ? 'assignable jobs' : `${viewMode.toLowerCase()} jobs`;
+        toast.show(`No ${scope} on this run.`, 'error');
+        return;
+      }
+      setAssignJobIds(ids);
+    } catch (e) {
+      toast.show(`Failed to load run jobs: ${(e as Error).message}`, 'error');
+    } finally {
+      setAssignLoading(false);
+    }
+  };
 
   const preAssignable = runId >= 0;
 
@@ -122,8 +165,10 @@ export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Prop
         }`}
         style={{ left: x, top: y }}
       >
-        <MenuItem onClick={() => { setAssignOpen(true); }}>
-          {user.isNetworkPartner ? 'Assign Courier' : 'Assign Route'}
+        <MenuItem onClick={doAssign} disabled={assignLoading}>
+          {assignLoading
+            ? 'Loading jobs…'
+            : user.isNetworkPartner ? 'Assign Courier' : 'Assign Route'}
         </MenuItem>
         {!user.isNetworkPartner && (
           <MenuItem onClick={() => setTransferOpen(true)}>Transfer Route</MenuItem>
@@ -153,13 +198,13 @@ export function RvRunContextMenu({ x, y, runId, runDate, onClose, onDone }: Prop
         </MenuItem>
       </div>
 
-      {assignOpen && (
+      {assignJobIds && (
         <AssignRouteDialog
-          runId={runId}
-          runDate={runDate}
-          onClose={() => { setAssignOpen(false); onClose(); }}
+          jobIds={assignJobIds}
+          runLabel={`run #${runId}`}
+          onClose={() => { setAssignJobIds(null); onClose(); }}
           onSuccess={(summary) => {
-            setAssignOpen(false);
+            setAssignJobIds(null);
             onClose();
             toast.show(summary);
             onDone();

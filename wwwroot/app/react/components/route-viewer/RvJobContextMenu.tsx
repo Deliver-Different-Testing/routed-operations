@@ -243,8 +243,18 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
 
       {assignOpen && (
         <AssignRouteDialog
-          runId={primary.bulkRunId ?? 0}
-          runDate={runDate ?? new Date().toISOString().slice(0, 10)}
+          // Job menu is already scoped to the operator's current
+          // selection; hand those tucJob ids straight to the dialog
+          // per the legacy Run Viewer pattern (caller owns scope).
+          // Under the pre-2026-09-18 shape the dialog re-fetched the
+          // whole run and assigned every job on it, ignoring the
+          // selection - George's Medical-Prod bug.
+          jobIds={jobIds()}
+          runLabel={
+            jobs.length === 1
+              ? `Job ${primary.jobNumber ?? `#${primary.jobId}`}`
+              : `${jobs.length} selected jobs`
+          }
           anchorJobId={primary.jobId}
           onClose={() => { setAssignOpen(false); onClose(); }}
           onSuccess={(msg) => { setAssignOpen(false); onClose(); toast.show(msg, 'success'); onDone(); }}

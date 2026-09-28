@@ -44,8 +44,16 @@ public class ScheduleGroupUpsertRequest
     public int? PickupBoxDiscount { get; set; }
     public int? DropOffLocationId { get; set; }
     public List<DayWindowUpsertRequest> DayWindows { get; set; } = new();
-    public List<ScheduleZoneUpsertRequest> Zones { get; set; } = new();
-    public List<ScheduleLinehaulUpsertRequest> Linehauls { get; set; } = new();
+    /// <summary>F7 preservation (Steve 2026-09-20): nullable so an absent
+    /// or explicit-null field is distinguishable from an explicit empty
+    /// array. Null = "leave existing zones alone"; [] = "clear all zones";
+    /// [...] = "replace". Prior shape (non-nullable List with = new()
+    /// default) coerced absent to [], wiping live zone rows on saves that
+    /// did not repopulate them.</summary>
+    public List<ScheduleZoneUpsertRequest>? Zones { get; set; }
+    /// <summary>F7 preservation (Steve 2026-09-20): see Zones. Same
+    /// null-vs-empty semantics.</summary>
+    public List<ScheduleLinehaulUpsertRequest>? Linehauls { get; set; }
     /// <summary>Legacy id-based fallback. Only consulted when ClientCodes
     /// is absent (null) from the request payload - i.e. an API caller that
     /// does not have code strings handy. Operator writes from the React UI
@@ -64,6 +72,19 @@ public class ScheduleGroupUpsertRequest
     public List<int> PostcodeIds { get; set; } = new();
     /// <summary>Coverage polygons bound to this schedule (M:N via tblSchedulePolygon).</summary>
     public List<int> PolygonIds { get; set; } = new();
+    /// <summary>Client-facing display name shown on the customer booking
+    /// page. Empty string from the form is normalised to NULL on write so
+    /// "cleared" and "unset" are distinguishable. Added 2026-09-22 (Steve F13).</summary>
+    public string DisplayName { get; set; }
+    /// <summary>Long-form description that pairs with DisplayName on the
+    /// customer booking page. Empty string normalises to NULL on write.
+    /// Added 2026-09-22 (Steve F13).</summary>
+    public string DisplayDescription { get; set; }
+    /// <summary>Whether the schedule can be booked at all (independent of
+    /// AutoBook). Optional; unset defaults to true on both create and
+    /// update paths so callers that don't know about the field keep the
+    /// pre-F21 behaviour. Added 2026-09-22 (Steve F21).</summary>
+    public bool? IsActive { get; set; }
 }
 
 /// <summary>
@@ -109,7 +130,14 @@ public class DayWindowUpsertRequest
     /// <summary>"HH:mm" e.g. "08:30". Required.</summary>
     [Required] public string StartTime { get; set; } = string.Empty;
     [Required] public string EndTime { get; set; } = string.Empty;
-    public int CutoffHours { get; set; }
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff day-of-week
+    /// (1=Mon..7=Sun). NULL leaves the row on the legacy CutoffHours
+    /// offset, which the service derives on write.</summary>
+    public int? CutoffDay { get; set; }
+    /// <summary>F11 Phase C (2026-09-24). Absolute cutoff wall-clock time
+    /// as "HH:mm". NULL leaves the row on the legacy CutoffHours
+    /// offset.</summary>
+    public string CutoffTime { get; set; }
 }
 
 public class ScheduleZoneUpsertRequest
@@ -137,4 +165,13 @@ public class ScheduleLinehaulUpsertRequest
     public int? DropOffLocationId { get; set; }
     /// <summary>Per-leg service class override. Null = inherit from run / schedule.</summary>
     public int? SpeedId { get; set; }
+
+    /// <summary>
+    /// 1-based travel order of this leg within the schedule. The chain editor
+    /// sends the leg's position in the chain. When a caller omits it the
+    /// service falls back to this leg's position in the Linehauls array, so
+    /// any client that sends legs in chain order gets the right answer without
+    /// having to know about this field.
+    /// </summary>
+    public int? LegOrder { get; set; }
 }

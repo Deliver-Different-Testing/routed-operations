@@ -130,8 +130,16 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
       if (f.dayWindows.some((w) => w.dayOfWeek === dayOfWeek)) return f;
       return {
         ...f,
+        // F11 Phase C (2026-09-24): DayWindow drops cutoffHours in favour
+        // of the absolute (cutoffDay, cutoffTime) pair. Legacy modal seeds
+        // null-null on new day rows so the backend derives the legacy
+        // CutoffHours from the pair on write (0 when both remain null).
+        // The legacy schedule editor has no per-day cutoff editor of its
+        // own; operators who need a specific cutoff use the Schedules NEW
+        // page (schedules-new folder).
         dayWindows: [...f.dayWindows, {
-          id: null, dayOfWeek, startTime: '08:00', endTime: '17:00', cutoffHours: 0,
+          id: null, dayOfWeek, startTime: '08:00', endTime: '17:00',
+          cutoffDay: null, cutoffTime: null,
         }].sort((a, b) => a.dayOfWeek - b.dayOfWeek),
       };
     });
@@ -394,10 +402,17 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                           disabled={!active}
                           onChange={(e) => updateDayWindow(dayOfWeek, { endTime: e.target.value })} />
                       </td>
-                      <td className="px-2 py-1.5">
-                        <input type="number" className={INPUT_CLASS} value={window?.cutoffHours ?? ''}
-                          disabled={!active}
-                          onChange={(e) => updateDayWindow(dayOfWeek, { cutoffHours: Number(e.target.value) })} />
+                      {/* F11 Phase C (2026-09-24): legacy modal renders a
+                          read-only summary of the absolute cutoff pair.
+                          Full pair editing lives on the Schedules NEW
+                          modal. Legacy operators who need to change a
+                          cutoff jump to schedules-new. */}
+                      <td className="px-2 py-1.5 text-xs text-text-muted">
+                        {active
+                          ? (window?.cutoffDay != null || window?.cutoffTime != null)
+                            ? `${window?.cutoffDay != null ? DAY_LABELS_LONG[(window.cutoffDay - 1 + 7) % 7] : '-'} ${window?.cutoffTime ?? ''}`
+                            : '-'
+                          : ''}
                       </td>
                     </tr>
                   );
@@ -745,7 +760,12 @@ function toForm(g: ScheduleGroup | null): ScheduleGroupUpsertBody {
     pickupBoxDiscount: g.pickupBoxDiscount,
     dropOffLocationId: g.dropOffLocationId,
     dayWindows: g.dayWindows.map((w) => ({
-      id: w.id, dayOfWeek: w.dayOfWeek, startTime: w.startTime, endTime: w.endTime, cutoffHours: w.cutoffHours,
+      // F11 Phase C (2026-09-24): pass the absolute cutoff pair through
+      // verbatim - the legacy modal does not surface an editor for these
+      // but must forward the seeded values on save so the backend does
+      // not clobber them.
+      id: w.id, dayOfWeek: w.dayOfWeek, startTime: w.startTime, endTime: w.endTime,
+      cutoffDay: w.cutoffDay, cutoffTime: w.cutoffTime,
     })),
     zones: g.zones.map((z) => ({ zone: z.zone, active: z.active })),
     linehauls: g.linehauls.map((l) => ({

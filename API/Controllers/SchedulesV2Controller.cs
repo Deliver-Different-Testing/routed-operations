@@ -30,7 +30,7 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/v2/schedules")]
 [Authorize(Policy = "RouteBuilder.Read")]
-public class SchedulesV2Controller(ScheduleService svc) : BaseController
+public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService overrides) : BaseController
 {
     /// <summary>
     /// Translate an EF Core DbUpdateException into an operator-facing
@@ -184,18 +184,38 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// GET /api/v2/schedules/{id}/overrides - lightweight list of the
-    /// overrides pointing at this base + the client each owns. Used by
-    /// the AttachClientsModal to render the "has own override #id"
-    /// indicator so operators can see which candidate clients are
-    /// unavailable to attach directly to the base.
+    /// GET /api/v2/schedules/{id}/overrides - every client's delta on
+    /// this schedule. Grouped by client with three scope blocks
+    /// (schedule / collection / delivery). Clients with no delta rows
+    /// are excluded. Backed by tblBulkRunScheduleOverride from the
+    /// 2026-09-22 delta migration; supersedes the clone-based
+    /// BaseScheduleId model (Steve F1 2026-09-20).
     /// </summary>
     [HttpGet("{scheduleId:int}/overrides")]
     public async Task<IActionResult> ListOverrides(int scheduleId)
     {
         try
         {
-            var list = await svc.ListOverridesAsync(scheduleId);
+            var list = await overrides.ListForScheduleAsync(scheduleId);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// GET /api/v2/clients/{clientId}/overrides - every schedule this
+    /// client owns a delta on. Compact list feeding the client-first
+    /// "you differ from N schedules" view.
+    /// </summary>
+    [HttpGet("~/api/v2/clients/{clientId:int}/overrides")]
+    public async Task<IActionResult> ListClientOverrides(int clientId)
+    {
+        try
+        {
+            var list = await overrides.ListForClientAsync(clientId);
             return Ok(new { response = list });
         }
         catch (InvalidOperationException ex)
@@ -250,21 +270,46 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// POST /api/v2/schedules/{id}/overrides - create a client override
-    /// of this base schedule. Body `{ clientId: int }`. Copies the
-    /// base's day rows verbatim; the client's link row moves from base
-    /// to override so the client is never on both.
+    /// PUT /api/v2/schedules/{id}/overrides/{clientId} - full replace of
+    /// this client's delta on this schedule. Every scope in the request
+    /// wipes and re-writes its row (or deletes the row when the scope is
+    /// null / wholly-null). An empty body deletes the client's override
+    /// entirely (client returns to the base schedule). Steve F1
+    /// 2026-09-20.
     /// </summary>
-    [HttpPost("{scheduleId:int}/overrides")]
+    [HttpPut("{scheduleId:int}/overrides/{clientId:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> CreateOverride(int scheduleId, [FromBody] CreateOverrideRequest req)
+    public async Task<IActionResult> PutOverride(int scheduleId, int clientId, [FromBody] ScheduleOverridePutRequest req)
     {
         try
         {
-            if (req == null || req.ClientId <= 0)
-                return BadRequest(new { message = "clientId is required." });
-            var newId = await svc.CreateOverrideAsync(scheduleId, req.ClientId);
-            return Ok(new { response = new { scheduleId = newId } });
+            var payload = req ?? new ScheduleOverridePutRequest(null, null, null);
+            var actor = User?.Identity?.Name ?? "RoutedOps";
+            await overrides.PutAsync(scheduleId, clientId, payload, actor);
+            var list = await overrides.ListForScheduleAsync(scheduleId);
+            var entry = list.FirstOrDefault(o => o.ClientId == clientId);
+            return Ok(new { response = entry });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
+    /// DELETE /api/v2/schedules/{id}/overrides/{clientId} - remove every
+    /// delta row for this client on this schedule. The client returns to
+    /// the base schedule in full. Steve F1 2026-09-20.
+    /// </summary>
+    [HttpDelete("{scheduleId:int}/overrides/{clientId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DeleteOverride(int scheduleId, int clientId)
+    {
+        try
+        {
+            await overrides.DeleteAsync(scheduleId, clientId);
+            return Ok(new { response = new { deleted = true } });
         }
         catch (InvalidOperationException ex)
         {
@@ -358,6 +403,26 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
+    /// POST /api/v2/schedules/{id}/is-active - flip the header's IsActive
+    /// flag. Body `{ isActive: bool }`. Independent of AutoBook (which
+    /// controls book-immediately vs stage); IsActive gates whether the
+    /// schedule can be booked at all (Steve F21 2026-09-22).
+    /// </summary>
+    [HttpPost("{scheduleId:int}/is-active")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> SetIsActive(int scheduleId, [FromBody] SetIsActiveRequest req)
+    {
+        if (req == null) return BadRequest(new { message = "Body is required." });
+        try
+        {
+            var next = await svc.ToggleIsActiveAsync(scheduleId, req.IsActive);
+            return Ok(new { response = new { isActive = next } });
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
     /// POST /api/v2/schedules/{id}/copy - clone a schedule under a new
     /// name. Body `{ newName, clientIds? }`. Wraps
     /// ScheduleService.CopyAsync. Copy carries the source's day rows +
@@ -389,17 +454,18 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// GET /api/v2/schedule-groups - Dane's Schedule Groups bundles.
+    /// GET /api/v2/schedule-bundles - Dane's Schedule Bundles.
     /// Read-only for Phase 1; POST /PUT /DELETE + client-attach land
     /// in Phase 3. Returns empty until migration 20260914140000
-    /// applies (Steve's brief section 5).
+    /// applies (Steve's brief section 5). Renamed 2026-09-22 by
+    /// Steve F18 - was /api/v2/schedule-groups.
     /// </summary>
-    [HttpGet("/api/v2/schedule-groups")]
-    public async Task<IActionResult> ListGroups()
+    [HttpGet("/api/v2/schedule-bundles")]
+    public async Task<IActionResult> ListBundles()
     {
         try
         {
-            var list = await svc.ListScheduleGroupsAsync();
+            var list = await svc.ListScheduleBundlesAsync();
             return Ok(new { response = list });
         }
         catch (InvalidOperationException ex)
@@ -409,19 +475,19 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// POST /api/v2/schedule-groups - create a Schedule Group with an
+    /// POST /api/v2/schedule-bundles - create a Schedule Bundle with an
     /// initial member list. Body `{ name, description, scheduleIds[] }`.
-    /// Returns the new groupId.
+    /// Returns the new bundleId.
     /// </summary>
-    [HttpPost("/api/v2/schedule-groups")]
+    [HttpPost("/api/v2/schedule-bundles")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> CreateGroup([FromBody] CreateGroupRequest req)
+    public async Task<IActionResult> CreateBundle([FromBody] CreateBundleRequest req)
     {
         try
         {
             if (req == null) return BadRequest(new { message = "Body is required." });
-            var id = await svc.CreateGroupAsync(req.Name, req.Description, req.ScheduleIds ?? Array.Empty<int>());
-            return Ok(new { response = new { groupId = id } });
+            var id = await svc.CreateBundleAsync(req.Name, req.Description, req.ScheduleIds ?? Array.Empty<int>());
+            return Ok(new { response = new { bundleId = id } });
         }
         catch (InvalidOperationException ex)
         {
@@ -430,15 +496,15 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
-    /// <summary>PUT /api/v2/schedule-groups/{groupId} - rename / redescribe.</summary>
-    [HttpPut("/api/v2/schedule-groups/{groupId:int}")]
+    /// <summary>PUT /api/v2/schedule-bundles/{bundleId} - rename / redescribe.</summary>
+    [HttpPut("/api/v2/schedule-bundles/{bundleId:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> UpdateGroup(int groupId, [FromBody] CreateGroupRequest req)
+    public async Task<IActionResult> UpdateBundle(int bundleId, [FromBody] CreateBundleRequest req)
     {
         try
         {
             if (req == null) return BadRequest(new { message = "Body is required." });
-            await svc.UpdateGroupAsync(groupId, req.Name, req.Description);
+            await svc.UpdateBundleAsync(bundleId, req.Name, req.Description);
             return Ok(new { response = "ok" });
         }
         catch (InvalidOperationException ex)
@@ -470,16 +536,16 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// POST /api/v2/schedule-groups/{groupId}/members - add schedules
-    /// to a group. Body `{ scheduleIds: int[] }`. Idempotent.
+    /// POST /api/v2/schedule-bundles/{bundleId}/members - add schedules
+    /// to a bundle. Body `{ scheduleIds: int[] }`. Idempotent.
     /// </summary>
-    [HttpPost("/api/v2/schedule-groups/{groupId:int}/members")]
+    [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/members")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> AddGroupMembers(int groupId, [FromBody] AddGroupMembersRequest req)
+    public async Task<IActionResult> AddBundleMembers(int bundleId, [FromBody] AddBundleMembersRequest req)
     {
         try
         {
-            var added = await svc.AddGroupMembersAsync(groupId, req?.ScheduleIds ?? Array.Empty<int>());
+            var added = await svc.AddBundleMembersAsync(bundleId, req?.ScheduleIds ?? Array.Empty<int>());
             return Ok(new { response = new { added } });
         }
         catch (InvalidOperationException ex)
@@ -489,14 +555,14 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
-    /// <summary>DELETE /api/v2/schedule-groups/{groupId}/members/{scheduleId}.</summary>
-    [HttpDelete("/api/v2/schedule-groups/{groupId:int}/members/{scheduleId:int}")]
+    /// <summary>DELETE /api/v2/schedule-bundles/{bundleId}/members/{scheduleId}.</summary>
+    [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}/members/{scheduleId:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> RemoveGroupMember(int groupId, int scheduleId)
+    public async Task<IActionResult> RemoveBundleMember(int bundleId, int scheduleId)
     {
         try
         {
-            var removed = await svc.RemoveGroupMemberAsync(groupId, scheduleId);
+            var removed = await svc.RemoveBundleMemberAsync(bundleId, scheduleId);
             return Ok(new { response = new { removed } });
         }
         catch (InvalidOperationException ex)
@@ -506,14 +572,14 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
-    /// <summary>DELETE /api/v2/schedule-groups/{groupId} - hard-delete.</summary>
-    [HttpDelete("/api/v2/schedule-groups/{groupId:int}")]
+    /// <summary>DELETE /api/v2/schedule-bundles/{bundleId} - hard-delete.</summary>
+    [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> DeleteGroup(int groupId)
+    public async Task<IActionResult> DeleteBundle(int bundleId)
     {
         try
         {
-            await svc.DeleteGroupAsync(groupId);
+            await svc.DeleteBundleAsync(bundleId);
             return Ok(new { response = "ok" });
         }
         catch (InvalidOperationException ex)
@@ -524,18 +590,18 @@ public class SchedulesV2Controller(ScheduleService svc) : BaseController
     }
 
     /// <summary>
-    /// POST /api/v2/schedule-groups/{groupId}/clients - attach clients
-    /// to every non-default member schedule of the group. Body
+    /// POST /api/v2/schedule-bundles/{bundleId}/clients - attach clients
+    /// to every non-default member schedule of the bundle. Body
     /// `{ clientIds: int[] }`. Idempotent (already-attached pairs
     /// skipped). Returns the total number of link rows added.
     /// </summary>
-    [HttpPost("/api/v2/schedule-groups/{groupId:int}/clients")]
+    [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/clients")]
     [Authorize(Policy = "RouteBuilder.Admin")]
-    public async Task<IActionResult> AttachClientsToGroup(int groupId, [FromBody] AttachClientsRequest req)
+    public async Task<IActionResult> AttachClientsToBundle(int bundleId, [FromBody] AttachClientsRequest req)
     {
         try
         {
-            var added = await svc.AttachClientsToGroupAsync(groupId, req?.ClientIds ?? Array.Empty<int>());
+            var added = await svc.AttachClientsToBundleAsync(bundleId, req?.ClientIds ?? Array.Empty<int>());
             return Ok(new { response = new { added } });
         }
         catch (InvalidOperationException ex)
@@ -551,19 +617,14 @@ public class AttachClientsRequest
     public int[] ClientIds { get; set; } = Array.Empty<int>();
 }
 
-public class CreateOverrideRequest
-{
-    public int ClientId { get; set; }
-}
-
-public class CreateGroupRequest
+public class CreateBundleRequest
 {
     public string Name { get; set; }
     public string Description { get; set; }
     public int[] ScheduleIds { get; set; } = Array.Empty<int>();
 }
 
-public class AddGroupMembersRequest
+public class AddBundleMembersRequest
 {
     public int[] ScheduleIds { get; set; } = Array.Empty<int>();
 }
@@ -572,4 +633,9 @@ public class CopyScheduleRequest
 {
     public string NewName { get; set; }
     public int[] ClientIds { get; set; } = Array.Empty<int>();
+}
+
+public class SetIsActiveRequest
+{
+    public bool IsActive { get; set; }
 }

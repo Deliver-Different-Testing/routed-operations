@@ -13,4 +13,11 @@ public partial class TucJobType
 
     [Column("ucjtName")]
     public string UcjtName { get; set; }
+
+    /// <summary>Per-speed AlertTemplate override. Nullable - falls back
+    /// to tblSetting.DefaultJobLabelId / DefaultBulkLabelId when null.
+    /// Added 2026-09-18 so RouteViewerLabelService can honour per-speed
+    /// label templates in the AlertLabel-direct swap (legacy parity;
+    /// column exists in DB, was just not modelled here).</summary>
+    public int? LabelId { get; set; }
 }

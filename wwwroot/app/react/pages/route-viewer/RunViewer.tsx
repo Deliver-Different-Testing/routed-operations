@@ -9,10 +9,12 @@ import { useRouteViewerRuns } from '../../hooks/queries/useRouteViewerRuns';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { RvFilterBar, type FilterState } from '../../components/route-viewer/RvFilterBar';
-import { RvRunList, type ViewMode } from '../../components/route-viewer/RvRunList';
+import { RvRunList } from '../../components/route-viewer/RvRunList';
+import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvRunContextMenu } from '../../components/route-viewer/RvRunContextMenu';
 import { RvJobContextMenu } from '../../components/route-viewer/RvJobContextMenu';
+import { PrintRunSortModeDialog, type PrintRunSortMode } from '../../components/route-viewer/PrintRunSortModeDialog';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 import { RvRunListLite } from '../../components/route-viewer/RvRunListLite';
@@ -354,6 +356,60 @@ export default function RunViewer() {
   const singleRun = runsQuery.data?.find((r) => r.id === singleRunId) ?? null;
   const rawRunJobs = runJobsQuery.data ?? [];
 
+  // Print Run flow: printer icon on the Run Jobs toolbar opens a small
+  // Sort Mode picker (Run Name / Product / Client - legacy parity with
+  // labelsForm.tpl); operator's pick fires POST /runviewer/labels/bulk-jobs
+  // with the current filter set + selected sortMode and opens the
+  // returned PDF in a new tab. `printRunSubmitting` locks the dialog
+  // while the fetch is in flight so a double-click cannot fire two
+  // label requests. Fix 2026-09-18 for George's Medical-Prod report
+  // that the Print Run + Print Job Report buttons were placeholder
+  // scaffolds that did not call any endpoint.
+  const [printRunOpen, setPrintRunOpen] = useState(false);
+  const [printRunSubmitting, setPrintRunSubmitting] = useState(false);
+  const doPrintRun = async (sortMode: PrintRunSortMode) => {
+    if (printRunSubmitting) return;
+    setPrintRunSubmitting(true);
+    try {
+      const bulkJobIds = rawRunJobs.map((j) => j.bulkJobId).filter((n) => n > 0);
+      const blob = await routeViewerService.printRunLabelsPdf({
+        bookDate: filters.runDate,
+        sortMode,
+        runName: singleRun?.name ?? null,
+        bulkJobIds: bulkJobIds.length > 0 ? bulkJobIds.join(',') : null,
+        clientIds: filters.clientIds.length > 0 ? filters.clientIds.join(',') : null,
+        regionIds: filters.regionIds.length > 0 ? filters.regionIds.join(',') : null,
+        speedIds: filters.speedIds.length > 0 ? filters.speedIds.join(',') : null,
+      });
+      setPrintRunOpen(false);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch (e) {
+      toast.show(`Print run failed: ${(e as Error).message}`, 'error');
+    } finally {
+      setPrintRunSubmitting(false);
+    }
+  };
+
+  // Job Detail print: single-job label PDF (Mode 1). Uses the currently
+  // selected tucJob id (selectedJobId), since the backend GET endpoint
+  // keys off ucjbID. Bulk-job-only rows (jobId == 0, synthetic Recurring
+  // Route rows before materialisation) fall through with a toast rather
+  // than firing a call that would 404 on the SP.
+  const doPrintJobReport = async () => {
+    if (!selectedJobId || selectedJobId <= 0) {
+      toast.show('Select a job with a live tucJob row first.', 'error');
+      return;
+    }
+    try {
+      const blob = await routeViewerService.printSingleJobLabelPdf(selectedJobId);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch (e) {
+      toast.show(`Print job report failed: ${(e as Error).message}`, 'error');
+    }
+  };
+
   // Audit 7.4: client-side courier filter. Runs SP doesn't take a
   // courier param; look up the selected courier's code from the same
   // courier list the FilterBar dropdown reads, then keep only runs
@@ -424,17 +480,11 @@ export default function RunViewer() {
     const filtered = rawRunJobs.filter((j: any) => {
       if (!rjShowCancelled && j.jobStatus === 'V') return false;
       if (!rjShowMultibox && j.multiboxParentId != null && j.multiboxParentId !== 0) return false;
-      if (viewMode === 'Combined') return true;
-      const jn = (j.jobNumber ?? '').trim().toUpperCase();
-      const isLhp = jn.endsWith('LHP');
-      if (viewMode === 'Inbound') return isLhp;
-      // Outbound
-      if (isLhp) return false;
-      const hasFrom = j.pickUpLatitude != null && j.pickUpLongitude != null;
-      const hasTo = (j.deliveryLatitude != null && j.deliveryLongitude != null)
-        || (j.toLat != null && j.toLng != null);
-      const kind = hasFrom && hasTo ? 'both' : hasFrom ? 'pickup' : hasTo ? 'delivery' : 'none';
-      return kind !== 'pickup';
+      // Direction filter lives in lib/runViewerViewMode.ts so the Assign
+      // Route + Transfer Route flows apply the same predicate. Without
+      // that shared helper, the display list and the assign scope drift
+      // apart (Medical-Prod 2026-09-18 report).
+      return matchesViewMode(j, viewMode);
     });
     const sorted = filtered.slice().sort((a: any, b: any) => {
       const va = (a as any)[rjSort.key];
@@ -717,8 +767,11 @@ export default function RunViewer() {
                       </button>
                       <button
                         type="button"
-                        title="Print run"
-                        onClick={() => toast.show('Print run - endpoint scaffold (P14).')}
+                        title="Print run (Sort Mode picker)"
+                        onClick={() => {
+                          if (singleRunId == null) { toast.show('Select a run first.'); return; }
+                          setPrintRunOpen(true);
+                        }}
                         className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/5 text-text-secondary"
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -943,7 +996,7 @@ export default function RunViewer() {
                       setSiblingOverride(sib);
                     }
                   }}
-                  onPrint={() => toast.show('Print job report - endpoint scaffold (P14).')}
+                  onPrint={doPrintJobReport}
                   onSend={(j) => {
                     // POD email: proxies to legacy /Home/SendPOD via the
                     // same env-gated proxy the labels use. Prompt for the
@@ -1072,8 +1125,17 @@ export default function RunViewer() {
           y={ctxMenu.y}
           runId={ctxMenu.runId}
           runDate={filters.runDate}
+          viewMode={viewMode}
           onClose={() => setCtxMenu(null)}
           onDone={() => runsQuery.refetch()}
+        />
+      )}
+
+      {printRunOpen && (
+        <PrintRunSortModeDialog
+          onPick={doPrintRun}
+          onCancel={() => setPrintRunOpen(false)}
+          submitting={printRunSubmitting}
         />
       )}
 

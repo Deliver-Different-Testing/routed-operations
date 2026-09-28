@@ -8,6 +8,15 @@ variables:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_NOLOGO: "true"
 
+  # nuget.config authenticates the private GitLab feeds (projects 797 + 809)
+  # with these. ci-templates/base.yml already sets them stack-wide, but
+  # base.yml is only included by the generated CHILD pipeline - the jobs below
+  # run in the PARENT, which includes ci-template.yml only. Without these the
+  # dotnet restore in test:backend:unit 401s the first time its rules fire,
+  # which is on merge to master, i.e. at release time rather than on the MR.
+  GITLAB_NUGET_USERNAME: "gitlab-ci-token"
+  GITLAB_NUGET_TOKEN: "${CI_JOB_TOKEN}"
+
 # Path-based rules: only run frontend jobs when frontend files change.
 # Backend-only MRs (a service edit, a migration bump) skip the ~11-min
 # vitest suite entirely. Pattern copied from DespatchWeb's .gitlab-ci.yml
@@ -16,7 +25,16 @@ variables:
 .frontend-test-rules:
   interruptible: true
   rules:
-    - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/
+    # Any MR, whatever it targets. In a merge request pipeline rules:changes
+    # already compares the source branch against the target branch, so no
+    # compare_to is needed and this stays correct for MRs into develop and
+    # into master alike.
+    #
+    # The previous form matched only staging|master|main and pinned compare_to
+    # to master. After the 2026-09-18 branch inversion routine MRs target
+    # develop, so this rule never matched and every routine MR silently ran no
+    # frontend tests at all.
+    - if: $CI_MERGE_REQUEST_IID
       changes:
         paths:
           - "wwwroot/**/*"
@@ -27,14 +45,19 @@ variables:
           - "vite.config.ts"
           - "index.html"
           - ".gitlab-ci.yml"
-        compare_to: refs/heads/master
+    # Branch pipelines. develop is the integration branch, master the released
+    # one. This GitLab merges semi-linearly (rebase first), so the merged SHA
+    # is not always the SHA the MR pipeline tested.
+    - if: $CI_COMMIT_BRANCH == "develop"
     - if: $CI_COMMIT_BRANCH == "master"
 
 # Same idea for backend - skip the dotnet test job on pure-frontend MRs.
 .backend-test-rules:
   interruptible: true
   rules:
-    - if: $CI_MERGE_REQUEST_IID && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^(staging|master|main)$/
+    # Same rationale as .frontend-test-rules above: target-branch agnostic, no
+    # compare_to, plus branch pipelines on both develop and master.
+    - if: $CI_MERGE_REQUEST_IID
       changes:
         paths:
           - "**/*.cs"
@@ -44,7 +67,7 @@ variables:
           - "global.json"
           - "coverlet.runsettings"
           - ".gitlab-ci.yml"
-        compare_to: refs/heads/master
+    - if: $CI_COMMIT_BRANCH == "develop"
     - if: $CI_COMMIT_BRANCH == "master"
 
 # Cache node_modules keyed on package-lock so `npm ci` restores the

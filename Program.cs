@@ -358,6 +358,14 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 // Schedules module (nightly booking templates + territory maintenance).
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleOverrideService>();
+// Steve F19b (2026-09-24) next-available-collection resolver. Interface
+// registration so callers depend on IScheduleAvailabilityResolver rather
+// than the concrete service - the wiring point for the eventual booking
+// flow is a service-layer only landing (no controller / endpoint yet).
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Schedule.IScheduleAvailabilityResolver,
+    RoutedOperations.Core.Application.Services.Schedule.ScheduleAvailabilityService>();
 // Driver Scheduling module (2026-09-07 port from CourierManager). Two
 // per-tenant abstractions live behind the service - PhoneNormaliser
 // reads the CountryCode auth claim, HubUrlProvider reads DriverHubUrl.
@@ -416,11 +424,14 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewe
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerEventService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerAssignmentService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerRouteTransferService>();
-// RouteViewerLabelService is an HTTP proxy to the legacy RunViewer
-// label endpoints. Typed HttpClient so per-service timeout stays out
-// of the shared IHttpClientFactory default. Env var
-// RunViewerLabelProxyUrl activates the proxy; missing = 501 error
-// with a specific "set this env var" message.
+// RouteViewerLabelService generates label PDFs directly via the shared
+// DeliverDifferent.AlertLabel.Data package (GitLab project 809). Keeps
+// a typed HttpClient for the two still-proxied endpoints
+// (SendPodEmailAsync + GetLineHaulManifestCsvAsync); those two require
+// env var RunViewerLabelProxyUrl to be set until they are ported off
+// legacy. Label PDFs no longer need any env var. Swapped 2026-09-18
+// from the P14-interim HTTP proxy.
+DeliverDifferent.AlertLabel.Data.Extensions.ServiceCollectionExtensions.AddAlertLabelService(builder.Services);
 builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(60);

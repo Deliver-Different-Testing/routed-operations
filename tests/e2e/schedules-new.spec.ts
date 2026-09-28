@@ -5,7 +5,7 @@ import { test, expect, type Route } from '@playwright/test';
 // mocked so no DB is required. The spec verifies:
 //   1. Sidebar carries the "Schedules NEW" entry (badge visible),
 //      navigates to /schedules-new.
-//   2. Page mounts the 3 tabs: Schedules / Schedule Groups /
+//   2. Page mounts the 3 tabs: Schedules / Schedule Bundles /
 //      Recurring Routes.
 //   3. Schedules tab renders the id-keyed table with day pills +
 //      client chips, filter pills, search box, view-as-client picker.
@@ -13,7 +13,7 @@ import { test, expect, type Route } from '@playwright/test';
 //   5. Row-click opens the read-only edit modal with the 4 tabs +
 //      disabled Save button.
 //   6. Recurring Routes tab shows the route list + type filter.
-//   7. Schedule Groups tab renders (or its empty-state).
+//   7. Schedule Bundles tab renders (or its empty-state).
 
 const V2_SCHEDULES = [
   {
@@ -34,27 +34,6 @@ const V2_SCHEDULES = [
     hasActiveLinehaul: true,
     linkedClientCodes: ['MLC', 'PATH', 'NPG'],
     baseScheduleId: null,
-  },
-  {
-    // Override of #1042. Amber "O" badge nests under its base.
-    scheduleId: 1051,
-    name: 'AKL > CHCH Pre 8am Medical',
-    legacyClientId: null,
-    legacyClientCode: null,
-    regionId: 3,
-    regionName: 'Christchurch',
-    speedId: 1,
-    speedName: 'Medical',
-    activeDays: [1, 2, 3, 4, 5],
-    activeZonesCount: 4,
-    clientCount: 1,
-    postcodeCount: 0,
-    polygonCount: 0,
-    autoBook: false,
-    hasActiveLinehaul: true,
-    linkedClientCodes: ['HRAD'],
-    baseScheduleId: 1042,
-    overriddenFields: ['Cut-off', 'Speed'],
   },
   {
     scheduleId: 7,
@@ -148,9 +127,9 @@ const V2_DETAIL = {
   polygonIds: [],
 };
 
-const V2_GROUPS = [
+const V2_BUNDLES = [
   {
-    groupId: 1,
+    bundleId: 1,
     name: 'AKL medical overnight bundle',
     description: 'What a new medical client gets on day one.',
     isActive: true,
@@ -199,7 +178,6 @@ async function stubApis(page: import('@playwright/test').Page) {
     let rows = V2_SCHEDULES;
     if (type === 'default') rows = rows.filter((s) => s.baseScheduleId == null && s.clientCount === 0 && s.legacyClientId == null);
     if (type === 'shared') rows = rows.filter((s) => s.baseScheduleId == null && !(s.legacyClientId == null && s.clientCount === 0));
-    if (type === 'override') rows = rows.filter((s) => s.baseScheduleId != null);
     if (q) rows = rows.filter((s) => s.name.toLowerCase().includes(q));
     if (clientId) rows = rows.filter((s) => s.linkedClientCodes.length > 0 || s.baseScheduleId == null);
     const total = rows.length;
@@ -218,18 +196,54 @@ async function stubApis(page: import('@playwright/test').Page) {
   // GET /overrides must be routed BEFORE the generic /schedules/{id}
   // match or the wildcard catch-all short-circuits it.
   await page.route('**/api/v2/schedules/*/overrides', (route: Route) => {
+    // Steve F1 (2026-09-22): the /overrides endpoint returns per-client
+    // delta rows out of tblBulkRunScheduleOverride, not clone-header
+    // refs. Seed one delta: HRAD (client 300) differs on the schedule
+    // scope (cutoffHours=3).
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         response: [
-          // Steve's mockup: HRAD (client 300) owns override #1051 of
-          // base #1050. Seeded here so the AttachClientsModal renders
-          // "has own override #1051" on the HRAD row.
-          { scheduleId: 1051, clientId: 300, clientCode: 'HRAD' },
+          {
+            scheduleId: 1050,
+            clientId: 300,
+            clientCode: 'HRAD',
+            clientName: 'Harmony Radiology',
+            schedule: {
+              cutoffHours: 3,
+              cutoffDay: null,
+              cutoffTime: null,
+              weekDays: null,
+              isActive: null,
+              displayName: null,
+              displayDescription: null,
+            },
+            collection: null,
+            delivery: null,
+            updatedUtc: '2026-09-22T00:00:00Z',
+            updatedBy: 'steve',
+          },
         ],
       }),
     });
+  });
+  await page.route('**/api/v2/schedules/*/overrides/*', (route: Route) => {
+    if (route.request().method() === 'PUT') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ response: null }),
+      });
+    }
+    if (route.request().method() === 'DELETE') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ response: { deleted: true } }),
+      });
+    }
+    return route.fulfill({ status: 405, body: '' });
   });
   await page.route('**/api/v2/schedules/*/clients', (route: Route) =>
     route.fulfill({
@@ -252,11 +266,11 @@ async function stubApis(page: import('@playwright/test').Page) {
       body: JSON.stringify({ response: V2_DETAIL }),
     });
   });
-  await page.route('**/api/v2/schedule-groups', (route: Route) =>
+  await page.route('**/api/v2/schedule-bundles', (route: Route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ response: V2_GROUPS }),
+      body: JSON.stringify({ response: V2_BUNDLES }),
     }),
   );
   await page.route('**/api/recurring-routes', (route: Route) =>
@@ -337,36 +351,21 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     // accessible name is like "Schedules 14" - use a startsWith regex.
     await expect(page.getByRole('heading', { name: 'Schedules', level: 1 })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Schedules\b/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /^Schedule Groups\b/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Schedule Bundles\b/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Recurring Routes\b/ })).toBeVisible();
   });
 
-  test('Schedules tab renders table with day pills + client chips + nested overrides', async ({ page }) => {
+  test('Schedules tab renders table with day pills + client chips', async ({ page }) => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // Base row + override row visible.
+    // Base row visible.
     await expect(page.getByText('AKL > CHCH Pre 8am Medical').first()).toBeVisible();
     await expect(page.getByText('#1042').first()).toBeVisible();
-    // Override "O" badge + Based-on line.
-    await expect(page.getByTitle('Client override')).toBeVisible();
-    await expect(page.getByText('Based on #1042')).toBeVisible();
     // Client chip strip on the base.
     await expect(page.getByText('MLC').first()).toBeVisible();
     // Default schedule (no clients) surfaces the All-clients pill.
     await expect(page.getByText('All clients').first()).toBeVisible();
-  });
-
-  test('type filter narrows to overrides', async ({ page }) => {
-    await stubApis(page);
-    await page.goto('/schedules-new');
-
-    await page.getByRole('button', { name: 'Overrides' }).click();
-    // Only the override row survives - based-on line still shows the
-    // base id. Rely on the base id NOT appearing as an own-row #id.
-    await expect(page.getByText('Based on #1042')).toBeVisible();
-    // Data table rows count: exactly one (the override).
-    await expect(page.locator('table tbody tr')).toHaveCount(1);
   });
 
   test('row-click opens the edit modal with 4 tabs + Save dirty-gated', async ({ page }) => {
@@ -433,11 +432,11 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await expect(page.getByRole('columnheader', { name: 'Clients via schedule' })).toBeVisible();
   });
 
-  test('Schedule Groups tab renders bundle with expand', async ({ page }) => {
+  test('Schedule Bundles tab renders bundle with expand', async ({ page }) => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    await page.getByRole('button', { name: /^Schedule Groups\b/ }).click();
+    await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
     await expect(page.getByText('AKL medical overnight bundle')).toBeVisible();
     await expect(page.getByText('3 schedules')).toBeVisible();
@@ -598,7 +597,7 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // The stub returns 3 rows and the total. The "Showing 3 of 3
+    // The stub returns 2 rows and the total. The "Showing 2 of 2
     // schedules" caption sources its count from the server total,
     // not from client-side derived slicing.
     await expect(page.getByText(/Showing \d+ of \d+ schedules/)).toBeVisible();
@@ -608,57 +607,66 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // Depot dropdown pulls the full tenant list from
+    // Depot filter pulls the full tenant list from
     // /api/schedules/lookups, not just depots seen in the current
-    // page. All three seeded depots appear as options.
-    const depot = page.getByRole('combobox').filter({ has: page.locator('option', { hasText: 'All depots' }) });
-    await expect(depot).toBeVisible();
-    await expect(depot.getByRole('option', { name: 'Auckland' })).toHaveCount(1);
-    await expect(depot.getByRole('option', { name: 'Christchurch' })).toHaveCount(1);
-    await expect(depot.getByRole('option', { name: 'Gisborne' })).toHaveCount(1);
+    // page. The 2026-09-17 filter refactor replaced the plain <select>
+    // with `DepotMultiPicker` - a trigger button labelled "All depots"
+    // (when nothing selected) that reveals a panel (testid
+    // `depot-multi-picker-panel`) with one checkbox row per depot.
+    // Assert the trigger exists, then open the panel and assert every
+    // seeded depot renders as a row.
+    const trigger = page.getByRole('button', { name: 'All depots' });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    const panel = page.getByTestId('depot-multi-picker-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText('Auckland', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Christchurch', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Gisborne', { exact: true })).toBeVisible();
   });
 
-  test('Groups tab New group wire creates + refreshes list', async ({ page }) => {
+  test('Bundles tab New bundle wire creates + refreshes list', async ({ page }) => {
     let created: any = null;
     await stubApis(page);
-    await page.route('**/api/v2/schedule-groups', async (route) => {
+    await page.route('**/api/v2/schedule-bundles', async (route) => {
       if (route.request().method() === 'POST') {
         created = await route.request().postDataJSON();
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ response: { groupId: 999 } }),
+          body: JSON.stringify({ response: { bundleId: 999 } }),
         });
       }
       // fall back to the seeded GET stub
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ response: V2_GROUPS }),
+        body: JSON.stringify({ response: V2_BUNDLES }),
       });
     });
     await page.goto('/schedules-new');
-    await page.getByRole('button', { name: /^Schedule Groups\b/ }).click();
+    await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
-    // + New group opens the modal + submits.
-    await page.getByRole('button', { name: '+ New group' }).click();
-    await expect(page.getByRole('heading', { name: 'New schedule group' })).toBeVisible();
+    // + New bundle opens the modal + submits.
+    await page.getByRole('button', { name: '+ New bundle' }).click();
+    await expect(page.getByRole('heading', { name: 'New schedule bundle' })).toBeVisible();
     await page.getByPlaceholder('AKL medical overnight bundle').fill('Wednesday HFAK bundle');
     await page.getByPlaceholder('What a new medical client gets on day one...').fill('Chilled produce mid-week.');
-    await page.getByRole('button', { name: 'Create group' }).click();
+    await page.getByRole('button', { name: 'Create bundle' }).click();
 
     // Modal closes on success + POST payload matches the form.
-    await expect(page.getByRole('heading', { name: 'New schedule group' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'New schedule bundle' })).toHaveCount(0);
     expect(created).toMatchObject({
       name: 'Wednesday HFAK bundle',
       description: 'Chilled produce mid-week.',
     });
   });
 
-  test('Groups Delete confirm + wire hits delete endpoint', async ({ page }) => {
+  test('Bundles Delete confirm + wire hits delete endpoint', async ({ page }) => {
     let deleteHit = false;
     await stubApis(page);
-    await page.route('**/api/v2/schedule-groups/1', async (route) => {
+    await page.route('**/api/v2/schedule-bundles/1', async (route) => {
       if (route.request().method() === 'DELETE') {
         deleteHit = true;
         return route.fulfill({
@@ -670,10 +678,10 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
       return route.fallback();
     });
     await page.goto('/schedules-new');
-    await page.getByRole('button', { name: /^Schedule Groups\b/ }).click();
+    await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
     await page.getByRole('button', { name: 'Delete', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Delete group?' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Delete bundle?' })).toBeVisible();
     // The confirm modal's danger button reads "Delete" too - danger
     // variant. Use exact match to pick it out of the row-level button.
     await page.getByRole('button', { name: 'Delete', exact: true }).nth(1).click();
@@ -763,10 +771,10 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     });
   });
 
-  test('Group Attach clients modal picks + POSTs to /clients', async ({ page }) => {
+  test('Bundle Attach clients modal picks + POSTs to /clients', async ({ page }) => {
     let attachPayload: any = null;
     await stubApis(page);
-    await page.route('**/api/v2/schedule-groups/1/clients', async (route) => {
+    await page.route('**/api/v2/schedule-bundles/1/clients', async (route) => {
       if (route.request().method() === 'POST') {
         attachPayload = await route.request().postDataJSON();
         return route.fulfill({
@@ -778,11 +786,11 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
       return route.fallback();
     });
     await page.goto('/schedules-new');
-    await page.getByRole('button', { name: /^Schedule Groups\b/ }).click();
+    await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
-    // Attach clients link on the seeded group card.
+    // Attach clients link on the seeded bundle card.
     await page.getByRole('button', { name: 'Attach clients' }).click();
-    await expect(page.getByRole('heading', { name: /Attach clients to group #1/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Attach clients to bundle #1/ })).toBeVisible();
 
     // Open the picker + tick one client.
     await page.getByRole('button', { name: 'Pick clients...' }).click();

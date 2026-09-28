@@ -20,7 +20,8 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 // Fields:
 //   - Name (required)
 //   - Description (optional)
-//   - Active toggle (autoBook proxy - schedule.autoBook mirrors it)
+//   - Book-immediately toggle (writes schedule.autoBook - controls
+//     whether the job creates now vs stages into bulk)
 //   - Origin depot (pickup) - optional; empty = "Client address"
 //   - Destination region - required
 //   - Delivery speed - optional
@@ -50,14 +51,25 @@ interface DayForm {
   enabled: boolean;
   startTime: string;
   endTime: string;
-  cutoffHours: number;
+  /** F11 Phase C (2026-09-24). Absolute cutoff day-of-week (1=Mon..7=Sun).
+   *  Null until the operator picks; toggleDay seeds this to the day's
+   *  own dayOfWeek so the default is "same-day cutoff". */
+  cutoffDay: number | null;
+  /** F11 Phase C (2026-09-24). Absolute cutoff wall-clock time as "HH:mm".
+   *  Defaults to 06:00 on a fresh row per the F11 spec. */
+  cutoffTime: string | null;
 }
 
+// F11 Phase C default: same-day cutoff at 06:00. cutoffDay stays null in
+// the shared default so the toggleDay handler can seed it to the day's
+// own dayOfWeek when the operator enables that day. cutoffTime defaults
+// to 06:00 (Kevin's judgment call on the choice offered in the spec).
 const DEFAULT_DAY: DayForm = {
   enabled: false,
   startTime: '08:00',
   endTime: '17:00',
-  cutoffHours: 2,
+  cutoffDay: null,
+  cutoffTime: '06:00',
 };
 
 export function NewScheduleModal({ open, onClose }: Props) {
@@ -66,7 +78,16 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const tenantId = auth.currentTenantId ?? 0;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [active, setActive] = useState(true);
+  const [autoBook, setAutoBook] = useState(false);
+  // F21 (Steve 2026-09-20): header-level bookable flag. Defaults to true
+  // on create so new schedules are immediately bookable; independent of
+  // AutoBook (which is off by default because staging into bulk is the
+  // safer default for a brand-new schedule).
+  const [isActive, setIsActive] = useState(true);
+  // F13: client-facing display copy. Empty strings are saved as NULL so
+  // the backend can distinguish "cleared" from "unset".
+  const [displayName, setDisplayName] = useState('');
+  const [displayDescription, setDisplayDescription] = useState('');
   // Booking mode per Steve's brief §2 Creating-a-schedule item 1:
   //   "booking mode radio Fixed Time / Window"
   // Fixed Time = single despatch time (drivers pick up at the same
@@ -128,7 +149,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const resetAndClose = () => {
     setName('');
     setDescription('');
-    setActive(true);
+    setAutoBook(false);
+    setIsActive(true);
+    setDisplayName('');
+    setDisplayDescription('');
     setBookingMode('window');
     setLegs([]);
     setDays([1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...DEFAULT_DAY, enabled: n <= 5 })));
@@ -153,7 +177,17 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setPolygonIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b));
 
   const toggleDay = (i: number) => {
-    setDays((prev) => prev.map((d, idx) => idx === i ? { ...d, enabled: !d.enabled } : d));
+    // F11 Phase C: when the operator enables a day, seed cutoffDay to the
+    // day's own dayOfWeek so the default is a same-day cutoff. Leaves an
+    // existing pick untouched.
+    setDays((prev) => prev.map((d, idx) =>
+      idx === i
+        ? {
+            ...d,
+            enabled: !d.enabled,
+            cutoffDay: !d.enabled && d.cutoffDay == null ? i + 1 : d.cutoffDay,
+          }
+        : d));
   };
   const patchDay = (i: number, patch: Partial<DayForm>) => {
     setDays((prev) => prev.map((d, idx) => idx === i ? { ...d, ...patch } : d));
@@ -178,6 +212,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
       applyAddOnPercentage: boolean | null; weekDay: number[];
       departureAdvanceDays: number | null; fromClientAddress: boolean | null;
       dropOffLocationId: number | null; speedId: number | null;
+      legOrder: number | null;
     }> = [];
     const zones: number[] = [];
     for (const leg of legs) {
@@ -206,6 +241,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
           fromClientAddress: leg.fromClientAddress,
           dropOffLocationId: leg.dropOffLocationId,
           speedId: leg.speedId,
+          // Bug 1 (Steve 2026-09-25): persist the leg's position in the chain
+          // so the booking SPs number and time legs in travel order instead of
+          // falling back to tblBulkScheduleLinehaul.Id order.
+          legOrder: linehauls.length + 1,
         });
       } else if (leg.type === 'delivery') {
         regionId = leg.regionId;
@@ -234,11 +273,17 @@ export function NewScheduleModal({ open, onClose }: Props) {
       scheduleId: null,   // create
       name: name.trim(),
       description: description.trim() || null,
+      // F13: send NULL when the operator leaves the display fields
+      // blank so the backend can distinguish "cleared" from "unset".
+      displayName: displayName.trim() || null,
+      displayDescription: displayDescription.trim() || null,
+      // F21: header-level bookable flag.
+      isActive: isActive,
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
       parentSpeedId: parentSpeedId,
-      autoBook: active,
+      autoBook: autoBook,
       bookPickup: bookPickup,
       applyPickupCutoff: applyPickupCutoff,
       pickupCutoff: applyPickupCutoff ? pickupCutoff : null,
@@ -249,15 +294,28 @@ export function NewScheduleModal({ open, onClose }: Props) {
       deliveryState: deliveryState,
       pickupBoxDiscount: pickupBoxDiscount,
       dropOffLocationId: dropOffLocationId,
+      // F11 Phase C (Steve 2026-09-24): absolute per-day cutoff pair
+       // (cutoffDay + cutoffTime). Replaces the integer cutoffHours field.
+       // Each enabled day carries its own pair; the backend derives a
+       // legacy CutoffHours from the pair on write so downstream consumers
+       // that still read the old column keep working.
       dayWindows: days.map((d, i) => ({
         id: null,
         dayOfWeek: i + 1,
         startTime: d.startTime,
         endTime: d.endTime,
-        cutoffHours: d.cutoffHours,
+        cutoffDay: d.cutoffDay,
+        cutoffTime: d.cutoffTime,
       })).filter((_d, i) => days[i].enabled),
-      zones: derived.zones.map((z) => ({ zone: z, active: true })),
-      linehauls: derived.linehauls,
+      // F7 (Steve 2026-09-20): send null when the operator did not
+      // populate zones/linehauls, so the backend's null-guard preserves
+      // any existing rows (moot on create since there are none, but
+      // keeps the send-shape consistent with ScheduleDetailModal for
+      // the backend contract).
+      zones: derived.zones.length > 0
+        ? derived.zones.map((z) => ({ zone: z, active: true }))
+        : null,
+      linehauls: derived.linehauls.length > 0 ? derived.linehauls : null,
       // "Specific" mode uses the id-based fallback: `clientCodes: null`
       // tells the backend to consult `clientIds`. "All" mode sends an
       // explicit empty `clientCodes: []` which reads as "no link rows"
@@ -316,15 +374,41 @@ export function NewScheduleModal({ open, onClose }: Props) {
             placeholder="AKL > CHCH Pre 10am Medical"
           />
         </label>
-        <label className="flex items-center gap-3 mt-6">
-          <input
-            type="checkbox"
-            checked={active}
-            onChange={(e) => setActive(e.target.checked)}
-            className="accent-brand-cyan"
-          />
-          <span className="text-sm">Active (auto-book on)</span>
-        </label>
+        <div className="flex flex-col gap-2 mt-6">
+          {/* F21: Active flag - independent of Book immediately. Active
+              gates whether the schedule can be booked at all; Book
+              immediately gates book-now vs stage-into-bulk. Defaults:
+              active=true (bookable), autoBook=false (stages by default). */}
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={isActive}
+              onChange={(e) => setIsActive(e.target.checked)}
+              className="accent-brand-cyan"
+              data-testid="new-schedule-is-active-checkbox"
+            />
+            <span className="text-sm">
+              Active
+              <span className="ml-2 text-xs text-text-muted">
+                schedule is bookable at all
+              </span>
+            </span>
+          </label>
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={autoBook}
+              onChange={(e) => setAutoBook(e.target.checked)}
+              className="accent-brand-cyan"
+            />
+            <span className="text-sm">
+              Book immediately
+              <span className="ml-2 text-xs text-text-muted">
+                job creates now instead of staging into bulk
+              </span>
+            </span>
+          </label>
+        </div>
 
         <fieldset className="col-span-2 flex items-center gap-4 mt-2">
           <legend className="text-xs uppercase tracking-wide text-text-muted mr-2">Booking mode</legend>
@@ -370,6 +454,41 @@ export function NewScheduleModal({ open, onClose }: Props) {
           />
         </label>
 
+        {/* F13: client-facing display copy shown on the booking / job
+            pages. Blank -> NULL on save (falls back to Name). */}
+        <label className="block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Display name
+            <span className="ml-2 text-text-muted normal-case">
+              (client-facing; blank = use Name)
+            </span>
+          </span>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+            placeholder="Next Business Day"
+            data-testid="new-schedule-display-name-input"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs uppercase tracking-wide text-text-muted">
+            Display description
+            <span className="ml-2 text-text-muted normal-case">
+              (client-facing subtitle)
+            </span>
+          </span>
+          <input
+            type="text"
+            value={displayDescription}
+            onChange={(e) => setDisplayDescription(e.target.value)}
+            className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+            placeholder="Order by 3pm, delivered next business day"
+            data-testid="new-schedule-display-description-input"
+          />
+        </label>
+
         <div className="col-span-2">
           <span className="text-xs uppercase tracking-wide text-text-muted">Delivery route</span>
           <div className="mt-1">
@@ -386,7 +505,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 })),
                 zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
                 dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
+                pickupBoxDiscounts: lookupsQuery.data?.pickupBoxDiscounts ?? [],
               }}
+              pickupBoxDiscount={pickupBoxDiscount}
+              onPickupBoxDiscountChange={setPickupBoxDiscount}
             />
           </div>
         </div>
@@ -412,6 +534,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 </label>
                 {d.enabled && (
                   <div className="mt-1 space-y-1">
+                    <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Window</span>
                     <input
                       type="time"
                       value={d.startTime}
@@ -424,16 +547,33 @@ export function NewScheduleModal({ open, onClose }: Props) {
                       onChange={(e) => patchDay(i, { endTime: e.target.value })}
                       className="w-full text-xs border border-border rounded px-1"
                     />
-                    <div className="flex items-center gap-1 text-xs">
-                      <input
-                        type="number"
-                        min={0}
-                        value={d.cutoffHours}
-                        onChange={(e) => patchDay(i, { cutoffHours: Number(e.target.value) })}
-                        className="w-12 border border-border rounded px-1"
-                      />
-                      <span>h</span>
-                    </div>
+                    {/* F11 Phase C (2026-09-24): absolute cutoff pair.
+                        Labelled + matched to the Window inputs' shape so
+                        operators know they're editing the cut-off day+time,
+                        not a second window pair. */}
+                    <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Cut-off</span>
+                    <select
+                      value={d.cutoffDay ?? ''}
+                      onChange={(e) => patchDay(i, {
+                        cutoffDay: e.target.value === '' ? null : Number(e.target.value),
+                      })}
+                      className="w-full text-xs border border-border rounded px-1"
+                      title="Cut-off day"
+                    >
+                      <option value="">- day -</option>
+                      {DAYS.map((day) => (
+                        <option key={day.n} value={day.n}>{day.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="time"
+                      value={d.cutoffTime ?? ''}
+                      onChange={(e) => patchDay(i, {
+                        cutoffTime: e.target.value === '' ? null : e.target.value,
+                      })}
+                      className="w-full text-xs border border-border rounded px-1"
+                      title="Cut-off time"
+                    />
                   </div>
                 )}
               </div>
@@ -447,7 +587,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
             onClick={() => setAdvancedOpen((v) => !v)}
             className="w-full flex items-center justify-between px-3 py-2 rounded border border-border hover:bg-surface-light text-xs uppercase tracking-wide text-text-muted"
           >
-            <span>Advanced (schedule speed, cutoffs, delivery state, box discount, drop-off, collection group)</span>
+            <span>Advanced (schedule speed, cutoffs, delivery state, drop-off, collection group)</span>
             <span>{advancedOpen ? '−' : '+'}</span>
           </button>
           {advancedOpen && (
@@ -474,19 +614,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 >
                   <option value="">- default -</option>
                   {(lookupsQuery.data?.deliveryStates ?? []).map((s) => (
-                    <option key={s.id} value={s.id}>{s.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="block text-xs">
-                Collection box discount
-                <select
-                  value={pickupBoxDiscount ?? ''}
-                  onChange={(e) => setPickupBoxDiscount(e.target.value ? Number(e.target.value) : null)}
-                  className="mt-1 w-full px-2 py-1 border border-border rounded"
-                >
-                  <option value="">- none -</option>
-                  {(lookupsQuery.data?.pickupBoxDiscounts ?? []).map((s) => (
                     <option key={s.id} value={s.id}>{s.label}</option>
                   ))}
                 </select>
