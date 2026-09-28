@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   autoMatchColumn,
+  includedDepotBuckets,
   initialWizardState,
+  nextPendingDepotIndex,
   urgentFieldsFor,
   wizardReducer,
+  type DepotBucket,
   type UrgentField,
   type WizardState,
 } from './wizardState';
@@ -452,5 +455,101 @@ describe('autoMatchColumn', () => {
 
   it('no match returns empty string', () => {
     expect(autoMatchColumn(field('foo', 'Foo', ['Bar']), ['Baz'])).toBe('');
+  });
+});
+
+// Tester report 2026-09-22: Back from the schedule picker re-ticked every
+// depot, reset the cursor to depot 1 (risking a double import) and the next
+// depot opened with the previous depot's service + schedule.
+describe('wizardReducer - per-depot loop', () => {
+  const buckets: DepotBucket[] = [
+    { depotId: 1, depotName: 'Auckland', jobIndexes: [0, 1] },
+    { depotId: 2, depotName: 'Christchurch', jobIndexes: [2] },
+    { depotId: 3, depotName: 'Wellington', jobIndexes: [3] },
+    { depotId: 0, depotName: 'Unmatched', jobIndexes: [4] },
+  ];
+
+  function seeded(): WizardState {
+    return wizardReducer(initialWizardState(), { type: 'SEED_DEPOTS', depots: buckets });
+  }
+
+  it('SEED_DEPOTS pre-ticks every real depot on first load, never Unmatched', () => {
+    const s = seeded();
+    expect([...s.selectedRegions].sort()).toEqual(['1', '2', '3']);
+    expect(s.depots).toBe(buckets);
+  });
+
+  it('SEED_DEPOTS on re-entry (Back then Next) keeps the operator unticks', () => {
+    let s = seeded();
+    s = wizardReducer(s, { type: 'TOGGLE_REGION', region: '2' });
+    s = wizardReducer(s, { type: 'SEED_DEPOTS', depots: buckets });
+    expect([...s.selectedRegions].sort()).toEqual(['1', '3']);
+  });
+
+  it('SEED_DEPOTS ticks newly appearing depots and prunes vanished ones', () => {
+    let s = wizardReducer(initialWizardState(), {
+      type: 'SEED_DEPOTS',
+      depots: [{ depotId: 0, depotName: 'Unmatched', jobIndexes: [0] }],
+    });
+    expect(s.selectedRegions.size).toBe(0);
+    // Depot lookup arrives: Auckland replaces Unmatched and is pre-ticked.
+    s = wizardReducer(s, {
+      type: 'SEED_DEPOTS',
+      depots: [{ depotId: 1, depotName: 'Auckland', jobIndexes: [0] }],
+    });
+    expect([...s.selectedRegions]).toEqual(['1']);
+    s = wizardReducer(s, {
+      type: 'SEED_DEPOTS',
+      depots: [{ depotId: 2, depotName: 'Christchurch', jobIndexes: [0] }],
+    });
+    expect([...s.selectedRegions]).toEqual(['2']);
+  });
+
+  it('SEED_DEPOTS never ticks a no-service depot', () => {
+    const s = wizardReducer(initialWizardState(), {
+      type: 'SEED_DEPOTS',
+      depots: [
+        { depotId: 1, depotName: 'Auckland', jobIndexes: [0] },
+        { depotId: 9, depotName: 'Air NZ Cargo', jobIndexes: [1], noService: true },
+      ],
+    });
+    expect([...s.selectedRegions]).toEqual(['1']);
+    expect(includedDepotBuckets(s).map((b) => b.depotId)).toEqual([1]);
+  });
+
+  it('completed depots are skipped so Back then Next cannot import them twice', () => {
+    let s = seeded();
+    s = wizardReducer(s, { type: 'START_PENDING_DEPOT' });
+    expect(s.currentDepotIndex).toBe(0);
+    s = wizardReducer(s, { type: 'MARK_DEPOT_DONE', depotId: 1 });
+    // Operator goes Back to Select Depots and Next again.
+    s = wizardReducer(s, { type: 'SEED_DEPOTS', depots: buckets });
+    expect(s.selectedRegions.has('1')).toBe(true);
+    s = wizardReducer(s, { type: 'START_PENDING_DEPOT' });
+    expect(includedDepotBuckets(s)[s.currentDepotIndex].depotId).toBe(2);
+    s = wizardReducer(s, { type: 'MARK_DEPOT_DONE', depotId: 2 });
+    expect(nextPendingDepotIndex(s, 0)).toBe(2);
+    s = wizardReducer(s, { type: 'MARK_DEPOT_DONE', depotId: 3 });
+    expect(nextPendingDepotIndex(s, 0)).toBe(-1);
+  });
+
+  it('SET_CURRENT_DEPOT clears service, schedule and time but keeps bookDate', () => {
+    let s = seeded();
+    s = wizardReducer(s, { type: 'SET_BOOK_DATE', date: '2026-09-29' });
+    s = wizardReducer(s, { type: 'SET_SPEED_ID', speedId: 95 });
+    s = wizardReducer(s, { type: 'SET_SCHEDULE_ID', scheduleId: 12 });
+    s = wizardReducer(s, { type: 'SET_BOOK_TIME', time: '12:00' });
+    s = wizardReducer(s, { type: 'SET_CURRENT_DEPOT', index: 1 });
+    expect(s.currentDepotIndex).toBe(1);
+    expect(s.speedId).toBe(0);
+    expect(s.scheduleId).toBeNull();
+    expect(s.bookTime).toBe('');
+    expect(s.bookDate).toBe('2026-09-29');
+  });
+
+  it('RESET clears completed depots', () => {
+    let s = wizardReducer(seeded(), { type: 'MARK_DEPOT_DONE', depotId: 1 });
+    s = wizardReducer(s, { type: 'RESET' });
+    expect(s.completedDepotIds.size).toBe(0);
   });
 });
