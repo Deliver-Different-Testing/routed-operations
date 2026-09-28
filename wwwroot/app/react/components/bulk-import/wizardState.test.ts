@@ -257,6 +257,22 @@ describe('wizardReducer - primitive setters', () => {
   });
 });
 
+describe('wizardReducer - Batch D export + postcode fixes', () => {
+  it('SET_FIXED_POSTCODE records the geocoder postcode per row', () => {
+    let s = wizardReducer(initialWizardState(), { type: 'SET_FIXED_POSTCODE', rowIndex: 3, postCode: '0612' });
+    s = wizardReducer(s, { type: 'SET_FIXED_POSTCODE', rowIndex: 5, postCode: '8011' });
+    expect(s.fixedPostCodes).toEqual({ 3: '0612', 5: '8011' });
+  });
+
+  it('SET_KMRATED keeps the source row per km-rated row, null when not given', () => {
+    const rows = [{}, {}] as any;
+    let s = wizardReducer(initialWizardState(), { type: 'SET_KMRATED', rows, sourceRows: [4, null] });
+    expect(s.kmRatedSourceRows).toEqual([4, null]);
+    s = wizardReducer(s, { type: 'SET_KMRATED', rows });
+    expect(s.kmRatedSourceRows).toEqual([null, null]);
+  });
+});
+
 describe('wizardReducer - km-rated flow', () => {
   it('SET_KMRATED stores rows and pre-ticks every one by default', () => {
     const rows = [{}, {}, {}] as any[];

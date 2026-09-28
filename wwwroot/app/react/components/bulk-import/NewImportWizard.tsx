@@ -22,8 +22,10 @@ import {
   initialWizardState,
   nextPendingDepotIndex,
   wizardReducer,
+  type DepotBucket,
   type WizardState,
 } from './wizardState';
+import { matchKmRatedToSourceRows } from './sourceRowExport';
 
 interface Props {
   open: boolean;
@@ -148,6 +150,19 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     }
   }
 
+  // The jobs built from one bucket's source rows, paired with their row
+  // index. Rows the depot grouping placed by the geocoder's suggested
+  // postcode are sent with that postcode (see DepotBucket.postCodeOverrides).
+  function bucketJobs(bucket: DepotBucket): { rowIndex: number; job: BulkImportJobCreateDto }[] {
+    const all = buildJobs(state, isUs);
+    return bucket.jobIndexes
+      .filter((i) => all[i] !== undefined)
+      .map((i) => {
+        const override = bucket.postCodeOverrides?.[i];
+        return { rowIndex: i, job: override ? { ...all[i], toPostCode: override } : all[i] };
+      });
+  }
+
   // Build the /import payload for a specific depot cursor. When
   // isKmRatedSecondPass is true, we ship state.kmRatedRows filtered by the
   // operator's selection (matches BulkImportHyper's re-fire path).
@@ -163,9 +178,7 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       jobs = state.kmRatedRows.filter((_, i) => state.kmRatedSelected.has(i));
     } else if (bucket) {
       // Project only the rows belonging to this bucket.
-      const all = buildJobs(state, isUs);
-      const set = new Set(bucket.jobIndexes);
-      jobs = all.filter((_, i) => set.has(i));
+      jobs = bucketJobs(bucket).map((c) => c.job);
     } else {
       // No bucket iteration (edge case: everything went to unmatched / empty).
       jobs = buildJobs(state, isUs);
@@ -286,7 +299,15 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       }
       // Km-rated review branch: server returned rows to confirm.
       if (!isKmRatedSecondPass && response.jobs && response.jobs.length > 0) {
-        dispatch({ type: 'SET_KMRATED', rows: response.jobs });
+        // Trace each km-rated row back to its source row so the review
+        // step can export the client's original columns.
+        const sourceRows = bucket
+          ? matchKmRatedToSourceRows(response.jobs, bucketJobs(bucket))
+          : matchKmRatedToSourceRows(
+              response.jobs,
+              buildJobs(state, isUs).map((job, rowIndex) => ({ rowIndex, job }))
+            );
+        dispatch({ type: 'SET_KMRATED', rows: response.jobs, sourceRows });
         dispatch({ type: 'GOTO', step: 'kmRatedReview' });
         return;
       }

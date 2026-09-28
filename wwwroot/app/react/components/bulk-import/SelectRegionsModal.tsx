@@ -9,6 +9,7 @@ import {
   type WizardAction,
   type WizardState,
 } from './wizardState';
+import { UnmatchedRowsModal } from './UnmatchedRowsModal';
 
 /**
  * Extract the 5-digit base ZIP from a raw value. Handles ZIP+4 ("02110-1234"),
@@ -69,6 +70,8 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
   const isUs = auth.isUsTenant || state.client?.isUsTenant || false;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Depot id of the Unmatched / no-service bucket being reviewed, or null.
+  const [reviewDepotId, setReviewDepotId] = useState<number | null>(null);
 
   // depotLookup: postcode/zip -> { depotId, depotName }. Built once per
   // fetch, then used to bucket every parsed row.
@@ -184,9 +187,26 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
       jobIndexes: [],
     };
     for (let i = 0; i < state.parsed.rows.length; i++) {
-      const raw = String(state.parsed.rows[i][key] ?? '').trim();
-      const lookupKey = isUs ? zipBase(raw) : nzPostCode(raw);
-      const hit = depotLookup[lookupKey];
+      const rawValue = String(state.parsed.rows[i][key] ?? '');
+      const raw = rawValue.trim();
+      // Apply the corrections made on the Fix Addresses step first, so rows
+      // the operator (or the geocoder) already fixed don't land in
+      // Unmatched. US: fixedZips is keyed on the bad zip, the same key
+      // buildJobs uses when it rewrites toZipCode.
+      const usZip = state.fixedZips[rawValue] ?? state.fixedZips[raw] ?? raw;
+      const lookupKey = isUs ? zipBase(usZip) : nzPostCode(raw);
+      let hit = depotLookup[lookupKey];
+      // NZ: the row's own postcode wins. Only when it matches no depot does
+      // the geocoder's suggested postcode get a say, and the bucket then
+      // records the override so the job is booked with that postcode.
+      let overridePostCode: string | null = null;
+      if (!hit && !isUs && state.fixedPostCodes[i]) {
+        const suggested = nzPostCode(state.fixedPostCodes[i]);
+        if (depotLookup[suggested]) {
+          hit = depotLookup[suggested];
+          overridePostCode = suggested;
+        }
+      }
       if (hit) {
         let b = byId.get(hit.depotId);
         if (!b) {
@@ -195,6 +215,9 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
           byId.set(hit.depotId, b);
         }
         b.jobIndexes.push(i);
+        if (overridePostCode) {
+          b.postCodeOverrides = { ...b.postCodeOverrides, [i]: overridePostCode };
+        }
         continue;
       }
       // US only: bucket into coverage-only when polygon covers the base zip.
@@ -212,7 +235,16 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
     if (isUs && coverageOnly.jobIndexes.length > 0) list.push(coverageOnly);
     if (unmatched.jobIndexes.length > 0) list.push(unmatched);
     return list;
-  }, [state.parsed, state.mapping, state.importType, isUs, depotLookup, coveredZipBases]);
+  }, [
+    state.parsed,
+    state.mapping,
+    state.importType,
+    state.fixedZips,
+    state.fixedPostCodes,
+    isUs,
+    depotLookup,
+    coveredZipBases,
+  ]);
 
   // Persist buckets onto wizard state so downstream picker + fireImport
   // can iterate them. SEED_DEPOTS pre-ticks depots the operator has not
@@ -229,7 +261,12 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
   // (START_PENDING_DEPOT), not here, so reopening this step never rewinds
   // to a depot that has already been imported.
   const bucketSignature = buckets
-    .map((b) => `${b.depotId}:${b.jobIndexes.length}:${b.noService ? 'x' : ''}`)
+    .map(
+      (b) =>
+        `${b.depotId}:${b.jobIndexes.length}:${b.noService ? 'x' : ''}:${
+          Object.keys(b.postCodeOverrides ?? {}).length
+        }`
+    )
     .join(',');
   useEffect(() => {
     if (!open) return;
@@ -319,17 +356,36 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
                 const importedCount = importedByDepot.get(b.depotId) ?? 0;
                 return (
                   <div key={key} className={`border ${borderClass} rounded p-3`}>
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => dispatch({ type: 'TOGGLE_REGION', region: key })}
-                        disabled={disabled}
-                      />
-                      <span className={isDone ? 'line-through' : undefined}>
-                        {b.depotName} ( {importedCount} of {bucketSize} jobs imported )
-                      </span>
-                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        {isUnmatched || isNoService ? (
+                          // Not importable, so no checkbox to fight with. The
+                          // warning marks the row and View / export opens it.
+                          <span aria-hidden="true" className="text-warning font-bold w-[13px] text-center">
+                            !
+                          </span>
+                        ) : (
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => dispatch({ type: 'TOGGLE_REGION', region: key })}
+                            disabled={disabled}
+                          />
+                        )}
+                        <span className={isDone ? 'line-through' : undefined}>
+                          {b.depotName} ( {importedCount} of {bucketSize} jobs imported )
+                        </span>
+                      </label>
+                      {(isUnmatched || isNoService) && (
+                        <Button
+                          variant="neutral"
+                          size="sm"
+                          onClick={() => setReviewDepotId(b.depotId)}
+                        >
+                          View / export
+                        </Button>
+                      )}
+                    </div>
                     {isNoService && (
                       <p className="text-[11px] text-warning mt-1 pl-6">
                         This client has no service set up at this depot, so these rows
@@ -340,8 +396,8 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
                     {isUnmatched && (
                       <p className="text-[11px] text-warning mt-1 pl-6">
                         These rows have {isUs ? 'zip codes' : 'postcodes'} that do not match any{' '}
-                        {isUs ? 'region' : 'depot'} and cannot be imported. Fix the source data
-                        and re-upload.
+                        {isUs ? 'region' : 'depot'} and cannot be imported. Use View / export
+                        to download them, fix the source data and re-upload.
                       </p>
                     )}
                   </div>
@@ -351,6 +407,13 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
           </>
         )}
       </div>
+      <UnmatchedRowsModal
+        open={reviewDepotId != null}
+        state={state}
+        isUs={isUs}
+        bucket={buckets.find((b) => b.depotId === reviewDepotId) ?? null}
+        onClose={() => setReviewDepotId(null)}
+      />
     </Modal>
   );
 }

@@ -195,15 +195,29 @@ describe('KmRatedReviewModal', () => {
     expect(screen.getByRole('button', { name: 'Uploading...' })).toBeDisabled();
   });
 
-  it('Export CSV button triggers download when rows present', () => {
+  it('Export CSV writes the original source rows with Amount as column A', async () => {
     const originalCreate = URL.createObjectURL;
-    (URL as any).createObjectURL = vi.fn(() => 'blob:x');
+    const createObjectURL = vi.fn((_: Blob) => 'blob:x');
+    (URL as any).createObjectURL = createObjectURL;
     (URL as any).revokeObjectURL = vi.fn();
     try {
       renderWithProviders(
         <KmRatedReviewModal
           open
-          state={seed({ kmRatedRows: [kmRow(1)], kmRatedSelected: new Set([0]) })}
+          state={seed({
+            parsed: {
+              headers: ['Ref', 'Street', 'PC', 'Notes'],
+              rows: [
+                { Ref: 'R0', Street: '0 High St', PC: '1010', Notes: 'x' },
+                { Ref: 'R1', Street: '1 High St', PC: '1010', Notes: 'ring, twice' },
+              ],
+            },
+            mapping: { toAddress: 'Street', toPostCode: 'PC' },
+            kmRatedRows: [kmRow(1), kmRow(2)],
+            kmRatedSelected: new Set([0, 1]),
+            // Row 2 could not be traced: laid out from the server copy.
+            kmRatedSourceRows: [1, null],
+          })}
           dispatch={noop}
           onUploadSelected={noop}
           onSkip={noop}
@@ -211,10 +225,37 @@ describe('KmRatedReviewModal', () => {
           importing={false}
         />
       );
+      expect(screen.getByText(/re-evaluate the amount on re-import/)).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Export CSV/ }));
-      expect((URL as any).createObjectURL).toHaveBeenCalled();
+      expect(createObjectURL).toHaveBeenCalled();
+      // jsdom's Blob has no .text(); read it the FileReader way.
+      const csv = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.readAsText(createObjectURL.mock.calls[0][0]);
+      });
+      expect(csv.replace(/^﻿/, '').split('\r\n')).toEqual([
+        'Amount,Ref,Street,PC,Notes',
+        '12.34,R1,1 High St,1010,"ring, twice"',
+        '12.34,,2 High St,1010,',
+      ]);
     } finally {
       (URL as any).createObjectURL = originalCreate;
     }
+  });
+
+  it('Export CSV is disabled without the parsed source file', () => {
+    renderWithProviders(
+      <KmRatedReviewModal
+        open
+        state={seed({ kmRatedRows: [kmRow(1)], kmRatedSelected: new Set([0]) })}
+        dispatch={noop}
+        onUploadSelected={noop}
+        onSkip={noop}
+        onCancel={noop}
+        importing={false}
+      />
+    );
+    expect(screen.getByRole('button', { name: /Export CSV/ })).toBeDisabled();
   });
 });
