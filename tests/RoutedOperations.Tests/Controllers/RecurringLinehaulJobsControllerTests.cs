@@ -26,9 +26,11 @@ public class RecurringLinehaulJobsControllerTests
     {
         var ctl = NewCtl();
         var ok = Assert.IsType<OkObjectResult>(await ctl.ListForRun(runId: 1));
-        var list = Assert.IsAssignableFrom<IEnumerable<BulkJobListItemDto>>(
-            ControllerTestHarness.ExtractResponse(ok)!);
-        Assert.Empty(list);
+        // Bug 3 made this a page rather than a bare list.
+        var page = Assert.IsType<BulkJobPageDto>(ControllerTestHarness.ExtractResponse(ok)!);
+        Assert.Empty(page.Entries);
+        Assert.Equal(0, page.Total);
+        Assert.Equal(1, page.Page);
     }
 
     [Fact]

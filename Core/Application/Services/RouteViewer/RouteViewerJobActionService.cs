@@ -12,6 +12,8 @@
 // Sequential-per-item rate limiting is a FRONTEND concern - the
 // service invokes SPs one call at a time. See useSequentialBulkAction
 // on the client for the 150ms gap.
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
@@ -288,22 +290,55 @@ public class RouteViewerJobActionService(
     // -----------------------------------------------------------------
 
     /// <summary>Partial-update for editable text fields on the Detail
-    /// pane (ToAddress / ToSuburb / Quantity / Notes / Refs / OurRef).
-    /// Wraps `dbo.WS_stpBulkJob_Update` which requires ALL fields on
-    /// every call - service loads current values for anything the
-    /// patch didn't set so unmentioned fields pass through unchanged.
-    /// The @Message param on the SP is a bolt-on SMS trigger; we
-    /// pass empty so no unintended SMS fires from an edit.</summary>
+    /// pane (Quantity / Notes / Refs / OurRef).
+    /// Wraps `dbo.WS_stpBulkJob_Update`.
+    ///
+    /// Three things about that SP that the previous version of this
+    /// method got wrong, all verified against the live 11,550-char body
+    /// on both staging tenants 2026-09-29:
+    ///
+    /// 1. It does NOT require all fields. Every input is `= NULL`
+    ///    defaulted and each field is guarded `IF ISNULL(@X, '') &lt;&gt; ''`,
+    ///    so omitting one is already a no-op.
+    /// 2. It APPENDS rather than replaces:
+    ///    `SET Notes = @Notes + CRLF + ISNULL(Notes, '')`, mirrored onto
+    ///    `tucJob`. So the old "load current values and pass them
+    ///    through unchanged" design prepended every currently non-empty
+    ///    value to itself on every call - editing Ref A duplicated
+    ///    Notes, Ref B and Our Ref as collateral. We now send only what
+    ///    the patch actually set and let the guards no-op the rest.
+    /// 3. `@Message` is an OUTPUT abort channel, not an SMS trigger (the
+    ///    body contains no SMS logic at all). It is set and the
+    ///    transaction ROLLBACKed, with no RAISERROR, when the job cannot
+    ///    be found or has already been picked up (status 4-13 or 17).
+    ///    The old call omitted OUTPUT, so those aborts surfaced to the
+    ///    operator as HTTP 200 "ok" on an edit that was rolled back. We
+    ///    now read it back and throw.
+    ///
+    /// ToAddress / ToSuburb are NOT handled here. The SP declares them
+    /// but never reads them - each token appears exactly once in the
+    /// whole body, in the parameter list - so those edits were silently
+    /// discarded. Address changes go through UpdateGpsAsync, which calls
+    /// RVW_stpUpdateBulkJobPickupAddress / ...DeliveryAddress and does
+    /// persist them.</summary>
     public async Task UpdateTextFieldsAsync(int bulkJobId, UpdateJobTextFieldsRequest patch)
     {
         await scopeGuard.EnsureBulkJobInScopeAsync(bulkJobId);
 
+        if (patch.ToAddress != null || patch.ToSuburb != null)
+        {
+            // Fail loud rather than report success on a write the SP drops.
+            throw new ArgumentException(
+                "WS_stpBulkJob_Update does not persist ToAddress or ToSuburb. "
+                + "Use the address endpoint (UpdateGpsAsync) for address changes.");
+        }
+
+        // @ClientID and @JobNumber are the SP's only non-defaulted inputs and
+        // form its lookup key, so they are the only values we still need to
+        // read. Everything else is sent only when the patch set it.
         var current = await Context.TblBulkJobs
             .Where(b => b.BulkJobId == bulkJobId)
-            .Select(b => new {
-                b.ClientId, b.JobNumber, b.ToAddress, b.ToSuburb,
-                b.Qty, b.Notes, b.ClientRefa, b.ClientRefb, b.OurRef,
-            })
+            .Select(b => new { b.ClientId, b.JobNumber })
             .FirstOrDefaultAsync();
         if (current == null) throw new ArgumentException($"BulkJob {bulkJobId} not found");
 
@@ -312,8 +347,6 @@ public class RouteViewerJobActionService(
             "WS_stpBulkJob_Update bulkJobId={BulkJobId} user={User} fields={Fields}",
             bulkJobId, userName,
             string.Join(',', new[] {
-                patch.ToAddress != null ? "toAddress" : null,
-                patch.ToSuburb != null ? "toSuburb" : null,
                 patch.Quantity != null ? "quantity" : null,
                 patch.Notes != null ? "notes" : null,
                 patch.RefA != null ? "refA" : null,
@@ -321,28 +354,43 @@ public class RouteViewerJobActionService(
                 patch.OurRef != null ? "ourRef" : null,
             }.Where(s => s != null)));
 
+        var spMessage = new SqlParameter("@Message", SqlDbType.NVarChar, 1000)
+        {
+            Direction = ParameterDirection.Output,
+        };
+
         await Context.Database.ExecuteSqlRawAsync(
             @"EXEC dbo.WS_stpBulkJob_Update
                 @ClientID = @ClientID,
                 @JobNumber = @JobNumber,
-                @ToAddress = @ToAddress,
-                @ToSuburb = @ToSuburb,
                 @Quantity = @Quantity,
                 @Notes = @Notes,
                 @ClientRefA = @ClientRefA,
                 @ClientRefB = @ClientRefB,
                 @OurRef = @OurRef,
-                @Message = @Message",
+                @Message = @Message OUTPUT",
             SpParam.Of("@ClientID", current.ClientId),
             SpParam.Of("@JobNumber", current.JobNumber),
-            SpParam.Of("@ToAddress", patch.ToAddress ?? current.ToAddress ?? string.Empty),
-            SpParam.Of("@ToSuburb", patch.ToSuburb ?? current.ToSuburb ?? string.Empty),
-            SpParam.Of("@Quantity", patch.Quantity ?? current.Qty ?? (short)1),
-            SpParam.Of("@Notes", patch.Notes ?? current.Notes ?? string.Empty),
-            SpParam.Of("@ClientRefA", patch.RefA ?? current.ClientRefa ?? string.Empty),
-            SpParam.Of("@ClientRefB", patch.RefB ?? current.ClientRefb ?? string.Empty),
-            SpParam.Of("@OurRef", patch.OurRef ?? current.OurRef ?? string.Empty),
-            SpParam.Of("@Message", string.Empty));
+            // Unset fields go as NULL so the SP's own
+            // IF ISNULL(@X, '') <> '' guards skip them. Sending the current
+            // value instead is what made the SP append it to itself.
+            SpParam.Of("@Quantity", patch.Quantity),
+            SpParam.Of("@Notes", patch.Notes),
+            SpParam.Of("@ClientRefA", patch.RefA),
+            SpParam.Of("@ClientRefB", patch.RefB),
+            SpParam.Of("@OurRef", patch.OurRef),
+            spMessage);
+
+        var abortReason = spMessage.Value as string;
+        if (!string.IsNullOrWhiteSpace(abortReason))
+        {
+            // The SP ROLLBACKed and RETURNed without raising, so this is the
+            // only signal that nothing was written.
+            logger.LogWarning(
+                "WS_stpBulkJob_Update aborted bulkJobId={BulkJobId} reason={Reason}",
+                bulkJobId, abortReason);
+            throw new InvalidOperationException(abortReason.Trim());
+        }
     }
 
     public async Task AddBulkJobNoteAsync(int bulkJobId, string notes)

@@ -322,7 +322,7 @@ export default function ScheduledRoutes() {
 
       {drillRoute && (
         <MappedStopsDrilldown
-          source="route"
+          tab="route"
           run={{ id: drillRoute.routeId, runName: drillRoute.name, fromDepotName: drillRoute.area || '-', toDepotName: '' }}
           onClose={() => setDrillRoute(null)}
         />

@@ -79,8 +79,93 @@ public partial class BulkImportServiceV2
             var jobId = new SqlParameter("@JobID", SqlDbType.Int) { Direction = ParameterDirection.Output };
             var message = new SqlParameter("@Message", SqlDbType.NVarChar, 1000) { Direction = ParameterDirection.Output };
 
+            // Named, not positional. This call was written against the
+            // pre-20250822161527 signature: that migration inserted
+            // @FromStreet/@FromBuilding/@FromCompany before @FromSuburb and
+            // @ToStreet/@ToBuilding/@ToCompany before @ToSuburb (plus
+            // @FromCountry/@ToCountry/@PickupNotes/@DeliveryNotes), so every
+            // argument from position 3 on landed one to ten slots early. The
+            // port in db81507 (2026-07-24) carried the stale order across, so
+            // BookPickup has never succeeded: position 7 fed ToAddress into
+            // @FromPostCode int (Msg 245) and the two OUTPUT parameters sat at
+            // 35/40 where the SP declares them at 45/50 (Msg 8162).
+            //
+            // The eight now-required address parameters follow the convention
+            // the sibling on-demand inserts in BulkImportJobFactory use:
+            // @FromStreet/@ToStreet take the raw address line, @FromBuilding
+            // and @FromCompany are blank because PickupJobToCreateDto has no
+            // unit or company field (the NZ branch passes fromExtra: "" for
+            // the same reason), and @PickupNotes/@DeliveryNotes are blank on
+            // both branches. @FromCountry/@ToCountry stay at their NULL
+            // defaults, as the DD wrapper leaves them.
+            //
+            // The eleven trailing NULLs of the old call mapped to @Pickup
+            // through @DeliveryState, all of which default to NULL, so they
+            // are simply omitted. The final 3 was @SourceId.
             var result =
-                await Context.Database.ExecuteSqlInterpolatedAsync($"EXEC WS_stpJob_Insert {request.PickupJob.BookedBy}, {request.PickupJob.FromAddress}, {request.PickupJob.FromSuburb}, {request.PickupJob.FromPostCode}, {request.PickupJob.Speed}, {request.PickupJob.SpeedID}, {request.PickupJob.ToAddress}, {request.PickupJob.ToSuburb}, {request.PickupJob.ToPostCode}, {request.PickupJob.ToAddressType}, {request.PickupJob.ReferenceA}, {request.PickupJob.ReferenceB}, {request.VehicleSize}, {request.PickupJob.Weight}, {request.PickupJob.Return}, {request.PickupJob.CourierNotes}, {request.PickupJob.ClientNotes}, {request.PickupJob.FromContactName}, {request.PickupJob.FromPhoneNumber}, {request.PickupJob.ToContactName}, {request.PickupJob.ToPhoneNumber}, {request.PickupJob.Type}, {request.PickupJob.PickUpFrom}, {request.PickupJob.Quantity}, {request.PickupJob.LeaveNotHome}, {request.PickupJob.JobNotificationType}, {request.PickupJob.JobNotificationEmail}, {request.PickupJob.JobNotificationMobile}, {request.PickupJob.ToAddressCode}, {request.PickupJob.FromAddressCode}, {request.PickupJob.ClientID}, {request.PickupJob.Time}, {request.PickupJob.Hold}, {request.PickupJob.FixedAmount}, {jobId} out, {request.PickupJob.AgentAmount}, {request.PickupJob.AgentCourierID}, {request.PickupJob.FuelSurchargeAmount}, {request.PickupJob.OurRef}, {message} out, {request.PickupJob.PickUpLatitude}, {request.PickupJob.PickUpLongitude}, {request.PickupJob.DeliveryLatitude}, {request.PickupJob.DeliveryLongitude}, {request.PickupJob.Kms}, {request.PickupJob.DGClass}, {request.PickupJob.DGDocument}, {request.PickupJob.ShopId}, {request.PickupJob.ShopRef1}, {request.PickupJob.ShopRef2}, {request.PickupJob.ShopRef3}, {request.PickupJob.ShopRef4}, {request.PickupJob.ShopRef5}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 3");
+                await Context.Database.ExecuteSqlInterpolatedAsync($@"EXEC WS_stpJob_Insert
+                    @BookedBy = {request.PickupJob.BookedBy},
+                    @FromAddress = {request.PickupJob.FromAddress},
+                    @FromStreet = {request.PickupJob.FromAddress ?? string.Empty},
+                    @FromBuilding = {string.Empty},
+                    @FromCompany = {string.Empty},
+                    @FromSuburb = {request.PickupJob.FromSuburb},
+                    @FromPostCode = {request.PickupJob.FromPostCode},
+                    @Speed = {request.PickupJob.Speed},
+                    @SpeedID = {request.PickupJob.SpeedID},
+                    @ToAddress = {request.PickupJob.ToAddress},
+                    @ToStreet = {request.PickupJob.ToAddress ?? string.Empty},
+                    @ToBuilding = {string.Empty},
+                    @ToCompany = {string.Empty},
+                    @ToSuburb = {request.PickupJob.ToSuburb},
+                    @ToPostCode = {request.PickupJob.ToPostCode},
+                    @ToAddressType = {request.PickupJob.ToAddressType},
+                    @ReferenceA = {request.PickupJob.ReferenceA},
+                    @ReferenceB = {request.PickupJob.ReferenceB},
+                    @Size = {request.VehicleSize},
+                    @Weight = {request.PickupJob.Weight},
+                    @Return = {request.PickupJob.Return},
+                    @CourierNotes = {request.PickupJob.CourierNotes},
+                    @ClientNotes = {request.PickupJob.ClientNotes},
+                    @PickupNotes = {string.Empty},
+                    @DeliveryNotes = {string.Empty},
+                    @FromContactName = {request.PickupJob.FromContactName},
+                    @FromPhoneNumber = {request.PickupJob.FromPhoneNumber},
+                    @ToContactName = {request.PickupJob.ToContactName},
+                    @ToPhoneNumber = {request.PickupJob.ToPhoneNumber},
+                    @Type = {request.PickupJob.Type},
+                    @PickUpFrom = {request.PickupJob.PickUpFrom},
+                    @Quantity = {request.PickupJob.Quantity},
+                    @LeaveNotHome = {request.PickupJob.LeaveNotHome},
+                    @JobNotificationType = {request.PickupJob.JobNotificationType},
+                    @JobNotificationEmail = {request.PickupJob.JobNotificationEmail},
+                    @JobNotificationMobile = {request.PickupJob.JobNotificationMobile},
+                    @ToAddressCode = {request.PickupJob.ToAddressCode},
+                    @FromAddressCode = {request.PickupJob.FromAddressCode},
+                    @ClientID = {request.PickupJob.ClientID},
+                    @Time = {request.PickupJob.Time},
+                    @Hold = {request.PickupJob.Hold},
+                    @FixedAmount = {request.PickupJob.FixedAmount},
+                    @JobID = {jobId} OUTPUT,
+                    @AgentAmount = {request.PickupJob.AgentAmount},
+                    @AgentCourierID = {request.PickupJob.AgentCourierID},
+                    @FuelSurchargeAmount = {request.PickupJob.FuelSurchargeAmount},
+                    @OurRef = {request.PickupJob.OurRef},
+                    @Message = {message} OUTPUT,
+                    @PickUpLatitude = {request.PickupJob.PickUpLatitude},
+                    @PickUpLongitude = {request.PickupJob.PickUpLongitude},
+                    @DeliveryLatitude = {request.PickupJob.DeliveryLatitude},
+                    @DeliveryLongitude = {request.PickupJob.DeliveryLongitude},
+                    @Kms = {request.PickupJob.Kms},
+                    @DGClass = {request.PickupJob.DGClass},
+                    @DGDocument = {request.PickupJob.DGDocument},
+                    @ShopId = {request.PickupJob.ShopId},
+                    @ShopRef1 = {request.PickupJob.ShopRef1},
+                    @ShopRef2 = {request.PickupJob.ShopRef2},
+                    @ShopRef3 = {request.PickupJob.ShopRef3},
+                    @ShopRef4 = {request.PickupJob.ShopRef4},
+                    @ShopRef5 = {request.PickupJob.ShopRef5},
+                    @SourceId = 3");
 
             if (jobId.Value != null && jobId.Value != DBNull.Value)
             {
