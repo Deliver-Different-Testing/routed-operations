@@ -34,6 +34,13 @@ public class BulkRunListRequest
     public string? SpeedIds { get; set; }
 
     /// <summary>Legacy group-by filter (Combined / Inbound / Outbound).
-    /// Passed verbatim to the SP - values are the legacy strings.</summary>
+    /// Bound from the query string - the Run Viewer frontend sends it on
+    /// /runs, /runs/{id}/jobs and /runs/overview - but NOTHING reads it
+    /// server-side: none of RVW_stpBulkRuns_2, RVW_stpBulkRunJobs or
+    /// RVW_stpBulkJobSearchData declares a @Group parameter. Do not wire it
+    /// into an SP call without checking that SP's signature first; a previous
+    /// attempt passed it to RVW_stpBulkJobSearchData positionally and broke
+    /// the call outright. Whether inbound/outbound should filter server-side
+    /// is open and belongs with Feature 5 Route Direction.</summary>
     public string? Group { get; set; }
 }

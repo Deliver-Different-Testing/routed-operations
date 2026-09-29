@@ -147,6 +147,15 @@ public class RecurringRouteService(
     public async Task<List<Dtos.RecurringLinehaul.BulkJobListItemDto>> GetMappedStopsAsync(int routeId)
     {
         var q =
+            // Bug 3: this shares BulkJobListItemDto and the MappedStopsDrilldown
+            // component with the Linehaul tab, so it has to stamp Source even
+            // though it only reads one table. Route stops are keyed on RouteId,
+            // not LinehaulRunId, and every tenant currently has zero rows with a
+            // RouteId in tucJob / tucJobArchive (checked on all four 2026-09-30),
+            // so there is no second source to union here yet. If route stamping
+            // ever reaches tucJob, this needs the same treatment as the linehaul
+            // list. Note Bug 2 deliberately nulls RouteId on linehaul legs, so LH
+            // legs are expected to be absent from this list.
             from j in Context.TblBulkJobs.AsNoTracking()
             where j.RouteId == routeId && !j.Void
             join t in Context.TucJobTypes.AsNoTracking() on j.Speed equals t.UcjtId into ts
@@ -159,6 +168,7 @@ public class RecurringRouteService(
             select new Dtos.RecurringLinehaul.BulkJobListItemDto
             {
                 Id = j.BulkJobId,
+                Source = Dtos.RecurringLinehaul.JobSources.Bulk,
                 JobNumber = j.JobNumber ?? string.Empty,
                 Pickup = j.FromAddress,
                 Drop = j.ToAddress,
