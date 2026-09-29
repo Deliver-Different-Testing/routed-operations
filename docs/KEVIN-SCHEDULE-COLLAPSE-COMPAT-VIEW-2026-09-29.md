@@ -17,6 +17,7 @@ on Steve's PC (see §9 for what that inventory does and does not cover).
 | :- | :- |
 | **Goal** | One row per schedule with a seven-day mask, instead of one row per operating day. |
 | **Size** | 11,110 day rows → ~2,750 schedule rows on Urgent prod (75% reduction). With the F1 client fold, ~2,100. |
+| **Cutoff / visibility** | Header carries one relative cutoff rule and `OccurrencesAhead`; the booking page shows the next N occurrences instead of a calendar window, which removes the reason for the inflated Monday cutoff (section 2.6). |
 | **Losslessness** | Only two columns genuinely vary by day: `CutoffHours` (845 schedules, of which 776 are the Monday-weekend artefact F11 already replaces) and the window `StartTime`/`EndTime` (~75 schedules). Everything else is constant per schedule. |
 | **Mechanism** | Payload moves up onto `tblBulkRunScheduleHeader` (which already exists and is already the FK target of every day row since 2026-09-08). Physical day table is renamed; a **view with the old name** fans collapsed headers back out per day, **preserving every existing `BulkRunScheduleId`**. |
 | **Blast radius** | 26 SPs/functions read `DayOfWeek` off the day table. None of them changes. They keep reading `dbo.tblBulkRunSchedule`, which becomes the view. |
@@ -89,8 +90,13 @@ MaxJobs             INT          NULL,
 Region              INT          NULL,
 SpeedId             INT          NULL,
 CutoffHours         INT          NULL,   -- legacy carrier only; F11 Phase D drops it
-CutoffDay           TINYINT      NULL,
+-- Cutoff is a RELATIVE rule on the header (decided 2026-09-29, see 2.6):
+-- "CutoffTime on the occurrence date minus CutoffWorkingDaysBefore working days".
+-- An absolute CutoffDay cannot be one value for a Mon-Fri row; the view derives
+-- the per-day CutoffDay the SPs expect.
+CutoffWorkingDaysBefore TINYINT  NULL,   -- 0 = same day, 1 = previous working day, ...
 CutoffTime          TIME(0)      NULL,
+OccurrencesAhead    TINYINT      NULL,   -- how many future occurrences the booking page shows (2.6)
 Description         NVARCHAR(500) NULL,
 AutoBook            BIT          NULL,
 PostcodeGroupId     INT          NULL,
@@ -156,7 +162,11 @@ SELECT
     COALESCE(d.ClientId, h.LegacyClientId)                                          AS ClientId,
     CASE WHEN h.IsCollapsed = 1 THEN h.SpeedId            ELSE d.SpeedId            END AS SpeedId,
     CASE WHEN h.IsCollapsed = 1 THEN h.CutoffHours        ELSE d.CutoffHours        END AS CutoffHours,
-    CASE WHEN h.IsCollapsed = 1 THEN h.CutoffDay          ELSE d.CutoffDay          END AS CutoffDay,
+    -- Collapsed: derive the per-day absolute CutoffDay from the relative rule, rolling
+    -- back over Sat/Sun (holidays are date-specific and stay with the booking function).
+    CASE WHEN h.IsCollapsed = 1
+         THEN dbo.fnCutoffDayFor(d.DayOfWeek, h.CutoffWorkingDaysBefore)
+         ELSE d.CutoffDay END                                                          AS CutoffDay,
     CASE WHEN h.IsCollapsed = 1 THEN h.CutoffTime         ELSE d.CutoffTime         END AS CutoffTime,
     CASE WHEN h.IsCollapsed = 1 THEN h.Description        ELSE d.Description        END AS Description,
     CASE WHEN h.IsCollapsed = 1 THEN h.AutoBook           ELSE d.AutoBook           END AS AutoBook,
@@ -251,6 +261,36 @@ so they can null/restore payload. `tblBulkRunScheduleDay` is post-2024 in shape 
 legacy table by identity; the trigger opens with `SET QUOTED_IDENTIFIER ON` / `SET ANSI_NULLS ON`
 per the legacy-DB policy.
 
+### 2.6 Cutoff and visibility on one row (decided 2026-09-29)
+
+Two things were historically encoded in the per-day `CutoffHours`:
+
+1. **The real cutoff** - how long before the run bookings close.
+2. **Visibility** - the Monday value was inflated (+48h, 796 schedules) so that Monday's run
+   still appeared on the booking page over a weekend when the page only looked
+   `DaysInFuture` calendar days ahead.
+
+The product direction is that the booking page shows the **next N occurrences** of a schedule,
+not a calendar window. Monday then appears on Friday because it is simply the next occurrence,
+and the inflated Monday cutoff has no reason to exist. So on the header:
+
+- `CutoffWorkingDaysBefore` + `CutoffTime`: one relative rule for every occurrence. Monday with
+  `1` gives Friday; over a long weekend the holiday calendar gives Thursday. No per-day case.
+- `OccurrencesAhead`: N. Replaces the client-speed `DaysInFuture` (which stays as a fallback;
+  `0` maps to `1` occurrence). Also added to `tblBulkRunScheduleOverride` at schedule scope so a
+  client can see further ahead than the schedule default; `fnScheduleForClient` coalesces it.
+- `dbo.fnCutoffDayFor(@DayOfWeek, @WorkingDaysBefore)` - tiny helper the view uses to emit the
+  legacy absolute `CutoffDay` per day row (weekend roll-back only).
+
+The F11 backfill (`20260924100500`) converted per-day `CutoffHours` to absolute pairs including
+the inflated Monday -> Friday case. The collapse procedure (section 5) reads the **weekday** rows
+as the rule and reports the Monday row as `MondayVisibilityOffset (reconciled)` rather than
+refusing.
+
+The availability functions (`UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule`) are built
+around the calendar window in four branches. They become the **first real rewrite** (section 9):
+one query - mask x dates, skip holidays, drop occurrences past cutoff, stop at N.
+
 ---
 
 ## 3. Migrations (dbmigrationsv2 conventions)
@@ -292,8 +332,9 @@ After M1–M4:
   → table, for writes. `BulkRunScheduleHeader` gains the payload properties.
   `BulkZoneSchedule`, `TblBulkScheduleLinehaul` and `Route.Schedules` FKs point at the Day
   entity (same ids).
-- **Create / update** writes collapsed: payload on the header, `WeekDays` from the selected
-  days, `IsCollapsed = 1`, and **one key row per masked day** in `tblBulkRunScheduleDay`
+- **Create / update** writes collapsed: payload on the header (`CutoffWorkingDaysBefore` +
+  `CutoffTime` + `OccurrencesAhead`, section 2.6 - not a per-day cutoff), `WeekDays` from the
+  selected days, `IsCollapsed = 1`, and **one key row per masked day** in `tblBulkRunScheduleDay`
   (`Name`, `ClientId`, `ScheduleId`, `DayOfWeek` only). Unticking a day flips the mask bit;
   the key row is not deleted (its id may be on a booking).
 - **Editing an uncollapsed header** in Schedules NEW: either collapse-on-save (call
@@ -359,10 +400,12 @@ uspScheduleCollapse @ScheduleId INT, @Commit BIT = 0, @By NVARCHAR(100) = NULL
      (`Description`, `StorageState`, … — the ≤ 11-schedule cases in §1). Report the values;
      operator fixes the data or accepts the majority value (`@AcceptMajority BIT` option).
    - `CutoffUnclean`: any row with `CutoffDay IS NULL` after the F11 backfill. Report
-     `CutoffHours` per day. Operator sets the absolute pair on the header explicitly.
-   - `CutoffVariesByDay`: `CutoffDay`/`CutoffTime` differ across rows **after** the F11
-     conversion. Genuine per-day cutoff; today that is the `CutoffException` structure F11
-     describes. Refuse in v1; revisit if the count is material (expected to be near zero).
+     `CutoffHours` per day. Operator sets `CutoffWorkingDaysBefore` + `CutoffTime` explicitly.
+   - `MondayVisibilityOffset (reconciled)`: Tue-Fri rows agree on a relative rule and only the
+     Monday row differs (the +48h pattern, section 2.6). **Not a refusal.** The weekday rule is
+     taken for the header and the Monday value is logged as discarded.
+   - `CutoffVariesByDay`: the relative rule differs across rows in a way that is **not** the
+     Monday pattern. Refuse in v1; expected to be near zero after the above.
 4. Compute `WeekDays` from the set of `DayOfWeek` values present.
 5. `@Commit = 0`: return one row `(ScheduleId, Name, CanCollapse, Reasons, ProposedWeekDays,
    ProposedCutoffDay, ProposedCutoffTime, RowCount)` plus a detail rowset of differing columns.
@@ -428,8 +471,10 @@ SELECT IsCollapsed, COUNT(*) Headers FROM dbo.tblBulkRunScheduleHeader WHERE Ret
   the header later. `tblBulkRunScheduleOverride.WeekDays` already has the same `CHAR(7)` shape,
   so a client override of days composes naturally: effective mask = override mask if present,
   else header mask.
-- **F11 (cutoff):** the collapse depends on the F11 backfill having run. The `CutoffUnclean`
-  refusal reason is the 603-row "unclean" set from Kevin's 24 Sep preview surfacing per schedule.
+- **F11 (cutoff):** the collapse depends on the F11 backfill having run, but the header carries
+  a **relative** rule (section 2.6), not the per-day absolute pair; the view derives the pair for
+  the SPs. The `CutoffUnclean` reason is the 603-row "unclean" set from Kevin's 24 Sep preview
+  surfacing per schedule. The Monday +48h pattern is reconciled, not refused.
 - **F17 / recurring routes:** untouched here. Binding stays on the representative day-row id
   until F18. The collapse does not delete key rows, so `tblRouteSchedule` cascade deletes cannot
   fire from this work.
@@ -462,8 +507,8 @@ geography; not worth moving).
 | `RVW_stpJobSiblings` | Sibling legs for a job | routed-operations | — | **Lift now** | Small. |
 | `UTL_stpJob_tblBulkJobWithFilter` | Bulk job filter (delimited id lists) | routed-operations | — | **Lift now** | Replace delimited strings with LINQ `Contains`. |
 | `fnScheduleForClient` | F1 delta resolver (inline TVF) | routed-operations (7 sites) | booking SPs via view | **Keep in SQL** for now | Inline TVF is the point; EF version comes when booking lifts. |
-| `UTL_fncJob_GetClientAvailableBulkRunSchedule` | NZ client availability | none local (booking site / DespatchWeb) | `WS_stpBulkScheduleJob_Insert`, `WS_stpJob_Insert` | **After re-point** | Customer-facing; both tenants; used by SPs too. |
-| `DD_fncJob_GetClientAvailableBulkRunSchedule` | US client availability | dfrnt-ops (proposed MCP tools only) | `DD_stpBulkScheduleJob_Insert`, `DD_stpJob_InsertExcelerator` | **After re-point** | As above. |
+| `UTL_fncJob_GetClientAvailableBulkRunSchedule` | NZ client availability | none local (booking site / DespatchWeb) | `WS_stpBulkScheduleJob_Insert`, `WS_stpJob_Insert` | **Rewrite first (SQL)** | Four calendar-window branches -> one occurrence-based query over the header mask (section 2.6). Read-only, testable against the booking page. Same signature so SP callers are untouched. |
+| `DD_fncJob_GetClientAvailableBulkRunSchedule` | US client availability | dfrnt-ops (proposed MCP tools only) | `DD_stpBulkScheduleJob_Insert`, `DD_stpJob_InsertExcelerator` | **Rewrite first (SQL)** | Twin; one body, tenant branch only where types differ. |
 | `IsWithinDepotServiceArea` | Depot geography | none local | availability fns | **Keep in SQL** | Geography. |
 | `WS_stpBulkScheduleJob_Insert` | NZ scheduled booking entry | none local | `WS_stpJob_Insert`, `UTL_stpJobBooking_ApplyInitialPhase`, `UTL_stpJob_InsertFromTblBulkJob` | **After re-point** | The prize with its DD_ twin: one C# engine, tenant strategy. Pricing → shadow-run. |
 | `DD_stpBulkScheduleJob_Insert` | US scheduled booking entry | dfrnt-ops (1) | `DD_stpJob_InsertExcelerator`, `DD_stpJob_Scheduler_Rates`, `UTL_stpJobBooking_InsertSchedule` | **After re-point** | Twin of the above. |
@@ -498,8 +543,9 @@ off-PC caller inventory is complete.
    writing day rows until ops collapses explicitly?
 2. ~~Legacy ClientManager writer~~ — **decided 2026-09-29:** ClientManager is being retired;
    leave it behind the trigger. Old Schedules page in Routed Operations shares the upsert path (§4.4).
-3. **`CutoffVariesByDay` after F11 conversion:** refuse (recommended for v1) or support a
-   per-day cutoff exception row?
+3. ~~Per-day cutoff~~ - **decided 2026-09-29:** cutoff is one relative rule per schedule
+   (`CutoffWorkingDaysBefore` + `CutoffTime`); the Monday offset was a visibility hack that
+   "next N occurrences" removes (section 2.6). Genuine per-day cutoff remains a refusal in v1.
 4. **Order of sets** for Phase C, and who on the Urgent team drives it.
 5. **F18 timing:** run M6 straight after Phase D, or hold until F9/F10 leg model lands so
    `tblRouteSchedule` moves to the leg in the same pass?
