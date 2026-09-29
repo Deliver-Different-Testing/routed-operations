@@ -520,3 +520,85 @@ off-PC caller inventory is complete.
 | `tblBulkScheduleLinehaul` | `BulkRunScheduleId` | FK |
 | `BulkZoneSchedule` | `ScheduleId` | FK |
 | `tblSchedulePostcode`, `tblSchedulePolygon`, `tblScheduleClient` | `ScheduleName` | name-keyed (F18 Risk A) — unaffected by collapse, still wrong |
+
+## Appendix C — read-only queries to run before M1 (Urgent prod + staging; C-block also on Medical prod)
+
+Return results as CSV or a pasted table, tenant name on each.
+
+```sql
+-- A1. Time column types per tenant. Decides the view body (§2.4).
+SELECT c.name, t.name AS type_name
+FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id
+WHERE c.object_id = OBJECT_ID('dbo.tblBulkRunSchedule') AND c.name IN ('StartTime','EndTime','CutoffTime');
+
+-- A2. Everything in the DB that references the day table (real blast radius).
+SELECT o.type_desc, o.name,
+       CASE WHEN OBJECTPROPERTY(o.object_id,'IsSchemaBound') = 1 THEN 'SCHEMABOUND' END AS bound
+FROM sys.sql_expression_dependencies d JOIN sys.objects o ON o.object_id = d.referencing_id
+WHERE d.referenced_id = OBJECT_ID('dbo.tblBulkRunSchedule') ORDER BY o.type_desc, o.name;
+
+-- A3. Anything that would fight sp_rename or the view.
+SELECT 'trigger' AS kind, name FROM sys.triggers WHERE parent_id = OBJECT_ID('dbo.tblBulkRunSchedule')
+UNION ALL SELECT 'synonym', name FROM sys.synonyms WHERE base_object_name LIKE '%tblBulkRunSchedule%'
+UNION ALL SELECT 'fk_in', name FROM sys.foreign_keys WHERE referenced_object_id = OBJECT_ID('dbo.tblBulkRunSchedule');
+
+-- A4. Procedures that WRITE the day table (approximate, body text).
+SELECT o.name FROM sys.objects o
+WHERE o.type IN ('P','TR') AND OBJECT_DEFINITION(o.object_id) LIKE '%tblBulkRunSchedule%'
+  AND (OBJECT_DEFINITION(o.object_id) LIKE '%INSERT%tblBulkRunSchedule%'
+    OR OBJECT_DEFINITION(o.object_id) LIKE '%UPDATE%tblBulkRunSchedule%'
+    OR OBJECT_DEFINITION(o.object_id) LIKE '%DELETE%tblBulkRunSchedule%');
+
+-- B1. Collapse readiness per header, after F1 fold + F11 backfill (the dry run in one query).
+;WITH v AS (
+  SELECT s.ScheduleId,
+         COUNT(*) AS Rows_, COUNT(DISTINCT s.DayOfWeek) AS Days_,
+         COUNT(DISTINCT CONCAT(s.StartTime,'|',s.EndTime)) AS Windows_,
+         COUNT(DISTINCT CONCAT(s.CutoffDay,'|',s.CutoffTime)) AS CutoffPair_,
+         SUM(CASE WHEN s.CutoffDay IS NULL THEN 1 ELSE 0 END) AS CutoffUnclean_,
+         COUNT(DISTINCT CONCAT(s.MaxJobs,'|',s.Region,'|',s.SpeedId,'|',s.Description,'|',s.AutoBook,'|',
+               s.PostcodeGroupId,'|',s.BookPickup,'|',s.PickupDepotId,'|',s.StorageState,'|',s.DeliveryState,'|',
+               s.PickupRatingSpeed,'|',s.PickupPostcodeGroupId,'|',s.ParentSpeedId,'|',s.PickupBoxDiscount,'|',
+               s.DropOffLocationID,'|',s.ApplyPickupCutoff,'|',s.PickupCutoff,'|',s.AutoBookScanAhead,'|',
+               s.IsRecurringSchedule)) AS OtherPayload_
+  FROM dbo.tblBulkRunSchedule s
+  JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId AND h.RetiredUtc IS NULL
+  GROUP BY s.ScheduleId)
+SELECT COUNT(*) AS Headers,
+  SUM(CASE WHEN Rows_ > Days_ THEN 1 ELSE 0 END)      AS DuplicateDay,
+  SUM(CASE WHEN Windows_ > 1 THEN 1 ELSE 0 END)       AS WindowVariesByDay,
+  SUM(CASE WHEN CutoffPair_ > 1 THEN 1 ELSE 0 END)    AS CutoffVariesByDay_AfterF11,
+  SUM(CASE WHEN CutoffUnclean_ > 0 THEN 1 ELSE 0 END) AS CutoffUnclean,
+  SUM(CASE WHEN OtherPayload_ > 1 THEN 1 ELSE 0 END)  AS OtherPayloadVaries,
+  SUM(CASE WHEN Rows_ = Days_ AND Windows_ = 1 AND CutoffPair_ = 1 AND CutoffUnclean_ = 0 AND OtherPayload_ = 1
+           THEN 1 ELSE 0 END) AS CollapsibleNow,
+  SUM(Rows_) AS DayRows
+FROM v;
+
+-- B2. Day-mask distribution.
+SELECT WeekDays, COUNT(*) FROM (
+  SELECT s.ScheduleId,
+         (SELECT STRING_AGG(CASE WHEN EXISTS (SELECT 1 FROM dbo.tblBulkRunSchedule x WHERE x.ScheduleId = s.ScheduleId AND x.DayOfWeek = d.n) THEN '1' ELSE '0' END, '')
+                 WITHIN GROUP (ORDER BY d.n) FROM (VALUES (1),(2),(3),(4),(5),(6),(7)) d(n)) AS WeekDays
+  FROM dbo.tblBulkRunSchedule s GROUP BY s.ScheduleId) m
+GROUP BY WeekDays ORDER BY COUNT(*) DESC;
+
+-- C1. F17: junction bindings per route vs distinct schedules on the route's bookings.
+SELECT r.RouteId, r.Name, r.Active,
+       (SELECT COUNT(*) FROM dbo.tblRouteSchedule rs WHERE rs.RouteId = r.RouteId) AS BoundSchedules,
+       (SELECT COUNT(DISTINCT b.ScheduleID) FROM dbo.tucJobBooking b WHERE b.RouteId = r.RouteId) AS BookingSchedules,
+       (SELECT COUNT(*) FROM dbo.tucJobBooking b WHERE b.RouteId = r.RouteId) AS Bookings
+FROM dbo.Routes r ORDER BY BoundSchedules DESC;
+
+-- C2. F17: bindings that no longer resolve to a live day row.
+SELECT rs.* FROM dbo.tblRouteSchedule rs
+LEFT JOIN dbo.tblBulkRunSchedule s ON s.BulkRunScheduleId = rs.ScheduleId
+LEFT JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId
+WHERE s.BulkRunScheduleId IS NULL OR h.RetiredUtc IS NOT NULL;
+
+-- C3. F17: resolver outcomes, last 14 days, by route.
+SELECT ResolvedRouteId, Outcome, Side, COUNT(*) AS N
+FROM dbo.RouteAutoAssignLog
+WHERE CreatedAtUtc >= DATEADD(DAY, -14, SYSUTCDATETIME())
+GROUP BY ResolvedRouteId, Outcome, Side ORDER BY ResolvedRouteId, N DESC;
+```
