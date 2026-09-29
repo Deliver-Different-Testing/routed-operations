@@ -118,7 +118,16 @@ public class UpdateJobGpsRequest
 /// fields).</summary>
 public class UpdateJobTextFieldsRequest
 {
+    /// <summary>NOT persisted. WS_stpBulkJob_Update declares @ToAddress and
+    /// @ToSuburb but never reads them, so these used to be dropped silently.
+    /// The service now rejects a patch that sets either. Address edits belong
+    /// on the address endpoint, which writes through
+    /// RVW_stpUpdateBulkJobPickupAddress / ...DeliveryAddress. Kept on the
+    /// request so an older client gets an error instead of a false success.
+    /// </summary>
     public string? ToAddress { get; set; }
+
+    /// <inheritdoc cref="ToAddress"/>
     public string? ToSuburb { get; set; }
     public short? Quantity { get; set; }
     public string? Notes { get; set; }

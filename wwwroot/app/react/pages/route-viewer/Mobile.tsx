@@ -9,7 +9,7 @@ import { routeViewerService } from '../../services/routeViewerService';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvGpsEditModal } from '../../components/route-viewer/RvGpsEditModal';
-import { EditableRow } from '../../components/route-viewer/EditableInfoRow';
+import { EditableRow, InfoRow } from '../../components/route-viewer/EditableInfoRow';
 
 // Mobile RunViewer surface (master Section 13). Single-column layout
 // tuned for handheld / tablet operators. Nav flow:
@@ -333,15 +333,15 @@ export default function Mobile() {
                   then item / order details, then delivery / charge). Each
                   editable row is a large tap target for one-handed operators. */}
               <div className="border-t border-border pt-2 mt-2 space-y-2">
-                {/* 1. To Address - free-text, backed by WS_stpBulkJob_Update.@ToAddress */}
-                <EditableRow
-                  label="To"
-                  displayValue={job.toAddress ?? ''}
-                  editValue={job.toAddress ?? ''}
-                  kind="textarea"
-                  readOnly={readOnlyEdit(job.bulkJobId)}
-                  onSave={(v) => saveJobField(job.bulkJobId, { toAddress: v })}
-                />
+                {/* 1. To Address - read-only. This was an EditableRow posting
+                    { toAddress } to the text-fields endpoint, but
+                    WS_stpBulkJob_Update declares @ToAddress and never reads
+                    it, so every save was discarded while the UI reported
+                    success. Fix GPS immediately below is the path that
+                    actually persists an address change, via
+                    RVW_stpUpdateBulkJobDeliveryAddress. Desktop RvJobDetail
+                    never offered this edit either. */}
+                <InfoRow label="To" value={job.toAddress ?? null} />
                 {/* Fix GPS lives beside the To row for touch-first access
                     (Mobile has no right-click). Kept in a separate button
                     row so tapping the address value never accidentally

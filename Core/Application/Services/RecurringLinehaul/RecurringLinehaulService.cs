@@ -474,12 +474,51 @@ public class RecurringLinehaulService(
         });
         var stopCountsTask = Task.Run(async () =>
         {
+            // Bug 3: must cover the same two sources as
+            // RecurringLinehaulJobsService.ListForLinehaulRunAsync, or the count on
+            // the row disagrees with the number of rows the drill-down shows.
+            // tucJobArchive is deliberately excluded from both.
+            //
+            // This number is EXPECTED to differ from the Route Viewer Linehaul tab,
+            // and that is not a defect to go fixing. RVW_stpLineHaulRuns builds its
+            // rows FROM tucJob only, on purpose (Kevin 2026-09-30): presence in
+            // tucJob means the job has been activated, so that SP answers "what is
+            // actually moving on @RunDate and how far has it been scanned". This
+            // count answers a different question - "how many stops are mapped to
+            // this run" - which includes tblBulkJob rows that are still future
+            // prebooks (urgent-prod carries BookDates out to 2026-10-05). Unioning
+            // tblBulkJob into that SP would inflate its ExpectedItems without
+            // adding any scans and turn every run red.
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.TblBulkJobs.AsNoTracking()
+
+            var counts = new Dictionary<int, int>();
+
+            void Add(IEnumerable<KeyValuePair<int, int>> part)
+            {
+                foreach (var kv in part)
+                {
+                    counts[kv.Key] = counts.TryGetValue(kv.Key, out var n) ? n + kv.Value : kv.Value;
+                }
+            }
+
+            Add(await ctx.TblBulkJobs.AsNoTracking()
                 .Where(j => j.LinehaulRunId != null && runIds.Contains(j.LinehaulRunId.Value) && !j.Void)
                 .GroupBy(j => j.LinehaulRunId!.Value)
                 .Select(g => new { RunId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.RunId, x => x.Count);
+                .ToDictionaryAsync(x => x.RunId, x => x.Count));
+
+            // Same de-duplication as the list: a pushed leg can carry the run id on
+            // both tables, and counting it twice would make this number disagree
+            // with the drill-down. See RecurringLinehaulJobsService.BuildStops.
+            Add(await ctx.TucJobs.AsNoTracking()
+                .Where(j => j.LinehaulRunId != null && runIds.Contains(j.LinehaulRunId.Value) && !j.UcjbVoid
+                            && !ctx.TblBulkJobs.Any(
+                                   b => b.JobId == j.UcjbId && b.LinehaulRunId == j.LinehaulRunId && !b.Void))
+                .GroupBy(j => j.LinehaulRunId!.Value)
+                .Select(g => new { RunId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.RunId, x => x.Count));
+
+            return counts;
         });
         var bindingRowsTask = Task.Run(async () =>
         {
