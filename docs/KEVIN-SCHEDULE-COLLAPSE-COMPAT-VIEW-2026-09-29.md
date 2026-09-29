@@ -327,12 +327,18 @@ Filters that make useful sets: by client, by region (`Region`), by name prefix, 
 `Route.cs` still carries the legacy `Routes.ScheduleId` single pointer; unchanged here, retired
 under F18.
 
-### 4.4 Legacy ClientManager `/api/Schedules` (AdminManager)
+### 4.4 Legacy ClientManager `/api/Schedules` (AdminManager) — being retired
 
-Writes day rows directly (POST/PUT/DELETE `/api/Schedules`, `POST /api/Schedules/AutoBook/{id}`).
-Source is not on this PC. Two options: point the admin-ui schedules module at Schedules NEW's
-API, or leave it and let the trigger reject edits to collapsed schedules with a clear message.
-The trigger is the safety net either way. **Decision needed (§10).**
+**Decided 2026-09-29 (Steve):** ClientManager is being migrated away from; the old schedules
+view already exists inside Routed Operations. So: **no re-point work.** The guard trigger (§2.5)
+is the safety net for the remainder of ClientManager's life — an edit to a collapsed schedule
+from there fails with a clear message instead of silently doing nothing.
+
+Consequence: the **old Schedules page inside Routed Operations** (`SchedulesController` /
+`Schedules.tsx`, distinct from Schedules NEW's `SchedulesV2Controller`) is also a day-row
+writer through the same `ScheduleService`. It gets the same behaviour as §4.1: write collapsed
+for collapsed headers, or refuse with the dry-run reasons. Simplest: route both pages through
+the one upsert path so there is exactly one writer.
 
 ---
 
@@ -490,8 +496,8 @@ off-PC caller inventory is complete.
 
 1. **Collapse-on-save** in Schedules NEW for uncollapsed headers (recommended), or keep
    writing day rows until ops collapses explicitly?
-2. **Legacy ClientManager `/api/Schedules` writer:** re-point admin-ui to Schedules NEW, or
-   leave it behind the trigger?
+2. ~~Legacy ClientManager writer~~ — **decided 2026-09-29:** ClientManager is being retired;
+   leave it behind the trigger. Old Schedules page in Routed Operations shares the upsert path (§4.4).
 3. **`CutoffVariesByDay` after F11 conversion:** refuse (recommended for v1) or support a
    per-day cutoff exception row?
 4. **Order of sets** for Phase C, and who on the Urgent team drives it.
