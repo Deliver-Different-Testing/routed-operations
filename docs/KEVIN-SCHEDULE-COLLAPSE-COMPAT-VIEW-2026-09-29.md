@@ -6,7 +6,7 @@ strategic team as a rationalisation goal; this document is the execution plan._
 
 Sources: Kerran's `Schedule Table` export (11,110 rows, Urgent prod, 8 Sep 2026), the
 dbmigrationsv2 migrations through 2026-09-25, routed-operations `develop` on GitLab as at
-2026-09-29, and a call-site inventory across the repos on Steve's PC (section 9 says what that
+2026-09-29, and a call-site inventory across the repos on Steve's PC (section 8 says what that
 does and does not cover).
 
 ---
@@ -26,7 +26,7 @@ Not a campaign to collapse the existing 11,000 rows.
 | **Cutoff / visibility** | One relative cutoff rule per schedule and `OccurrencesAhead`; the booking page shows the next N occurrences, which removes the reason for the inflated Monday cutoff (section 2.5). |
 | **Day mask format** | `CHAR(7)`, position 1 = Monday - the convention `ucbkDays`, `tblBulkRunScheduleOverride.WeekDays` and `uspPrebookSet` already use. |
 | **Not in scope** | Header widening, `IsCollapsed` flag, guard trigger, batch collapse runbook, dropping legacy columns. All can come later; none is needed to stop the bloat. |
-| **Decisions needed** | Section 10 (two). |
+| **Decisions needed** | Section 9 (two). |
 
 ---
 
@@ -200,7 +200,7 @@ Properties:
 - **Every existing `BulkRunScheduleId` still resolves.** No booking, route binding or linehaul
   leg needs touching.
 - With **no detail rows** the view is the table (`x` is always NULL, `WHERE` is always true).
-  That is the state at deploy, and V1 in section 7 proves it.
+  That is the state at deploy, and V1 in section 6 proves it.
 - For a new-shape schedule, a key row whose mask bit is `0` is hidden. "Switch off Fridays" is
   a mask edit; the key row stays as an id anchor.
 - Plain joins on clustered keys, no aggregates, so predicates on `BulkRunScheduleId`,
@@ -251,7 +251,7 @@ Monday cutoff has no reason to exist. Hence, on the detail row:
   legacy client-speed over the current default of 6.
 
 The availability functions (`UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule`) are built
-around the calendar window in four branches; they are the **first real rewrite** (section 9):
+around the calendar window in four branches; they are the **first real rewrite** (section 8):
 one query - mask x dates, skip holidays, drop occurrences past cutoff, stop at N.
 
 ---
@@ -268,7 +268,7 @@ via the `sys.database_permissions` discovery pattern from `20260908120004`,
 | M2 | `..._ScheduleDay_RenameAndCompatView` | `sp_rename` -> `tblBulkRunScheduleDay`; view `dbo.tblBulkRunSchedule` (section 2.3, tenant time-type branch section 2.4); GRANTs on both; `procRefreshAllViews`. **Behaviour identical**: no detail rows exist. | **Low, and the only one.** Metadata rename + view. Anything `INSERT`ing into the old name fails (section 2.3). | drop view, `sp_rename` back |
 | M3 | `..._fnScheduleForClient_ReadDetail` | F1 resolver reads detail-then-day via the view's columns plus `OccurrencesAhead`. Optional in this release; the view already feeds it. | Low | redeploy prior body |
 
-**Gate for M2:** on staging, V1 (section 7) returns zero rows both ways, then the standard
+**Gate for M2:** on staging, V1 (section 6) returns zero rows both ways, then the standard
 booking / availability / run viewer / `uspPrebookSet` regression passes. Then prod.
 
 **Ordering:** M2 must come after the last F11 / F19 SP re-emit in the same deploy; name them in
@@ -327,7 +327,7 @@ indicator is useful so ops can see the estate converging; nothing else changes.
   Its direct `INSERT`/`UPDATE`/`DELETE` against `tblBulkRunSchedule` will fail after M2 with a
   view-not-updatable error. Accepted. If that lands before ClientManager is switched off, the
   admin-ui schedules module should be pointed at Schedules NEW rather than patched.
-- **The 26 SPs / functions** (section 9): unchanged in this plan.
+- **The 26 SPs / functions** (section 8): unchanged in this plan.
 
 ---
 
@@ -347,7 +347,7 @@ remaining rows gone faster.
 
 ---
 
-## 7. Verification queries
+## 6. Verification queries
 
 ```sql
 -- V1. View reproduces the table exactly (staging, immediately after M2, before any detail rows).
@@ -379,7 +379,7 @@ WHERE h.RetiredUtc IS NULL GROUP BY CASE WHEN x.ScheduleId IS NULL THEN 'old' EL
 
 ---
 
-## 8. How this fits the open F-items
+## 7. How this fits the open F-items
 
 - **F1 (client deltas):** unchanged. `fnScheduleForClient` resolves against the view now and
   the header later. `tblBulkRunScheduleOverride.WeekDays` already has the same `CHAR(7)` shape,
@@ -400,7 +400,7 @@ WHERE h.RetiredUtc IS NULL GROUP BY CASE WHEN x.ScheduleId IS NULL THEN 'old' EL
 
 ---
 
-## 9. Inventory: the 26 SPs/functions that read schedule day rows, and what can be lifted into EF Core
+## 8. Inventory: the 26 SPs/functions that read schedule day rows, and what can be lifted into EF Core
 
 **Coverage caveat.** Call sites were searched across the repos on Steve's PC only
 (routed-operations, dfrntdrive_configurator, configurator-main-docs, despatchwebchanges,
@@ -451,7 +451,7 @@ off-PC caller inventory is complete.
 
 ---
 
-## 10. Decisions needed from Steve
+## 9. Decisions needed from Steve
 
 1. ~~Legacy ClientManager writer~~ - **decided 2026-09-29:** retiring; direct writes failing
    against the view after M2 is accepted (section 4.3).
