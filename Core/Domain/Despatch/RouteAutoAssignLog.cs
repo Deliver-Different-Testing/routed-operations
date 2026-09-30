@@ -58,4 +58,23 @@ public partial class RouteAutoAssignLog
     [Required]
     [MaxLength(10)]
     public string Side { get; set; }
+
+    /// <summary>Feature 5.2. Which of the delivery side's three attempts
+    /// produced the resolution: 'FM-Depot' (a final-mile route bound to the
+    /// origin depot), 'FM-Addr' (a final-mile route whose address origin sat
+    /// within its radius of the pickup point), or 'Legacy' (no direction
+    /// filter, i.e. what every caller got before this feature).
+    ///
+    /// NULL on every pickup-side row and on every row written before the
+    /// feature shipped. Deliberately a separate nullable column rather than a
+    /// TriggerSource suffix: TriggerSource is varchar(30) whose longest live
+    /// value is already 20 characters, so a suffix would truncate silently at
+    /// the parameter boundary.
+    ///
+    /// DEPLOY ORDER: dbmigrationsv2 20260930170000 adds the column. EF
+    /// projects every mapped property, so this must not reach a tenant before
+    /// that migration does or the /api/auto-assign-log feed breaks outright.
+    /// </summary>
+    [MaxLength(20)]
+    public string MatchStrategy { get; set; }
 }

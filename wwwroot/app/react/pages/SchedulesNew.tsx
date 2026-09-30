@@ -18,7 +18,7 @@ import {
   scheduleService,
   type ScheduleGroupSummary,
 } from '../services/scheduleService';
-import { recurringRouteService, type RecurringRoute } from '../services/recurringRouteService';
+import { recurringRouteService, RouteDirection, type RecurringRoute } from '../services/recurringRouteService';
 import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
 import { ScheduleDetailModal, type OverrideEditContext } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
@@ -1641,10 +1641,29 @@ function RecurringRoutesTab() {
     return map;
   }, [schedSummary.data]);
 
-  const routeKind = (r: RecurringRoute): 'first' | 'final' => {
-    const name = `${r.name} ${r.area}`.toLowerCase();
-    return /deliver|final|pm\b|home/.test(name) ? 'final' : 'first';
-  };
+  // Feature 5.1: classify from the stored Routes.Direction instead of
+  // guessing at the route's name.
+  //
+  // The name regex it replaces was /deliver|final|pm\b|home/ over
+  // `${name} ${area}`. It happened to classify all 11 live routes on
+  // medical-prod correctly, so this is not fixing a visible misclassification
+  // - it is removing the guess that Feature 5 exists to make unnecessary.
+  //
+  // CONSEQUENCE WORTH KNOWING: Direction is NOT NULL DEFAULT 1, so until an
+  // operator (or the 5.6 data step) marks a route as final mile it now reads
+  // as first mile. Route 15 "Burbank to Lab" on medical-prod is the one that
+  // changes: the regex called it final via its name, and it will show as
+  // first until its Direction is set. Deliberately NOT papering over that
+  // with a name fallback - a fallback would also override an operator who
+  // explicitly chose first mile on a route whose name contains "delivery",
+  // and the stored value has to be the single source of truth or the whole
+  // feature is decorative.
+  //
+  // 'middle' is not reachable here and never was: it belongs to linehaul runs
+  // (tblbulkLinehaulRun), which push their own rows with kind 'middle' below.
+  // Routes.Direction only has 1 and 2 by CK_Routes_Direction.
+  const routeKind = (r: RecurringRoute): 'first' | 'final' =>
+    r.direction === RouteDirection.FinalMile ? 'final' : 'first';
 
   const rows = useMemo<RecurringRow[]>(() => {
     const out: RecurringRow[] = [];

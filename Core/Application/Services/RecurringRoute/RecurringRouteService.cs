@@ -52,6 +52,11 @@ public class RecurringRouteService(
             .SelectMany(r => r.Schedules.Select(s => s.BulkRunScheduleId))
             .Distinct().ToList();
         var routeIds = rows.Select(r => r.RouteId).ToList();
+        // Feature 5.1. Route.DepotId is a bare scalar with no navigation
+        // property on purpose (see Route.Direction.cs), so the name is
+        // resolved here the same way courier and agent names already are.
+        var depotIds = rows.Where(r => r.DepotId.HasValue)
+            .Select(r => r.DepotId!.Value).Distinct().ToList();
 
         var couriersTask = Task.Run(async () =>
         {
@@ -68,6 +73,14 @@ public class RecurringRouteService(
             return await ctx.TucAgents.AsNoTracking()
                 .Where(a => agentIds.Contains(a.UcagId))
                 .ToDictionaryAsync(a => a.UcagId, a => a.UcagName ?? string.Empty);
+        });
+        var depotsTask = Task.Run(async () =>
+        {
+            if (depotIds.Count == 0) return new Dictionary<int, string>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkRegions.AsNoTracking()
+                .Where(d => depotIds.Contains(d.BulkRegionId))
+                .ToDictionaryAsync(d => d.BulkRegionId, d => d.Name ?? string.Empty);
         });
         var scheduleMapTask = BuildScheduleLookupAsync(scheduleIds);
         var bookingCountsTask = Task.Run(async () =>
@@ -92,9 +105,10 @@ public class RecurringRouteService(
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
         });
 
-        await Task.WhenAll(couriersTask, agentsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask);
+        await Task.WhenAll(couriersTask, agentsTask, depotsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask);
         var couriers = couriersTask.Result;
         var agents = agentsTask.Result;
+        var depots = depotsTask.Result;
         var scheduleMap = scheduleMapTask.Result;
         var bookingCounts = bookingCountsTask.Result;
         var mappedStopsCounts = mappedStopsTask.Result;
@@ -136,7 +150,14 @@ public class RecurringRouteService(
                 bookingCounts.GetValueOrDefault(r.RouteId),
                 mappedStopsCounts.GetValueOrDefault(r.RouteId),
                 r.CreatedAt,
-                r.UpdatedAt);
+                r.UpdatedAt,
+                // Feature 5.1
+                r.Direction,
+                r.DepotId,
+                r.DepotId.HasValue
+                    ? depots.GetValueOrDefault(r.DepotId.Value, string.Empty)
+                    : string.Empty,
+                BuildOrigin(r));
         }).ToList();
     }
 
@@ -291,6 +312,7 @@ public class RecurringRouteService(
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
         };
+        ApplyDirection(route, req.Direction, req.DepotId, req.Origin);
         await AttachZipsAsync(route, req.ZipPolygonIds);
         await AttachBulkPolygonsAsync(route, req.BulkPolygonIds ?? new List<int>());
         await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
@@ -321,6 +343,7 @@ public class RecurringRouteService(
         route.Active = req.Active;
         route.UpdatedAt = DateTime.UtcNow;
         route.UpdatedBy = CurrentUser();
+        ApplyDirection(route, req.Direction, req.DepotId, req.Origin);
 
         // Replace zip coverage wholesale (matches Configurator UPDATE contract).
         route.ZipPolygons.Clear();
@@ -351,6 +374,16 @@ public class RecurringRouteService(
             .Include(r => r.Schedules)
             .FirstOrDefaultAsync(r => r.RouteId == sourceRouteId);
         if (source is null) return null;
+
+        // Feature 5.1 / pre-existing gap: CopyAsync never validated anything.
+        // CreateAsync and UpdateAsync both call ValidateUpsert as their first
+        // statement; this path did not, so a copy could persist a shape the
+        // other two reject. Validating the shape the copy is ABOUT to take -
+        // which inherits Direction and the origin from the source - closes it
+        // and, more importantly, stops a copy of a final-mile route silently
+        // becoming first-mile or tripping CK_Routes_Direction at SaveChanges.
+        ValidateDirection(source.Direction, source.DepotId, BuildOrigin(source));
+
         var (courierId, agentId) = SplitTarget(req.DefaultTargetType, req.DefaultTargetId);
 
         var copy = new RouteEntity
@@ -364,6 +397,12 @@ public class RecurringRouteService(
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
         };
+        // Direction and origin come from the SOURCE, not from the request.
+        // CopyRouteRequest deliberately has no direction fields: a copy of a
+        // final-mile route that quietly became first-mile would be a worse
+        // surprise than not offering the choice, and the two must move
+        // together anyway or CK_Routes_Direction rejects the row.
+        ApplyDirection(copy, source.Direction, source.DepotId, BuildOrigin(source));
         if (req.CopyZipcodes && source.ZipPolygons.Count > 0)
         {
             var zipIds = source.ZipPolygons.Select(z => z.ZipPolygonId).ToList();
@@ -686,6 +725,92 @@ public class RecurringRouteService(
         foreach (var s in found) route.Schedules.Add(s);
     }
 
+    /// <summary>K6: recent pickup addresses, for the final-mile origin box.
+    ///
+    /// Two passes on purpose. The first groups by the address text to get a
+    /// usage count and the id of the most recent job at each address; the
+    /// second reads the coordinates off exactly those jobs. Doing it in one
+    /// grouped query would force an aggregate over the coordinates, and on
+    /// medical-prod a single company + zip carries several distinct points
+    /// because a linehaul child leg stores its own leg's pickup point. An
+    /// averaged point would be somewhere no job has ever been.
+    ///
+    /// Scoped to the last 180 days: an address nobody has collected from in
+    /// six months is not a suggestion, it is clutter.
+    /// </summary>
+    public async Task<List<PickupAddressSuggestionDto>> GetPickupAddressSuggestionsAsync(
+        string? q, int max = 15)
+    {
+        var since = DateTime.UtcNow.AddDays(-180);
+        var term = (q ?? string.Empty).Trim();
+
+        var baseQuery = Context.TucJobs.AsNoTracking()
+            .Where(j => !j.UcjbVoid
+                        && j.CreatedTimeUtc >= since
+                        && j.PickupAddressLine1 != null && j.PickupAddressLine1 != ""
+                        && j.PickUpLatitude != null && j.PickUpLongitude != null);
+
+        if (term.Length > 0)
+        {
+            baseQuery = baseQuery.Where(j =>
+                j.PickupAddressLine1!.Contains(term)
+                || (j.PickupAddressLine5 != null && j.PickupAddressLine5.Contains(term))
+                || (j.PickupAddressLine7 != null && j.PickupAddressLine7.Contains(term)));
+        }
+
+        var grouped = await baseQuery
+            .GroupBy(j => new
+            {
+                Company = j.PickupAddressLine1,
+                Street3 = j.PickupAddressLine3,
+                Street4 = j.PickupAddressLine4,
+                City = j.PickupAddressLine5,
+                Zip = j.PickupAddressLine7,
+            })
+            .Select(g => new
+            {
+                g.Key,
+                UsageCount = g.Count(),
+                LatestJobId = g.Max(x => x.UcjbId),
+            })
+            // Frequency first so a real depot outranks a one-off, recency as
+            // the tiebreak.
+            .OrderByDescending(x => x.UsageCount)
+            .ThenByDescending(x => x.LatestJobId)
+            .Take(max)
+            .ToListAsync();
+
+        if (grouped.Count == 0) return new List<PickupAddressSuggestionDto>();
+
+        var latestIds = grouped.Select(x => x.LatestJobId).ToList();
+        var points = await Context.TucJobs.AsNoTracking()
+            .Where(j => latestIds.Contains(j.UcjbId))
+            .Select(j => new { j.UcjbId, j.PickUpLatitude, j.PickUpLongitude, j.CreatedTimeUtc })
+            .ToDictionaryAsync(x => x.UcjbId);
+
+        return grouped.Select(g =>
+        {
+            var pt = points.GetValueOrDefault(g.LatestJobId);
+            var street = string.Join(" ",
+                new[] { g.Key.Street3, g.Key.Street4 }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!.Trim()));
+            var label = string.Join(", ",
+                new[] { g.Key.Company?.Trim(), street, g.Key.City?.Trim(), g.Key.Zip?.Trim() }
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+            return new PickupAddressSuggestionDto(
+                label,
+                Trimmed(g.Key.Company),
+                string.IsNullOrWhiteSpace(street) ? null : street,
+                Trimmed(g.Key.City),
+                Trimmed(g.Key.Zip),
+                pt?.PickUpLatitude,
+                pt?.PickUpLongitude,
+                g.UsageCount,
+                pt?.CreatedTimeUtc);
+        }).ToList();
+    }
+
     private static void ValidateUpsert(UpsertRouteRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Name))
@@ -694,6 +819,96 @@ public class RecurringRouteService(
             throw new InvalidOperationException("DefaultTargetType must be 1, 2 or 3.");
         if (req.DefaultTargetType.HasValue && !req.DefaultTargetId.HasValue)
             throw new InvalidOperationException("DefaultTargetId is required when DefaultTargetType is set.");
+        ValidateDirection(req.Direction, req.DepotId, req.Origin);
+    }
+
+    /// <summary>Feature 5.1. Mirrors CK_Routes_Direction so the operator gets a
+    /// sentence instead of "The UPDATE statement conflicted with the CHECK
+    /// constraint" (Msg 547), which names the constraint and nothing useful.
+    ///
+    /// Deliberately NOT stricter than the constraint. The database accepts a
+    /// final-mile route carrying BOTH a depot and coordinates, because the
+    /// resolver's attempt order already makes the depot win, and it accepts a
+    /// first-mile route that still has leftover origin values, because no code
+    /// path reads them when Direction = 1. Adding rules here that the database
+    /// does not enforce would mean the API rejects rows that Configurator,
+    /// which shares this table and knows nothing about these columns, can
+    /// still write.</summary>
+    private static void ValidateDirection(byte direction, int? depotId, RouteOriginDto? origin)
+    {
+        if (!RouteDirections.IsValid(direction))
+            throw new InvalidOperationException(
+                $"Direction must be {RouteDirections.FirstMile} (first mile) or {RouteDirections.FinalMile} (final mile).");
+
+        if (direction != RouteDirections.FinalMile) return;
+
+        var hasDepot = depotId.HasValue;
+        var hasPoint = origin?.Latitude is not null && origin?.Longitude is not null;
+        if (!hasDepot && !hasPoint)
+            throw new InvalidOperationException(
+                "A final-mile route needs an origin to fan out from: choose a depot, " +
+                "or set an origin address and geocode it so it has coordinates.");
+
+        // Half a coordinate pair is the mistake an operator actually makes -
+        // typing a latitude and tabbing away. CK_Routes_Direction would let it
+        // through whenever a depot is also set, and the resolver would then
+        // silently never use the address side.
+        var halfPoint = (origin?.Latitude is null) != (origin?.Longitude is null);
+        if (halfPoint)
+            throw new InvalidOperationException(
+                "An origin address needs both a latitude and a longitude. Geocode the address again.");
+
+        if (origin?.RadiusM is <= 0)
+            throw new InvalidOperationException("Origin radius must be greater than zero metres.");
+    }
+
+    /// <summary>Feature 5.1. Copies the direction + origin shape onto the
+    /// entity. One place, so Create, Update and Copy cannot drift.</summary>
+    private static void ApplyDirection(RouteEntity route, byte direction, int? depotId, RouteOriginDto? origin)
+    {
+        route.Direction = direction;
+
+        if (direction == RouteDirections.FirstMile)
+        {
+            // Clear the origin rather than leave it behind. The CHECK permits
+            // stale values on a first-mile route, but a later flip back to
+            // final mile would then silently inherit an address the operator
+            // has long forgotten. The migration header calls this out as the
+            // UI's job; this is the UI's server side.
+            route.DepotId = null;
+            route.OriginName = null;
+            route.OriginAddress = null;
+            route.OriginZip = null;
+            route.OriginLatitude = null;
+            route.OriginLongitude = null;
+            route.OriginRadiusM = null;
+            return;
+        }
+
+        route.DepotId = depotId;
+        route.OriginName = Trimmed(origin?.Name);
+        route.OriginAddress = Trimmed(origin?.Address);
+        route.OriginZip = Trimmed(origin?.Zip);
+        route.OriginLatitude = origin?.Latitude;
+        route.OriginLongitude = origin?.Longitude;
+        route.OriginRadiusM = origin?.RadiusM;
+    }
+
+    private static string? Trimmed(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>Feature 5.1. Null when the route carries no address origin, so
+    /// the frontend can treat "has an address origin" as one test rather than
+    /// six null checks.</summary>
+    private static RouteOriginDto? BuildOrigin(RouteEntity r)
+    {
+        var any = r.OriginName is not null || r.OriginAddress is not null
+                  || r.OriginZip is not null || r.OriginLatitude is not null
+                  || r.OriginLongitude is not null || r.OriginRadiusM is not null;
+        return any
+            ? new RouteOriginDto(r.OriginName, r.OriginAddress, r.OriginZip,
+                                 r.OriginLatitude, r.OriginLongitude, r.OriginRadiusM)
+            : null;
     }
 
     private static string FormatWindow(TimeSpan? start, TimeSpan? end)
