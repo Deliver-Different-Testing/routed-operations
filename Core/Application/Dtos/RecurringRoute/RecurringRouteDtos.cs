@@ -1,5 +1,40 @@
 namespace RoutedOperations.Core.Application.Dtos.RecurringRoute;
 
+/// <summary>Feature 5.1 Routes.Direction values. A byte rather than an enum
+/// because the column is tinyint and CK_Routes_Direction is the authority on
+/// what is valid; an enum would invite a third member that the database
+/// rejects.</summary>
+// NOTE: plural on purpose. "RouteDirection" collides with
+// Microsoft.AspNetCore.Routing.RouteDirection, which the implicit usings pull
+// in, and the collision is a hard CS0104 at every use site. Do not "fix" the
+// name back to the singular.
+public static class RouteDirections
+{
+    /// <summary>Collect from the customer. Every pre-existing route.</summary>
+    public const byte FirstMile = 1;
+
+    /// <summary>Fan out from one origin to the drop.</summary>
+    public const byte FinalMile = 2;
+
+    public static bool IsValid(byte value) => value is FirstMile or FinalMile;
+}
+
+/// <summary>Where a final-mile route fans out from when the origin is an
+/// ADDRESS rather than a depot. Grouped instead of six loose fields because
+/// they move together: CK_Routes_Direction accepts a final-mile route with a
+/// depot OR with a complete coordinate pair, so "has an address origin" is one
+/// decision, not six.
+///
+/// RadiusM is METRES and may be null, in which case the resolver applies its
+/// own documented 5000 m default.</summary>
+public record RouteOriginDto(
+    string? Name,
+    string? Address,
+    string? Zip,
+    decimal? Latitude,
+    decimal? Longitude,
+    int? RadiusM);
+
 /// <summary>Zip code attached to a route (via the RouteZipcodes junction).</summary>
 public record RouteZipcodeDto(int ZipPolygonId, string Zip);
 
@@ -38,7 +73,14 @@ public record RouteDto(
     int BookingCount,
     int MappedStopsCount,
     DateTime CreatedAt,
-    DateTime? UpdatedAt);
+    DateTime? UpdatedAt,
+    // Feature 5.1. Appended rather than slotted in beside Area so the
+    // positional arity change is confined to the tail and every existing
+    // reader keeps reading the same field at the same index.
+    byte Direction,
+    int? DepotId,
+    string DepotName,
+    RouteOriginDto? Origin);
 
 /// <summary>One live recurring booking bound to a route. Populated by the
 /// read-only "Bookings on this route" list in the Route editor modal.</summary>
@@ -61,7 +103,13 @@ public record UpsertRouteRequest(
     List<int> ScheduleIds,
     bool Active,
     List<int> ZipPolygonIds,
-    List<int>? BulkPolygonIds = null);
+    List<int>? BulkPolygonIds = null,
+    // Feature 5.1. Defaulted so every existing caller and test keeps
+    // compiling and keeps creating first-mile routes, which is what they
+    // have always created.
+    byte Direction = RouteDirections.FirstMile,
+    int? DepotId = null,
+    RouteOriginDto? Origin = null);
 
 /// <summary>Copy an existing route's geometry + defaults into a new route.
 /// Null ScheduleIds means "keep the source's schedules"; empty list means
@@ -72,6 +120,30 @@ public record CopyRouteRequest(
     int? DefaultTargetId,
     List<int>? ScheduleIds,
     bool CopyZipcodes);
+
+/// <summary>K6: one suggestion for the final-mile origin address box. Built
+/// from pickup addresses this tenant has actually used, so the operator picks
+/// instead of typing, and picks something already geocoded.
+///
+/// Coordinates come from the MOST RECENT job at that address rather than an
+/// aggregate. Measured on medical-prod: the same company + zip carries several
+/// different points across jobs, because a linehaul child leg stores its own
+/// leg's pickup point rather than the family's. Averaging them would invent a
+/// location that no job ever used; "where we collected from last time" is a
+/// statement that can be checked.
+///
+/// UsageCount is how many non-void jobs share the address, so a one-off
+/// mistyped address sorts below a real depot.</summary>
+public record PickupAddressSuggestionDto(
+    string Label,
+    string? Company,
+    string? Address,
+    string? City,
+    string? Zip,
+    decimal? Latitude,
+    decimal? Longitude,
+    int UsageCount,
+    DateTime? LastUsedUtc);
 
 /// <summary>Autocomplete result for the zip search picker.</summary>
 public record ZipcodeLookupDto(int ZipPolygonId, string Zip, decimal? Latitude, decimal? Longitude);

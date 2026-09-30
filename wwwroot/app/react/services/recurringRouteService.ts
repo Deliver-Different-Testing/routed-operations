@@ -1,5 +1,52 @@
 import { request } from './api';
 
+/** Feature 5.1 `Routes.Direction`. Numbers, not a string union, because the
+ *  column is tinyint and `CK_Routes_Direction` is the authority on what is
+ *  valid. */
+export const RouteDirection = {
+  /** Collect from the customer. Every route that existed before Feature 5. */
+  FirstMile: 1,
+  /** Fan out from one origin to the drop. */
+  FinalMile: 2,
+} as const;
+export type RouteDirectionValue = (typeof RouteDirection)[keyof typeof RouteDirection];
+
+/** Where a final-mile route fans out from when the origin is an ADDRESS
+ *  rather than a depot. Grouped because the six fields move together:
+ *  a final-mile route needs a depot OR a complete coordinate pair, so
+ *  "has an address origin" is one decision rather than six.
+ *
+ *  `radiusM` is METRES. Null means the resolver applies its own 5000 m
+ *  default. */
+export interface RouteOrigin {
+  name: string | null;
+  address: string | null;
+  zip: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  radiusM: number | null;
+}
+
+/** K6: one suggestion for the final-mile origin address box, built from
+ *  pickup addresses this tenant has actually used in the last 180 days.
+ *
+ *  Coordinates are from the most recent job at that address, not an average:
+ *  the same company + zip carries several distinct points in the data because
+ *  a linehaul child leg stores its own leg's pickup point. Picking a
+ *  suggestion therefore fills the origin AND locates it, with no geocode
+ *  round-trip. */
+export interface PickupAddressSuggestion {
+  label: string;
+  company: string | null;
+  address: string | null;
+  city: string | null;
+  zip: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  usageCount: number;
+  lastUsedUtc: string | null;
+}
+
 export interface RouteZipcode {
   zipPolygonId: number;
   zip: string;
@@ -38,6 +85,17 @@ export interface RecurringRoute {
   mappedStopsCount: number;
   createdAt: string;
   updatedAt: string | null;
+  /** Feature 5.1. 1 = first mile, 2 = final mile. Every pre-existing route
+   *  reads 1 because the column defaults to it. */
+  direction: RouteDirectionValue;
+  /** Depot a final-mile route fans out from (tblBulkRegion.BulkRegionId).
+   *  Null on a first-mile route and on a final-mile route with an address
+   *  origin. */
+  depotId: number | null;
+  /** Resolved depot name, empty string when depotId is null. */
+  depotName: string;
+  /** Null when the route carries no address origin at all. */
+  origin: RouteOrigin | null;
 }
 
 /** One live recurring booking bound to a route. Populated by
@@ -62,6 +120,15 @@ export interface UpsertRouteBody {
   zipPolygonIds: number[];
   /** Optional. Omit to keep existing bulk polygons untouched; empty array clears them. */
   bulkPolygonIds?: number[];
+  /** Feature 5.1. Omit to create a first-mile route, which is what every
+   *  caller did before this existed. */
+  direction?: RouteDirectionValue;
+  /** Only meaningful with direction = FinalMile. */
+  depotId?: number | null;
+  /** Only meaningful with direction = FinalMile. The server clears every
+   *  origin field when direction is FirstMile, so a route flipped back to
+   *  first mile cannot silently inherit an old address later. */
+  origin?: RouteOrigin | null;
 }
 
 export interface RouteBulkPolygonRef {
@@ -181,7 +248,14 @@ export const recurringRouteService = {
       method: 'POST', body: JSON.stringify(zipPolygonIds),
     }),
   getAssignableTargets: () =>
-    request<{ response: AssignableTargets }>('/recurring-routes/assignable-targets'),
+    request<{ response: AssignableTargets }>('/recurring-routes/assignable-targets'),
+  /** K6 autocomplete for the final-mile origin address. `q` filters on
+   *  company / city / zip; empty returns the most-used recent addresses. */
+  getPickupAddressSuggestions: (q?: string, max = 15) =>
+    request<{ response: PickupAddressSuggestion[] }>(
+      `/recurring-routes/pickup-address-suggestions?q=${encodeURIComponent(q ?? '')}&max=${max}`,
+    ),
+
   getSchedules: () =>
     request<{ response: ScheduleLookup[] }>('/recurring-routes/schedules/lookup'),
 };
