@@ -1,29 +1,32 @@
-# Schedules: collapse day rows into one record, keep the SPs working
+# Schedules: one row per schedule, without touching what works
 
-_Steve Bonnici → Kevin, 2026-09-29. Follows the F1 / F11 / F17 / F18 work in
-`KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md`. Signed off by the strategic team as a
-rationalisation goal; this document is the execution plan._
+_Steve Bonnici -> Kevin, 2026-09-29, revised 2026-09-30 to the minimal-risk shape. Follows the
+F1 / F11 / F17 / F18 work in `KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md`. Signed off by the
+strategic team as a rationalisation goal; this document is the execution plan._
 
-Sources: Kerran's `Schedule Table` export (11,110 rows, Urgent prod, 8 Sep 2026),
-the dbmigrationsv2 migrations through 2026-09-25, the routed-operations `develop`
-branch on GitLab as at 2026-09-29, and a call-site inventory across the repos held
-on Steve's PC (see §9 for what that inventory does and does not cover).
+Sources: Kerran's `Schedule Table` export (11,110 rows, Urgent prod, 8 Sep 2026), the
+dbmigrationsv2 migrations through 2026-09-25, routed-operations `develop` on GitLab as at
+2026-09-29, and a call-site inventory across the repos on Steve's PC (section 9 says what that
+does and does not cover).
 
 ---
 
 ## 0. TL;DR
 
+**Brief (Steve, 30 Sep):** the lowest-risk plan that stops the day-row bloat getting worse.
+Not a campaign to collapse the existing 11,000 rows.
+
 | | |
 | :- | :- |
-| **Goal** | One row per schedule with a seven-day mask, instead of one row per operating day. |
-| **Size** | 11,110 day rows → ~2,750 schedule rows on Urgent prod (75% reduction). With the F1 client fold, ~2,100. |
-| **Cutoff / visibility** | Header carries one relative cutoff rule and `OccurrencesAhead`; the booking page shows the next N occurrences instead of a calendar window, which removes the reason for the inflated Monday cutoff (section 2.6). |
-| **Losslessness** | Only two columns genuinely vary by day: `CutoffHours` (845 schedules, of which 776 are the Monday-weekend artefact F11 already replaces) and the window `StartTime`/`EndTime` (~75 schedules). Everything else is constant per schedule. |
-| **Mechanism** | Payload moves up onto `tblBulkRunScheduleHeader` (which already exists and is already the FK target of every day row since 2026-09-08). Physical day table is renamed; a **view with the old name** fans collapsed headers back out per day, **preserving every existing `BulkRunScheduleId`**. |
-| **Blast radius** | 26 SPs/functions read `DayOfWeek` off the day table. None of them changes. They keep reading `dbo.tblBulkRunSchedule`, which becomes the view. |
-| **Rollout** | Four phases, each reversible. New schedules write collapsed first. Existing schedules collapse **a set at a time** via a dry-run/commit procedure, driven from the Schedules NEW list. Ops sets the pace. |
-| **Day mask format** | `CHAR(7)`, position 1 = Monday, `'1'`/`'0'` — the convention `tucJobBooking.ucbkDays`, `tblBulkRunScheduleOverride.WeekDays` and `uspPrebookSet` already use. Not an int bitmask; that would be a third convention. |
-| **Decisions needed** | §10. |
+| **Goal** | Every schedule created or edited from now on is **one row** with a seven-day mask. Existing schedules are left alone until touched. |
+| **Mechanism** | A new **1:1 detail table keyed on the existing header id** holds the single-row shape. The physical day table is renamed and a **view with its old name** keeps the 26 dependent SPs working unchanged; where a detail row exists the view serves payload from it. |
+| **Identity** | Unchanged. `tblBulkRunScheduleHeader.ScheduleId` stays the one key (F18). No new identity, no id remap in this project. Day rows survive as three-column id anchors until F18. |
+| **What changes for ops** | Nothing they have to do. Schedules NEW writes the new shape; an old schedule moves to it when someone next saves it and its day rows agree. |
+| **Only risky step** | The rename plus view (M2). Metadata-only, diffable to zero rows on staging, reversible in minutes. Direct `INSERT`s into the old table name from outside (ClientManager, being retired) will fail against the view - known and accepted. |
+| **Cutoff / visibility** | One relative cutoff rule per schedule and `OccurrencesAhead`; the booking page shows the next N occurrences, which removes the reason for the inflated Monday cutoff (section 2.5). |
+| **Day mask format** | `CHAR(7)`, position 1 = Monday - the convention `ucbkDays`, `tblBulkRunScheduleOverride.WeekDays` and `uspPrebookSet` already use. |
+| **Not in scope** | Header widening, `IsCollapsed` flag, guard trigger, batch collapse runbook, dropping legacy columns. All can come later; none is needed to stop the bloat. |
+| **Decisions needed** | Section 10 (two). |
 
 ---
 
@@ -68,82 +71,79 @@ exception mechanism. §5 says how the collapse procedure surfaces them.
 
 ## 2. Target shape
 
-### 2.1 `tblBulkRunScheduleHeader` — becomes *the* schedule row
+### 2.1 `tblBulkRunScheduleDetail` - the single-row schedule (new, additive)
 
-Existing: `ScheduleId` (PK), `Name`, `IsDefault`, `LegacyClientId`, `DisplayName`,
-`DisplayDescription`, `IsActive`, `OverrideCount`, `OverridesVersion`, `BaseScheduleId`,
-`RetiredUtc/By`, `CreatedUtc/By`.
-
-Add:
+One row per schedule, keyed on the header. Exists only for schedules written in the new shape.
 
 ```sql
-WeekDays            CHAR(7)      NULL,   -- '1111100' Mon..Sun. NULL until collapsed.
-IsCollapsed         BIT NOT NULL CONSTRAINT DF_tblBulkRunScheduleHeader_IsCollapsed DEFAULT (0),
-CollapsedUtc        DATETIME2(0) NULL,
-CollapsedBy         NVARCHAR(100) NULL,
-
--- Payload lifted from the day row. Same names, same types as the day table
--- (see 2.4 for the NZ StartTime/EndTime type trap). All NULL until collapsed.
-StartTime           TIME(0)      NULL,
-EndTime             TIME(0)      NULL,
-MaxJobs             INT          NULL,
-Region              INT          NULL,
-SpeedId             INT          NULL,
-CutoffHours         INT          NULL,   -- legacy carrier only; F11 Phase D drops it
--- Cutoff is a RELATIVE rule on the header (decided 2026-09-29, see 2.6):
--- "CutoffTime on the occurrence date minus CutoffWorkingDaysBefore working days".
--- An absolute CutoffDay cannot be one value for a Mon-Fri row; the view derives
--- the per-day CutoffDay the SPs expect.
-CutoffWorkingDaysBefore TINYINT  NULL,   -- 0 = same day, 1 = previous working day, ...
-CutoffTime          TIME(0)      NULL,
-OccurrencesAhead    TINYINT      NULL,   -- how many future occurrences the booking page shows (2.6)
-Description         NVARCHAR(500) NULL,
-AutoBook            BIT          NULL,
-PostcodeGroupId     INT          NULL,
-BookPickup          BIT          NULL,
-PickupDepotId       INT          NULL,
-StorageState        INT          NULL,
-DeliveryState       INT          NULL,
-PickupRatingSpeed   INT          NULL,
-PickupPostcodeGroupId INT        NULL,
-ParentSpeedId       INT          NULL,
-PickupBoxDiscount   INT          NULL,
-DropOffLocationID   INT          NULL,
-ApplyPickupCutoff   BIT          NULL,
-PickupCutoff        INT          NULL,
-AutoBookScanAhead   INT          NULL,
-IsRecurringSchedule BIT          NULL,
-
-CONSTRAINT CK_tblBulkRunScheduleHeader_WeekDays
-    CHECK (WeekDays IS NULL OR (LEN(WeekDays) = 7 AND WeekDays NOT LIKE '%[^01]%')),
-CONSTRAINT CK_tblBulkRunScheduleHeader_CollapsedHasMask
-    CHECK (IsCollapsed = 0 OR WeekDays IS NOT NULL)
+CREATE TABLE dbo.tblBulkRunScheduleDetail (
+    ScheduleId              INT          NOT NULL
+        CONSTRAINT PK_tblBulkRunScheduleDetail PRIMARY KEY CLUSTERED,
+    WeekDays                CHAR(7)      NOT NULL,  -- '1111100' Mon..Sun
+    StartTime               TIME(0)      NULL,
+    EndTime                 TIME(0)      NULL,
+    -- Cutoff is ONE relative rule (section 2.5):
+    -- "CutoffTime on the occurrence date minus CutoffWorkingDaysBefore working days".
+    CutoffWorkingDaysBefore TINYINT      NULL,
+    CutoffTime              TIME(0)      NULL,
+    OccurrencesAhead        TINYINT      NULL,      -- next-N occurrences the booking page shows
+    MaxJobs                 INT          NULL,
+    Region                  INT          NULL,
+    SpeedId                 INT          NULL,
+    Description             NVARCHAR(500) NULL,
+    AutoBook                BIT          NULL,
+    PostcodeGroupId         INT          NULL,
+    BookPickup              BIT          NULL,
+    PickupDepotId           INT          NULL,
+    StorageState            INT          NULL,
+    DeliveryState           INT          NULL,
+    PickupRatingSpeed       INT          NULL,
+    PickupPostcodeGroupId   INT          NULL,
+    ParentSpeedId           INT          NULL,
+    PickupBoxDiscount       INT          NULL,
+    DropOffLocationID       INT          NULL,
+    ApplyPickupCutoff       BIT          NULL,
+    PickupCutoff            INT          NULL,
+    AutoBookScanAhead       INT          NULL,
+    IsRecurringSchedule     BIT          NULL,
+    CreatedUtc              DATETIME2(0) NOT NULL CONSTRAINT DF_tblBulkRunScheduleDetail_CreatedUtc DEFAULT SYSUTCDATETIME(),
+    CreatedBy               NVARCHAR(100) NOT NULL,
+    UpdatedUtc              DATETIME2(0) NULL,
+    UpdatedBy               NVARCHAR(100) NULL,
+    CONSTRAINT FK_tblBulkRunScheduleDetail_Header FOREIGN KEY (ScheduleId)
+        REFERENCES dbo.tblBulkRunScheduleHeader (ScheduleId),
+    CONSTRAINT CK_tblBulkRunScheduleDetail_WeekDays
+        CHECK (LEN(WeekDays) = 7 AND WeekDays NOT LIKE '%[^01]%' AND WeekDays <> '0000000')
+);
 ```
 
-`ClientId` is **not** lifted; `Header.LegacyClientId` already carries it and the view emits it.
-`Name` is already on the header.
+Not here: `Name`, `ClientId`, `IsActive`, `DisplayName` - all already on the header.
+`CutoffHours` is not carried; the view derives it for legacy readers (section 2.3).
 
-### 2.2 `tblBulkRunScheduleDay` — the renamed physical day table
+Why a detail table rather than widening the header: the header stays narrow for the F1
+resolver and `uspPrebookSet` seeks; "in the new shape" is simply "has a detail row" (no flag);
+rollback of the whole feature is `DROP TABLE`; and the header, which every link table points at,
+is never altered.
 
-`sp_rename 'dbo.tblBulkRunSchedule', 'tblBulkRunScheduleDay'`. Constraints, indexes,
-IDENTITY and the incoming FKs (`tblRouteSchedule`, `BulkZoneSchedule`,
-`tblBulkScheduleLinehaul`) follow the rename automatically. **No id changes.**
+### 2.2 `tblBulkRunScheduleDay` - the renamed physical day table
 
-For an **uncollapsed** header the day rows are unchanged. For a **collapsed** header the day
-rows shrink to a key: `BulkRunScheduleId`, `ScheduleId`, `DayOfWeek`, `Name` (kept in sync),
-`ClientId` (kept in sync); every payload column is set to NULL by the collapse procedure.
-The rows stay because downstream still keys on `BulkRunScheduleId`:
+`EXEC sp_rename 'dbo.tblBulkRunSchedule', 'tblBulkRunScheduleDay'`. IDENTITY, constraints,
+indexes and the incoming FKs (`tblRouteSchedule`, `BulkZoneSchedule`, `tblBulkScheduleLinehaul`)
+follow the rename. **No id changes; no row changes.**
 
-- `tucJobBooking.ScheduleID`, `tucJob.ScheduleId`, `tblBulkJob` (booked day row)
-- `tblRouteSchedule.ScheduleId` (representative day row — F17/F18 finding)
+For a schedule in the new shape, its day rows are **key rows only**: `BulkRunScheduleId`,
+`ScheduleId`, `DayOfWeek`, `Name`, `ClientId`; every payload column NULL. They exist because
+downstream still keys on the day-row id:
+
+- `tucJobBooking.ScheduleID`, `tucJob.ScheduleId`, `tblBulkJob.ScheduleId` (booked day row)
+- `tblRouteSchedule.ScheduleId` (representative day row; F17/F18)
 - `tblBulkScheduleLinehaul.BulkRunScheduleId`, `BulkZoneSchedule.ScheduleId`
-- the `@UrgentScheduleSpeedID = ScheduleID * 1000 + SpeedID` packing in
-  `WS_stpBulkScheduleJob_Insert` / `DD_stpBulkScheduleJob_Insert`
+- the `@UrgentScheduleSpeedID = ScheduleID * 1000 + SpeedID` packing in the booking SPs
 
-Until F18 remaps all of those to `Header.ScheduleId`, the day table is the id allocator.
-New collapsed schedules therefore still insert one key row per masked day (§4.1).
+Until F18 remaps those to `Header.ScheduleId`, the day table is the id allocator. Three-column
+key rows are not the bloat this plan is about; the payload duplication is.
 
-### 2.3 View `dbo.tblBulkRunSchedule` — the compatibility surface
+### 2.3 View `dbo.tblBulkRunSchedule` - the compatibility surface
 
 ```sql
 SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;
@@ -153,314 +153,228 @@ AS
 SELECT
     d.BulkRunScheduleId,
     d.ScheduleId,
-    h.Name,                                          -- header is canonical
+    h.Name,
     d.DayOfWeek,
-    CASE WHEN h.IsCollapsed = 1 THEN h.StartTime          ELSE d.StartTime          END AS StartTime,
-    CASE WHEN h.IsCollapsed = 1 THEN h.EndTime            ELSE d.EndTime            END AS EndTime,
-    CASE WHEN h.IsCollapsed = 1 THEN h.MaxJobs            ELSE d.MaxJobs            END AS MaxJobs,
-    CASE WHEN h.IsCollapsed = 1 THEN h.Region             ELSE d.Region             END AS Region,
-    COALESCE(d.ClientId, h.LegacyClientId)                                          AS ClientId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.SpeedId            ELSE d.SpeedId            END AS SpeedId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.CutoffHours        ELSE d.CutoffHours        END AS CutoffHours,
-    -- Collapsed: derive the per-day absolute CutoffDay from the relative rule, rolling
-    -- back over Sat/Sun (holidays are date-specific and stay with the booking function).
-    CASE WHEN h.IsCollapsed = 1
-         THEN dbo.fnCutoffDayFor(d.DayOfWeek, h.CutoffWorkingDaysBefore)
-         ELSE d.CutoffDay END                                                          AS CutoffDay,
-    CASE WHEN h.IsCollapsed = 1 THEN h.CutoffTime         ELSE d.CutoffTime         END AS CutoffTime,
-    CASE WHEN h.IsCollapsed = 1 THEN h.Description        ELSE d.Description        END AS Description,
-    CASE WHEN h.IsCollapsed = 1 THEN h.AutoBook           ELSE d.AutoBook           END AS AutoBook,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PostcodeGroupId    ELSE d.PostcodeGroupId    END AS PostcodeGroupId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.BookPickup         ELSE d.BookPickup         END AS BookPickup,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PickupDepotId      ELSE d.PickupDepotId      END AS PickupDepotId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.StorageState       ELSE d.StorageState       END AS StorageState,
-    CASE WHEN h.IsCollapsed = 1 THEN h.DeliveryState      ELSE d.DeliveryState      END AS DeliveryState,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PickupRatingSpeed  ELSE d.PickupRatingSpeed  END AS PickupRatingSpeed,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PickupPostcodeGroupId ELSE d.PickupPostcodeGroupId END AS PickupPostcodeGroupId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.ParentSpeedId      ELSE d.ParentSpeedId      END AS ParentSpeedId,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PickupBoxDiscount  ELSE d.PickupBoxDiscount  END AS PickupBoxDiscount,
-    CASE WHEN h.IsCollapsed = 1 THEN h.DropOffLocationID  ELSE d.DropOffLocationID  END AS DropOffLocationID,
-    CASE WHEN h.IsCollapsed = 1 THEN h.ApplyPickupCutoff  ELSE d.ApplyPickupCutoff  END AS ApplyPickupCutoff,
-    CASE WHEN h.IsCollapsed = 1 THEN h.PickupCutoff       ELSE d.PickupCutoff       END AS PickupCutoff,
-    CASE WHEN h.IsCollapsed = 1 THEN h.AutoBookScanAhead  ELSE d.AutoBookScanAhead  END AS AutoBookScanAhead,
-    CASE WHEN h.IsCollapsed = 1 THEN h.IsRecurringSchedule ELSE d.IsRecurringSchedule END AS IsRecurringSchedule
+    COALESCE(x.StartTime,        d.StartTime)        AS StartTime,
+    COALESCE(x.EndTime,          d.EndTime)          AS EndTime,
+    COALESCE(x.MaxJobs,          d.MaxJobs)          AS MaxJobs,
+    COALESCE(x.Region,           d.Region)           AS Region,
+    COALESCE(d.ClientId,         h.LegacyClientId)   AS ClientId,
+    COALESCE(x.SpeedId,          d.SpeedId)          AS SpeedId,
+    -- Legacy relative-hours carrier, derived for new-shape rows so old readers keep working:
+    CASE WHEN x.ScheduleId IS NOT NULL
+         THEN dbo.fnCutoffHoursFor(d.DayOfWeek, x.StartTime, x.CutoffWorkingDaysBefore, x.CutoffTime)
+         ELSE d.CutoffHours END                      AS CutoffHours,
+    CASE WHEN x.ScheduleId IS NOT NULL
+         THEN dbo.fnCutoffDayFor(d.DayOfWeek, x.CutoffWorkingDaysBefore)
+         ELSE d.CutoffDay END                        AS CutoffDay,
+    COALESCE(x.CutoffTime,       d.CutoffTime)       AS CutoffTime,
+    COALESCE(x.Description,      d.Description)      AS Description,
+    COALESCE(x.AutoBook,         d.AutoBook)         AS AutoBook,
+    COALESCE(x.PostcodeGroupId,  d.PostcodeGroupId)  AS PostcodeGroupId,
+    COALESCE(x.BookPickup,       d.BookPickup)       AS BookPickup,
+    COALESCE(x.PickupDepotId,    d.PickupDepotId)    AS PickupDepotId,
+    COALESCE(x.StorageState,     d.StorageState)     AS StorageState,
+    COALESCE(x.DeliveryState,    d.DeliveryState)    AS DeliveryState,
+    COALESCE(x.PickupRatingSpeed, d.PickupRatingSpeed) AS PickupRatingSpeed,
+    COALESCE(x.PickupPostcodeGroupId, d.PickupPostcodeGroupId) AS PickupPostcodeGroupId,
+    COALESCE(x.ParentSpeedId,    d.ParentSpeedId)    AS ParentSpeedId,
+    COALESCE(x.PickupBoxDiscount, d.PickupBoxDiscount) AS PickupBoxDiscount,
+    COALESCE(x.DropOffLocationID, d.DropOffLocationID) AS DropOffLocationID,
+    COALESCE(x.ApplyPickupCutoff, d.ApplyPickupCutoff) AS ApplyPickupCutoff,
+    COALESCE(x.PickupCutoff,     d.PickupCutoff)     AS PickupCutoff,
+    COALESCE(x.AutoBookScanAhead, d.AutoBookScanAhead) AS AutoBookScanAhead,
+    COALESCE(x.IsRecurringSchedule, d.IsRecurringSchedule) AS IsRecurringSchedule
 FROM dbo.tblBulkRunScheduleDay d
 INNER JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = d.ScheduleId
-WHERE h.IsCollapsed = 0
-   OR SUBSTRING(h.WeekDays, d.DayOfWeek, 1) = '1';
+LEFT  JOIN dbo.tblBulkRunScheduleDetail x ON x.ScheduleId = d.ScheduleId
+WHERE x.ScheduleId IS NULL
+   OR SUBSTRING(x.WeekDays, d.DayOfWeek, 1) = '1';
 GO
 ```
 
-Properties that matter:
+Properties:
 
-- **Same column list, same names, same order as the table today**, so `SELECT *` callers and
-  positional temp-table inserts (the availability functions use both) are unaffected.
-- **Every existing `BulkRunScheduleId` still resolves**, so bookings, route bindings and
-  linehaul legs need no remap in this project.
-- For a collapsed header, a day row whose mask bit is `0` **disappears from the view**. That
-  is how "switch this schedule off on Fridays" works after collapse: flip the mask, do not
-  delete the row. The row stays as an id anchor.
-- Plain inner join on the clustered key, no aggregates, no TOP, so predicates on
-  `BulkRunScheduleId`, `ScheduleId`, `DayOfWeek` and `Name` push straight through.
-  `IX_tblBulkRunScheduleDay (ScheduleId, DayOfWeek)` should exist; check.
-- Writable? No, and it must not be. §2.5.
+- **Same columns, same names, same order** as the table today, so `SELECT *` and positional
+  temp-table inserts in the availability functions are unaffected.
+- **Every existing `BulkRunScheduleId` still resolves.** No booking, route binding or linehaul
+  leg needs touching.
+- With **no detail rows** the view is the table (`x` is always NULL, `WHERE` is always true).
+  That is the state at deploy, and V1 in section 7 proves it.
+- For a new-shape schedule, a key row whose mask bit is `0` is hidden. "Switch off Fridays" is
+  a mask edit; the key row stays as an id anchor.
+- Plain joins on clustered keys, no aggregates, so predicates on `BulkRunScheduleId`,
+  `ScheduleId`, `DayOfWeek` and `Name` push through. Confirm
+  `IX_tblBulkRunScheduleDay (ScheduleId, DayOfWeek)` exists.
+- **Not writable.** A direct `INSERT`/`UPDATE` against the old name fails. The only writer we
+  control (Schedules NEW) writes the detail and day tables directly. ClientManager is being
+  retired; its direct writes failing loudly is the accepted consequence (section 4.3).
+
+Two tiny helpers keep legacy readers whole: `dbo.fnCutoffDayFor(@DayOfWeek, @WorkingDaysBefore)`
+(weekday roll-back over Sat/Sun) and `dbo.fnCutoffHoursFor(...)` (hours between the derived
+cutoff and the occurrence start, for anything still reading `CutoffHours`). Holidays are
+date-specific and stay with the booking-time functions, exactly as today.
 
 ### 2.4 The NZ time-type trap
 
-`TblBulkRunSchedule.cs` in routed-operations says `StartTime`/`EndTime` are **TIME on US but
-DATETIME on NZ**, and the legacy SPs paper over it with `CAST(x AS datetime)`. Before M1
-runs, confirm with:
+`TblBulkRunSchedule.cs` in routed-operations records that `StartTime`/`EndTime` are **TIME on
+US but DATETIME on NZ**; the legacy SPs paper over it with `CAST(x AS datetime)`. Before M2:
 
 ```sql
 SELECT c.name, t.name FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.user_type_id
 WHERE c.object_id = OBJECT_ID('dbo.tblBulkRunSchedule') AND c.name IN ('StartTime','EndTime');
 ```
 
-If NZ is DATETIME, the header columns are still `TIME(0)` (the correct type), and the view's
-`StartTime`/`EndTime` expressions are wrapped so the view emits the **legacy type of that
-tenant**: `CAST(CAST(h.StartTime AS datetime) AS datetime)` on NZ, bare on US. The migration
-branches on `sys.columns` at deploy time and builds the view body with `sp_executesql`. This
-keeps every NZ SP that compares `StartTime` to a datetime unchanged. The F11 migrations
-already do this kind of per-tenant branching, so the pattern exists.
+If NZ is DATETIME, the detail table still uses `TIME(0)` (correct), and the view emits
+`StartTime`/`EndTime` in the **tenant's legacy type** so the view's column types equal the
+table's. The migration branches on `sys.columns` and builds the view body with `sp_executesql`;
+the F11 migrations already branch per tenant the same way.
 
-### 2.5 Guard trigger on the day table
-
-Two writers exist today: Schedules NEW (`ScheduleService` in routed-operations, EF) and
-the legacy ClientManager `/api/Schedules` endpoints behind the AdminManager `admin-ui`
-schedules module (source not on this PC; see §9). Once a header is collapsed, a payload write
-to its day rows would be silently ignored by the view. Fail loudly instead:
-
-```sql
-CREATE OR ALTER TRIGGER dbo.trg_tblBulkRunScheduleDay_GuardCollapsed
-ON dbo.tblBulkRunScheduleDay
-AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    IF UPDATE(StartTime) OR UPDATE(EndTime) OR UPDATE(MaxJobs) OR UPDATE(Region)
-       OR UPDATE(SpeedId) OR UPDATE(CutoffHours) OR UPDATE(CutoffDay) OR UPDATE(CutoffTime)
-       OR UPDATE(Description) OR UPDATE(AutoBook) OR UPDATE(PostcodeGroupId) OR UPDATE(BookPickup)
-       OR UPDATE(PickupDepotId) OR UPDATE(StorageState) OR UPDATE(DeliveryState)
-       OR UPDATE(PickupRatingSpeed) OR UPDATE(PickupPostcodeGroupId) OR UPDATE(ParentSpeedId)
-       OR UPDATE(PickupBoxDiscount) OR UPDATE(DropOffLocationID) OR UPDATE(ApplyPickupCutoff)
-       OR UPDATE(PickupCutoff) OR UPDATE(AutoBookScanAhead) OR UPDATE(IsRecurringSchedule)
-    BEGIN
-        IF EXISTS (SELECT 1 FROM inserted i
-                   JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = i.ScheduleId
-                   WHERE h.IsCollapsed = 1
-                     AND SESSION_CONTEXT(N'ScheduleCollapseBypass') IS NULL)
-        BEGIN
-            ;THROW 51000, 'Schedule is collapsed: edit tblBulkRunScheduleHeader, not the day row.', 1;
-        END
-    END
-END
-```
-
-The collapse/uncollapse procedures set `EXEC sp_set_session_context 'ScheduleCollapseBypass', 1`
-so they can null/restore payload. `tblBulkRunScheduleDay` is post-2024 in shape but is the
-legacy table by identity; the trigger opens with `SET QUOTED_IDENTIFIER ON` / `SET ANSI_NULLS ON`
-per the legacy-DB policy.
-
-### 2.6 Cutoff and visibility on one row (decided 2026-09-29)
+### 2.5 Cutoff and visibility on one row (decided 2026-09-29)
 
 Two things were historically encoded in the per-day `CutoffHours`:
 
 1. **The real cutoff** - how long before the run bookings close.
-2. **Visibility** - the Monday value was inflated (+48h, 796 schedules) so that Monday's run
-   still appeared on the booking page over a weekend when the page only looked
-   `DaysInFuture` calendar days ahead.
+2. **Visibility** - the Monday value was inflated (+48h on 796 schedules) so Monday's run still
+   appeared on the booking page over a weekend when the page only looked `DaysInFuture`
+   calendar days ahead.
 
-The product direction is that the booking page shows the **next N occurrences** of a schedule,
-not a calendar window. Monday then appears on Friday because it is simply the next occurrence,
-and the inflated Monday cutoff has no reason to exist. So on the header:
+Product direction: the booking page shows the **next N occurrences**, not a calendar window.
+Monday then appears on Friday because it is simply the next occurrence, and the inflated
+Monday cutoff has no reason to exist. Hence, on the detail row:
 
-- `CutoffWorkingDaysBefore` + `CutoffTime`: one relative rule for every occurrence. Monday with
-  `1` gives Friday; over a long weekend the holiday calendar gives Thursday. No per-day case.
-- `OccurrencesAhead`: N. Replaces the client-speed `DaysInFuture` (which stays as a fallback;
-  `0` maps to `1` occurrence). Also added to `tblBulkRunScheduleOverride` at schedule scope so a
-  client can see further ahead than the schedule default; `fnScheduleForClient` coalesces it.
-- `dbo.fnCutoffDayFor(@DayOfWeek, @WorkingDaysBefore)` - tiny helper the view uses to emit the
-  legacy absolute `CutoffDay` per day row (weekend roll-back only).
-
-The F11 backfill (`20260924100500`) converted per-day `CutoffHours` to absolute pairs including
-the inflated Monday -> Friday case. The collapse procedure (section 5) reads the **weekday** rows
-as the rule and reports the Monday row as `MondayVisibilityOffset (reconciled)` rather than
-refusing.
+- `CutoffWorkingDaysBefore` + `CutoffTime`: one relative rule for every occurrence. Monday
+  with `1` gives Friday; over a long weekend the holiday calendar gives Thursday.
+- `OccurrencesAhead`: N. Replaces the client-speed `DaysInFuture`, which stays as fallback
+  (`0` maps to `1` occurrence). Also added to `tblBulkRunScheduleOverride` at schedule scope so
+  one client can see further ahead; `fnScheduleForClient` coalesces override over detail over
+  legacy client-speed over the current default of 6.
 
 The availability functions (`UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule`) are built
-around the calendar window in four branches. They become the **first real rewrite** (section 9):
+around the calendar window in four branches; they are the **first real rewrite** (section 9):
 one query - mask x dates, skip holidays, drop occurrences past cutoff, stop at N.
 
 ---
 
 ## 3. Migrations (dbmigrationsv2 conventions)
 
-Every script: `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;`, idempotent guards, GRANT
-mirroring via the `sys.database_permissions` discovery pattern from
-`20260908120004`, `EXEC procRefreshAllViews` wherever a table changes shape.
+Every script: `SET ANSI_NULLS ON; SET QUOTED_IDENTIFIER ON;`, idempotent guards, GRANT mirroring
+via the `sys.database_permissions` discovery pattern from `20260908120004`,
+`EXEC procRefreshAllViews` where a table changes shape.
 
-| # | Name | Contents | Reversible by |
+| # | Name | Contents | Risk | Reversible by |
+| :- | :- | :- | :- | :- |
+| M1 | `..._ScheduleDetail_Create` | `tblBulkRunScheduleDetail` (section 2.1) + `OccurrencesAhead` on `tblBulkRunScheduleOverride` + `fnCutoffDayFor` / `fnCutoffHoursFor`. GRANTs. `procRefreshAllViews`. | **None** - additive, nothing reads it. | `DROP` |
+| M2 | `..._ScheduleDay_RenameAndCompatView` | `sp_rename` -> `tblBulkRunScheduleDay`; view `dbo.tblBulkRunSchedule` (section 2.3, tenant time-type branch section 2.4); GRANTs on both; `procRefreshAllViews`. **Behaviour identical**: no detail rows exist. | **Low, and the only one.** Metadata rename + view. Anything `INSERT`ing into the old name fails (section 2.3). | drop view, `sp_rename` back |
+| M3 | `..._fnScheduleForClient_ReadDetail` | F1 resolver reads detail-then-day via the view's columns plus `OccurrencesAhead`. Optional in this release; the view already feeds it. | Low | redeploy prior body |
+
+**Gate for M2:** on staging, V1 (section 7) returns zero rows both ways, then the standard
+booking / availability / run viewer / `uspPrebookSet` regression passes. Then prod.
+
+**Ordering:** M2 must come after the last F11 / F19 SP re-emit in the same deploy; name them in
+the `COLLISION-REVIEWED` header.
+
+**Deferred, deliberately** (each is a separate decision later): guard trigger on the day table;
+batch collapse procedure; dropping payload columns from `tblBulkRunScheduleDay`; F18 remap of
+`tucJobBooking` / `tblRouteSchedule` / linehaul / zones to `Header.ScheduleId`.
+
+---
+
+## 4. Application changes (routed-operations only)
+
+### 4.1 `ScheduleService` - one upsert path, writes the new shape
+
+Today `UpsertGroupAsync` creates a header, then one `TblBulkRunSchedule` per `req.DayWindows`,
+stamping the shared payload on every row via `ApplyGroupTemplateToRow`
+(`ScheduleService.cs` ~1120-1200 on develop). Both the old Schedules page and Schedules NEW go
+through this service.
+
+After M1-M2:
+
+- **EF mapping.** `TblBulkRunSchedule` -> mapped to the **view** for reads (keyed view is fine
+  for queries). New `TblBulkRunScheduleDay` -> table, writes. New `BulkRunScheduleDetail` ->
+  table, 1:1 with `BulkRunScheduleHeader`. `BulkZoneSchedule`, `TblBulkScheduleLinehaul`,
+  `Route.Schedules` FKs point at the Day entity (same ids).
+- **Create** writes: header (as now) + **one detail row** (payload, `WeekDays`, relative cutoff,
+  `OccurrencesAhead`) + **one key row per masked day** in `tblBulkRunScheduleDay` with only
+  `Name`, `ClientId`, `ScheduleId`, `DayOfWeek` set. Zones and linehaul legs bind to the
+  lowest-`DayOfWeek` key row, which is what they bind to today (F18 finding).
+- **Update of a new-shape schedule** edits the detail row. Unticking a day flips the mask bit;
+  the key row is kept. Ticking a day that has no key row inserts one.
+- **Update of an old-shape schedule** (no detail row yet): if its day rows agree on every
+  payload column (after treating the Monday +48h `CutoffHours` as the visibility offset,
+  section 2.5), the save writes a detail row and nulls the day-row payload, i.e. it converts.
+  If they disagree, the save proceeds in the old shape and the UI shows why it did not convert
+  (per-day window differs, duplicate day, payload differs). **This is the whole "migration" of
+  existing data in this plan**: opportunistic, on touch, no campaign.
+- `ApplyGroupTemplateToRow` is not called for new-shape schedules; the F8 "row 0 decides"
+  problem does not exist for them.
+- The day tab offers **one** window and **one** set of days. A schedule that needs Monday
+  07:00-20:00 and Tue-Fri 07:00-08:00 is two schedules; offer "Split by window" in the
+  did-not-convert message.
+
+### 4.2 Schedules NEW list
+
+Reads the header + detail (or header + synthesised-from-day-rows for old-shape). Same DTO
+either way: `scheduleId`, `weekDays` (7-char), payload once. A small "new shape / old shape"
+indicator is useful so ops can see the estate converging; nothing else changes.
+
+### 4.3 Everything else
+
+- **dfrntdrive_configurator** (`TenantSchedulesService`, `TenantRouteService`,
+  `TenantLinehaulService`): read `TblBulkRunSchedule` only; unaffected through the view.
+- **ClientManager `/api/Schedules`** (AdminManager admin-ui): being retired (Steve, 29 Sep).
+  Its direct `INSERT`/`UPDATE`/`DELETE` against `tblBulkRunSchedule` will fail after M2 with a
+  view-not-updatable error. Accepted. If that lands before ClientManager is switched off, the
+  admin-ui schedules module should be pointed at Schedules NEW rather than patched.
+- **The 26 SPs / functions** (section 9): unchanged in this plan.
+
+---
+
+## 5. Rollout
+
+| Step | Ships | Gate | Rollback |
 | :- | :- | :- | :- |
-| M1 | `…_ScheduleCollapse_HeaderPayloadColumns` | §2.1 columns + checks on `tblBulkRunScheduleHeader`. Data-free. `procRefreshAllViews`. | drop columns |
-| M2 | `…_ScheduleCollapse_RenameDayTableAndCompatView` | `sp_rename` to `tblBulkRunScheduleDay`; create view `dbo.tblBulkRunSchedule` (§2.3, per-tenant time-type branch §2.4); re-issue GRANTs on both objects; `procRefreshAllViews`. **Behaviour identical**: `IsCollapsed = 0` everywhere. | drop view, rename back |
-| M3 | `…_ScheduleCollapse_GuardTrigger` | §2.5 trigger. | drop trigger |
-| M4 | `…_ScheduleCollapse_Procedures` | `dbo.uspScheduleCollapse @ScheduleId INT, @Commit BIT = 0` and `dbo.uspScheduleUncollapse @ScheduleId INT`. §5. | drop procs |
-| M5 | `…_ScheduleCollapse_DropDayPayload` | **Only after every non-retired header is collapsed.** Drop payload columns from `tblBulkRunScheduleDay`; simplify the view to read header only. | not needed once gate met |
-| M6 | F18 remap (separate project) | Repoint `tucJobBooking`, `tucJob`, `tblBulkJob`, `tblRouteSchedule`, `tblBulkScheduleLinehaul`, `BulkZoneSchedule` to `Header.ScheduleId`; retire the day table and the view. | — |
+| **A** | M1 (+ M3 if ready) | none needed; additive | drop |
+| **B** | M2 on staging | V1 = 0 rows both ways; regression on booking, availability, run viewer, `uspPrebookSet` | drop view, rename back |
+| **C** | M2 on prod | same V1 immediately after deploy | same, minutes |
+| **D** | `ScheduleService` writes new shape; list shows shape indicator | a week of new schedules on staging book identically; then prod | revert app; delete detail rows for anything created (day rows still carry nothing, so also re-fan payload from detail before deleting - trivial script) |
+| **E** | Opportunistic conversion on save (section 4.1) | watch the did-not-convert reasons for a fortnight | per schedule: copy detail back to day rows, delete detail row |
 
-M1–M4 can ship in one release. M5 and M6 are gated.
-
-**Coordination with in-flight work.** M2 renames the table Kevin's F11 Phase C/D and F19 SP
-re-emits all reference. Nothing in those SPs changes, but the migration ordering must put M2
-after the last F11/F19 SP migration in the same deploy, and the `COLLISION-REVIEWED` header
-convention should name them.
-
----
-
-## 4. Application changes
-
-### 4.1 routed-operations `ScheduleService` (Schedules NEW) — the only writer we control
-
-Today `UpsertGroupAsync` creates a header and then one `TblBulkRunSchedule` per
-`req.DayWindows`, calling `ApplyGroupTemplateToRow` to stamp the shared payload on every row
-(`ScheduleService.cs` ~1120–1200 on develop).
-
-After M1–M4:
-
-- **EF mapping.** `TblBulkRunSchedule` entity → map to **view** `tblBulkRunSchedule` for reads
-  (keep the key; EF is fine with a keyed view for queries). New entity `TblBulkRunScheduleDay`
-  → table, for writes. `BulkRunScheduleHeader` gains the payload properties.
-  `BulkZoneSchedule`, `TblBulkScheduleLinehaul` and `Route.Schedules` FKs point at the Day
-  entity (same ids).
-- **Create / update** writes collapsed: payload on the header (`CutoffWorkingDaysBefore` +
-  `CutoffTime` + `OccurrencesAhead`, section 2.6 - not a per-day cutoff), `WeekDays` from the
-  selected days, `IsCollapsed = 1`, and **one key row per masked day** in `tblBulkRunScheduleDay`
-  (`Name`, `ClientId`, `ScheduleId`, `DayOfWeek` only). Unticking a day flips the mask bit;
-  the key row is not deleted (its id may be on a booking).
-- **Editing an uncollapsed header** in Schedules NEW: either collapse-on-save (call
-  `uspScheduleCollapse` first, refuse the save with the dry-run reasons if it cannot collapse)
-  or keep writing day rows. Recommend **collapse-on-save** so the estate converges without a
-  separate campaign, with the refusal list telling the operator exactly what to fix.
-- `ApplyGroupTemplateToRow` goes away for collapsed headers; the F8 "row 0 decides everything"
-  problem disappears with it, because there is one row.
-- Per-day window in the UI: the day tab stops offering a per-day start/end. If a schedule needs
-  Monday 07:00–20:00 and Tue–Fri 07:00–08:00, that is two schedules. Offer "Split by window"
-  in the refusal UI.
-- `fnScheduleForClient` (F1 resolver) reads `s.StartTime`, `s.EndTime`, `s.CutoffHours`,
-  `s.SpeedId`, `s.PostcodeGroupId`, `s.PickupPostcodeGroupId` from `tblBulkRunSchedule s` —
-  it keeps working through the view; later it reads the header directly and drops the day join.
-
-### 4.2 Schedules NEW list — the "Collapse" action
-
-Multi-select on the list → **Dry run** → report table (per header: `CanCollapse`, `Reason`,
-proposed `WeekDays`, proposed `CutoffDay/CutoffTime`, columns that differ) → **Commit** for
-the ones that passed. Backed by `POST /api/v2/schedules/collapse` calling `uspScheduleCollapse`
-per id with `@Commit` as chosen. Refusals link to the schedule for fixing. This is the
-"set at a time" control ops asked for.
-
-Filters that make useful sets: by client, by region (`Region`), by name prefix, by "mask =
-1111100 and no variance" (the 1,600 easy ones).
-
-### 4.3 dfrntdrive_configurator
-
-`TenantSchedulesService`, `TenantRouteService`, `TenantLinehaulService` read
-`TblBulkRunSchedule` only (no `Add`/`Remove` found). They keep working through the view.
-`Route.cs` still carries the legacy `Routes.ScheduleId` single pointer; unchanged here, retired
-under F18.
-
-### 4.4 Legacy ClientManager `/api/Schedules` (AdminManager) — being retired
-
-**Decided 2026-09-29 (Steve):** ClientManager is being migrated away from; the old schedules
-view already exists inside Routed Operations. So: **no re-point work.** The guard trigger (§2.5)
-is the safety net for the remainder of ClientManager's life — an edit to a collapsed schedule
-from there fails with a clear message instead of silently doing nothing.
-
-Consequence: the **old Schedules page inside Routed Operations** (`SchedulesController` /
-`Schedules.tsx`, distinct from Schedules NEW's `SchedulesV2Controller`) is also a day-row
-writer through the same `ScheduleService`. It gets the same behaviour as §4.1: write collapsed
-for collapsed headers, or refuse with the dry-run reasons. Simplest: route both pages through
-the one upsert path so there is exactly one writer.
-
----
-
-## 5. `uspScheduleCollapse` — one schedule, dry-run then commit
-
-```
-uspScheduleCollapse @ScheduleId INT, @Commit BIT = 0, @By NVARCHAR(100) = NULL
-```
-
-1. Load the header; refuse if retired or already collapsed.
-2. Load its day rows from `tblBulkRunScheduleDay`.
-3. **Checks** (all reported, any one refuses):
-   - `DuplicateDay`: the same `DayOfWeek` appears more than once. Report whether the
-     duplicates are identical (safe to delete the higher id) or two windows (split needed).
-   - `WindowVariesByDay`: `StartTime` or `EndTime` differ across rows. Report per day. Split
-     needed.
-   - `PayloadVaries:<column>` for every other payload column that differs across rows
-     (`Description`, `StorageState`, … — the ≤ 11-schedule cases in §1). Report the values;
-     operator fixes the data or accepts the majority value (`@AcceptMajority BIT` option).
-   - `CutoffUnclean`: any row with `CutoffDay IS NULL` after the F11 backfill. Report
-     `CutoffHours` per day. Operator sets `CutoffWorkingDaysBefore` + `CutoffTime` explicitly.
-   - `MondayVisibilityOffset (reconciled)`: Tue-Fri rows agree on a relative rule and only the
-     Monday row differs (the +48h pattern, section 2.6). **Not a refusal.** The weekday rule is
-     taken for the header and the Monday value is logged as discarded.
-   - `CutoffVariesByDay`: the relative rule differs across rows in a way that is **not** the
-     Monday pattern. Refuse in v1; expected to be near zero after the above.
-4. Compute `WeekDays` from the set of `DayOfWeek` values present.
-5. `@Commit = 0`: return one row `(ScheduleId, Name, CanCollapse, Reasons, ProposedWeekDays,
-   ProposedCutoffDay, ProposedCutoffTime, RowCount)` plus a detail rowset of differing columns.
-6. `@Commit = 1` and `CanCollapse = 1`, in one transaction with the bypass session flag set:
-   copy payload to header, set `WeekDays`, `IsCollapsed = 1`, `CollapsedUtc/By`; null the
-   payload columns on the day rows; write an audit row (`ScheduleId`, before-JSON of the day
-   rows) to `tblBulkRunScheduleCollapseLog` so `uspScheduleUncollapse` is exact.
-
-`uspScheduleUncollapse @ScheduleId` reverses: restore day payload from the header (identical by
-construction) or from the log, clear the header payload and mask, `IsCollapsed = 0`.
-
-**Batch driver.** `uspScheduleCollapseBatch @Filter…, @Commit` loops headers and returns the
-combined report; the Schedules NEW action calls this. Sets of 50–200 are comfortable to review.
-
----
-
-## 6. Rollout
-
-| Phase | What ships | Gate to proceed | Rollback |
-| :- | :- | :- | :- |
-| **A. Schema + view** | M1, M2, M3, M4. `IsCollapsed = 0` everywhere. | Staging: full regression on booking, availability, run viewer, uspPrebookSet with the view in place. Diff `SELECT * FROM tblBulkRunSchedule` before/after M2 on staging: **zero differences**. | Drop view, rename back. Minutes. |
-| **B. New schedules write collapsed** | Schedules NEW upsert change (§4.1), EF mapping. | A week of new schedules on staging then prod; bookings on them behave identically. | Revert app; collapsed headers can be uncollapsed with `uspScheduleUncollapse`. |
-| **C. Collapse existing, set by set** | Collapse action (§4.2). Ops runs dry-runs, fixes refusals, commits. Suggested order: (1) the ~1,600 `1111100` no-variance schedules, (2) single-day schedules, (3) 6/7-day, (4) the refusal tail. | Each set: dry run clean → commit → spot-check bookings the next morning. `uspPrebookSet` nightly output unchanged for affected clients. | Per schedule, `uspScheduleUncollapse`. |
-| **D. Finish** | M5 drops day payload columns; view simplifies. | `SELECT COUNT(*) FROM tblBulkRunScheduleHeader WHERE RetiredUtc IS NULL AND IsCollapsed = 0` = 0. | — |
-| **E. F18** | Remap consumers to `Header.ScheduleId`; retire day table + view. | Separate plan. | — |
+After E the estate converges on its own. A deliberate set-by-set collapse (the earlier
+`uspScheduleCollapse` design) remains available as a later, separate decision if ops wants the
+remaining rows gone faster.
 
 ---
 
 ## 7. Verification queries
 
 ```sql
--- V1. View reproduces the table exactly (run on staging around M2, before any collapse).
+-- V1. View reproduces the table exactly (staging, immediately after M2, before any detail rows).
 SELECT COUNT(*) FROM (SELECT * FROM dbo.tblBulkRunSchedule EXCEPT SELECT * FROM dbo.tblBulkRunScheduleDay) x;
 SELECT COUNT(*) FROM (SELECT * FROM dbo.tblBulkRunScheduleDay EXCEPT SELECT * FROM dbo.tblBulkRunSchedule) x;
 
--- V2. After a collapse: every masked day still has a key row, and no unmasked day leaks.
-SELECT h.ScheduleId
-FROM dbo.tblBulkRunScheduleHeader h
+-- V2. Every masked day of a new-shape schedule has a key row; no unmasked day leaks through the view.
+SELECT x.ScheduleId, d.dow
+FROM dbo.tblBulkRunScheduleDetail x
 CROSS APPLY (VALUES (1),(2),(3),(4),(5),(6),(7)) d(dow)
-LEFT JOIN dbo.tblBulkRunScheduleDay r ON r.ScheduleId = h.ScheduleId AND r.DayOfWeek = d.dow
-WHERE h.IsCollapsed = 1
-  AND SUBSTRING(h.WeekDays, d.dow, 1) = '1'
-  AND r.BulkRunScheduleId IS NULL;
+LEFT JOIN dbo.tblBulkRunScheduleDay r ON r.ScheduleId = x.ScheduleId AND r.DayOfWeek = d.dow
+WHERE SUBSTRING(x.WeekDays, d.dow, 1) = '1' AND r.BulkRunScheduleId IS NULL;
 
--- V3. No collapsed header has payload left on a day row.
+-- V3. New-shape schedules carry no payload on their day rows.
 SELECT COUNT(*) FROM dbo.tblBulkRunScheduleDay d
-JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = d.ScheduleId
-WHERE h.IsCollapsed = 1 AND (d.StartTime IS NOT NULL OR d.CutoffHours IS NOT NULL OR d.SpeedId IS NOT NULL);
+JOIN dbo.tblBulkRunScheduleDetail x ON x.ScheduleId = d.ScheduleId
+WHERE d.StartTime IS NOT NULL OR d.CutoffHours IS NOT NULL OR d.SpeedId IS NOT NULL OR d.Region IS NOT NULL;
 
--- V4. Availability unchanged for a client (run before/after collapsing that client's set).
+-- V4. Availability unchanged for a client (before/after converting one of its schedules).
 SELECT * FROM dbo.UTL_fncJob_GetClientAvailableBulkRunSchedule(@ClientId, @SpeedId, @DateTime, @FromPostCode, @ToPostCode)
 ORDER BY BulkRunScheduleId;
 
--- V5. Progress.
-SELECT IsCollapsed, COUNT(*) Headers FROM dbo.tblBulkRunScheduleHeader WHERE RetiredUtc IS NULL GROUP BY IsCollapsed;
+-- V5. Progress: how much of the estate is in the new shape.
+SELECT CASE WHEN x.ScheduleId IS NULL THEN 'old' ELSE 'new' END AS Shape, COUNT(*) Headers,
+       SUM((SELECT COUNT(*) FROM dbo.tblBulkRunScheduleDay d WHERE d.ScheduleId = h.ScheduleId)) DayRows
+FROM dbo.tblBulkRunScheduleHeader h LEFT JOIN dbo.tblBulkRunScheduleDetail x ON x.ScheduleId = h.ScheduleId
+WHERE h.RetiredUtc IS NULL GROUP BY CASE WHEN x.ScheduleId IS NULL THEN 'old' ELSE 'new' END;
 ```
 
 ---
@@ -471,8 +385,8 @@ SELECT IsCollapsed, COUNT(*) Headers FROM dbo.tblBulkRunScheduleHeader WHERE Ret
   the header later. `tblBulkRunScheduleOverride.WeekDays` already has the same `CHAR(7)` shape,
   so a client override of days composes naturally: effective mask = override mask if present,
   else header mask.
-- **F11 (cutoff):** the collapse depends on the F11 backfill having run, but the header carries
-  a **relative** rule (section 2.6), not the per-day absolute pair; the view derives the pair for
+- **F11 (cutoff):** the collapse depends on the F11 backfill having run, but the detail row carries
+  a **relative** rule (section 2.5), not the per-day absolute pair; the view derives the pair for
   the SPs. The `CutoffUnclean` reason is the 603-row "unclean" set from Kevin's 24 Sep preview
   surfacing per schedule. The Monday +48h pattern is reconciled, not refused.
 - **F17 / recurring routes:** untouched here. Binding stays on the representative day-row id
@@ -507,7 +421,7 @@ geography; not worth moving).
 | `RVW_stpJobSiblings` | Sibling legs for a job | routed-operations | — | **Lift now** | Small. |
 | `UTL_stpJob_tblBulkJobWithFilter` | Bulk job filter (delimited id lists) | routed-operations | — | **Lift now** | Replace delimited strings with LINQ `Contains`. |
 | `fnScheduleForClient` | F1 delta resolver (inline TVF) | routed-operations (7 sites) | booking SPs via view | **Keep in SQL** for now | Inline TVF is the point; EF version comes when booking lifts. |
-| `UTL_fncJob_GetClientAvailableBulkRunSchedule` | NZ client availability | none local (booking site / DespatchWeb) | `WS_stpBulkScheduleJob_Insert`, `WS_stpJob_Insert` | **Rewrite first (SQL)** | Four calendar-window branches -> one occurrence-based query over the header mask (section 2.6). Read-only, testable against the booking page. Same signature so SP callers are untouched. |
+| `UTL_fncJob_GetClientAvailableBulkRunSchedule` | NZ client availability | none local (booking site / DespatchWeb) | `WS_stpBulkScheduleJob_Insert`, `WS_stpJob_Insert` | **Rewrite first (SQL)** | Four calendar-window branches -> one occurrence-based query over the header mask (section 2.5). Read-only, testable against the booking page. Same signature so SP callers are untouched. |
 | `DD_fncJob_GetClientAvailableBulkRunSchedule` | US client availability | dfrnt-ops (proposed MCP tools only) | `DD_stpBulkScheduleJob_Insert`, `DD_stpJob_InsertExcelerator` | **Rewrite first (SQL)** | Twin; one body, tenant branch only where types differ. |
 | `IsWithinDepotServiceArea` | Depot geography | none local | availability fns | **Keep in SQL** | Geography. |
 | `WS_stpBulkScheduleJob_Insert` | NZ scheduled booking entry | none local | `WS_stpJob_Insert`, `UTL_stpJobBooking_ApplyInitialPhase`, `UTL_stpJob_InsertFromTblBulkJob` | **After re-point** | The prize with its DD_ twin: one C# engine, tenant strategy. Pricing → shadow-run. |
@@ -539,15 +453,15 @@ off-PC caller inventory is complete.
 
 ## 10. Decisions needed from Steve
 
-1. **Collapse-on-save** in Schedules NEW for uncollapsed headers (recommended), or keep
-   writing day rows until ops collapses explicitly?
-2. ~~Legacy ClientManager writer~~ — **decided 2026-09-29:** ClientManager is being retired;
-   leave it behind the trigger. Old Schedules page in Routed Operations shares the upsert path (§4.4).
-3. ~~Per-day cutoff~~ - **decided 2026-09-29:** cutoff is one relative rule per schedule
-   (`CutoffWorkingDaysBefore` + `CutoffTime`); the Monday offset was a visibility hack that
-   "next N occurrences" removes (section 2.6). Genuine per-day cutoff remains a refusal in v1.
-4. **Order of sets** for Phase C, and who on the Urgent team drives it.
-5. **F18 timing:** run M6 straight after Phase D, or hold until F9/F10 leg model lands so
+1. ~~Legacy ClientManager writer~~ - **decided 2026-09-29:** retiring; direct writes failing
+   against the view after M2 is accepted (section 4.3).
+2. ~~Per-day cutoff~~ - **decided 2026-09-29:** one relative rule per schedule; Monday offset was
+   a visibility hack that next-N-occurrences removes (section 2.5).
+3. ~~Header vs new table~~ - **decided 2026-09-30:** 1:1 detail table keyed on the header id,
+   header untouched (section 2.1).
+4. **Convert-on-save** (section 4.1): on, as written? It is the only way existing rows shrink in
+   this plan. Off means the estate stays as-is until F18.
+5. **F18 timing:** after the estate has largely converged, or held for the F9/F10 leg model so
    `tblRouteSchedule` moves to the leg in the same pass?
 
 ---
@@ -573,7 +487,7 @@ off-PC caller inventory is complete.
 | `BulkZoneSchedule` | `ScheduleId` | FK |
 | `tblSchedulePostcode`, `tblSchedulePolygon`, `tblScheduleClient` | `ScheduleName` | name-keyed (F18 Risk A) — unaffected by collapse, still wrong |
 
-## Appendix C — read-only queries to run before M1 (Urgent prod + staging; C-block also on Medical prod)
+## Appendix C — read-only queries to run before M2 (Urgent prod + staging; C-block also on Medical prod)
 
 Return results as CSV or a pasted table, tenant name on each.
 
