@@ -14,7 +14,8 @@ namespace RoutedOperations.Tests.Services.RouteViewer;
 
 public class RouteViewerRunServiceTests
 {
-    private static (RouteViewerRunService sut, INpScopeResolver resolver) NewSvc(NpScope scope, IHttpContextAccessor? accessor = null)
+    private static (RouteViewerRunService sut, INpScopeResolver resolver) NewSvc(
+        NpScope scope, IHttpContextAccessor? accessor = null, INpScopeGuard? guard = null)
     {
         var opts = RouteViewerTestHarness.NewOptions();
         var factory = RouteViewerTestHarness.Factory(opts);
@@ -23,7 +24,8 @@ public class RouteViewerRunServiceTests
         var tz = new SqlTimeZoneNormalizer(factory);
         var accessorX = accessor ?? Substitute.For<IHttpContextAccessor>();
         accessorX.HttpContext.Returns(new DefaultHttpContext());
-        var sut = new RouteViewerRunService(factory, resolver, tz, accessorX,
+        var sut = new RouteViewerRunService(factory, resolver,
+            guard ?? Substitute.For<INpScopeGuard>(), tz, accessorX,
             NullLogger<RouteViewerRunService>.Instance);
         return (sut, resolver);
     }
@@ -34,6 +36,47 @@ public class RouteViewerRunServiceTests
         var (sut, _) = NewSvc(new NpScope(false, null));
         var result = await sut.GetBulkRunListAsync(new BulkRunListRequest { RunDate = DateTime.Today });
         Assert.Empty(result);
+    }
+
+    // ── T13: the anchor jobId must be scope-checked ──────────────────
+    // GetJobSiblingsAsync previously ran RVW_stpJobSiblings (which takes
+    // @JobID only) with no row guard on the anchor, so a partner could
+    // pass any jobId and get the family back with Amount on every row.
+    // Kevin's call 2026-10-01 (D7): guard app-side rather than adding
+    // @NpAgentId to the SP, because filtering siblings by agent returns a
+    // partial family. See NP-PAY-PART4-TODO.md T13.
+
+    [Fact]
+    public async Task GetJobSiblingsAsync_AnchorOutOfScope_Throws()
+    {
+        var guard = Substitute.For<INpScopeGuard>();
+        guard.EnsureTucJobInScopeAsync(99)
+            .Returns(Task.FromException(new NpLabelScopeException("tucJob 99 is outside your NP scope.")));
+        var (sut, _) = NewSvc(new NpScope(false, 42), null, guard);
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.GetJobSiblingsAsync(99));
+    }
+
+    [Fact]
+    public async Task GetJobSiblingsAsync_GuardsTheAnchorBeforeHittingTheSp()
+    {
+        var guard = Substitute.For<INpScopeGuard>();
+        var (sut, _) = NewSvc(new NpScope(true, null), null, guard);
+        // Admin: the guard is a no-op, so this runs on to the SP, which
+        // InMemory cannot execute. Either outcome is fine; what matters is
+        // that the anchor was checked first.
+        await Record.ExceptionAsync(() => sut.GetJobSiblingsAsync(7));
+        await guard.Received(1).EnsureTucJobInScopeAsync(7);
+    }
+
+    [Fact]
+    public async Task GetJobSiblingsAsync_InvalidJobId_ShortCircuitsBeforeTheGuard()
+    {
+        // jobId <= 0 is a caller error, not a scope violation. It must
+        // stay an empty list rather than becoming a 403.
+        var guard = Substitute.For<INpScopeGuard>();
+        var (sut, _) = NewSvc(new NpScope(true, null), null, guard);
+        Assert.Empty(await sut.GetJobSiblingsAsync(0));
+        await guard.DidNotReceive().EnsureTucJobInScopeAsync(Arg.Any<int>());
     }
 
     [Fact]

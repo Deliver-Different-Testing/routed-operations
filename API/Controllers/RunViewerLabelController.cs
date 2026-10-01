@@ -2,9 +2,14 @@
 // proxies to the legacy RunViewer /Home/Labels/* URLs. Env var
 // RunViewerLabelProxyUrl activates the proxy; missing = 501 with
 // a specific "set this env var" message.
+//
+// NpLabelScopeException -> 403, matching every other RunViewer
+// controller. This one was missing the translation, so the two bulk
+// flows that already guarded NP users surfaced a 500 instead.
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.API.Controllers;
@@ -61,6 +66,10 @@ public class RunViewerLabelController(
             return File(System.Text.Encoding.UTF8.GetBytes(csv), "text/csv",
                 $"linehaul-manifest-{DateTime.Today:yyyy-MM-dd}.csv");
         }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
         catch (InvalidOperationException ex)
         {
             return StatusCode(501, new { message = ex.Message });
@@ -73,6 +82,13 @@ public class RunViewerLabelController(
         {
             var bytes = await generator;
             return new FileContentResult(bytes, "application/pdf") { FileDownloadName = $"{tag}.pdf" };
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return new ObjectResult(new { message = ex.Message })
+            {
+                StatusCode = StatusCodes.Status403Forbidden,
+            };
         }
         catch (InvalidOperationException ex)
         {

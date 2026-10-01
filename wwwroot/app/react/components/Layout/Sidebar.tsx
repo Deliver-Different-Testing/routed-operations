@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { isPartnerDeniedPath } from '../../lib/partnerAccess';
 
 interface NavItem {
   to: string;
@@ -89,11 +90,17 @@ export function Sidebar() {
   const location = useLocation();
   const auth = useAuth();
 
-  // Filter out internal-only entries for non-internal users. Server also
-  // enforces this on the corresponding controllers; this is UX only.
+  // Filter out internal-only entries for non-internal users, and the whole
+  // tenant-planning side for network partners. Server also enforces both on
+  // the corresponding controllers (the RouteBuilder.* policies deny the NP
+  // claim); this is UX only, so a partner is not shown links that would 403.
+  // The denied list lives in lib/partnerAccess so App.tsx guards the same
+  // set of routes - see NP-PAY-PART4-TODO.md T2/T3.
   const visibleItems = useMemo(
-    () => items.filter((item) => !item.internalOnly || auth.isInternal),
-    [auth.isInternal],
+    () => items.filter((item) =>
+      (!item.internalOnly || auth.isInternal)
+      && !(auth.isNetworkPartner && isPartnerDeniedPath(item.to))),
+    [auth.isInternal, auth.isNetworkPartner],
   );
 
   // Auto-expand whichever group owns the currently-active route.

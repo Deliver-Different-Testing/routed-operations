@@ -746,6 +746,15 @@ export default function RunViewer() {
                         />
                         Multibox
                       </label>
+                      {/* Both print controls are bulk-label flows, which the
+                          server refuses for a partner
+                          (EnsureBulkLabelFlowSupportedForNpAsync). Hiding them
+                          so a partner is not handed two buttons whose only
+                          outcome is a failure toast. Same reasoning as the
+                          Print menu in RvUtilityActions.
+                          See NP-PAY-PART4-TODO.md F7. */}
+                      {!user.isNetworkPartner && (
+                      <>
                       <button
                         type="button"
                         title="Print labels for run"
@@ -780,6 +789,8 @@ export default function RunViewer() {
                           <rect x="6" y="14" width="12" height="8" />
                         </svg>
                       </button>
+                      </>
+                      )}
                       <button
                         type="button"
                         title="Refresh"
