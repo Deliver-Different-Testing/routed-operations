@@ -23,6 +23,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerRunService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    INpScopeGuard scopeGuard,
     SqlTimeZoneNormalizer tzNormalizer,
     IHttpContextAccessor httpContextAccessor,
     ILogger<RouteViewerRunService> logger) : BaseService(contextFactory)
@@ -686,9 +687,18 @@ public class RouteViewerRunService(
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<SiblingJobDto>();
 
         // SP signature is (@JobID) only - does NOT accept @NpAgentId.
-        // NP scoping happens implicitly because the family is derived
-        // from tucJob.ParentID/RootParentId, so an NP-owned anchor job
-        // will only walk to NP-owned siblings.
+        // The family is derived from tucJob.ParentID/RootParentId, so an
+        // NP-owned anchor walks only to NP-owned siblings.
+        //
+        // That reasoning protects the SIBLINGS of an in-scope anchor. It
+        // never validated the ANCHOR, so a partner could pass any jobId
+        // and receive the family, Amount included (mapped at
+        // MapRawBulkJobRowToDto). Guard the anchor explicitly, the same
+        // way GetBulkJobAsync does at RouteViewerJobService.cs:49.
+        // Kevin's call 2026-10-01 (D7): app-side guard rather than adding
+        // @NpAgentId to RVW_stpJobSiblings, because filtering siblings by
+        // agent can return a partial family, which is the wrong semantic
+        // for a siblings view. See NP-PAY-PART4-TODO.md T13.
         //
         // CRITICAL: @JobID here is tucJob.ucjbID (the LIVE job id),
         // NOT tblBulkJob.BulkJobID. If the caller passes 0 / negative /
@@ -697,6 +707,10 @@ public class RouteViewerRunService(
         // surfaces the empty reader as "column missing", not "0 rows",
         // so guard here rather than letting the raw exception bubble.
         if (jobId <= 0) return new List<SiblingJobDto>();
+
+        // Throws NpLabelScopeException -> 403 at RunViewerRunController:142.
+        // No-op for admin scope.
+        await scopeGuard.EnsureTucJobInScopeAsync(jobId);
 
         // Both RVW_stpJobSiblings and RVW_stpBulkRunJobs return the SAME
         // wide-row shape (sp-reference/runviewer-overview.md line 121
