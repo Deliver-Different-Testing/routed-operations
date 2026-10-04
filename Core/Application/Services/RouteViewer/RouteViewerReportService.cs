@@ -251,6 +251,22 @@ ORDER BY BookDate, ServiceType";
     private async Task<byte[]> RunReportAsync(string spName, ReportRequest request, bool includeClientIds)
     {
         var scope = await scopeResolver.ResolveAsync();
+        // NP gate. A partner WITH a resolved agent id is allowed through
+        // and scoped by @NpAgentId below; a partner with no agent linkage
+        // has nothing to scope by, so it stays a refusal.
+        //
+        // This condition briefly read `!scope.IsAdmin` alone. That was the
+        // correct answer for exactly as long as the four SPs had no
+        // @NpAgentId parameter: before that, letting a partner through
+        // handed them the full unfiltered tenant-wide result set.
+        // dbmigrationsv2 20261001153500_NpScope_RunViewerReportProcs added
+        // the parameter to all four, so the scoped form is correct again.
+        // DO NOT simplify this back to `!scope.IsAdmin`; see
+        // NP-PAY-PART4-TODO.md T5/T17/T18 for the full sequence.
+        //
+        // Woop (line 50) and Linehaul (line 144) keep the stricter
+        // `!scope.IsAdmin` because their queries are raw SQL in this file
+        // with no NP predicate at all.
         if (!scope.IsAdmin && scope.NpAgentId == null) return Array.Empty<byte>();
 
         var runDate = request.RunDate ?? DateTime.Today;
@@ -268,6 +284,10 @@ ORDER BY BookDate, ServiceType";
         if (includeClientIds) AddParam(cmd, "@ClientIDs", (object?)request.ClientIds ?? DBNull.Value);
         AddParam(cmd, "@Regions", (object?)request.Regions ?? DBNull.Value);
         AddParam(cmd, "@Speeds", (object?)request.Speeds ?? DBNull.Value);
+        // Null for admin (every row), the agent id for a partner (their
+        // rows only). Requires dbmigrationsv2 20261001153500 to be applied
+        // to the tenant first, or the SP rejects it with Msg 8145.
+        AddParam(cmd, "@NpAgentId", (object?)scope.NpAgentId ?? DBNull.Value);
 
         var sb = new StringBuilder();
         using var reader = await cmd.ExecuteReaderAsync();

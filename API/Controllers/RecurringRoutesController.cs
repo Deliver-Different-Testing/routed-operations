@@ -25,6 +25,17 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
         return Ok(new { response = list });
     }
 
+    /// <summary>K6: recent pickup addresses for the final-mile origin box.
+    /// Read-only autocomplete; no Admin policy because it exposes nothing the
+    /// Run Viewer does not already show.</summary>
+    [HttpGet("pickup-address-suggestions")]
+    public async Task<IActionResult> GetPickupAddressSuggestions(
+        [FromQuery] string? q, [FromQuery] int max = 15)
+    {
+        var list = await routes.GetPickupAddressSuggestionsAsync(q, Math.Clamp(max, 1, 50));
+        return Ok(new { response = list });
+    }
+
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetOne(int id)
     {
