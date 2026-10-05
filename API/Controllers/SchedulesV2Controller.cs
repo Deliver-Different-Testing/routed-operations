@@ -443,6 +443,11 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
                 NewName = req.NewName,
                 ClientCodes = new List<string>(),   // link-row semantics: copy uses ClientIds directly.
                 ClientIds = (req.ClientIds ?? Array.Empty<int>()).ToList(),
+                // An empty ClientIds here means "no client links", not
+                // "inherit the source's". Without this the shared resolver
+                // falls through to its inherit branch and the copy silently
+                // picks up every one of the source's clients.
+                CopyClientLinks = false,
             });
             return Ok(new { response = new { scheduleId = group.ScheduleId } });
         }
