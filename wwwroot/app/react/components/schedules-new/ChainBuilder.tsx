@@ -13,8 +13,8 @@ import type { LookupItem } from '../../services/scheduleService';
 // This is a smaller reimplementation than Dane's full module
 // (~1000 lines across ChainBuilder + LegNode + LegConfigPanel +
 // ZoneSelector) but covers every field Steve's mockup requires:
-// - Collection: pickupSource (client_address / depot / booking),
-//   pickupDepotId, speedId.
+// - Collection: pickupSource (client_address / depot), pickupDepotId,
+//   speedId.
 // - Depot: depotId, storageState.
 // - Linehaul: linehaulRunId, fromDepotId, toDepotId, dayOffset,
 //   transitMinutes, speedId (per-leg override), amount, amountPercentage,
@@ -25,7 +25,23 @@ export type LegType = 'collection' | 'depot' | 'linehaul' | 'delivery';
 
 export interface CollectionLeg {
   type: 'collection';
-  pickupSource: 'client_address' | 'depot' | 'booking';
+  /** Two states only, because the storage is two-state: the collection leg
+   *  persists nothing but tblBulkRunSchedule.PickupDepotId, and a NULL there
+   *  IS "collect from client address". A third "booking-declared" option
+   *  shipped here until 2026-10-05 and could not round-trip: both modals
+   *  saved it as `pickupDepotId = null` and reloaded it as 'client_address',
+   *  so the choice was lost silently.
+   *
+   *  It was not a missing column either. On the collection leg the legacy
+   *  model treats the two as the same thing: DD_stpJob_InsertExcelerator /
+   *  WS_stpJob_Insert derive `BookPickup = 1 AND PickupDepotId IS NULL` and
+   *  use it only to SUPPRESS overwriting the caller's declared From address
+   *  with the depot's. "Client address" there means "whatever the booking
+   *  declared". The booking-declared versus client-master distinction is
+   *  real, but it lives on the linehaul leg (FromClientAddress) and in the
+   *  bulk-import path, not here - and which one F12 wants is still open
+   *  with Steve, so do not re-add this option to settle it. */
+  pickupSource: 'client_address' | 'depot';
   pickupDepotId: number | null;
   speedId: number | null;
 }
@@ -459,9 +475,7 @@ function LegSummary({ leg, lookups }: { leg: Leg; lookups: LookupCatalogue }) {
   if (leg.type === 'collection') {
     const src = leg.pickupSource === 'depot'
       ? (depotName(leg.pickupDepotId) ?? 'Depot')
-      : leg.pickupSource === 'booking'
-        ? 'Booking-declared'
-        : 'Client address';
+      : 'Client address';
     return (
       <>
         <div className="font-medium text-text-primary">Collect from {src}</div>
@@ -545,7 +559,6 @@ function LegEditor({
           >
             <option value="client_address">Client address</option>
             <option value="depot">Depot</option>
-            <option value="booking">Booking-declared</option>
           </select>
         </label>
         {leg.pickupSource === 'depot' && (
