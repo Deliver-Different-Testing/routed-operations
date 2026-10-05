@@ -1370,13 +1370,19 @@ public class ScheduleService(
         {
             targetClientIds = req.ClientIds.Distinct().ToList();
         }
-        else
+        else if (req.CopyClientLinks)
         {
             // Inherit source header's junction clients.
             targetClientIds = await Context.ScheduleClients.AsNoTracking()
                 .Where(x => x.ScheduleId == source.ScheduleId)
                 .Select(x => x.ClientId)
                 .ToListAsync();
+        }
+        else
+        {
+            // Caller named no clients and opted out of inheriting. The copy
+            // starts as a default group with no client link rows.
+            targetClientIds = new List<int>();
         }
 
         var srcPostcodes = await Context.SchedulePostcodes.AsNoTracking()

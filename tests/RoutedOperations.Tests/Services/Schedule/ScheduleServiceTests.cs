@@ -342,6 +342,36 @@ public class ScheduleServiceTests
     }
 
     [Fact]
+    public async Task CopyAsync_with_CopyClientLinks_false_creates_no_client_links()
+    {
+        // Regression guard for the 2026-10-05 defect: POST /api/v2/schedules/{id}/copy
+        // sends an empty ClientIds and its modal promises "Client link rows are NOT
+        // copied", but the resolver's fall-through inherited the source's junction, so
+        // copying a 40-client schedule produced a second 40-client schedule. The empty
+        // list cannot carry that intent on its own because the legacy endpoint relies
+        // on the same emptiness to mean "inherit", so the caller states it explicitly.
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.ClientIds = new List<int> { 100, 200 };
+        await svc.UpsertAsync(src);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceName = "Source", NewName = "Source (copy)",
+            ClientCodes = new List<string>(),
+            ClientIds = new List<int>(),
+            CopyClientLinks = false,
+        });
+
+        Assert.Empty(copy.ClientIds);
+
+        // The source keeps its own clients - this is a copy, not a move.
+        var reread = await svc.GetDetailAsync("Source", null);
+        Assert.Equal(new[] { 100, 200 }, reread.ClientIds.OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task DeleteAsync_removes_group_and_junctions()
     {
         var svc = NewSvc();
