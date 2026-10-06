@@ -18,7 +18,7 @@ dbmigrationsv2 SP re-emits of 2026-09-25 / 2026-09-28.
 | **Intent** | Some clients (warehouses, distribution centres) want runs built **from their own site**. The client address *is* the origin. There is no collection job and no consolidation at our depot. One delivery job per consignment, runs fan out from the client. |
 | **Decision (Steve, Marcus)** | The chain's **first Depot leg** gains a dropdown value **"Client address"**. A schedule that delivers straight from a client's warehouse is **Depot (Client address) -> Delivery**, optionally with Linehaul legs in between. There is **no Collection leg**. Client-origin schedules are client-specific, never default. **No real depot rows per client** (avoid region sprawl). |
 | **Good news** | The booking SP already produces the right job when a schedule has no pickup schedule and no linehaul: one job from the booking's own From address to the consignee. No new booking SQL. |
-| **Real blocker** | Route Builder's region filter finds jobs by matching **pickup lat/long or From address to `tblBulkRegion`**. A job that picks up at a client address matches no depot, so it never appears when filtering by region. That is why "we can't use that". The filter must use `tblBulkJob.RegionID` for these schedules. |
+| **Real blockers (two)** | (1) Route Builder's region filter finds jobs by matching **pickup lat/long or From address to `tblBulkRegion`**; a client-address pickup matches no depot, so the job never appears when filtering by region. The filter must also admit `tblBulkJob.RegionID` for these schedules. (2) **Bulk Import** resolves a routed job's origin from the **schedule's Region depot first** (NZ: only), so imported jobs on a client-origin schedule would be stamped with the dispatch depot's coordinates. The resolver must take the client's saved site address instead (section 4.4). |
 | **Remove** | The Pickup source dropdown on the Collection leg, including the "Booking-declared" value on develop that has no backend meaning. |
 | **Dispatch region** | When the Depot leg is "Client address" nothing writes `Region`, which is how Route Builder / Route Viewer scope work to a team. The Depot card shows a **Dispatch region** picker in that case. |
 | **Storage** | `OriginType` on `tblBulkRunScheduleDetail` (collapse plan M1). Interim derivation rule in section 5 until that ships. |
@@ -229,7 +229,59 @@ the `EXISTS`. Same change in the Route Viewer region filter if it shares the SP 
   defaulting it is a convenience, not a requirement. No `tblBulkRegion` row is involved.
 - `ReturnToStart` default on (back to the client site), operator can switch off.
 
-### 4.3 Nothing else
+### 4.3 Where a job's pickup coordinates come from
+
+A client-origin job must carry the **client site's** coordinates, never a depot's. Two entry
+paths:
+
+| Path | Today | Client origin |
+| :- | :- | :- |
+| Web / API booking (`WS_stpJob_Insert`, `WS_/DD_stpBulkScheduleJob_Insert`) | `@PickUpLatitude/@PickUpLongitude` come from the booking's From address. With `BookPickup = 0` and no linehaul they are stamped on the job unchanged (~line 470). | **No change.** |
+| Bulk Import, routed (`BulkImportJobFactory.ResolveRoutedOriginLocal`, ~line 781) | Origin precedence: **Step 1 = the schedule's `RegionNavigation` depot** (address + `PickupLatitude/Longitude`). NZ "always resolves at Step 1". US then tries `RouteFromClientSite` -> per-row From address -> `OriginLocationId` region. | **Change required** - section 4.4. |
+
+### 4.4 Bulk Import origin precedence
+
+The wizard already has a **"Route starts from client site"** checkbox (`BulkImportRequest.
+RouteFromClientSite`, `MapColumnsModal`). When ticked, `BulkImportJobFactory` (~line 735) fills
+every row's `From*` and `FromLatitude/FromLongitude` from the client record's saved site address
+(`tucClient` address + `Latitude`/`Longitude`). Two problems for our case: the schedule-depot
+step runs **before** it, and the client-site branch is inside `if (isUs)`.
+
+Rule: **when the chosen schedule's first Depot leg is Client address, the import behaves as if
+`RouteFromClientSite = true`, on both tenants, and the schedule-depot step is skipped.**
+
+```csharp
+bool clientOrigin = schedule?.OriginType == "client";          // from detail row / interim rule
+if (clientOrigin) request.RouteFromClientSite = true;          // implied by the schedule
+
+ResolvedRoutedOrigin ResolveRoutedOriginLocal(BulkImportJobCreateDto j)
+{
+    if (!clientOrigin && schedule?.RegionNavigation != null) { /* depot origin, as today */ }
+    if (request.RouteFromClientSite && !string.IsNullOrWhiteSpace(j.FromAddress))
+    {   /* existing client-site branch, no longer gated on isUs */ }
+    ...
+}
+```
+
+The wizard shows the checkbox pre-ticked and disabled for a client-origin schedule, with the
+hint "This schedule starts at the client's address".
+
+### 4.5 Prerequisite: the client record is geocoded
+
+The client-site branch is only correct if `tucClient.Latitude/Longitude` are populated.
+
+- **Schedules NEW save**: when the first Depot leg is Client address, look up each linked
+  client; if any has no site coordinates, show a warning naming them ("PB Tech has no geocoded
+  site address - runs will not start in the right place") and offer the client record link.
+  Warn, do not block, because the booking path still works from the per-booking address.
+- **Bulk Import**: if the client has no site coordinates and the rows carry no From coordinates,
+  **refuse the batch** with that message rather than falling back to a depot. A silently wrong
+  run start is the failure mode this spec exists to remove.
+- Geocoding the client site is a one-off via the existing HERE geocoder
+  (`HereGeocodeService`); add a "Geocode site address" action on the client record if it is
+  not already there.
+
+### 4.6 Nothing else
 
 Resolver (`UTL_stpRouteAutoAssign_*`), pricing, `uspPrebookSet`: unchanged. The job is a plain
 delivery job to them.
@@ -292,6 +344,9 @@ whose depot should be set to `Region`.
    (or LH legs + DEL when linehaul legs exist) with From = the client's address. No LHP.
 2. That job appears in Route Builder when filtering by the schedule's dispatch region, and can
    be built into a run whose start is the client site.
+2a. A routed **Bulk Import** on that schedule stamps every job with the client site's address
+   and coordinates, on NZ and US, without the operator ticking "Route starts from client site".
+2b. The same import for a client with no geocoded site address is refused with a clear message.
 3. A schedule saved with a real first depot and a Collection leg still produces LHP + DEL exactly
    as today (regression on an existing medical corridor schedule).
 4. The Pickup source dropdown and the `'booking'` value no longer exist in the code.
@@ -313,4 +368,6 @@ whose depot should be set to `Region`.
 
 - Whether Route Viewer's region filter shares the geospatial SP join and needs the same
   extension (section 4.1). Kevin to confirm.
+- Whether the client record already exposes a geocode action anywhere in Routed Operations or
+  only in legacy ClientManager (section 4.5).
 - Whether ops wants `ReturnToStart` on by default for client-origin runs (section 4.2).
