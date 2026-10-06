@@ -67,6 +67,54 @@ genuine per-day window, ~18 two-window names, 41 duplicate rows and a few dozen 
 Those are handled by *splitting into two schedules* or *fixing the data*, not by a per-day
 exception mechanism. §5 says how the collapse procedure surfaces them.
 
+## 1a. Urgent Prod results, 6 Oct 2026 (Kerran, Appendix C queries)
+
+**A1 - column types.** `StartTime`, `EndTime`, `CutoffTime` are all `time` on Urgent Prod. The NZ
+DATETIME trap in section 2.4 does **not** apply there; the view needs no cast on Urgent Prod. Still
+check Medical Prod / US before M2 (the US entity comment is what raised it).
+
+**A2 - dependents.** 34 objects reference the day table, none schema-bound. My migration grep found
+26; the DB adds: `UTL_fncBulkZonePostcode_IsActive`, `UTL_fncJob_IsValid_WithDateTime`,
+`Job_stpPush_AutoBookRun` / `_Combined`, `NET_stpBulkJobItems_Insert`, `REP_qryAlertTemplateCell`,
+`REP_qryLabelsLinehaulJobs`, `RVW_stpLinehaulJobs` / `RVW_stpLinehaulOverview` / `RVW_stpLineHaulRuns`,
+`UCL_StpBulkZoneRate_GetAmountByJobID` / `_GetDescriptionByJob`, `UTL_stpJob_tblBulkRunSchedule`,
+`UTL_stpJob_tblBulkRunWithFilter`, `UTL_stpRate_UpratingRate`, `WS_stpJob_Topup_Insert`,
+`fncT_BulkZoneRate_WithLinehaul`, `fncT_StpBulkZoneRate_GetAmountByJobID`, `UCL_fncT_GetBulkZone`,
+trigger `tblBulkJob_Insert`, and view `DESWEB_qryDespatch`. All keep working through the compat
+view. Two to note: `DESWEB_qryDespatch` is a view over the table and **must be refreshed** after the
+rename (`procRefreshAllViews` does this); `tblBulkJob_Insert` is a trigger that reads the schedule
+on every bulk job insert, so M2 must be tested with a real booking, not just a SELECT diff.
+
+**A3 - FKs in.** Five, no triggers on the table, no synonyms: `tblBulkScheduleLinehaul`,
+`tblRouteSchedule`, `BulkZoneSchedule`, plus two I had not listed - **`ShopWindow`**
+(`FK_ShopWindow_tblBulkRunSchedule`, Shopify integration) and a **`BulkPickup...`** table
+(`FK__BulkPicku__Sched__3C2ACFCE`). Both follow the rename automatically; both are added to
+Appendix B and both key on day-row ids until F18.
+
+**A4 - writers.** The query was too loose (any `INSERT` anywhere in a body that also mentions the
+table) and returned 16 booking SPs that only *read* it. Tightened query in Appendix C (A4b). From
+source control the only writer of the day table is the F11 backfill script; expected answer is
+**no SP writes it**, which is what M2 relies on.
+
+**B1 - readiness.** 2,736 headers, 11,396 day rows. `DuplicateDay` 112 (up from 72 in the export:
+the F1 fold put several clients' identical day rows under one header - these collapse to one).
+`WindowVariesByDay` 82. `CutoffUnclean` 37. `OtherPayloadVaries` 27. **`CutoffVariesByDay_AfterF11`
+= 2,103 is my query's fault, not the data's:** the F11 backfill stores an *absolute* `CutoffDay`
+per day row, so a Mon-Fri schedule with one consistent rule necessarily has five different
+`CutoffDay` values. The relative rule (section 2.5) is what must be constant; B1b in Appendix C
+measures that. On the export the relative rule varied on 845 schedules, 776 of them the Monday
+offset that section 2.5 reconciles. Expect **CollapsibleNow around 1,700**, not 602.
+
+**B2 - masks.** 1,732 Mon-Fri, 203 Sunday-only, 88 all-week, ~370 single-weekday, 65 Mon/Wed/Fri.
+Matches the export; nothing has shifted since 8 Sep beyond the fold.
+
+**C - F17 on Urgent Prod.** Ten routes. The most schedules bound to any route is **three**
+(Route 1, Waikato Outer / Rotorua Run, active, 3 bound, 0 bookings). No route has four or more. No
+orphaned bindings (C2 empty). Resolver, last 14 days: 8,096 pickup / 8,088 delivery `NoMatch`
+(expected - routes cover a few corridors), 14 jobs assigned to Routes 1 and 3. So **at rest nothing
+is broken**: the "breaks above about three" report cannot be confirmed from data because no route
+has crossed three. It has to be reproduced live - C4 in Appendix C.
+
 ---
 
 ## 2. Target shape
@@ -217,7 +265,8 @@ date-specific and stay with the booking-time functions, exactly as today.
 
 ### 2.4 The NZ time-type trap
 
-`TblBulkRunSchedule.cs` in routed-operations records that `StartTime`/`EndTime` are **TIME on
+**Urgent Prod confirmed `time` on all three columns (A1, 6 Oct).** The branch below is only needed
+if another tenant differs. `TblBulkRunSchedule.cs` in routed-operations records that `StartTime`/`EndTime` are **TIME on
 US but DATETIME on NZ**; the legacy SPs paper over it with `CAST(x AS datetime)`. Before M2:
 
 ```sql
@@ -485,6 +534,8 @@ off-PC caller inventory is complete.
 | `tblRouteSchedule` | `ScheduleId` | **ON DELETE CASCADE** — never delete key rows |
 | `tblBulkScheduleLinehaul` | `BulkRunScheduleId` | FK |
 | `BulkZoneSchedule` | `ScheduleId` | FK |
+| `ShopWindow` | (FK `FK_ShopWindow_tblBulkRunSchedule`) | FK - Shopify integration; confirmed A3 6 Oct |
+| `BulkPickup...` | (FK `FK__BulkPicku__Sched__3C2ACFCE`) | FK - confirmed A3 6 Oct; Kerran to name the table |
 | `tblSchedulePostcode`, `tblSchedulePolygon`, `tblScheduleClient` | `ScheduleName` | name-keyed (F18 Risk A) — unaffected by collapse, still wrong |
 
 ## Appendix C — read-only queries to run before M2 (Urgent prod + staging; C-block also on Medical prod)
@@ -515,7 +566,48 @@ WHERE o.type IN ('P','TR') AND OBJECT_DEFINITION(o.object_id) LIKE '%tblBulkRunS
     OR OBJECT_DEFINITION(o.object_id) LIKE '%UPDATE%tblBulkRunSchedule%'
     OR OBJECT_DEFINITION(o.object_id) LIKE '%DELETE%tblBulkRunSchedule%');
 
+-- A4b. Writers of the day table, tightened: the table name must follow the verb within 60 chars.
+SELECT o.type_desc, o.name
+FROM sys.objects o
+CROSS APPLY (SELECT OBJECT_DEFINITION(o.object_id) AS body) b
+WHERE o.type IN ('P','TR','FN','IF','TF')
+  AND (PATINDEX('%INSERT%INTO%tblBulkRunSchedule%', b.body) > 0
+       AND PATINDEX('%tblBulkRunSchedule%', SUBSTRING(b.body, PATINDEX('%INSERT%INTO%tblBulkRunSchedule%', b.body), 60)) > 0
+    OR PATINDEX('%UPDATE%tblBulkRunSchedule%', b.body) > 0
+       AND PATINDEX('%tblBulkRunSchedule%', SUBSTRING(b.body, PATINDEX('%UPDATE%tblBulkRunSchedule%', b.body), 60)) > 0
+    OR PATINDEX('%DELETE%FROM%tblBulkRunSchedule%', b.body) > 0
+       AND PATINDEX('%tblBulkRunSchedule%', SUBSTRING(b.body, PATINDEX('%DELETE%FROM%tblBulkRunSchedule%', b.body), 60)) > 0)
+  AND b.body NOT LIKE '%tblBulkRunScheduleHeader%' + REPLICATE('_', 0);   -- header/override/junction tables are fine; eyeball the result
+
+-- B1b. Collapse readiness with the RELATIVE cutoff rule (replaces B1's CutoffVariesByDay).
+--      Rule per row = legacy CutoffHours (hours before StartTime). Monday-only outliers are the
+--      visibility offset and are reconciled, not refused.
+;WITH r AS (
+  SELECT s.ScheduleId, s.DayOfWeek, s.CutoffHours, s.StartTime, s.EndTime
+  FROM dbo.tblBulkRunSchedule s
+  JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId AND h.RetiredUtc IS NULL),
+v AS (
+  SELECT ScheduleId,
+         COUNT(*) AS Rows_, COUNT(DISTINCT DayOfWeek) AS Days_,
+         COUNT(DISTINCT CONCAT(StartTime,'|',EndTime)) AS Windows_,
+         COUNT(DISTINCT CASE WHEN DayOfWeek <> 1 THEN ISNULL(CutoffHours,-1) END) AS NonMonCutoffs_,
+         MAX(CASE WHEN DayOfWeek = 1 THEN CutoffHours END) AS MonCutoff_,
+         MAX(CASE WHEN DayOfWeek <> 1 THEN CutoffHours END) AS OtherCutoff_,
+         SUM(CASE WHEN CutoffHours IS NULL THEN 1 ELSE 0 END) AS CutoffNull_
+  FROM r GROUP BY ScheduleId)
+SELECT COUNT(*) AS Headers,
+  SUM(CASE WHEN Rows_ > Days_ THEN 1 ELSE 0 END) AS DuplicateDay,
+  SUM(CASE WHEN Windows_ > 1 THEN 1 ELSE 0 END) AS WindowVariesByDay,
+  SUM(CASE WHEN NonMonCutoffs_ > 1 THEN 1 ELSE 0 END) AS CutoffRuleVaries_TueToSun,
+  SUM(CASE WHEN NonMonCutoffs_ <= 1 AND MonCutoff_ IS NOT NULL AND OtherCutoff_ IS NOT NULL
+            AND MonCutoff_ <> OtherCutoff_ THEN 1 ELSE 0 END) AS MondayVisibilityOffset_Reconciled,
+  SUM(CASE WHEN CutoffNull_ > 0 THEN 1 ELSE 0 END) AS CutoffNull,
+  SUM(CASE WHEN Rows_ = Days_ AND Windows_ = 1 AND NonMonCutoffs_ <= 1 AND CutoffNull_ = 0 THEN 1 ELSE 0 END) AS CollapsibleNow
+FROM v;
+
 -- B1. Collapse readiness per header, after F1 fold + F11 backfill (the dry run in one query).
+--     NOTE 6 Oct: CutoffVariesByDay_AfterF11 here counts ABSOLUTE CutoffDay differences, which a
+--     Mon-Fri schedule always has. Use B1b for the readiness number; keep B1 for the other columns.
 ;WITH v AS (
   SELECT s.ScheduleId,
          COUNT(*) AS Rows_, COUNT(DISTINCT s.DayOfWeek) AS Days_,
@@ -561,6 +653,20 @@ SELECT rs.* FROM dbo.tblRouteSchedule rs
 LEFT JOIN dbo.tblBulkRunSchedule s ON s.BulkRunScheduleId = rs.ScheduleId
 LEFT JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId
 WHERE s.BulkRunScheduleId IS NULL OR h.RetiredUtc IS NOT NULL;
+
+-- C4. F17 live reproduction (staging, Kevin): Urgent Prod shows no route with more than three
+--     bound schedules, so the "breaks above ~3" report cannot be seen in data. Bind a 4th and a 5th
+--     schedule to Route 1 (Waikato Outer) on staging via the Routes editor, capture the HTTP
+--     response and server log on save, then re-run C1 and:
+SELECT rs.RouteId, rs.ScheduleId, s.ScheduleId AS HeaderId, s.Name, s.DayOfWeek
+FROM dbo.tblRouteSchedule rs
+JOIN dbo.tblBulkRunSchedule s ON s.BulkRunScheduleId = rs.ScheduleId
+WHERE rs.RouteId = 1 ORDER BY rs.ScheduleId;
+--     Two things to check while doing it: (a) the schedule picker (GetSchedulesLookupAsync) filters
+--     out every schedule with AutoBook = 1, so "Book immediately" schedules cannot be bound at all -
+--     if the schedules ops wanted were AutoBook, that is the whole symptom; (b) if the save fails,
+--     capture the PK (RouteId, ScheduleId) violation or other error. If it succeeds and the picker
+--     showed the schedule, the symptom was on the legacy page and F17 closes with the F18 re-key.
 
 -- C3. F17: resolver outcomes, last 14 days, by route.
 SELECT ResolvedRouteId, Outcome, Side, COUNT(*) AS N
