@@ -87,14 +87,17 @@ on every bulk job insert, so M2 must be tested with a real booking, not just a S
 
 **A3 - FKs in.** Five, no triggers on the table, no synonyms: `tblBulkScheduleLinehaul`,
 `tblRouteSchedule`, `BulkZoneSchedule`, plus two I had not listed - **`ShopWindow`**
-(`FK_ShopWindow_tblBulkRunSchedule`, Shopify integration) and a **`BulkPickup...`** table
-(`FK__BulkPicku__Sched__3C2ACFCE`). Both follow the rename automatically; both are added to
-Appendix B and both key on day-row ids until F18.
+(`FK_ShopWindow_tblBulkRunSchedule`, Shopify integration) and **`BulkPickupZoneSchedule`**
+(`FK__BulkPicku__Sched__3C2ACFCE`, the collection-side zone junction - the pickup counterpart of
+`BulkZoneSchedule`). Both follow the rename automatically; both are in Appendix B and both key on
+day-row ids until F18.
 
 **A4 - writers.** The query was too loose (any `INSERT` anywhere in a body that also mentions the
 table) and returned 16 booking SPs that only *read* it. Tightened query in Appendix C (A4b). From
-source control the only writer of the day table is the F11 backfill script; expected answer is
-**no SP writes it**, which is what M2 relies on.
+source control the only writer of the day table is the F11 backfill script. **A4b (Kerran, 7 Oct):
+none.** No procedure, trigger or function writes the day table. The only writers are the
+applications (Schedules NEW / old Schedules page via `ScheduleService`, and legacy ClientManager),
+which is exactly what M2's non-updatable view relies on.
 
 **B1 - readiness.** 2,736 headers, 11,396 day rows. `DuplicateDay` 112 (up from 72 in the export:
 the F1 fold put several clients' identical day rows under one header - these collapse to one).
@@ -548,7 +551,7 @@ off-PC caller inventory is complete.
 | `tblBulkScheduleLinehaul` | `BulkRunScheduleId` | FK |
 | `BulkZoneSchedule` | `ScheduleId` | FK |
 | `ShopWindow` | (FK `FK_ShopWindow_tblBulkRunSchedule`) | FK - Shopify integration; confirmed A3 6 Oct |
-| `BulkPickup...` | (FK `FK__BulkPicku__Sched__3C2ACFCE`) | FK - confirmed A3 6 Oct; Kerran to name the table |
+| `BulkPickupZoneSchedule` | `ScheduleId` (FK `FK__BulkPicku__Sched__3C2ACFCE`) | FK - collection-side zone junction; named by Kerran 7 Oct |
 | `tblSchedulePostcode`, `tblSchedulePolygon`, `tblScheduleClient` | `ScheduleName` | name-keyed (F18 Risk A) — unaffected by collapse, still wrong |
 
 ## Appendix C — read-only queries to run before M2 (Urgent prod + staging; C-block also on Medical prod)
