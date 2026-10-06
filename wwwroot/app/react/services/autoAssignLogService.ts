@@ -22,6 +22,10 @@ export interface AutoAssignLogEntry {
   triggerSource: string;
   priorRouteId: number | null;
   side: string;
+  /** Feature 5.2: which delivery attempt won - 'FM-Depot' / 'FM-Addr' /
+   *  'Legacy'. Null on pickup rows and on anything logged before the
+   *  feature shipped. */
+  matchStrategy: string | null;
 }
 
 export interface AutoAssignLogPage {

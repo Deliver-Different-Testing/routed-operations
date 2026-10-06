@@ -75,14 +75,17 @@ describe('Sidebar', () => {
     expect(screen.queryAllByText('Schedules')).toHaveLength(0);
   });
 
-  it('keeps Quoting and Auto-Assign Log, which still work for a partner', () => {
-    // RouteBuilder.Quote and .Polygon kept no NP check under D1 = B.
+  it('hides Quoting and Auto-Assign Log from a partner', () => {
+    // Flipped 2026-10-07. These two stayed visible under D1 = B because
+    // RouteBuilder.Quote and .Polygon kept no NP check and the pages worked.
+    // Steve ruled on 2026-10-06 that a partner is denied both; the policy
+    // refuses them now, so the nav must not offer them.
     (window as any).__APP_USER__ = {
       ...(window as any).__APP_USER__, isNetworkPartner: true,
     };
     renderWithProviders(<Sidebar />);
-    expect(screen.getByText('Quoting')).toBeInTheDocument();
-    expect(screen.getByText('Auto-Assign Log')).toBeInTheDocument();
+    expect(screen.queryByText('Quoting')).not.toBeInTheDocument();
+    expect(screen.queryByText('Auto-Assign Log')).not.toBeInTheDocument();
   });
 
   it('keeps Dashboard and the Route Viewer group for a network partner', () => {

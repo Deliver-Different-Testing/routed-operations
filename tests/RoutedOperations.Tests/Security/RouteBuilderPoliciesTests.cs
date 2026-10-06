@@ -9,9 +9,10 @@
 // must sit above the UserGroupID=1 fast path, because that path admits without
 // looking at anything else.
 //
-// Scope is Read/Build/Admin only (D1 = B). Quote and Polygon still admit a
-// partner on purpose; Quote_And_Polygon_StillAdmitAPartner pins that so it is
-// a visible decision rather than something found later.
+// All five policies now deny a partner. Quote and Polygon were outside the
+// original scope (D1 = B, Read/Build/Admin only) and admitted one on purpose
+// until Steve's 2026-10-06 ruling; Quote_And_Polygon_DenyAPartner is the
+// flipped version of the test that used to pin that gap.
 //
 // See NP-PAY-PART4-TODO.md T1 / T4 / D1.
 using System.Security.Claims;
@@ -42,22 +43,30 @@ public class RouteBuilderPoliciesTests
     }
 
     [Fact]
-    public void Quote_And_Polygon_StillAdmitAPartner()
+    public void Quote_And_Polygon_DenyAPartner()
     {
-        // NOT an oversight. Kevin's call 2026-10-01 (D1 = B): the denial stays
-        // inside the scope Steve's spec names, which is Read/Build/Admin.
+        // Flipped 2026-10-07 on Steve's 2026-10-06 ruling. Until then this
+        // asserted the opposite, pinning a deliberate scope decision
+        // (D1 = B, denial inside Read/Build/Admin only) so it read as a
+        // decision and not an oversight.
         //
-        // What that leaves reachable, raised with Steve in the Part 4 report:
+        // What the denial now closes:
         //   * QuoteController (RouteBuilder.Quote) - CostPerJob, CostPerKm,
         //     TotalCost, MarginPct, RecommendedQuote. The most commercially
         //     sensitive surface in the module.
-        //   * AutoAssignLogController and ZonesController (RouteBuilder.Polygon)
-        //     - tenant dispatch diagnostics.
-        //
-        // This test exists so the state is visible in the suite rather than
-        // discovered later. If Steve says a partner must not see quoting
-        // margin, flip CanUsePlaceholderModule and flip this with it.
-        Assert.True(RouteBuilderPolicies.CanUsePlaceholderModule(Partner()));
+        //   * AutoAssignLogController and ZonesController
+        //     (RouteBuilder.Polygon) - tenant dispatch diagnostics.
+        Assert.False(RouteBuilderPolicies.CanUsePlaceholderModule(Partner()));
+    }
+
+    [Fact]
+    public void Quote_And_Polygon_StillAdmitTenantStaff()
+    {
+        // The other half of the ruling. Denying the partner must not deny
+        // ordinary staff, including a courier: CanUsePlaceholderModule has
+        // never excluded couriers, unlike Build and Admin.
+        Assert.True(RouteBuilderPolicies.CanUsePlaceholderModule(TenantStaff()));
+        Assert.True(RouteBuilderPolicies.CanUsePlaceholderModule(Courier()));
     }
 
     [Fact]

@@ -12,10 +12,12 @@ import { PARTNER_DENIED_PATHS, isPartnerDeniedPath } from './partnerAccess';
 describe('isPartnerDeniedPath', () => {
   it('denies every surface a partner would be refused anyway', () => {
     expect([...PARTNER_DENIED_PATHS].sort()).toEqual([
+      '/auto-assign-log',
       '/bulk-import',
       '/client-overrides',
       '/driver-scheduling',
       '/polygon-builder',
+      '/quoting',
       '/recurring-routes',
       '/routes',
       '/schedules',
@@ -40,14 +42,16 @@ describe('isPartnerDeniedPath', () => {
     expect(isPartnerDeniedPath('/route-viewer/mobile')).toBe(false);
   });
 
-  it('keeps the two pages that actually work for a partner', () => {
-    // RouteBuilder.Quote and .Polygon kept no NP check under D1 = B, so these
-    // two load and function - quoting included, MarginPct and all. Hiding a
-    // working page would be wrong. Pinned so that if the policy ever gains the
-    // NP check, this test fails and forces the list to follow.
+  it('denies quoting and the auto-assign log', () => {
+    // Flipped 2026-10-07. These two loaded and worked for a partner under
+    // D1 = B - quoting included, MarginPct and all - and the previous version
+    // of this test pinned that, saying it should fail and force this list to
+    // follow if the policy ever gained the NP check. Steve ruled on
+    // 2026-10-06 that a partner is denied both, CanUsePlaceholderModule now
+    // refuses them, so the list follows.
     // See NP-PAY-PART4-TODO.md D17.
-    expect(isPartnerDeniedPath('/quoting')).toBe(false);
-    expect(isPartnerDeniedPath('/auto-assign-log')).toBe(false);
+    expect(isPartnerDeniedPath('/quoting')).toBe(true);
+    expect(isPartnerDeniedPath('/auto-assign-log')).toBe(true);
   });
 
   it('denies the six that 403 under RouteBuilder.Read / .Admin', () => {

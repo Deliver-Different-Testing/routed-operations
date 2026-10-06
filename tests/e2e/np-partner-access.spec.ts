@@ -43,12 +43,12 @@ test.describe('Network partner - module lockout', () => {
     }
     await expect(nav.getByText('Schedules')).toHaveCount(0);
 
-    // Quoting and Auto-Assign Log stay: RouteBuilder.Quote and .Polygon kept
-    // no NP check under D1 = B, so those two pages genuinely work. Hiding a
-    // working page would be wrong; whether a partner should see quoting margin
-    // at all is Steve's call, and the policy would change before this list.
-    await expect(nav.getByText('Quoting')).toBeVisible();
-    await expect(nav.getByText('Auto-Assign Log')).toBeVisible();
+    // Quoting and Auto-Assign Log go too, from 2026-10-07. They stayed under
+    // D1 = B because RouteBuilder.Quote and .Polygon kept no NP check and the
+    // pages genuinely worked. Steve ruled on 2026-10-06 that a partner sees
+    // neither, so the policy denies them and the nav follows.
+    await expect(nav.getByText('Quoting')).toHaveCount(0);
+    await expect(nav.getByText('Auto-Assign Log')).toHaveCount(0);
   });
 
   test('a tenant operator still sees both entries', async ({ page }) => {
@@ -74,18 +74,18 @@ test.describe('Network partner - module lockout', () => {
     await expect(page).toHaveURL(/\/dashboard$/);
   });
 
-  test('every denied surface redirects, and the two working ones do not', async ({ page }) => {
+  test('every denied surface redirects', async ({ page }) => {
+    // /quoting and /auto-assign-log joined this list on 2026-10-07. The
+    // earlier version of this test asserted they did NOT redirect, which was
+    // correct while RouteBuilder.Quote and .Polygon admitted a partner.
     await asNetworkPartner(page);
     for (const path of [
       '/schedules', '/schedules-new', '/recurring-routes',
       '/client-overrides', '/driver-scheduling', '/polygon-builder',
+      '/quoting', '/auto-assign-log',
     ]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/dashboard$/);
-    }
-    for (const path of ['/quoting', '/auto-assign-log']) {
-      await page.goto(path);
-      await expect(page).toHaveURL(new RegExp(path.replace('/', '\/') + '$'));
     }
   });
 
