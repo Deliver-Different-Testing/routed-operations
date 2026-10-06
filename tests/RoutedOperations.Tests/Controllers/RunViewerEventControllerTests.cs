@@ -21,6 +21,16 @@ using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.Tests.Controllers;
 
+// Joins the S3EnvVar collection 2026-10-07. This class sets the process-wide
+// S3Bucket env var in its constructor and clears it in Dispose, exactly like
+// S3PhotoReaderTests and RouteViewerJobServiceTests, which were already
+// collected together for that reason. Being outside the collection left it
+// running in parallel with them, so its Dispose could clear the variable
+// mid-test in another class. That surfaced as
+// S3PhotoReaderTests.DeleteObjectAsync_NotFound_IsSilent failing with
+// "Env var 'S3Bucket' is not set" on roughly one run in three, locally and
+// on CI. The three classes serialise now.
+[Collection("S3EnvVar")]
 public class RunViewerEventControllerTests : IDisposable
 {
     public RunViewerEventControllerTests()

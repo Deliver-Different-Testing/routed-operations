@@ -23,12 +23,13 @@
 // list therefore tracks the server, not the spec wording, and the gap is in
 // the Part 4 report for Steve.
 //
-// DELIBERATELY ABSENT: /quoting and /auto-assign-log. RouteBuilder.Quote and
-// .Polygon kept no network-partner check under D1 = B, so a partner reaches
-// both and they work - including MarginPct, CostPerJob and RecommendedQuote on
-// the quoting page. Hiding a working page would be wrong; the question of
-// whether a partner should see quoting margin at all is on Steve's desk, and
-// if the answer is no then the policy changes first and this list follows.
+// /quoting and /auto-assign-log were deliberately absent until 2026-10-07.
+// RouteBuilder.Quote and .Polygon kept no network-partner check under D1 = B,
+// so a partner reached both and they worked, including MarginPct, CostPerJob
+// and RecommendedQuote on the quoting page. Hiding a working page would have
+// been wrong. Steve ruled on 2026-10-06 that a partner is denied both, so
+// CanUsePlaceholderModule now refuses them and this list follows, in that
+// order: the server is the gate, the list only stops the dead links.
 //
 // Note the 16-17 Sep configurator change already removed Recurring Routes and
 // Schedules from the NP lane. Routed Operations still shows them, so the two
@@ -50,6 +51,11 @@ export const PARTNER_DENIED_PATHS: readonly string[] = [
   '/client-overrides',
   '/driver-scheduling',
   '/polygon-builder',
+  // Added 2026-10-07 with the RouteBuilder.Quote / .Polygon denial. Note
+  // .Polygon guards AutoAssignLogController and ZonesController, not the
+  // Polygon Builder page above, which was already denied through Read/Admin.
+  '/quoting',
+  '/auto-assign-log',
 ];
 
 /**

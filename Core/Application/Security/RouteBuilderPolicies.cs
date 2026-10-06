@@ -15,19 +15,20 @@ namespace RoutedOperations.Core.Application.Security;
 /// Payout and schedule pricing. This matches the 16-17 Sep configurator
 /// decision that took Schedules and Recurring Routes out of the NP lane.
 ///
-/// Quote and Polygon deliberately do NOT. Kevin's call 2026-10-01 (D1 = B):
-/// stay inside the scope Steve's spec names, which is Read/Build/Admin only.
-/// The consequence is recorded rather than quietly absorbed, and there is a
-/// test pinning it so it reads as a decision and not an oversight:
+/// Quote and Polygon now deny a partner too. Steve's ruling 2026-10-06,
+/// closing the gap Kevin raised in the Part 4 report: partners get
+/// operational access but not customer pricing visibility, and MarginPct is
+/// exactly that. Until then these two sat outside the scope Steve's spec
+/// named (D1 = B, Read/Build/Admin only), with a test pinning the gap so it
+/// read as a decision rather than an oversight. What this closes:
 ///
 ///   * RouteBuilder.Quote guards QuoteController, which returns CostPerJob,
-///     CostPerKm, TotalCost, MarginPct and RecommendedQuote. A partner can
-///     still reach all of it. This is the most commercially sensitive surface
-///     in the module.
+///     CostPerKm, TotalCost, MarginPct and RecommendedQuote. The most
+///     commercially sensitive surface in the module.
 ///   * RouteBuilder.Polygon guards AutoAssignLogController (tenant dispatch
-///     diagnostics) and ZonesController.
-///
-/// Raised with Steve in the Part 4 report.
+///     diagnostics) and ZonesController. Note it does NOT guard the Polygon
+///     Builder page itself, whose data calls go through Read/Admin and were
+///     already denied.
 ///
 /// Deliberately does NOT cover the RouteViewer.* policies. Route Viewer is the
 /// partner's own lane; scoping there is row-level via INpScopeGuard and the
@@ -79,15 +80,13 @@ public static class RouteBuilderPolicies
     }
 
     /// <summary>
-    /// RouteBuilder.Quote and RouteBuilder.Polygon. Tenant claim only, with no
-    /// network-partner check, so a partner passes BOTH.
+    /// RouteBuilder.Quote and RouteBuilder.Polygon. Tenant claim, and not a
+    /// network partner.
     ///
-    /// That is deliberate and scoped by D1 = B, not an omission. See the class
-    /// comment for what stays reachable and why it is on Steve's desk. If the
-    /// answer comes back that a partner must not see quoting margin, this
-    /// becomes `HasTenant(user) &amp;&amp; !IsNetworkPartner(user)` and the
-    /// Quote_And_Polygon_StillAdmitAPartner test flips with it.
+    /// The partner check was added 2026-10-07 on Steve's 2026-10-06 ruling.
+    /// Before that these two admitted a partner by design (D1 = B); see the
+    /// class comment for what that exposed.
     /// </summary>
     public static bool CanUsePlaceholderModule(ClaimsPrincipal user) =>
-        HasTenant(user);
+        HasTenant(user) && !IsNetworkPartner(user);
 }
