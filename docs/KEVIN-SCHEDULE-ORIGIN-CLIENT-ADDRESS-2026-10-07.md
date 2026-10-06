@@ -126,6 +126,28 @@ Rules:
 - The Collection leg means exactly one thing from now on: **collect from the client's address
   into the depot**. Its "Pickup source" dropdown is deleted. Its zones (F10) decide coverage.
 
+### 2.1b What "Dispatch region" is for - and what it is not
+
+`Region` on a client-origin schedule is the **owning branch**, not a place. It is needed for:
+
+- **Zones and pricing.** Zone groups belong to a region (`tblBulkRegion` -> `BulkZonePostcodeGroup`).
+  The schedule's delivery zone group is one of its region's groups, and the rating function
+  (`fncT_BulkZoneRate_WithLinehaul`, called with `@DepotId`) prices against it.
+- **Who sees the work.** Route Builder, Route Viewer and the run list are scoped by region, and
+  runs carry a region id. The Auckland team sees Auckland work.
+- **Linehaul endpoints**, where the chain has linehaul legs.
+
+Its **coordinates are never read for a client-origin job.** The three places that read a
+region's `PickupLatitude/Longitude` today are: the LHP destination / linehaul origin (no
+collection leg exists, and linehaul legs use `BookFromClientAddress`), Bulk Import's first
+origin step (replaced by the client site, section 4.4), and Route Builder's region filter
+(replaced by `RegionID`, section 4.1). After those two changes the job carries the client's
+coordinates and the region supplies zones, pricing and ownership. There is no geolocation
+conflict to resolve.
+
+Dropping `Region` for client-origin schedules was considered and rejected: the zone group would
+have no home and the job would be invisible to every region-scoped screen.
+
 ### 2.1a Why not a real depot row per client warehouse
 
 The dropdown already contains partner premises modelled as depots (GF Dunedin, KB Distributors,
