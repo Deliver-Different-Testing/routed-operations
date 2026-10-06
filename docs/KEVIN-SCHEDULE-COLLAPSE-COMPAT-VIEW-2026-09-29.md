@@ -102,8 +102,21 @@ the F1 fold put several clients' identical day rows under one header - these col
 = 2,103 is my query's fault, not the data's:** the F11 backfill stores an *absolute* `CutoffDay`
 per day row, so a Mon-Fri schedule with one consistent rule necessarily has five different
 `CutoffDay` values. The relative rule (section 2.5) is what must be constant; B1b in Appendix C
-measures that. On the export the relative rule varied on 845 schedules, 776 of them the Monday
-offset that section 2.5 reconciles. Expect **CollapsibleNow around 1,700**, not 602.
+measures that.
+
+**B1b - readiness with the relative rule (Kerran, 7 Oct, Urgent Prod):**
+
+| Headers | DuplicateDay | WindowVariesByDay | CutoffRuleVaries (Tue-Sun) | MondayVisibilityOffset (reconciled) | CutoffNull | **CollapsibleNow** |
+| -: | -: | -: | -: | -: | -: | -: |
+| 2,736 | 112 | 82 | 118 | 734 | 0 | **2,488 (91%)** |
+
+The Monday offset is confirmed as the dominant pattern (734 schedules) and is reconciled, not
+refused. `CutoffHours` is never NULL, so the 37 `CutoffUnclean` in B1 are F11's "unclean" absolute
+conversions only. B1b does not subtract the 27 `OtherPayloadVaries` headers, so the honest first
+set is about **2,460 schedules** convertible on touch with no operator action. The remaining ~250
+are the 112 duplicate-day headers (mostly F1-fold duplicates that collapse once the identical rows
+are deduplicated), the 82 per-day windows (split into two schedules) and the 118 schedules whose
+Tue-Sun cutoff rule genuinely differs by day (review individually; expected to be data drift).
 
 **B2 - masks.** 1,732 Mon-Fri, 203 Sunday-only, 88 all-week, ~370 single-weekday, 65 Mon/Wed/Fri.
 Matches the export; nothing has shifted since 8 Sep beyond the fold.
