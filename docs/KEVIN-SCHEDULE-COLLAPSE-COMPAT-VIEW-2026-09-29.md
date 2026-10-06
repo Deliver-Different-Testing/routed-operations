@@ -131,6 +131,30 @@ orphaned bindings (C2 empty). Resolver, last 14 days: 8,096 pickup / 8,088 deliv
 is broken**: the "breaks above about three" report cannot be confirmed from data because no route
 has crossed three. It has to be reproduced live - C4 in Appendix C.
 
+**C - F17 on Medical Prod (7 Oct).** This is the tenant Kevin's original Route 5 / 7 / 10 counts
+came from, and it reframes the symptom:
+
+| Route | Active | Bound in `tblRouteSchedule` | Distinct `ScheduleID` on its bookings | Bookings |
+| :- | :-: | -: | -: | -: |
+| 5 RNO200 | 1 | **1** | **6** | 261 |
+| 7 SMF5 | 1 | **1** | 4 | 70 |
+| 10 RNO300 | 1 | **1** | 3 | 60 |
+| 11 / 12 / 13 SMF4 / SMF3 / SMF2 | 1 | 1 | 1 | 40 / 42 / 35 |
+| 14 SMF7, 9 Stockton | 1 / 0 | 1 | 0 | 0 |
+| 6 Hayward, 8 Central Valley | 1 | **0** | 1 | 96 / 21 |
+| 15 Burbank to Lab | 1 | 0 | 0 | 0 |
+
+**Every route has at most one junction binding**, while the bookings on Route 5 span six
+schedules. No route anywhere has more than one bound schedule, on either tenant beyond Waikato's
+three. So "link more than about three schedules" was never achieved in `tblRouteSchedule`. Either
+ops are linking through a surface that only holds one (the Configurator / DF Admin route editor
+writes the legacy single `Routes.ScheduleId` pointer, and the 2026-08-03 backfill mirrored exactly
+one row per route), or the Routed Operations picker refuses the extra schedules (it filters out
+`AutoBook = 1`, and the medical corridor schedules are largely Book-immediately). C2 is empty (no
+orphans). Resolver, last 14 days: routes 5-13 receive pickup-side assignments (11-144 each), Route
+15 receives 482 delivery-side; `NoMatch` 180 / 154. The resolver is doing its job on Medical; the
+binding count is what is stuck at one. **C5 in Appendix C discriminates the two causes.**
+
 ---
 
 ## 2. Target shape
@@ -281,8 +305,8 @@ date-specific and stay with the booking-time functions, exactly as today.
 
 ### 2.4 The NZ time-type trap
 
-**Urgent Prod confirmed `time` on all three columns (A1, 6 Oct).** The branch below is only needed
-if another tenant differs. `TblBulkRunSchedule.cs` in routed-operations records that `StartTime`/`EndTime` are **TIME on
+**Urgent Prod (6 Oct) and Medical Prod (7 Oct) both confirmed `time` on all three columns.** The
+per-tenant branch below is therefore **not needed**; the view is one body. Kept for the record. `TblBulkRunSchedule.cs` in routed-operations records that `StartTime`/`EndTime` are **TIME on
 US but DATETIME on NZ**; the legacy SPs paper over it with `CAST(x AS datetime)`. Before M2:
 
 ```sql
@@ -683,6 +707,20 @@ WHERE rs.RouteId = 1 ORDER BY rs.ScheduleId;
 --     if the schedules ops wanted were AutoBook, that is the whole symptom; (b) if the save fails,
 --     capture the PK (RouteId, ScheduleId) violation or other error. If it succeeds and the picker
 --     showed the schedule, the symptom was on the legacy page and F17 closes with the F18 re-key.
+
+-- C5. F17 (Medical Prod): for Route 5, every schedule its bookings use - is it bound, is it AutoBook?
+--     If the unbound ones are all AutoBook = 1, the Routed Ops picker is hiding them (fix: drop the
+--     AutoBook filter in GetSchedulesLookupAsync). If they are not AutoBook, ops are linking through the
+--     single-pointer Configurator editor and the junction never sees them.
+SELECT b.ScheduleID AS DayRowId, s.ScheduleId AS HeaderId, s.Name, s.DayOfWeek, s.AutoBook,
+       CASE WHEN rs.ScheduleId IS NULL THEN 0 ELSE 1 END AS BoundToRoute5,
+       COUNT(*) AS Bookings
+FROM dbo.tucJobBooking b
+LEFT JOIN dbo.tblBulkRunSchedule s ON s.BulkRunScheduleId = b.ScheduleID
+LEFT JOIN dbo.tblRouteSchedule rs ON rs.RouteId = 5 AND rs.ScheduleId = b.ScheduleID
+WHERE b.RouteId = 5
+GROUP BY b.ScheduleID, s.ScheduleId, s.Name, s.DayOfWeek, s.AutoBook, rs.ScheduleId
+ORDER BY Bookings DESC;
 
 -- C3. F17: resolver outcomes, last 14 days, by route.
 SELECT ResolvedRouteId, Outcome, Side, COUNT(*) AS N
