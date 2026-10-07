@@ -486,7 +486,7 @@ by a derivation.
   the Depot leg rather than a property of a depot row. The per-leg linehaul flag stays.
 - **F6**: fixed as a side effect of section 2.2.
 
-## 8. Open
+## 8. Open (resolved items kept for the record)
 
 - **Cross-region client origin (HelloFresh shape).** `UTL_fncJob_GetClientAvailableBulkRunSchedule:
   220-243` offers a no-pickup-depot schedule only when the From and To postcodes resolve to the
@@ -501,9 +501,10 @@ by a derivation.
   shape hits the first-branch restriction. **With `OriginRegionId` the fix is one substitution**, not a
   redesign: the function's second branch today is "From postcode -> `PickupDepotId`, To postcode ->
   `Region`"; for `OriginType = 'client'` it reads "From postcode -> `OriginRegionId`, To postcode ->
-  `Region`". Same for `DD_fncJob_GetClientAvailableBulkRunSchedule`. **Steve to decide** scope;
-  recommendation now: **in scope**, since it is the same change the origin region already requires
-  everywhere else and leaves no known gap behind.
+  `Region`". Same for `DD_fncJob_GetClientAvailableBulkRunSchedule`. **Decided (Steve, 7 Oct): in
+  scope for this build.** Add to acceptance: a client-origin schedule with origin region Auckland and
+  delivery region Wellington is offered to the client when From resolves to Auckland and To to
+  Wellington, and is not offered otherwise.
 - `ReturnToStart` default for client-origin runs: ops preference, not a dev decision.
 
 ## 9. Changes after Kevin's review (7 Oct)
