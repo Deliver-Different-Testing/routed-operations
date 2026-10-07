@@ -1,6 +1,7 @@
 # Schedule origin: the first Depot leg can be "Client address"
 
-_Steve Bonnici -> Kevin, 2026-10-07 (revised same day to Marcus's shape). Closes the "From client
+_Steve Bonnici -> Kevin, 2026-10-07 (revised same day to Marcus's shape; revised again after Kevin's
+review of 7 Oct 12:21 - see section 9 for what changed). Closes the "From client
 address" confusion discussed with Kerran on 6 Oct. Supersedes F10's pickup-source wording and F12 in
 `KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md`. Companion to
 `KEVIN-SCHEDULE-COLLAPSE-COMPAT-VIEW-2026-09-29.md` (one new column on the detail table)._
@@ -17,7 +18,7 @@ dbmigrationsv2 SP re-emits of 2026-09-25 / 2026-09-28.
 | **Problem** | "Pick up from client address" lives inside the Collection leg. Choosing it nulls `PickupDepotId` but the schedule still books a pickup job (LHP) from the client to the depot, then a delivery from the depot. That is the opposite of what the setting is for. |
 | **Intent** | Some clients (warehouses, distribution centres) want runs built **from their own site**. The client address *is* the origin. There is no collection job and no consolidation at our depot. One delivery job per consignment, runs fan out from the client. |
 | **Decision (Steve, Marcus)** | The chain's **first Depot leg** gains a dropdown value **"Client address"**. A schedule that delivers straight from a client's warehouse is **Depot (Client address) -> Delivery**, optionally with Linehaul legs in between. There is **no Collection leg**. Client-origin schedules are client-specific, never default. **No real depot rows per client** (avoid region sprawl). |
-| **Good news** | The booking SP already produces the right job when a schedule has no pickup schedule and no linehaul: one job from the booking's own From address to the consignee. No new booking SQL. |
+| **Booking SPs** | The **bulk** path (`WS_/DD_stpBulkScheduleJob_Insert`) already produces the right job: one job from the booking's own From address. The **web/API single-job path** does not: `WS_stpJob_Insert`, `WS_stpJob_Topup_Insert` and `DD_stpJob_InsertExcelerator` overwrite the pickup address and coordinates with the depot's for a no-collection schedule. Three-line fix in each, reading a **stored** `OriginType` (section 4.3). |
 | **Real blockers (two)** | (1) Route Builder's region filter finds jobs by matching **pickup lat/long or From address to `tblBulkRegion`**; a client-address pickup matches no depot, so the job never appears when filtering by region. The filter must also admit `tblBulkJob.RegionID` for these schedules. (2) **Bulk Import** resolves a routed job's origin from the **schedule's Region depot first** (NZ: only), so imported jobs on a client-origin schedule would be stamped with the dispatch depot's coordinates. The resolver must take the client's saved site address instead (section 4.4). |
 | **Remove** | The Pickup source dropdown on the Collection leg, including the "Booking-declared" value on develop that has no backend meaning. |
 | **Dispatch region** | When the Depot leg is "Client address" nothing writes `Region`, which is how Route Builder / Route Viewer scope work to a team. The Depot card shows a **Dispatch region** picker in that case. |
@@ -69,8 +70,26 @@ already does the right thing for that combination. Nothing in the booking path n
 change for a delivery-only client-origin schedule.
 
 Linehaul legs that load at the client site are also already supported:
-`tblBulkScheduleLinehaul.BookFromClientAddress = 1` makes `InsertChildJobs` (~line 710) address
-the LH leg from the booking's `From*` instead of `tblBulkRegion`. That is the HelloFresh case.
+`tblBulkScheduleLinehaul.FromClientAddress = 1` (column confirmed against production 7 Oct; the SP's
+local variable is `@LinehaulBookFromClientAddress`) makes `InsertChildJobs` (~line 710) address the
+LH leg from the booking's `From*` instead of `tblBulkRegion`. That is the HelloFresh case. **It has
+never been used:** 0 of 9,547 linehaul rows across both production tenants have it set.
+
+**But the web/API single-job path is different.** `WS_stpJob_Insert:243` derives
+
+```sql
+@IsCollectFromClientAddress = CASE WHEN ISNULL(BookPickup,0) = 1 AND PickupDepotId IS NULL THEN 1 ELSE 0 END
+```
+
+so a client-origin schedule (`BookPickup = 0`) gets 0, and `:247` then overwrites `FromAddress`, suburb,
+postcode, country **and `PickUpLatitude/PickUpLongitude`** from `tblBulkRegion` joined on `s.Region`.
+It fires when `@DONOTOverwriteSceduleFromAddress = 0` OR `@JobTypeID IN (94,95,110)`, so the three
+home-delivery speeds (AH, SH, BEH) overwrite even when Book-immediately is on. Worked example on
+`PB TECH TEST (AIRPORT)` (#13342, Region Auckland, already `BookPickup = 0` / null depot): book on
+speed SH through the web and the job's From becomes the Auckland depot with the depot's coordinates.
+Because the coordinates then match a depot, the job *does* appear in the Route Builder region filter -
+blocker 1 looks fixed while the run starts in the wrong place. Same shape in `WS_stpJob_Topup_Insert`
+and `DD_stpJob_InsertExcelerator` (US has no 94/95/110 clause; Book-immediately only).
 
 ### 1.3 Why Route Builder cannot see these jobs
 
@@ -161,15 +180,22 @@ address" in the Depot leg is the right abstraction.
 ### 2.2 What is removed
 
 - `pickupSource` on `CollectionLeg` (`ChainBuilder.tsx:28`) and the dropdown (~line 540-549).
-- The `'booking'` / "Booking-declared" value. No backend reads it; it writes the same null depot
-  as Client address.
+- The `'booking'` / "Booking-declared" value - **already removed by Kevin on 5 Oct (`269c4dc`, on
+  `origin/develop`)**. The dropdown itself still goes with this work.
+- **The Collection card's pickup depot picker as well** (confirmed Steve 7 Oct). The collection's
+  destination is the chain's Depot leg; `PickupDepotId` is derived from it on save. Safe because
+  `seedLegsFromDto` already seeds the Depot leg as `depotId: d.pickupDepotId`
+  (`ScheduleDetailModal.tsx:221`), so the two cards show the same value today. Regression case:
+  `(TEST) AKL > CHCH Pre 10am Medical` - Collection depot Auckland (`PickupDepotId = 8`), Depot leg
+  Auckland, `Region = 20` (Christchurch); derived on save `PickupDepotId = 8`, unchanged.
 - The "Pickup source" summary line on the collapsed Collection card (`ChainBuilder.tsx:460`).
 - `seedLegsFromDto` unconditionally adding a Collection leg (section 1.1).
 
 ### 2.3 Not changed
 
 - The linehaul row's `fromClientAddress` checkbox ("Book from client address (overrides From
-  depot)", `ChainBuilder.tsx:797`). It is a per-leg concern and the SP honours it. On a
+  depot)", `ChainBuilder.tsx:797`), DB column `tblBulkScheduleLinehaul.FromClientAddress`. It is a
+  per-leg concern and the SP honours it. On a
   Client-origin schedule it defaults to **on** for the first LH leg.
 - `BookPickup` as the DB truth for "has a collection job". The UI stops exposing it as a loose
   checkbox; it is derived: `BookPickup = (OriginType = 'depot' AND chain has a Collection leg)`.
@@ -200,8 +226,9 @@ DEPOT   Client address                         edit v  Remove
 
 ### 3.2 Chain builder
 
-- Collection card: title "Collect from client address -> {depot}". Fields: speed (rating), zones
-  (F10), collection box discount. No source dropdown.
+- Collection card: title "Collect from client address -> {depot from the chain's Depot leg}".
+  Fields: speed (rating), zones (F10), collection box discount. **No source dropdown, no depot
+  picker.**
 - "Add Collection" button disabled with tooltip when the first Depot leg is "Client address".
 - Linehaul card on a Client-origin schedule: `fromClientAddress` defaults true on the first LH
   leg; From-depot select disabled while it is on (already the behaviour at `ChainBuilder.tsx:686`).
@@ -239,8 +266,11 @@ WHERE ( breg.BulkRegionId IN ({inList})
   {dateClause}
 ```
 
-Until `tblBulkRunScheduleDetail` exists, use the interim derivation in section 5 in place of
-the `EXISTS`. Same change in the Route Viewer region filter if it shares the SP pattern.
+Until `OriginType` is stored, the **read side may use the interim derivation** in section 5.2 in
+place of the `EXISTS` (worst case: an extra job becomes visible in a filter). **Route Viewer already
+does this**: `RVW_stpBulkRuns_2:193-206` admits a non-LHP job on `bjr.RegionID IN (@RIDS)` OR the
+coordinate match, and carries a `NOT LIKE '%LHP'` guard and a `COL_LENGTH('dbo.tucJob','DepotId')`
+check. Copy that shape into `RunService` / `JobService`; Route Viewer needs no change.
 
 ### 4.2 Grouping and start
 
@@ -258,7 +288,8 @@ paths:
 
 | Path | Today | Client origin |
 | :- | :- | :- |
-| Web / API booking (`WS_stpJob_Insert`, `WS_/DD_stpBulkScheduleJob_Insert`) | `@PickUpLatitude/@PickUpLongitude` come from the booking's From address. With `BookPickup = 0` and no linehaul they are stamped on the job unchanged (~line 470). | **No change.** |
+| Bulk schedule booking (`WS_/DD_stpBulkScheduleJob_Insert`) | `@InsertParentJob = 0` when `BookPickup = 0` and no linehaul; every `From*` column falls through to the booking's own address. Verified by Kevin 7 Oct. | **No change.** |
+| Web / API single job (`WS_stpJob_Insert:243-247`, `WS_stpJob_Topup_Insert`, `DD_stpJob_InsertExcelerator`) | `@IsCollectFromClientAddress` is 0 for a no-collection schedule, so From address **and coordinates** are overwritten with the `s.Region` depot's (section 1.2). | **Change required:** `@IsCollectFromClientAddress` is also 1 when the schedule's stored `OriginType = 'client'`. Three lines per SP. Must read the **stored** column, never the derivation (section 5). |
 | Bulk Import, routed (`BulkImportJobFactory.ResolveRoutedOriginLocal`, ~line 781) | Origin precedence: **Step 1 = the schedule's `RegionNavigation` depot** (address + `PickupLatitude/Longitude`). NZ "always resolves at Step 1". US then tries `RouteFromClientSite` -> per-row From address -> `OriginLocationId` region. | **Change required** - section 4.4. |
 
 ### 4.4 Bulk Import origin precedence
@@ -299,9 +330,20 @@ The client-site branch is only correct if `tucClient.Latitude/Longitude` are pop
 - **Bulk Import**: if the client has no site coordinates and the rows carry no From coordinates,
   **refuse the batch** with that message rather than falling back to a depot. A silently wrong
   run start is the failure mode this spec exists to remove.
-- Geocoding the client site is a one-off via the existing HERE geocoder
-  (`HereGeocodeService`); add a "Geocode site address" action on the client record if it is
-  not already there.
+- **Decided (Steve, 7 Oct): the geocode write is built in Routed Operations.** No link to
+  AdminManager (being retired alongside ClientManager). Today no screen in Routed Operations or
+  ClientManager writes `tucClient.Latitude/Longitude`; only AdminManager does (`ClientService.cs:338`,
+  `:832`), from a Google Maps autocomplete on its client form. So this is Routed Operations' **first
+  client write path**:
+  - `POST /api/clients/{clientId}/geocode` on `ClientsController` (currently all `HttpGet`),
+    `BaseController` logging as usual. Body: optional override address; default = the client's
+    saved site address. Uses `HereGeocodeService` (already behind `/api/address/forward-geocode`).
+  - Returns the candidate lat/long + formatted address for **confirmation**; a second call with
+    `confirm = true` writes `tucClient.Latitude/Longitude` and audits who/when.
+  - Surfaced from the Schedules NEW warning (section 4.5 first bullet) and from the client record
+    in Routed Operations. Never overwrite silently.
+  - Good news from Kevin's check: the three clients on the current candidate schedules already have
+    site coordinates.
 
 ### 4.6 Nothing else
 
@@ -321,16 +363,35 @@ OriginType  CHAR(6) NOT NULL CONSTRAINT DF_tblBulkRunScheduleDetail_OriginType D
     CONSTRAINT CK_tblBulkRunScheduleDetail_OriginType CHECK (OriginType IN ('depot','client')),
 ```
 
-If this spec ships **before** M1, put the same column on `tblBulkRunScheduleHeader` (nullable,
-default 'depot') and move it in M1. Do not put it on the day row.
+**It ships before M1** (confirmed 7 Oct: no `tblBulkRunScheduleDetail`, no `OriginType` anywhere).
+So the column lands on **`tblBulkRunScheduleHeader`** first:
 
-### 5.2 Interim derivation for existing schedules (no detail row yet)
+```sql
+ALTER TABLE dbo.tblBulkRunScheduleHeader
+    ADD OriginType CHAR(6) NOT NULL CONSTRAINT DF_tblBulkRunScheduleHeader_OriginType DEFAULT ('depot')
+        CONSTRAINT CK_tblBulkRunScheduleHeader_OriginType CHECK (OriginType IN ('depot','client'));
+```
+
+Additive, so the migration ships **before** the app and the SP change. It moves to the detail table
+in collapse M1. Never on the day row.
+
+### 5.2 Interim derivation - READ SIDE ONLY (decided 7 Oct)
+
+Kevin's review found 5.2 and 5.3 contradicting each other (a derivation *is* an auto-classifier).
+Resolved by side, because the risk is not symmetric:
+
+- **Read side** (Route Builder / Route Viewer region filters): the derivation below may be used
+  until `OriginType` is populated. Worst case is an extra job becoming visible.
+- **Write side** (the three booking SPs in section 4.3, Bulk Import origin in 4.4): **must read the
+  stored `OriginType` column.** Worst case is silently changing a live client's job address.
+
+Column name corrected: `FromClientAddress`, not `BookFromClientAddress`.
 
 ```sql
 OriginType = CASE WHEN ISNULL(BookPickup,0) = 0 AND PickupDepotId IS NULL
                    AND NOT EXISTS (SELECT 1 FROM dbo.tblBulkScheduleLinehaul l
                                    WHERE l.BulkRunScheduleId = s.BulkRunScheduleId
-                                     AND l.Active = 1 AND ISNULL(l.BookFromClientAddress,0) = 0)
+                                     AND l.Active = 1 AND ISNULL(l.FromClientAddress,0) = 0)
              THEN 'client' ELSE 'depot' END
 ```
 
@@ -349,12 +410,31 @@ FROM dbo.tblBulkRunSchedule s
 JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId AND h.RetiredUtc IS NULL;
 ```
 
-`NoPickupNoDepot` is the candidate Client-origin set, but it also contains ordinary
-depot-origin, delivery-only schedules whose depot is implied by `Region`. **Do not auto-classify
-those as Client origin.** Default everything to `'depot'` and let ops flag the genuine
-client-origin schedules (expected: a handful of warehouse / DC clients). The `PickupNoDepot`
-count is the set the old dropdown produced by accident; each of those is a real collection
-whose depot should be set to `Region`.
+**Results (Kevin, 7 Oct, all four tenants):**
+
+| Tenant | NoPickupNoDepot | NoPickupButDepot | PickupNoDepot | PickupAndDepot | DayRows |
+| :- | -: | -: | -: | -: | -: |
+| urgent-prod | 19 | 5,137 | 0 | 6,240 | 11,396 |
+| medical-prod | 0 | 17 | 0 | 30 | 47 |
+| NZ staging | 10 | 3,979 | 0 | 3,759 | 7,748 |
+| US | 11 | 17 | 0 | 35 | 63 |
+
+`PickupNoDepot = 0` everywhere, so the "set the depot to Region" cleanup task **comes out of the
+plan**. The 19 urgent-prod `NoPickupNoDepot` rows are four schedules across three clients, and they
+are exactly what the 5.2 derivation would flip:
+
+| Day rows | Schedule | Client | Rows |
+| :- | :- | :- | -: |
+| 5224-5230 | Urgent Express Delivery 9am | Paddock to Pantry | 7 |
+| 6453-6458 | TEST UCLAL Auckland Afternoons | UCL Anisah | 6 |
+| 8343-8348 | Store-to-Door Express Delivery 9am | UCL Anisah | 5 |
+| 13342 | PB TECH TEST (AIRPORT) | UCL Marcus Pouwels-Strang | 1 |
+
+All four have a client link and none is a default, so 2.1's validation would pass them. **Decided
+(Steve, 7 Oct): default every header to `'depot'`; ops flag these four by hand.** PB Tech is the
+case this spec exists for. Paddock to Pantry is a real meal-kit client (4,172 historical bulk jobs,
+none since 27 May) and plausibly client-origin, but nobody has confirmed it - it must not be flipped
+by a derivation.
 
 ---
 
@@ -362,9 +442,12 @@ whose depot should be set to `Region`.
 
 1. A schedule saved with the first Depot leg = Client address has `BookPickup = 0`,
    `PickupDepotId = NULL`, `Region` = the chosen dispatch region, no Collection leg, and
-   `OriginType = 'client'`. Booking a job on it creates **one** tucJob
-   (or LH legs + DEL when linehaul legs exist) with From = the client's address. No LHP.
-2. That job appears in Route Builder when filtering by the schedule's dispatch region, and can
+   `OriginType = 'client'`. Booking a job on it creates **one** tucJob (or LH legs + DEL when
+   linehaul legs exist) with From = the client's address. No LHP. **Exercised on both the bulk
+   path and the web/API path, on a home-delivery speed (SH), asserting `PickUpLatitude /
+   PickUpLongitude` equal the client's** - not merely that the job appears.
+2. That job appears in Route Builder when filtering by the schedule's dispatch region **with the
+   client's coordinates** (a depot-coordinate match would pass this for the wrong reason), and can
    be built into a run whose start is the client site.
 2a. A routed **Bulk Import** on that schedule stamps every job with the client site's address
    and coordinates, on NZ and US, without the operator ticking "Route starts from client site".
@@ -388,8 +471,27 @@ whose depot should be set to `Region`.
 
 ## 8. Open
 
-- Whether Route Viewer's region filter shares the geospatial SP join and needs the same
-  extension (section 4.1). Kevin to confirm.
-- Whether the client record already exposes a geocode action anywhere in Routed Operations or
-  only in legacy ClientManager (section 4.5).
+- **Cross-region client origin (HelloFresh shape).** `UTL_fncJob_GetClientAvailableBulkRunSchedule:
+  220-243` offers a no-pickup-depot schedule only when the From and To postcodes resolve to the
+  **same** depot equal to `s.Region`. PB Tech (Auckland site -> Auckland deliveries, Region
+  Auckland) is offered. A client-origin schedule whose deliveries are in another region via
+  linehaul (Auckland site -> LH -> Wellington, Region Wellington) would **not** be offered to the
+  client. Never configured on any tenant today (`FromClientAddress = 1` on 0 of 9,547 linehaul
+  rows). **Steve to decide** whether it is in scope for this build (relax the first branch to test
+  the To side only for `OriginType = 'client'`) or a recorded follow-up. Recommendation: follow-up.
+- `ReturnToStart` default for client-origin runs: ops preference, not a dev decision.
+
+## 9. Changes after Kevin's review (7 Oct)
+
+1. Web/API single-job SPs **do** need the three-line `@IsCollectFromClientAddress` change
+   (section 1.2 / 4.3); the bulk path does not.
+2. `OriginType` lands on the **header** first, migration before app (5.1).
+3. Derivation is **read-side only**; write side reads the stored column (5.2). Default `'depot'`;
+   ops flag the four candidate schedules by hand (5.3).
+4. Route Viewer already has the right filter; Route Builder copies `RVW_stpBulkRuns_2` (4.1).
+5. Client geocode write is built **in Routed Operations**, no AdminManager link (4.5).
+6. Column name `FromClientAddress`; "Booking-declared" already removed 5 Oct (2.2).
+7. Collection card loses its depot picker too; `PickupDepotId` derived from the Depot leg (2.2, 3.2).
+8. `PickupNoDepot` cleanup task removed - count is 0 on all tenants (5.3).
+9. Acceptance 1 and 2 exercised on both booking paths, asserting coordinates (6).
 - Whether ops wants `ReturnToStart` on by default for client-origin runs (section 4.2).
