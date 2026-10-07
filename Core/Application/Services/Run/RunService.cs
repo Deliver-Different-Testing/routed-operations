@@ -97,7 +97,30 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                               '>st<', '>street<'),
                             '<>', ' '
                           )))) COLLATE DATABASE_DEFAULT)
-                   WHERE breg.BulkRegionId IN ({inList})
+                   WHERE ( breg.BulkRegionId IN ({inList})
+                           -- Client-origin jobs (schedule-origin spec 4.1).
+                           -- Their pickup is a client address, so they match
+                           -- no tblBulkRegion row by coordinates or by name
+                           -- and the join above drops them from every
+                           -- region-filtered view. Admit them on the
+                           -- schedule's origin region instead. Delivery jobs
+                           -- are already found by Region.
+                           --
+                           -- Same shape Route Viewer already ships in
+                           -- RVW_stpBulkRuns_2:193-206, including its
+                           -- not-a-collection-job guard: a client-origin
+                           -- schedule has no collection leg, so an LHP row
+                           -- under one would be stale data, not something to
+                           -- surface here.
+                           OR ( UPPER(RTRIM(j.JobNumber)) NOT LIKE '%LHP'
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM dbo.tblBulkRunSchedule s
+                                    JOIN dbo.tblBulkRunScheduleHeader h
+                                      ON h.ScheduleId = s.ScheduleId
+                                    WHERE s.BulkRunScheduleId = j.ScheduleID
+                                      AND h.OriginType = 'client'
+                                      AND h.OriginRegionId IN ({inList}))) )
                      AND ISNULL(j.Done, 0) = 0
                      {dateClause}";
             var jobIds = await Context.Database.SqlQueryRaw<int>(sql, parameters.ToArray()).ToListAsync();

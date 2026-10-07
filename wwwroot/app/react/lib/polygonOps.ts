@@ -258,3 +258,84 @@ export function totalVertexCount(rings: LatLng[][]): number {
   for (const r of rings) n += r.length;
   return n;
 }
+
+// ─── Snap-to-boundary (custom-polygons spec 3.6) ────────────────────
+//
+// Adjacent shapes in a zone group must share a boundary rather than overlap,
+// because two different zones claiming one point is a pricing question that
+// cannot be answered after the fact. Overlap is prevented where the shapes
+// are drawn; the save-time STIntersects check on the server is the backstop,
+// not the first line of defence.
+
+/** Metres per degree of latitude. Close enough everywhere; longitude is
+ *  scaled by cos(lat) at the point of interest. At the scale of a dragged
+ *  vertex (tens of metres) the flat-earth error is far below the snap
+ *  tolerance, so a full geodesic is not worth the cost here. */
+const METRES_PER_DEG_LAT = 111_320;
+
+function metresBetween(a: LatLng, b: LatLng): number {
+  const latScale = METRES_PER_DEG_LAT;
+  const lngScale = METRES_PER_DEG_LAT * Math.cos((a.lat * Math.PI) / 180);
+  const dy = (a.lat - b.lat) * latScale;
+  const dx = (a.lng - b.lng) * lngScale;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** Closest point to `p` on the segment `a`-`b`, in lat/lng. */
+function closestPointOnSegment(p: LatLng, a: LatLng, b: LatLng): LatLng {
+  // Work in a local metric frame so the projection does not skew the
+  // perpendicular foot at high latitudes.
+  const lngScale = Math.cos((p.lat * Math.PI) / 180);
+  const ax = a.lng * lngScale, ay = a.lat;
+  const bx = b.lng * lngScale, by = b.lat;
+  const px = p.lng * lngScale, py = p.lat;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return { lat: a.lat, lng: a.lng };
+  // Clamped so the foot never runs past either end of the segment.
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return { lat: ay + t * dy, lng: (ax + t * dx) / lngScale };
+}
+
+/**
+ * Snap a dragged vertex onto the nearest edge of any neighbouring shape,
+ * when one is within `toleranceMetres`.
+ *
+ * Returns null when nothing is close enough, so the caller can leave the
+ * vertex exactly where the operator put it. Snapping silently at a large
+ * radius would be worse than overlapping: it moves work the operator did not
+ * ask to move.
+ *
+ * `others` is every OTHER polygon's rings. The caller decides what counts as
+ * a neighbour; the spec says shapes in the same zone group, which is the set
+ * whose overlap the server would refuse anyway.
+ */
+export function snapToNearestEdge(
+  point: LatLng,
+  others: LatLng[][][],
+  toleranceMetres: number,
+): LatLng | null {
+  if (toleranceMetres <= 0) return null;
+  let best: LatLng | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+
+  for (const rings of others) {
+    for (const ring of rings) {
+      if (ring.length < 2) continue;
+      for (let i = 0; i < ring.length; i++) {
+        // Rings are closed implicitly: the last vertex joins the first.
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        const candidate = closestPointOnSegment(point, a, b);
+        const d = metresBetween(point, candidate);
+        if (d < bestDist) {
+          bestDist = d;
+          best = candidate;
+        }
+      }
+    }
+  }
+
+  return bestDist <= toleranceMetres ? best : null;
+}

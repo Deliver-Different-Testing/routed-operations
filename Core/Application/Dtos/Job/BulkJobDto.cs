@@ -69,6 +69,17 @@ public class BulkJobDto
     // against; ScheduleName is that row's friendly label.
     public int? ScheduleId { get; set; }
     public string? ScheduleName { get; set; }
+
+    /// <summary>
+    /// Origin region of the schedule this job was booked against, when that
+    /// schedule starts at the CLIENT's address rather than a depot
+    /// (schedule-origin spec 4.2). Null for every depot-origin job, which is
+    /// all of them until ops flags a schedule.
+    ///
+    /// The cockpit buckets client-origin jobs by (this, ClientId, BookDate)
+    /// so one client's fan-out does not land in the same run as depot work.
+    /// </summary>
+    public int? OriginRegionId { get; set; }
     // Window is resolved for the target-day sibling schedule (same Name +
     // Client + Speed + Region, matching the run date's weekday). NULL when
     // no schedule exists for that weekday - the frontend treats that as

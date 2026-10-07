@@ -155,6 +155,20 @@ export interface ZipcodeLookup {
   longitude: number | null;
 }
 
+export interface CoverageLookup {
+  /** 'postcode' or 'polygon'. Decides which chip style the modal renders
+   *  and which collection the pick lands in on save. */
+  kind: 'postcode' | 'polygon';
+  /** ZipPolygonId for a postcode, PolygonId for a polygon. */
+  id: number;
+  label: string;
+  /** The polygon's own colour, so a polygon chip is visibly not a postcode.
+   *  Null for postcodes. */
+  colorHex: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
 export interface ZipPolygonShape {
   zipPolygonId: number;
   zip: string;
@@ -236,6 +250,13 @@ export const recurringRouteService = {
       method: 'DELETE',
     }),
 
+  /** One typeahead over postcodes AND custom polygons (polygons spec part 1).
+   *  The modal used to have a postcode box plus a read-only polygon list,
+   *  which were two inputs for one question: what ground does this route
+   *  cover. */
+  searchCoverage: (q: string, max = 25) =>
+    request<{ response: CoverageLookup[] }>(`/recurring-routes/coverage/lookup?q=${encodeURIComponent(q)}&max=${max}`),
+
   searchZipcodes: (q: string, max = 25) =>
     request<{ response: ZipcodeLookup[] }>(`/recurring-routes/zipcodes/search?q=${encodeURIComponent(q)}&max=${max}`),
   /** Every zip's id + code + centroid, no shape data. Used to seed the
@@ -248,7 +269,8 @@ export const recurringRouteService = {
       method: 'POST', body: JSON.stringify(zipPolygonIds),
     }),
   getAssignableTargets: () =>
-    request<{ response: AssignableTargets }>('/recurring-routes/assignable-targets'),
+    request<{ response: AssignableTargets }>('/recurring-routes/assignable-targets'),
+
   /** K6 autocomplete for the final-mile origin address. `q` filters on
    *  company / city / zip; empty returns the most-used recent addresses. */
   getPickupAddressSuggestions: (q?: string, max = 15) =>

@@ -6,6 +6,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.BulkPolygon;
 using RoutedOperations.Core.Domain;
+using RoutedOperations.Core.Domain.Despatch;
 using Serilog;
 
 namespace RoutedOperations.Core.Application.Services.BulkPolygon;
@@ -40,10 +41,13 @@ public class BulkPolygonService(
         // Small table - one dictionary lookup is cheaper than a per-row
         // subquery and lets the projection stay as EF-translatable as
         // possible.
-        var scheduleBindings = await Context.SchedulePolygons.AsNoTracking()
-            .GroupBy(x => x.PolygonId)
-            .Select(g => new { PolygonId = g.Key, Names = g.Select(x => x.ScheduleName).ToList() })
-            .ToDictionaryAsync(x => x.PolygonId, x => x.Names);
+        // tblSchedulePolygon is retired (custom-polygons spec 3.4) and the
+        // table is dropped by 20261007180000, so this can no longer be read.
+        // The binding it showed was never real: no SP read that junction, so a
+        // polygon "attached to a schedule" had no effect on booking. What
+        // replaces it is the zone membership below, which is the thing zone
+        // groups actually decide bookability from.
+        var scheduleBindings = new Dictionary<int, List<string>>();
 
         // Zone / postcode-group name lookups so the sidebar chip can render
         // "zone Fleet" instead of "zone #17". Both reference tables are tiny
@@ -56,6 +60,29 @@ public class BulkPolygonService(
             .Select(g => new { g.Id, g.Name })
             .ToDictionaryAsync(g => g.Id, g => g.Name);
 
+        // Zone memberships for every polygon in one hit (custom-polygons spec
+        // 3.1), same reasoning as the dictionaries above: a per-row join
+        // would not translate and the table is small.
+        var memberships = (await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join g in Context.BulkZonePostcodeGroups.AsNoTracking() on zp.PostcodeGroupId equals g.Id
+                join d in Context.TblBulkRegions.AsNoTracking() on g.DepotId equals d.BulkRegionId into dd
+                from d in dd.DefaultIfEmpty()
+                where zp.Active
+                select new
+                {
+                    zp.PolygonId, zp.Id, zp.PostcodeGroupId,
+                    GroupName = g.Name, g.DepotId, DepotName = d.Name, zp.Zone,
+                }).ToListAsync())
+            .GroupBy(x => x.PolygonId)
+            .ToDictionary(
+                grp => grp.Key,
+                grp => grp.Select(x => new BulkPolygonZoneMembershipDto(
+                        x.Id, x.PostcodeGroupId, x.GroupName, x.DepotId ?? 0,
+                        x.DepotName ?? $"#{x.DepotId}", x.Zone))
+                    .OrderBy(x => x.DepotName).ThenBy(x => x.Zone)
+                    .ToList());
+
         var rows = await Context.BulkRunPolygons
             .AsNoTracking()
             .Where(p => p.Active)
@@ -64,6 +91,7 @@ public class BulkPolygonService(
             {
                 p.PolygonId,
                 p.Name,
+                p.ColorHex,
                 p.SourceType,
                 p.SourceCode,
                 p.CentroidLatitude,
@@ -90,9 +118,10 @@ public class BulkPolygonService(
             .ToListAsync();
 
         return rows.Select(r => new BulkPolygonDto(
-            r.PolygonId, r.Name, r.SourceType, r.SourceCode,
+            r.PolygonId, r.Name, r.ColorHex, r.SourceType, r.SourceCode,
             r.CentroidLatitude, r.CentroidLongitude, r.Active,
             r.Points, r.AttachedRouteCount, r.AttachedRoutes,
+            memberships.TryGetValue(r.PolygonId, out var ms) ? ms : new List<BulkPolygonZoneMembershipDto>(),
             r.PartiallyIncludedZips,
             r.CreatedUtc, r.CreatedBy, r.LastModifiedUtc, r.UpdatedBy,
             r.ZoneNameId, r.PostcodeGroupId,
@@ -103,10 +132,8 @@ public class BulkPolygonService(
 
     public async Task<BulkPolygonDto?> GetByIdAsync(int id)
     {
-        var scheduleNames = await Context.SchedulePolygons.AsNoTracking()
-            .Where(x => x.PolygonId == id)
-            .Select(x => x.ScheduleName)
-            .ToListAsync();
+        // Retired with the junction (spec 3.4); see GetAllAsync.
+        var scheduleNames = new List<string>();
 
         var row = await Context.BulkRunPolygons
             .AsNoTracking()
@@ -115,6 +142,7 @@ public class BulkPolygonService(
             {
                 p.PolygonId,
                 p.Name,
+                p.ColorHex,
                 p.SourceType,
                 p.SourceCode,
                 p.CentroidLatitude,
@@ -156,9 +184,10 @@ public class BulkPolygonService(
                 .Where(g => g.Id == gid).Select(g => g.Name).FirstOrDefaultAsync();
         }
         return new BulkPolygonDto(
-            row.PolygonId, row.Name, row.SourceType, row.SourceCode,
+            row.PolygonId, row.Name, row.ColorHex, row.SourceType, row.SourceCode,
             row.CentroidLatitude, row.CentroidLongitude, row.Active,
             row.Points, row.AttachedRouteCount, row.AttachedRoutes,
+            await GetZoneMembershipsAsync(row.PolygonId),
             row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy,
             row.ZoneNameId, row.PostcodeGroupId, scheduleNames,
@@ -333,6 +362,136 @@ public class BulkPolygonService(
     /// pays for the overlay only when the geometry actually changed.
     /// Silently no-ops when the shape overlaps zero ZipPolygon rows
     /// (column left NULL).</summary>
+    /// <summary>
+    /// Place a polygon in a zone of a zone group (custom-polygons spec 3.1).
+    ///
+    /// Refuses when the shape intersects another polygon that is already in a
+    /// DIFFERENT zone of the same group, naming it (spec 3.6). Overlap is
+    /// prevented where shapes are authored rather than resolved at booking
+    /// time, because two different zones for one point is a pricing question
+    /// nobody can answer after the fact. Same-zone overlap is allowed: it is
+    /// harmless, both answers agree.
+    ///
+    /// Overlap with a whole postcode is NOT checked, deliberately. Resolution
+    /// rule 1 means a postcode that is already in a zone always wins, so a
+    /// polygon can never contradict it.
+    /// </summary>
+    public async Task<BulkPolygonZoneMembershipDto> AddToZoneAsync(
+        int polygonId, int postcodeGroupId, int zone, string actor)
+    {
+        var polygon = await Context.BulkRunPolygons
+            .FirstOrDefaultAsync(p => p.PolygonId == polygonId)
+            ?? throw new InvalidOperationException($"Polygon {polygonId} not found.");
+        var group = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.Id == postcodeGroupId)
+            ?? throw new InvalidOperationException($"Zone group {postcodeGroupId} not found.");
+
+        var existing = await Context.BulkZonePolygons
+            .FirstOrDefaultAsync(z => z.PolygonId == polygonId && z.PostcodeGroupId == postcodeGroupId);
+        if (existing != null && existing.Active && existing.Zone == zone)
+            return (await GetZoneMembershipsAsync(polygonId)).First(m => m.Id == existing.Id);
+
+        var clash = await FindZoneOverlapAsync(polygonId, postcodeGroupId, zone);
+        if (clash != null)
+        {
+            throw new InvalidOperationException(
+                $"\"{polygon.Name}\" overlaps \"{clash}\", which is in a different zone of "
+                + $"{group.Name}. Adjust the shapes so they share a boundary, or put both in "
+                + "the same zone.");
+        }
+
+        if (existing != null)
+        {
+            existing.Zone = zone;
+            existing.Active = true;
+        }
+        else
+        {
+            existing = new BulkZonePolygon
+            {
+                PolygonId = polygonId,
+                PostcodeGroupId = postcodeGroupId,
+                Zone = zone,
+                Active = true,
+                CreatedUtc = DateTime.UtcNow,
+                CreatedBy = actor,
+            };
+            Context.BulkZonePolygons.Add(existing);
+        }
+        await Context.SaveChangesAsync();
+        Log.Information(
+            "BulkZonePolygon: polygon {PolygonId} placed in zone {Zone} of group {GroupId} by {Actor}",
+            polygonId, zone, postcodeGroupId, actor);
+        return (await GetZoneMembershipsAsync(polygonId)).First(m => m.Id == existing.Id);
+    }
+
+    /// <summary>Remove a polygon from a zone group.</summary>
+    public async Task<bool> RemoveFromZoneAsync(int membershipId)
+    {
+        var row = await Context.BulkZonePolygons.FirstOrDefaultAsync(z => z.Id == membershipId);
+        if (row == null) return false;
+        Context.BulkZonePolygons.Remove(row);
+        await Context.SaveChangesAsync();
+        Log.Information("BulkZonePolygon {Id} removed", membershipId);
+        return true;
+    }
+
+    /// <summary>
+    /// Name of a polygon in the same zone group but a different zone whose
+    /// shape intersects this one, or null when there is no clash. Geometry
+    /// lives in SQL so the test runs there; EF has no spatial translation
+    /// for this provider configuration.
+    /// </summary>
+    private async Task<string> FindZoneOverlapAsync(int polygonId, int postcodeGroupId, int zone)
+    {
+        const string sql = @"
+            SELECT TOP 1 other.Name
+            FROM dbo.BulkZonePolygon bzp
+            JOIN dbo.tblBulkRunPolygon other ON other.PolygonId = bzp.PolygonId
+            CROSS JOIN dbo.tblBulkRunPolygon me
+            WHERE me.PolygonId = @polygonId
+              AND bzp.PostcodeGroupId = @groupId
+              AND bzp.Active = 1
+              AND bzp.Zone <> @zone
+              AND bzp.PolygonId <> @polygonId
+              AND ISNULL(other.Active, 0) = 1
+              AND me.GeographyData IS NOT NULL
+              AND other.GeographyData IS NOT NULL
+              AND me.GeographyData.STIntersects(other.GeographyData) = 1";
+        var names = await Context.Database.SqlQueryRaw<string>(
+                sql,
+                new SqlParameter("@polygonId", polygonId),
+                new SqlParameter("@groupId", postcodeGroupId),
+                new SqlParameter("@zone", zone))
+            .ToListAsync();
+        return names.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Zone memberships for one polygon (custom-polygons spec 3.1). The list
+    /// endpoint batches this for every shape; this overload serves the
+    /// single-shape read.
+    /// </summary>
+    private async Task<List<BulkPolygonZoneMembershipDto>> GetZoneMembershipsAsync(int polygonId)
+    {
+        return (await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join g in Context.BulkZonePostcodeGroups.AsNoTracking() on zp.PostcodeGroupId equals g.Id
+                join d in Context.TblBulkRegions.AsNoTracking() on g.DepotId equals d.BulkRegionId into dd
+                from d in dd.DefaultIfEmpty()
+                where zp.Active && zp.PolygonId == polygonId
+                select new
+                {
+                    zp.Id, zp.PostcodeGroupId, GroupName = g.Name,
+                    g.DepotId, DepotName = d.Name, zp.Zone,
+                }).ToListAsync())
+            .Select(x => new BulkPolygonZoneMembershipDto(
+                x.Id, x.PostcodeGroupId, x.GroupName, x.DepotId ?? 0,
+                x.DepotName ?? $"#{x.DepotId}", x.Zone))
+            .OrderBy(x => x.DepotName).ThenBy(x => x.Zone)
+            .ToList();
+    }
+
     private async Task RefreshPartiallyIncludedZipsAsync(int polygonId)
     {
         var zips = new List<string>();
@@ -404,6 +563,24 @@ public class BulkPolygonService(
             "UPDATE dbo.tblBulkRunPolygon SET PartiallyIncludedZips = @z WHERE PolygonId = @id",
             new SqlParameter("@z", (object?)packed ?? DBNull.Value),
             new SqlParameter("@id", polygonId));
+
+        // Keep the normalised twin in step (polygons spec 3.5). The packed
+        // column above is what the route resolver still reads; this table is
+        // what booking-time resolution rule 2 will seek, because
+        // LIKE '%,pc,%' over every shape is a nationwide scan on the booking
+        // path. Rewritten wholesale for this polygon so a shape that loses a
+        // postcode loses the row too.
+        await Context.Database.ExecuteSqlRawAsync(
+            "DELETE FROM dbo.BulkRunPolygonZip WHERE PolygonId = @id",
+            new SqlParameter("@id", polygonId));
+        foreach (var zip in zips.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (zip.Length > 10) continue;   // column is VARCHAR(10)
+            await Context.Database.ExecuteSqlRawAsync(
+                "INSERT INTO dbo.BulkRunPolygonZip (PolygonId, Zip) VALUES (@id, @zip)",
+                new SqlParameter("@id", polygonId),
+                new SqlParameter("@zip", zip));
+        }
 
         Log.Information(
             "BulkRunPolygon {Id} PartiallyIncludedZips refreshed - {ZipCount} zip(s)",

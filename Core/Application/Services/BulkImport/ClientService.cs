@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Clients;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Services.Routing;
 using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -25,6 +26,73 @@ public class ClientService(
     // 5-minute sliding TTL. Clients are edited via ClientManager (different
     // app - we cannot invalidate on write); acceptable staleness ceiling.
     private static readonly TimeSpan ClientsTtl = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Geocode a client's site address (schedule-origin spec 4.5). Preview by
+    /// default; writes tucClient.Latitude / Longitude only when the caller
+    /// repeats the call with Confirm set.
+    ///
+    /// This is Routed Operations' first client WRITE path. Until now nothing
+    /// in this app or ClientManager wrote these columns; only AdminManager
+    /// did, from a Google Maps autocomplete on its client form. AdminManager
+    /// is being retired, which is why the write lands here.
+    ///
+    /// Never overwrites silently: the response carries the previous values so
+    /// the caller can show what is about to change, and the write is logged
+    /// with who did it.
+    /// </summary>
+    public async Task<ClientGeocodeResponse> GeocodeSiteAsync(
+        int clientId, ClientGeocodeRequest request, HereGeocodeService geocoder, string actor)
+    {
+        var client = await Context.TucClients.FirstOrDefaultAsync(c => c.UcclId == clientId)
+            ?? throw new InvalidOperationException($"Client {clientId} not found.");
+
+        var address = string.IsNullOrWhiteSpace(request?.Address)
+            ? client.UcclAddress?.Trim()
+            : request.Address.Trim();
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            return new ClientGeocodeResponse(
+                clientId, client.UcclName, null, null, null, null,
+                (double?)client.Latitude, (double?)client.Longitude, false,
+                "This client has no site address to geocode. Add one first, or pass an address to use.");
+        }
+
+        var countryCode = httpContextAccessor.HttpContext?.User.Claims
+            .FirstOrDefault(x => x.Type == "CountryCode")?.Value;
+        var hit = await geocoder.GeocodeAsync(address, countryCode);
+        var previousLat = (double?)client.Latitude;
+        var previousLng = (double?)client.Longitude;
+
+        if (hit == null)
+        {
+            return new ClientGeocodeResponse(
+                clientId, client.UcclName, address, null, null, null,
+                previousLat, previousLng, false,
+                "No match for that address. Try a more complete one.");
+        }
+
+        if (!(request?.Confirm ?? false))
+        {
+            return new ClientGeocodeResponse(
+                clientId, client.UcclName, address, hit.Lat, hit.Lng, hit.FormattedAddress,
+                previousLat, previousLng, false,
+                "Preview only. Send the same call with confirm = true to save these coordinates.");
+        }
+
+        client.Latitude = (decimal)hit.Lat;
+        client.Longitude = (decimal)hit.Lng;
+        await Context.SaveChangesAsync();
+        Serilog.Log.Information(
+            "Client site geocoded: clientId={ClientId} by={Actor} address={Address} "
+            + "({PrevLat},{PrevLng}) -> ({Lat},{Lng})",
+            clientId, actor, address, previousLat, previousLng, hit.Lat, hit.Lng);
+
+        return new ClientGeocodeResponse(
+            clientId, client.UcclName, address, hit.Lat, hit.Lng, hit.FormattedAddress,
+            previousLat, previousLng, true,
+            "Site coordinates saved.");
+    }
 
     public Task<ClientsResponse> Get(Guid messageId, int contactId) =>
         cache.GetOrSetAsync($"clients:contact:{contactId}", ClientsTtl,

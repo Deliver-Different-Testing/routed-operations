@@ -38,6 +38,10 @@ public partial class TblBulkRunSchedule
     /// </summary>
     public virtual ICollection<BulkZoneSchedule> BulkZoneSchedules { get; set; } = new List<BulkZoneSchedule>();
 
+    /// <summary>Pickup-side zones (schedule-origin spec 3.2). Mirrors
+    /// BulkZoneSchedules; written by Schedules NEW's Collection card.</summary>
+    public virtual ICollection<BulkPickupZoneSchedule> BulkPickupZoneSchedules { get; set; } = new List<BulkPickupZoneSchedule>();
+
     /// <summary>
     /// Per-schedule linehaul legs. Reciprocal of
     /// TblBulkScheduleLinehaul.BulkRunSchedule (declared in the
