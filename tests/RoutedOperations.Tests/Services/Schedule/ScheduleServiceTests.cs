@@ -233,15 +233,24 @@ public class ScheduleServiceTests
     }
 
     [Fact]
-    public async Task UpsertAsync_syncs_postcode_and_polygon_junctions()
+    public async Task UpsertAsync_syncs_postcodes_but_no_longer_writes_polygon_junction()
     {
+        // tblSchedulePolygon is retired (custom-polygons spec 3.4). A polygon
+        // attached to a SCHEDULE never affected booking - no stored procedure
+        // read that junction - so PolygonIds on the request is now ignored and
+        // PolygonIds on the response is derived from the schedule's ZONE
+        // memberships instead. This schedule has none, so it reads empty.
+        //
+        // The postcode junction is untouched and still round-trips, which is
+        // what keeps this test honest: a blanket "both are empty" would pass
+        // even if the postcode sync had broken too.
         var svc = NewSvc();
         var req = ValidRequest();
         req.PostcodeIds = new List<int> { 1010, 6011 };
         req.PolygonIds = new List<int> { 500, 501 };
         var created = await svc.UpsertAsync(req);
         Assert.Equal(new[] { 1010, 6011 }, created.PostcodeIds.ToArray());
-        Assert.Equal(new[] { 500, 501 }, created.PolygonIds.ToArray());
+        Assert.Empty(created.PolygonIds);
     }
 
     [Fact]
@@ -278,9 +287,11 @@ public class ScheduleServiceTests
         Assert.Equal("Source (copy)", copy.Name);
         Assert.Null(copy.LegacyClientId);
         Assert.Equal(2, copy.DayWindows.Count);
-        // Junctions copied.
+        // Postcode junction still copies.
         Assert.Contains(1010, copy.PostcodeIds);
-        Assert.Contains(500, copy.PolygonIds);
+        // The polygon junction is retired (spec 3.4); a copy's polygon
+        // coverage comes from its zone groups, not from a copied junction.
+        Assert.Empty(copy.PolygonIds);
         // Client bindings inherited from source's junction.
         Assert.Contains(100, copy.ClientIds);
     }

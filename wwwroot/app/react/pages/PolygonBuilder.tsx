@@ -22,7 +22,7 @@ import {
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
-import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine } from '../lib/polygonOps';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge } from '../lib/polygonOps';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -37,6 +37,12 @@ const ZIP_TO_COVERAGE_MAX_VERTICES = 120;
 /** Absolute cap on how many vertices we'll render draggable handles for.
  *  Above this, edit mode shows a "Simplify shape" prompt instead of handles
  *  to protect the browser. */
+/** How close a dragged vertex has to come to a neighbouring polygon's edge
+ *  before it snaps onto it (custom-polygons spec 3.6). 15 m is roughly a
+ *  road width: close enough that the operator clearly meant to meet the
+ *  boundary, far enough that an intentional small gap survives. */
+const SNAP_TOLERANCE_METRES = 15;
+
 const MAX_EDIT_HANDLE_VERTICES = 200;
 /** Zoom threshold at which we render INDIVIDUAL zip pills. Below this,
  *  MarkerClusterer collapses them into count bubbles so the operator
@@ -228,6 +234,11 @@ export default function PolygonBuilder() {
   // of showing a "Fetching…" spinner. Fetch fires from the map's
   // first idle so it competes with nothing on the critical path.
   const [prefetchedZones, setPrefetchedZones] = useState<RatingZoneDepot[] | null>(null);
+  // Inline "Add to zone" editor (custom-polygons spec 3.2). Holds the polygon
+  // being placed plus the two picks; null when the editor is closed.
+  const [zonePlacing, setZonePlacing] = useState<
+    { polygonId: number; groupId: number | null; zone: number | null } | null>(null);
+  const [zonePlaceError, setZonePlaceError] = useState<string | null>(null);
   const zonesPrefetchStartedRef = useRef(false);
 
   // Stage 4: freehand lasso in-progress buffer + live polyline ref.
@@ -2342,6 +2353,25 @@ export default function PolygonBuilder() {
           });
           handle.addListener('dragend', async () => {
             mapRef.current.setOptions({ draggable: true, disableDoubleClickZoom: false });
+            // Snap-to-boundary (custom-polygons spec 3.6). A vertex dropped
+            // within SNAP_TOLERANCE_METRES of a neighbouring shape's edge
+            // lands ON that edge, so adjacent shapes share a boundary instead
+            // of overlapping by a metre nobody can see. The server still
+            // refuses a real overlap on save; this is what stops the operator
+            // creating one by hand in the first place.
+            //
+            // Only snaps when something is genuinely close: moving a vertex
+            // the operator did not ask to move would be worse than the
+            // overlap it prevents.
+            const neighbours = polygons
+              .filter((other) => other.polygonId !== mode.edit && other.active)
+              .map((other) => pointsToLatLngRings(other.points));
+            const snapped = snapToNearestEdge(
+              workingRings[ri][vi], neighbours, SNAP_TOLERANCE_METRES);
+            if (snapped) {
+              workingRings[ri][vi] = snapped;
+              editPolyRef.current?.setPaths(currentPaths());
+            }
             await commitShape(mode.edit, workingRings);
             renderHandles();
           });
@@ -2917,6 +2947,101 @@ export default function PolygonBuilder() {
                           <span>not attached to any route</span>
                         )}
                       </div>
+                      {/* Zone memberships (custom-polygons spec 3.1). A shape
+                          is a member of a zone number inside a zone group,
+                          exactly like a postcode; this is what makes it affect
+                          bookability at all. Attaching a polygon to a SCHEDULE
+                          never did (no SP read tblSchedulePolygon). */}
+                      <div className="ml-5 mt-0.5 flex flex-wrap items-center gap-1">
+                        {(p.zoneMemberships ?? []).map((m) => (
+                          <span key={m.id}
+                            className="inline-flex items-center gap-0.5 rounded bg-brand-purple/15 text-brand-dark text-[9px]">
+                            <span className="pl-1.5 py-0.5"
+                              title={`Zone ${m.zone} in ${m.depotName} / ${m.postcodeGroupName}`}>
+                              Zone {m.zone} in {m.depotName} / {m.postcodeGroupName}
+                            </span>
+                            <button type="button"
+                              onClick={async () => {
+                                await bulkPolygonService.removeFromZone(m.id);
+                                await reloadPolygons();
+                              }}
+                              className="px-1.5 py-0.5 hover:text-error font-bold"
+                              title="Remove from this zone">x</button>
+                          </span>
+                        ))}
+                        {zonePlacing?.polygonId !== p.polygonId && (
+                          <button type="button"
+                            onClick={() => { setZonePlaceError(null); setZonePlacing({ polygonId: p.polygonId, groupId: null, zone: null }); }}
+                            className="text-[9px] px-1.5 py-0.5 rounded border border-border text-text-muted hover:text-text-primary">
+                            + Add to zone
+                          </button>
+                        )}
+                      </div>
+                      {zonePlacing?.polygonId === p.polygonId && (
+                        <div className="ml-5 mt-1 p-1.5 border border-border rounded bg-surface-cream/50 flex flex-wrap items-center gap-1">
+                          <select
+                            className="text-[10px] border border-border rounded px-1 py-0.5"
+                            value={zonePlacing.groupId ?? ''}
+                            onChange={(e) => setZonePlacing({
+                              ...zonePlacing,
+                              groupId: e.target.value ? Number(e.target.value) : null,
+                              zone: null,
+                            })}>
+                            <option value="">Zone group...</option>
+                            {(prefetchedZones ?? []).flatMap((d) =>
+                              d.groups
+                                .filter((g) => g.groupId != null)
+                                .map((g) => (
+                                  <option key={`${d.depotId}-${g.groupId}`} value={g.groupId!}>
+                                    {d.depotName} / {g.groupName}
+                                  </option>
+                                )))}
+                          </select>
+                          <select
+                            className="text-[10px] border border-border rounded px-1 py-0.5"
+                            value={zonePlacing.zone ?? ''}
+                            disabled={zonePlacing.groupId == null}
+                            onChange={(e) => setZonePlacing({
+                              ...zonePlacing,
+                              zone: e.target.value ? Number(e.target.value) : null,
+                            })}>
+                            <option value="">Zone...</option>
+                            {(prefetchedZones ?? [])
+                              .flatMap((d) => d.groups)
+                              .find((g) => g.groupId === zonePlacing.groupId)
+                              ?.zones.map((z) => (
+                                <option key={z.zone} value={z.zone}>Zone {z.zone}</option>
+                              ))}
+                          </select>
+                          <button type="button"
+                            disabled={zonePlacing.groupId == null || zonePlacing.zone == null}
+                            onClick={async () => {
+                              try {
+                                setZonePlaceError(null);
+                                await bulkPolygonService.addToZone(
+                                  p.polygonId, zonePlacing.groupId!, zonePlacing.zone!);
+                                setZonePlacing(null);
+                                await reloadPolygons();
+                              } catch (err) {
+                                // The server refuses an overlap with a shape in
+                                // a different zone of the same group and names
+                                // it (spec 3.6). Surface that verbatim.
+                                setZonePlaceError(err instanceof Error ? err.message : 'Could not add to zone.');
+                              }
+                            }}
+                            className="text-[10px] px-2 py-0.5 rounded bg-brand-cyan text-white disabled:opacity-40">
+                            Add
+                          </button>
+                          <button type="button"
+                            onClick={() => { setZonePlacing(null); setZonePlaceError(null); }}
+                            className="text-[10px] px-1.5 py-0.5 text-text-muted hover:text-text-primary">
+                            Cancel
+                          </button>
+                          {zonePlaceError && (
+                            <div className="w-full text-[10px] text-error mt-0.5">{zonePlaceError}</div>
+                          )}
+                        </div>
+                      )}
                       {/* Zone / postcode-group / schedule bindings.
                           Populated by BulkPolygonService.GetAllAsync
                           (Phase 5 zoneNameId/postcodeGroupId +

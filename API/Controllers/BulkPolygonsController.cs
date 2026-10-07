@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.BulkPolygon;
@@ -78,6 +79,43 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// POST /api/bulk-polygons/{polygonId}/zones - place this shape in a zone
+    /// of a zone group (custom-polygons spec 3.1 / 3.2).
+    ///
+    /// Refused with 400 and the clashing shape named when it would overlap a
+    /// polygon already in a different zone of the same group (spec 3.6).
+    /// Overlap is prevented at authoring time because two zones for one point
+    /// is a pricing question that cannot be answered later.
+    /// </summary>
+    [HttpPost("{polygonId:int}/zones")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AddToZone(int polygonId, [FromBody] BulkPolygonAddToZoneRequest body)
+    {
+        try
+        {
+            var actor = User?.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+            var row = await svc.AddToZoneAsync(polygonId, body.PostcodeGroupId, body.Zone, actor);
+            return Ok(new { response = row });
+        }
+        catch (InvalidOperationException e)
+        {
+            return BadRequest(new { message = e.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/bulk-polygons/zones/{membershipId} - take the shape out of
+    /// that zone group.
+    /// </summary>
+    [HttpDelete("zones/{membershipId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> RemoveFromZone(int membershipId)
+    {
+        var ok = await svc.RemoveFromZoneAsync(membershipId);
+        return ok ? Ok(new { response = "Removed" }) : NotFound();
     }
 
     [HttpDelete("{id:int}")]

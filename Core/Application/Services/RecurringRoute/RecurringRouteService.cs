@@ -597,6 +597,43 @@ public class RecurringRouteService(
             .ToListAsync();
     }
 
+    /// <summary>
+    /// One lookup behind the recurring-route modal's Coverage box (polygons
+    /// spec part 1). Postcodes and custom polygons were two separate inputs
+    /// for one idea: which ground this route covers. The postcode half is the
+    /// same prefix seek SearchZipcodesAsync does; the polygon half is a
+    /// contains match on the name, active shapes only.
+    ///
+    /// Results are returned postcodes-first so the box behaves exactly as it
+    /// did for someone typing digits; a name match only appears when the
+    /// query is not a bare postcode prefix.
+    /// </summary>
+    public async Task<List<CoverageLookupDto>> SearchCoverageAsync(string q, int max = 25)
+    {
+        if (string.IsNullOrWhiteSpace(q))
+            return new List<CoverageLookupDto>();
+        var needle = q.Trim();
+
+        var zips = await Context.ZipPolygons
+            .AsNoTracking()
+            .Where(z => z.Zip != null && z.Zip.StartsWith(needle))
+            .OrderBy(z => z.Zip)
+            .Take(max)
+            .Select(z => new CoverageLookupDto("postcode", z.ZipPolygonId, z.Zip!, null, z.Latitude, z.Longitude))
+            .ToListAsync();
+
+        var polygons = await Context.BulkRunPolygons
+            .AsNoTracking()
+            .Where(p => p.Active && p.Name != null && p.Name.Contains(needle))
+            .OrderBy(p => p.Name)
+            .Take(max)
+            .Select(p => new CoverageLookupDto(
+                "polygon", p.PolygonId, p.Name, p.ColorHex, p.CentroidLatitude, p.CentroidLongitude))
+            .ToListAsync();
+
+        return zips.Concat(polygons).ToList();
+    }
+
     public async Task<List<ZipPolygonShapeDto>> GetPolygonShapesAsync(IEnumerable<int> zipPolygonIds)
     {
         var ids = zipPolygonIds.Distinct().ToList();

@@ -85,6 +85,11 @@ export interface BulkJob {
   multiboxParentId: number | null;
   parentId: number | null;
   regionId: number | null;
+  /** Origin region when the job's schedule starts at the client's address
+   *  (schedule-origin spec 4.2). Null on every depot-origin job. Drives the
+   *  cockpit's client-origin bucketing so a client's fan-out does not mix
+   *  into a depot run. */
+  originRegionId?: number | null;
   barcode: string | null;
   // Signature-not-required flag. Legacy SP aliased tblBulkJob.DeliverToPrivateBusiness
   // AS 'Ok_To_Leave'. JobDetail renders as "Sig not req" checkbox.

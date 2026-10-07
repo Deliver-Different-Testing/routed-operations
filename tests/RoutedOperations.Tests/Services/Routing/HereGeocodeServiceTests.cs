@@ -14,6 +14,51 @@ public class HereGeocodeServiceTests
         return (new HereGeocodeService(client, settings), handler);
     }
 
+    // ─── Country filter (found in a browser pass, 2026-10-07) ────────
+    //
+    // HERE's "in=countryCode:" takes ISO-3166-1 ALPHA-3 and rejects the whole
+    // request with a 400 for anything else. Callers naturally reach for the
+    // tenant's CountryCode claim, which is alpha-2, so the first one to do so
+    // made every lookup fail - and it surfaced to the operator as "no match
+    // for that address", not as a bad request, which is what made it worth
+    // pinning here.
+
+    [Fact]
+    public async Task GeocodeAsync_MapsAlpha2CountryToAlpha3()
+    {
+        var (sut, handler) = NewSut();
+        await sut.GeocodeAsync("50 Acheron Drive", "NZ");
+        var url = handler.Requests[0].RequestUri!.ToString();
+        Assert.Contains("in=countryCode:NZL", url);
+        Assert.DoesNotContain("in=countryCode:NZ&", url);
+    }
+
+    [Fact]
+    public async Task GeocodeAsync_PassesAlpha3CountryThroughUnchanged()
+    {
+        var (sut, handler) = NewSut();
+        await sut.GeocodeAsync("100 Queen Street", "USA");
+        Assert.Contains("in=countryCode:USA", handler.Requests[0].RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task GeocodeAsync_DropsAnUnrecognisedCountryRatherThanSendingIt()
+    {
+        // A malformed filter fails the whole call; no filter still geocodes,
+        // because HERE infers the country from the address text.
+        var (sut, handler) = NewSut();
+        await sut.GeocodeAsync("100 Queen Street", "Kiwiland");
+        Assert.DoesNotContain("in=countryCode", handler.Requests[0].RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task GeocodeAsync_OmitsTheFilterWhenNoCountryGiven()
+    {
+        var (sut, handler) = NewSut();
+        await sut.GeocodeAsync("100 Queen Street");
+        Assert.DoesNotContain("in=countryCode", handler.Requests[0].RequestUri!.ToString());
+    }
+
     [Fact]
     public async Task GeocodeAsync_EmptyAddressReturnsNull()
     {

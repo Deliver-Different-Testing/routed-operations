@@ -13,8 +13,8 @@ import type { LookupItem } from '../../services/scheduleService';
 // This is a smaller reimplementation than Dane's full module
 // (~1000 lines across ChainBuilder + LegNode + LegConfigPanel +
 // ZoneSelector) but covers every field Steve's mockup requires:
-// - Collection: pickupSource (client_address / depot), pickupDepotId,
-//   speedId.
+// - Collection: speedId only. Origin moved to the first Depot leg
+//   (schedule-origin spec 2026-10-07); the destination is that leg.
 // - Depot: depotId, storageState.
 // - Linehaul: linehaulRunId, fromDepotId, toDepotId, dayOffset,
 //   transitMinutes, speedId (per-leg override), amount, amountPercentage,
@@ -25,30 +25,45 @@ export type LegType = 'collection' | 'depot' | 'linehaul' | 'delivery';
 
 export interface CollectionLeg {
   type: 'collection';
-  /** Two states only, because the storage is two-state: the collection leg
-   *  persists nothing but tblBulkRunSchedule.PickupDepotId, and a NULL there
-   *  IS "collect from client address". A third "booking-declared" option
-   *  shipped here until 2026-10-05 and could not round-trip: both modals
-   *  saved it as `pickupDepotId = null` and reloaded it as 'client_address',
-   *  so the choice was lost silently.
+  /** The collection leg no longer carries a source or a depot. It means one
+   *  thing: collect from the client's address into the chain's first Depot
+   *  leg. The destination is read from that leg, and the save derives
+   *  tblBulkRunSchedule.PickupDepotId from it.
    *
-   *  It was not a missing column either. On the collection leg the legacy
-   *  model treats the two as the same thing: DD_stpJob_InsertExcelerator /
-   *  WS_stpJob_Insert derive `BookPickup = 1 AND PickupDepotId IS NULL` and
-   *  use it only to SUPPRESS overwriting the caller's declared From address
-   *  with the depot's. "Client address" there means "whatever the booking
-   *  declared". The booking-declared versus client-master distinction is
-   *  real, but it lives on the linehaul leg (FromClientAddress) and in the
-   *  bulk-import path, not here - and which one F12 wants is still open
-   *  with Steve, so do not re-add this option to settle it. */
-  pickupSource: 'client_address' | 'depot';
-  pickupDepotId: number | null;
+   *  Both controls were removed on 2026-10-07 per Steve's schedule-origin
+   *  spec. They were redundant rather than wrong: seedLegsFromDto already
+   *  seeded the Depot leg as `depotId: d.pickupDepotId`, so the Collection
+   *  card and the Depot card showed the same value and a user could put them
+   *  out of step with each other. Origin now lives on the Depot leg, which is
+   *  also where "Client address" is expressed. */
   speedId: number | null;
+  /** Collection zone group -> tblBulkRunSchedule.PickupPostcodeGroupId.
+   *  Mirrors the Delivery card's zone group. Lived under Advanced until
+   *  2026-10-07; it belongs on the leg it describes. */
+  postcodeGroupId: number | null;
+  /** Zones this leg collects from -> BulkPickupZoneSchedule rows, the
+   *  pickup-side twin of BulkZoneSchedule. Until now there was no way to
+   *  pick zone numbers on the pickup side at all, which is why so many
+   *  pickup zone groups exist only to express "a subset of zones". */
+  zones: number[];
 }
 
 export interface DepotLeg {
   type: 'depot';
   depotId: number | null;
+  /** True when the goods start at the client's own address instead of one of
+   *  our depots. Only the FIRST depot leg may set it; a depot leg that lands
+   *  after a linehaul is always a real depot. Persists as
+   *  `BookPickup = 1 AND PickupDepotId IS NULL`, which is the encoding the
+   *  booking SPs already read as @IsCollectFromClientAddress and which no
+   *  schedule uses today (0 rows on all four tenants). */
+  clientAddress: boolean;
+  /** Origin region. Only meaningful while clientAddress is true. It is the
+   *  counterpart of PickupDepotId, NOT of Region: Region keeps coming from
+   *  the Delivery leg and names the delivery branch, while this names the
+   *  branch that owns the start of the chain. Persists to
+   *  tblBulkRunScheduleHeader.OriginRegionId. */
+  originRegionId: number | null;
   storageState: number | null;
 }
 
@@ -139,8 +154,8 @@ interface Props {
 }
 
 const NEW_LEG: Record<LegType, Leg> = {
-  collection: { type: 'collection', pickupSource: 'client_address', pickupDepotId: null, speedId: null },
-  depot: { type: 'depot', depotId: null, storageState: null },
+  collection: { type: 'collection', speedId: null, postcodeGroupId: null, zones: [] },
+  depot: { type: 'depot', depotId: null, clientAddress: false, originRegionId: null, storageState: null },
   linehaul: {
     type: 'linehaul', linehaulRunId: null, fromDepotId: null, toDepotId: null,
     dayOffset: 0, transitMinutes: 0, speedId: null,
@@ -162,6 +177,16 @@ export function ChainBuilder({
 }: Props) {
   const [expanded, setExpanded] = useState<number | null>(0);
 
+  // Origin is expressed by the FIRST Depot leg. Everything below reads it:
+  // the Collection card's destination label, whether a Collection leg may
+  // exist at all, and which Depot card offers "Client address".
+  const firstDepotIndex = legs.findIndex((l) => l.type === 'depot');
+  const originLeg = firstDepotIndex >= 0 ? (legs[firstDepotIndex] as DepotLeg) : null;
+  const originIsClientAddress = originLeg?.clientAddress === true;
+  const originDepotName = originLeg && !originLeg.clientAddress && originLeg.depotId
+    ? (lookups.depots.find((d) => d.id === originLeg.depotId)?.name ?? `#${originLeg.depotId}`)
+    : null;
+
   const addLeg = (type: LegType) => {
     // Delivery must terminate the chain (Steve's brief section 2b:
     // route may end at Depot or Linehaul OR Delivery, but Delivery
@@ -175,6 +200,10 @@ export function ChainBuilder({
     const hasTerminalDelivery = legs.length > 0 && legs[legs.length - 1].type === 'delivery';
     const hasCollectionAlready = legs.some((l) => l.type === 'collection');
     if (type === 'collection' && hasCollectionAlready) return;
+    // "Collect from the client into the depot" is meaningless when the depot
+    // IS the client. Mirrors the server rule that client origin persists as
+    // PickupDepotId NULL, which leaves a collection job no destination.
+    if (type === 'collection' && originIsClientAddress) return;
     let next: Leg[];
     let insertAt: number;
     if (type === 'delivery') {
@@ -369,7 +398,8 @@ export function ChainBuilder({
                     {s.tag}
                   </span>
                   <div className="flex-1 text-sm min-w-0">
-                    <LegSummary leg={leg} lookups={lookups} />
+                    <LegSummary leg={leg} lookups={lookups} originDepotName={originDepotName}
+                      originIsClientAddress={originIsClientAddress} />
                   </div>
                   {!readOnly && (
                     <>
@@ -390,6 +420,8 @@ export function ChainBuilder({
                       leg={leg}
                       onPatch={(p) => patchLeg(i, p as never)}
                       lookups={lookups}
+                      isFirstDepot={i === firstDepotIndex}
+                      originDepotName={originDepotName}
                       pickupBoxDiscount={pickupBoxDiscount ?? null}
                       onPickupBoxDiscountChange={onPickupBoxDiscountChange}
                     />
@@ -425,11 +457,16 @@ export function ChainBuilder({
               const s = LEG_STYLE[t];
               const disabled =
                 (t === 'delivery' && hasDelivery) ||
-                (t === 'collection' && hasCollection);
+                (t === 'collection' && (hasCollection || originIsClientAddress));
               const disabledReason = t === 'delivery'
                 ? 'Only one Delivery leg allowed. Remove the existing one to change destination.'
                 : t === 'collection'
-                  ? 'Only one Collection leg allowed. A schedule has a single pickup source; remove the existing Collection to change it.'
+                  ? originIsClientAddress
+                    // Collection means "collect from the client into the
+                    // depot". When the depot IS the client there is nothing
+                    // to collect (schedule-origin spec 2.1).
+                    ? 'This schedule starts at the client address, so there is nothing to collect. Change the first Depot leg to a real depot first.'
+                    : 'Only one Collection leg allowed. A schedule has a single pickup source; remove the existing Collection to change it.'
                   : `Add a ${s.tag} leg`;
               return (
                 <button
@@ -460,7 +497,8 @@ export function ChainBuilder({
 
 // ─── One-line leg summary shown in the collapsed header ──────────────
 
-function LegSummary({ leg, lookups }: { leg: Leg; lookups: LookupCatalogue }) {
+function LegSummary({ leg, lookups, originDepotName, originIsClientAddress }:
+  { leg: Leg; lookups: LookupCatalogue; originDepotName: string | null; originIsClientAddress: boolean }) {
   const depotName = (id: number | null | undefined) =>
     id ? (lookups.depots.find((d) => d.id === id)?.name ?? `#${id}`) : null;
   const speedName = (id: number | null | undefined) =>
@@ -473,21 +511,37 @@ function LegSummary({ leg, lookups }: { leg: Leg; lookups: LookupCatalogue }) {
     id ? (lookups.storageStates.find((s) => s.id === id)?.label ?? `#${id}`) : null;
 
   if (leg.type === 'collection') {
-    const src = leg.pickupSource === 'depot'
-      ? (depotName(leg.pickupDepotId) ?? 'Depot')
-      : 'Client address';
+    // Collection always starts at the client address now. The only variable
+    // is where it lands, which is the chain's first Depot leg.
     return (
       <>
-        <div className="font-medium text-text-primary">Collect from {src}</div>
-        <div className="text-xs text-text-muted">Speed {speedName(leg.speedId) ?? '-'}</div>
+        <div className="font-medium text-text-primary">
+          Collect from client address{originDepotName ? ` -> ${originDepotName}` : ''}
+        </div>
+        <div className="text-xs text-text-muted">
+          Speed {speedName(leg.speedId) ?? '-'}
+          {leg.postcodeGroupId ? ` - zone group ${groupName(leg.postcodeGroupId)}` : ''}
+          {leg.zones.length > 0 ? ` - zones ${leg.zones.join(', ')}` : ''}
+        </div>
       </>
     );
   }
   if (leg.type === 'depot') {
+    // Null means the picker has not been filled in yet. Phrase the whole
+    // clause here rather than interpolating a placeholder into
+    // "Origin region {x}", which read "Origin region region not set".
+    const regionLabel = leg.clientAddress
+      ? (depotName(leg.originRegionId)
+          ? `Origin region ${depotName(leg.originRegionId)}`
+          : 'Origin region not set')
+      : null;
     return (
       <>
-        <div className="font-medium text-text-primary">{depotName(leg.depotId) ?? 'Depot (not set)'}</div>
+        <div className="font-medium text-text-primary">
+          {leg.clientAddress ? 'From client address' : (depotName(leg.depotId) ?? 'Depot (not set)')}
+        </div>
         <div className="text-xs text-text-muted">
+          {leg.clientAddress && `${regionLabel} - `}
           {leg.storageState != null ? `Storage ${storageLabel(leg.storageState) ?? leg.storageState}` : 'Storage -'}
         </div>
       </>
@@ -533,12 +587,20 @@ function LegEditor({
   leg,
   onPatch,
   lookups,
+  isFirstDepot,
+  originDepotName,
   pickupBoxDiscount,
   onPickupBoxDiscountChange,
 }: {
   leg: Leg;
   onPatch: (patch: Partial<Leg>) => void;
   lookups: LookupCatalogue;
+  /** True for the chain's first Depot leg, the only one that may be the
+   *  client's own address. */
+  isFirstDepot: boolean;
+  /** Name of the depot the Collection leg lands at, read from that same
+   *  first Depot leg. Null when it is not set or is the client address. */
+  originDepotName: string | null;
   /** Schedule-level PickupBoxDiscount value. Rendered on the Collection
    *  leg editor per Steve's F14 relocation; the write path still hits
    *  tblBulkRunSchedule.PickupBoxDiscount (not a per-leg column). */
@@ -550,34 +612,13 @@ function LegEditor({
     const showBoxDiscount = boxDiscounts.length > 0 && onPickupBoxDiscountChange != null;
     return (
       <div className="grid grid-cols-2 gap-3">
-        <label className="block col-span-2 text-xs">
-          Pickup source
-          <select
-            value={leg.pickupSource}
-            onChange={(e) => onPatch({ pickupSource: e.target.value as CollectionLeg['pickupSource'] } as Partial<Leg>)}
-            className="mt-1 w-full px-2 py-1 border border-border rounded"
-          >
-            <option value="client_address">Client address</option>
-            <option value="depot">Depot</option>
-          </select>
-        </label>
-        {leg.pickupSource === 'depot' && (
-          <label className="block text-xs">
-            Pickup depot
-            <select
-              value={leg.pickupDepotId ?? ''}
-              onChange={(e) => onPatch({ pickupDepotId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
-              className="mt-1 w-full px-2 py-1 border border-border rounded"
-            >
-              <option value="">-</option>
-              {lookups.depots.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        <p className="col-span-2 text-[11px] text-text-muted">
+          Collects from the client's address into{' '}
+          {originDepotName ?? 'the first depot in this route'}. The destination
+          follows the Depot leg below, so it is set there, not here.
+        </p>
         <label className="block text-xs">
-          Pickup speed
+          Collection speed
           <select
             value={leg.speedId ?? ''}
             onChange={(e) => onPatch({ speedId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
@@ -589,6 +630,50 @@ function LegEditor({
             ))}
           </select>
         </label>
+        <label className="block text-xs">
+          Collection zone group
+          <select
+            value={leg.postcodeGroupId ?? ''}
+            onChange={(e) => onPatch({ postcodeGroupId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+            className="mt-1 w-full px-2 py-1 border border-border rounded"
+          >
+            <option value="">-</option>
+            {lookups.postcodeGroups.map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+        </label>
+        {(lookups.zoneNumbers?.length ?? 0) > 0 && (
+          <div className="block col-span-2 text-xs">
+            <div className="mb-1">Zones this leg collects from</div>
+            <div className="flex flex-wrap gap-1">
+              {lookups.zoneNumbers!.map((z) => {
+                const checked = leg.zones.includes(z);
+                return (
+                  <label
+                    key={z}
+                    className={`px-2 py-1 border rounded cursor-pointer ${
+                      checked ? 'border-brand-cyan bg-brand-cyan/10 text-text-primary' : 'border-border text-text-muted'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...leg.zones, z].sort((a, b) => a - b)
+                          : leg.zones.filter((v) => v !== z);
+                        onPatch({ zones: next } as Partial<Leg>);
+                      }}
+                      className="mr-1 accent-brand-cyan"
+                    />
+                    {z}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {showBoxDiscount && (
           <label className="block col-span-2 text-xs">
             Collection box discount
@@ -616,16 +701,55 @@ function LegEditor({
         <label className="block text-xs">
           Depot
           <select
-            value={leg.depotId ?? ''}
-            onChange={(e) => onPatch({ depotId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+            value={leg.clientAddress ? 'client' : (leg.depotId ?? '')}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'client') {
+                onPatch({ clientAddress: true, depotId: null } as Partial<Leg>);
+              } else {
+                // Leaving client origin drops the origin region: a real
+                // depot IS the origin.
+                onPatch({
+                  clientAddress: false,
+                  originRegionId: null,
+                  depotId: v ? Number(v) : null,
+                } as Partial<Leg>);
+              }
+            }}
             className="mt-1 w-full px-2 py-1 border border-border rounded"
           >
             <option value="">-</option>
+            {/* Only the chain's first Depot leg can be the client's own
+                address. A depot after a linehaul is somewhere we actually
+                land, so it has to be a real one. */}
+            {isFirstDepot && <option value="client">Client address</option>}
             {lookups.depots.map((d) => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
         </label>
+        {leg.clientAddress && (
+          <label className="block text-xs">
+            Origin region
+            <select
+              value={leg.originRegionId ?? ''}
+              onChange={(e) => onPatch({ originRegionId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
+              className="mt-1 w-full px-2 py-1 border border-border rounded"
+            >
+              <option value="">-</option>
+              {lookups.depots.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {leg.clientAddress && (
+          <p className="col-span-2 text-[11px] text-text-muted">
+            Goods are at the client's own address at the start of this
+            schedule. The origin region says which branch owns the start of
+            the chain; the delivery region still comes from the Delivery leg.
+          </p>
+        )}
         <label className="block text-xs">
           Storage state
           <select

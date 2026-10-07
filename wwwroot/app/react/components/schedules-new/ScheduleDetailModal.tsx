@@ -16,7 +16,7 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, type Leg } from './ChainBuilder';
+import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
@@ -32,6 +32,7 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { clientsService, type ClientGeocodeResult } from '../../services/clientsService';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
 // section 2). 4 tabs: Clients / Route / Operating days / Roster.
@@ -125,6 +126,8 @@ type LinehaulUpsertRow = NonNullable<ScheduleGroupUpsertBody['linehauls']>[numbe
 function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   let pickupDepotId: number | null = null;
   let pickupRatingSpeed: number | null = null;
+  let pickupPostcodeGroupId: number | null = null;
+  let pickupZones: number[] = [];
   let regionId = 0;
   let speedId: number | null = null;
   let postcodeGroupId: number | null = null;
@@ -133,8 +136,13 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   const zones: number[] = [];
   for (const leg of legs) {
     if (leg.type === 'collection') {
-      pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+      // The collection leg no longer carries a depot. Its destination, and
+      // therefore PickupDepotId, is resolved from the first Depot leg after
+      // this loop. It does carry the pickup zone group and zones,
+      // which mirror the Delivery card (spec 3.2).
       pickupRatingSpeed = leg.speedId;
+      pickupPostcodeGroupId = leg.postcodeGroupId;
+      pickupZones = [...leg.zones].sort((a, b) => a - b);
     } else if (leg.type === 'depot') {
       storageState = leg.storageState;
     } else if (leg.type === 'linehaul') {
@@ -163,8 +171,37 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
       for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
     }
   }
+  // ── Origin resolution (schedule-origin spec, 2026-10-07) ──────────
+  // Origin is expressed by the chain's first Depot leg and stored on the
+  // header as OriginType / OriginRegionId.
+  //
+  //   client origin -> BookPickup = 0, PickupDepotId = NULL,
+  //                    OriginRegionId = the Depot card's picker
+  //   depot  origin -> PickupDepotId from the Depot leg, BookPickup = 1
+  //                    only when the chain actually has a Collection leg
+  //
+  // Region is NOT touched here. It keeps coming from the Delivery leg and
+  // names the delivery branch; OriginRegionId names the branch that owns the
+  // start of the chain. That is the same split a collection schedule already
+  // has between PickupDepotId and Region, which is why first-leg jobs and
+  // delivery jobs can sit under different teams.
+  //
+  // PickupDepotId is no longer picked on the Collection card; deriving it
+  // from the Depot leg is an identity round-trip, because seedLegsFromDto
+  // seeds that leg from PickupDepotId in the first place. That is what keeps
+  // existing LHP + DEL schedules behaving exactly as before.
+  const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
+  const hasCollection = legs.some((l) => l.type === 'collection');
+  const clientOrigin = firstDepot?.clientAddress === true;
+  const originType = clientOrigin ? 'client' : 'depot';
+  const originRegionId = clientOrigin ? (firstDepot?.originRegionId ?? null) : null;
+  let bookPickup = false;
+  if (!clientOrigin && hasCollection) {
+    bookPickup = true;
+    pickupDepotId = firstDepot?.depotId ?? null;
+  }
   zones.sort((a, b) => a - b);
-  return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
+  return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
 }
 
 // ─── Override-mode helpers (Kevin 2026-09-25) ──────────────────────
@@ -211,14 +248,34 @@ function nzOrNull(v: string | null | undefined): string | null {
 
 function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   const legs: Leg[] = [];
-  legs.push({
-    type: 'collection',
-    pickupSource: d.pickupDepotId ? 'depot' : 'client_address',
-    pickupDepotId: d.pickupDepotId ?? null,
-    speedId: d.pickupRatingSpeed ?? null,
-  });
-  if (d.pickupDepotName) {
-    legs.push({ type: 'depot', depotId: d.pickupDepotId ?? null, storageState: d.storageState });
+  // Client origin is a stored fact on the header, never derived here. The
+  // section 5.2 derivation is read-side only; using it to seed the editor
+  // would let an unflagged schedule be saved back as client origin.
+  const clientOrigin = d.originType === 'client';
+  // A Collection leg only when the schedule actually books a collection.
+  // This used to be unconditional, which is why a delivery-only schedule
+  // rendered as "Collect from Auckland" (F6).
+  if (d.bookPickup === true && d.pickupDepotId) {
+    legs.push({
+      type: 'collection',
+      speedId: d.pickupRatingSpeed ?? null,
+      postcodeGroupId: d.pickupPostcodeGroupId ?? null,
+      zones: (d.pickupZones ?? [])
+        .filter((z) => z.active !== false)
+        .map((z) => z.zone)
+        .sort((a, b) => a - b),
+    });
+  }
+  if (clientOrigin) {
+    legs.push({
+      type: 'depot', depotId: null, clientAddress: true,
+      originRegionId: d.originRegionId ?? null, storageState: d.storageState,
+    });
+  } else if (d.pickupDepotName) {
+    legs.push({
+      type: 'depot', depotId: d.pickupDepotId ?? null, clientAddress: false,
+      originRegionId: null, storageState: d.storageState,
+    });
   }
   for (const lh of d.linehauls) {
     legs.push({
@@ -360,7 +417,6 @@ export function ScheduleDetailModal({
   const [formDropOffLocationId, setFormDropOffLocationId] = useState<number | null>(null);
   const [formApplyPickupCutoff, setFormApplyPickupCutoff] = useState(false);
   const [formPickupCutoff, setFormPickupCutoff] = useState<number | null>(null);
-  const [formBookPickup, setFormBookPickup] = useState(false);
   const [formPostcodeIds, setFormPostcodeIds] = useState<number[]>([]);
   const [formPolygonIds, setFormPolygonIds] = useState<number[]>([]);
   // ─── Override-mode state (Kevin 2026-09-25) ──────────────────────
@@ -427,7 +483,6 @@ export function ScheduleDetailModal({
       dropOffLocationId: formDropOffLocationId,
       applyPickupCutoff: formApplyPickupCutoff,
       pickupCutoff: formPickupCutoff,
-      bookPickup: formBookPickup,
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
@@ -435,7 +490,7 @@ export function ScheduleDetailModal({
      formDisplayName, formDisplayDescription, formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
      formPickupBoxDiscount, formDropOffLocationId, formApplyPickupCutoff,
-     formPickupCutoff, formBookPickup, formPostcodeIds, formPolygonIds],
+     formPickupCutoff, formPostcodeIds, formPolygonIds],
   );
   const isDirty = initialSnapshot !== '' && currentSnapshot !== initialSnapshot;
 
@@ -467,7 +522,6 @@ export function ScheduleDetailModal({
     const seedDropOffLocationId = data.dropOffLocationId ?? null;
     const seedApplyPickupCutoff = data.applyPickupCutoff === true;
     const seedPickupCutoff = data.pickupCutoff ?? null;
-    const seedBookPickup = data.bookPickup === true;
     const seedPostcodeIds = [...(data.postcodeIds ?? [])];
     const seedPolygonIds = [...(data.polygonIds ?? [])];
     setFormName(seedName);
@@ -485,7 +539,6 @@ export function ScheduleDetailModal({
     setFormDropOffLocationId(seedDropOffLocationId);
     setFormApplyPickupCutoff(seedApplyPickupCutoff);
     setFormPickupCutoff(seedPickupCutoff);
-    setFormBookPickup(seedBookPickup);
     setFormPostcodeIds(seedPostcodeIds);
     setFormPolygonIds(seedPolygonIds);
     setSaveError(null);
@@ -506,7 +559,6 @@ export function ScheduleDetailModal({
       dropOffLocationId: seedDropOffLocationId,
       applyPickupCutoff: seedApplyPickupCutoff,
       pickupCutoff: seedPickupCutoff,
-      bookPickup: seedBookPickup,
       postcodeIds: seedPostcodeIds,
       polygonIds: seedPolygonIds,
     }));
@@ -795,11 +847,24 @@ export function ScheduleDetailModal({
       speedId: derived.speedId,
       parentSpeedId: formParentSpeedId,
       autoBook: formAutoBook,
-      bookPickup: formBookPickup,
+      // Derived from the chain, not a loose checkbox (spec 2.3).
+      bookPickup: derived.bookPickup,
+      originType: derived.originType,
+      originRegionId: derived.originRegionId,
+      // The Collection card owns these only when there IS a collection leg.
+      // 115 day rows on urgent-prod have a PickupPostcodeGroupId with
+      // BookPickup = 0; without this guard, saving one of those through the
+      // rebuilt card would clear it. Null pickupZones means "leave alone",
+      // the same contract Zones has.
       applyPickupCutoff: formApplyPickupCutoff,
       pickupCutoff: formApplyPickupCutoff ? formPickupCutoff : null,
       postcodeGroupId: derived.postcodeGroupId,
-      pickupPostcodeGroupId: formPickupPostcodeGroupId,
+      pickupPostcodeGroupId: derived.hasCollection
+        ? derived.pickupPostcodeGroupId
+        : formPickupPostcodeGroupId,
+      pickupZones: derived.hasCollection
+        ? derived.pickupZones.map((z) => ({ zone: z, active: true }))
+        : null,
       pickupRatingSpeed: derived.pickupRatingSpeed,
       storageState: derived.storageState,
       deliveryState: formDeliveryState,
@@ -1125,10 +1190,10 @@ export function ScheduleDetailModal({
                 pickupBoxDiscount: formPickupBoxDiscount, onPickupBoxDiscountChange: setFormPickupBoxDiscount,
                 dropOffLocationId: formDropOffLocationId, onDropOffLocationIdChange: setFormDropOffLocationId,
                 pickupPostcodeGroupId: formPickupPostcodeGroupId, onPickupPostcodeGroupIdChange: setFormPickupPostcodeGroupId,
-                bookPickup: formBookPickup, onBookPickupChange: setFormBookPickup,
                 applyPickupCutoff: formApplyPickupCutoff, onApplyPickupCutoffChange: setFormApplyPickupCutoff,
                 pickupCutoff: formPickupCutoff, onPickupCutoffChange: setFormPickupCutoff,
                 pickupDepotId: derived.pickupDepotId,
+                bookPickupDerived: derived.bookPickup,
               }}
             />
           )}
@@ -1523,8 +1588,9 @@ interface RouteTabProps {
     onDropOffLocationIdChange: (v: number | null) => void;
     pickupPostcodeGroupId: number | null;
     onPickupPostcodeGroupIdChange: (v: number | null) => void;
-    bookPickup: boolean;
-    onBookPickupChange: (v: boolean) => void;
+    /** Read-only mirror of the derived BookPickup, shown so the Advanced
+     *  tab still tells the truth about what will be saved. */
+    bookPickupDerived: boolean;
     applyPickupCutoff: boolean;
     onApplyPickupCutoffChange: (v: boolean) => void;
     pickupCutoff: number | null;
@@ -1565,6 +1631,15 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
             : 'Dane\'s vertical leg builder - edit inline; Save persists via /api/schedules'}
         </span>
       </div>
+      {/* Reads the LIVE chain, not data.originType: the warning should appear
+          the moment the operator switches the Depot leg to Client address,
+          not only after a save. */}
+      <ClientGeocodeWarning
+        clients={data?.clientsMissingGeocode ?? []}
+        isClientOrigin={
+          (legs.find((l) => l.type === 'depot') as DepotLeg | undefined)?.clientAddress === true
+        }
+      />
       <div className={readOnly ? 'pointer-events-none opacity-60' : undefined}>
         <ChainBuilder
           legs={legs}
@@ -1751,14 +1826,9 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                   .map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
               </select>
             </label>
-            <label className="col-span-2 flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={advanced.bookPickup}
-                onChange={(e) => advanced.onBookPickupChange(e.target.checked)}
-                className="accent-brand-cyan"
-              />
-              Book collection job (creates a separate collection job at booking time)
+            <label className="col-span-2 flex items-center gap-2 text-xs opacity-60">
+              <input type="checkbox" checked={advanced.bookPickupDerived} disabled className="accent-brand-cyan" />
+              Book collection job (derived: set by adding a Collection leg to the route)
             </label>
             <label className="col-span-2 flex items-center gap-2 text-xs">
               <input
@@ -2621,4 +2691,151 @@ function ProdRow({ label, value }: { label: string; value: string }) {
 function temperatureLabel(v: number | null | undefined): string | null {
   if (v == null) return null;
   return v === 1 ? 'Frozen' : v === 2 ? 'Chilled' : v === 3 ? 'Ambient' : `#${v}`;
+}
+
+/**
+ * Warns when a client-origin schedule is linked to clients whose site has no
+ * coordinates (schedule-origin spec 4.5). Those runs would start at whatever
+ * the booking happened to carry rather than the client's warehouse, and the
+ * Bulk Import path refuses the batch outright.
+ *
+ * Warns, never blocks: the booking path still works from the per-booking
+ * address, so this is a "your runs will start in the wrong place" caution,
+ * not a validation error.
+ *
+ * This is the surface Steve asked for the geocode action to hang off. It is
+ * two-step by design: the first click previews the candidate, a second
+ * confirms the write, so nobody overwrites a client's coordinates on one
+ * unseen lookup.
+ */
+function ClientGeocodeWarning({
+  clients,
+  isClientOrigin,
+}: {
+  clients: Array<{ clientId: number; clientName: string }>;
+  isClientOrigin: boolean;
+}) {
+  const [preview, setPreview] = useState<Record<number, ClientGeocodeResult>>({});
+  const [busy, setBusy] = useState<number | null>(null);
+  const [done, setDone] = useState<Record<number, string>>({});
+  const [error, setError] = useState<Record<number, string>>({});
+  // Address override, shown only after a lookup fails. Many client records
+  // hold a street line with no suburb or city ("Unit 6 - 50-56 Acheron
+  // Drive"), which HERE cannot resolve; without this the operator hits a
+  // dead end on the one screen that told them to fix it.
+  const [override, setOverride] = useState<Record<number, string>>({});
+
+  if (!isClientOrigin || clients.length === 0) return null;
+
+  const run = async (clientId: number, confirm: boolean) => {
+    setBusy(clientId);
+    setError((e) => ({ ...e, [clientId]: '' }));
+    try {
+      const typed = override[clientId]?.trim();
+      const res = await clientsService.geocodeSite(clientId, {
+        confirm,
+        address: typed ? typed : null,
+      });
+      if (res.written) {
+        setDone((d) => ({ ...d, [clientId]: res.message }));
+        setPreview((p) => {
+          const next = { ...p };
+          delete next[clientId];
+          return next;
+        });
+      } else if (res.latitude == null) {
+        setError((e) => ({ ...e, [clientId]: res.message }));
+      } else {
+        setPreview((p) => ({ ...p, [clientId]: res }));
+      }
+    } catch (err) {
+      setError((e) => ({
+        ...e,
+        [clientId]: err instanceof Error ? err.message : 'Geocode failed.',
+      }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-warning/40 bg-warning-bg/40 px-3 py-2">
+      <div className="text-xs font-semibold text-text-primary">
+        {clients.length === 1 ? 'A linked client has' : `${clients.length} linked clients have`}
+        {' '}no geocoded site address
+      </div>
+      <p className="text-[11px] text-text-muted mt-0.5">
+        This schedule starts at the client&apos;s address, so runs will not start in the
+        right place until the site is geocoded. Bookings still work; a routed Bulk
+        Import on this schedule will be refused.
+      </p>
+      <div className="mt-1.5 flex flex-col gap-1.5">
+        {clients.map((c) => {
+          const p = preview[c.clientId];
+          return (
+            <div key={c.clientId} className="text-[11px]">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-text-primary">{c.clientName}</span>
+                {done[c.clientId] ? (
+                  <span className="text-success">{done[c.clientId]}</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy === c.clientId}
+                    onClick={() => void run(c.clientId, false)}
+                    className="px-2 py-0.5 rounded border border-border text-text-muted hover:text-text-primary disabled:opacity-40"
+                  >
+                    {busy === c.clientId ? 'Looking up...' : p ? 'Look up again' : 'Geocode site address'}
+                  </button>
+                )}
+              </div>
+              {p && (
+                <div className="mt-0.5 ml-1 flex items-center gap-2 flex-wrap">
+                  <span className="text-text-muted">
+                    {p.formattedAddress} ({p.latitude}, {p.longitude})
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy === c.clientId}
+                    onClick={() => void run(c.clientId, true)}
+                    className="px-2 py-0.5 rounded bg-brand-cyan text-white disabled:opacity-40"
+                  >
+                    Save these coordinates
+                  </button>
+                </div>
+              )}
+              {error[c.clientId] && (
+                <div className="mt-0.5 ml-1">
+                  <div className="text-error">{error[c.clientId]}</div>
+                  {/* The stored address could not be resolved. Let the
+                      operator supply a fuller one rather than sending them
+                      to another app to fix the client record first. The
+                      typed value is used for the lookup only; what gets
+                      saved is still just the coordinates. */}
+                  <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <input
+                      type="text"
+                      value={override[c.clientId] ?? ''}
+                      onChange={(e) =>
+                        setOverride((o) => ({ ...o, [c.clientId]: e.target.value }))}
+                      placeholder="Try a fuller address, e.g. add the suburb and city"
+                      className="px-1.5 py-0.5 border border-border rounded text-[11px] w-80"
+                    />
+                    <button
+                      type="button"
+                      disabled={busy === c.clientId || !(override[c.clientId] ?? '').trim()}
+                      onClick={() => void run(c.clientId, false)}
+                      className="px-2 py-0.5 rounded border border-border text-text-muted hover:text-text-primary disabled:opacity-40"
+                    >
+                      Try this address
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

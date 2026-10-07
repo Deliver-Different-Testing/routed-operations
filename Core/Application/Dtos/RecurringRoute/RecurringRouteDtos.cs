@@ -148,6 +148,23 @@ public record PickupAddressSuggestionDto(
 /// <summary>Autocomplete result for the zip search picker.</summary>
 public record ZipcodeLookupDto(int ZipPolygonId, string Zip, decimal? Latitude, decimal? Longitude);
 
+/// <summary>
+/// One row of the recurring-route modal's Coverage lookup (polygons spec
+/// part 1). Postcodes and custom polygons share a box now, so they share a
+/// result shape: Kind tells the chip which colour and icon to use, and Id
+/// means ZipPolygonId or PolygonId accordingly.
+/// </summary>
+public record CoverageLookupDto(
+    /// <summary>"postcode" or "polygon".</summary>
+    string Kind,
+    int Id,
+    string Label,
+    /// <summary>Polygon's own colour, so the chip is visibly not a postcode.
+    /// Null for postcodes.</summary>
+    string ColorHex,
+    decimal? Latitude,
+    decimal? Longitude);
+
 /// <summary>Segmented list of assignable targets (couriers / agents / NPs).</summary>
 public record AssignableTargetDto(int Id, string Name, string Hint);
 public record AssignableTargetsResponse(
