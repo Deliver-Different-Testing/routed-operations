@@ -14,7 +14,7 @@ migrations through 2026-09-28._
 | **Two uses, two plumbings** | (1) **Dispatch**: a custom polygon attached to a recurring route tells the auto-assign resolver which route a job belongs to. This exists, but the only way to attach one is from Polygon Builder or the route map. (2) **Bookability**: a custom polygon should be a **member of a zone number inside a zone group**, exactly like a postcode, because zone groups are what decide whether a client can book to an address. This does not exist. |
 | **What is wrong today** | Polygons can be attached to a **schedule** (`tblSchedulePolygon`, Coverage tab). **No stored procedure reads that table.** Schedule-attached polygons have no effect on booking. The attachment was wired to the wrong object. |
 | **Part 1 (small)** | The recurring-route modal's **Postal Codes** box becomes one lookup: type a postcode *or* a polygon name; a polygon comes back as a differently coloured chip and is written to `tblBulkRunPolygonRoute`. No resolver change: it already prefers route polygons. |
-| **Part 2 (the real work)** | New `BulkZonePolygon` (zone group, zone number, polygon). Polygon Builder's zone drawer gains "Add to zone". The legacy zone-resolution functions are **extracted into source control first**, then given a polygon branch: when the address has coordinates, point-in-polygon wins; postcode is the fallback. `tblSchedulePolygon` and the schedule Coverage tab's polygon list are retired. |
+| **Part 2 (the real work)** | New `BulkZonePolygon` (zone group, zone number, polygon). Polygon Builder's zone drawer gains "Add to zone". The legacy zone-resolution functions are **extracted into source control first**, then given Steve's three-step rule (section 3.3): postcode membership first; else polygons tagged with that postcode supply the candidate zone; then geometry confirms. `tblSchedulePolygon` and the schedule Coverage tab's polygon list are retired. |
 | **Decisions needed** | Section 7. |
 
 ---
@@ -130,23 +130,48 @@ snapshots, the way `uspPrebookSet` was (migration `20260922120000`): `UCL_fncT_G
 `fncT_StpBulkZoneRate_GetAmountByJobID`, `UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule`
 (the last two are already in source). Nothing below is safe until there is a diff to review.
 
-Then, wherever a function maps an address to a zone within a group:
+**How a postcode finds its region today.** Postcodes are **not** tied to regions in their own
+right. `UTL_fncJob_GetClientAvailableBulkRunSchedule:139-145` does
+`SELECT DISTINCT DepotId, PostcodeGroupId FROM bulkzonepostcode WHERE postcode = @X` for From and
+To, and **returns nothing if either postcode is in no zone group**. The region comes off the zone
+row. So for a postcode that is in no zone, the polygon has to supply the region - which it can,
+because `tblBulkRunPolygon.PartiallyIncludedZips` lists the postcodes the shape overlaps.
+
+**Steve's rule (7 Oct), applied to each of the From and To addresses, in order:**
 
 ```
-IF the address has coordinates (lat/long):
-    zone := the Zone of the first active BulkZonePolygon in this group whose polygon
-            STIntersects(point), narrowed first by PartiallyIncludedZips containing the postcode
-    IF found -> use it
-resolve by postcode as today (BulkZonePostcode)
+1. POSTCODE MEMBERSHIP (today's behaviour, unchanged - always wins)
+   candidates := (DepotId, PostcodeGroupId, Zone) FROM BulkZonePostcode WHERE PostCode = @pc
+   IF any -> book and rate on those. STOP.
+
+2. POLYGONS TAGGED WITH THE POSTCODE
+   candidates := (g.DepotId, bzp.PostcodeGroupId, bzp.Zone, p.PolygonId)
+                 FROM tblBulkRunPolygon p
+                 JOIN BulkZonePolygon bzp ON bzp.PolygonId = p.PolygonId AND bzp.Active = 1
+                 JOIN BulkZonePostcodeGroup g ON g.Id = bzp.PostcodeGroupId
+                 WHERE p.Active = 1
+                   AND ',' + p.PartiallyIncludedZips + ',' LIKE '%,' + @pc + ',%'
+   IF none -> not bookable (as today). STOP.
+
+3. GEOMETRY CONFIRMS
+   IF the address has coordinates:
+       keep only candidates whose p.GeographyData.STIntersects(@point) = 1
+       IF any -> book and rate on those (lowest Zone if more than one, logged). STOP.
+       ELSE -> not bookable.
+   IF the address has no coordinates -> see decision 7.4 (default: not bookable via polygon).
 ```
 
-- **Polygon first, postcode fallback.** A polygon is drawn precisely to override the postcode.
-- `PartiallyIncludedZips` is the pre-filter so `STIntersects` runs against a handful of shapes, the
-  same trick the route resolver uses.
-- If a point falls in **two** polygons of the same group with different zones, take the **lowest**
-  zone number and log it; Polygon Builder warns when a polygon being added overlaps another already
-  in the group.
-- Where coordinates are absent (some API bookings), behaviour is identical to today.
+- Rule 1 before rule 2 means a polygon **extends** coverage to postcodes not already zoned; it never
+  overrides a postcode that is already in a zone. That removes the postcode-vs-polygon conflict
+  entirely; only polygon-vs-polygon overlap remains (decision 7.1).
+- `PartiallyIncludedZips` is already maintained on every polygon create/update
+  (`BulkPolygonService`), and it is the same pre-filter the route resolver uses, so `STIntersects`
+  runs against a handful of shapes.
+- The same three steps apply to the **pickup** address against `PickupPostcodeGroupId` /
+  `BulkPickupZoneSchedule` (decision 7.3).
+- Where this lives: the `@FromRegions` / `@ToRegions` population at the top of the two availability
+  functions (so the rest of the function sees a polygon-derived depot exactly like a postcode-derived
+  one), `UCL_fncT_GetBulkZone` / `UTL_fncBulkZonePostcode_IsActive` for rating, after extraction.
 
 ### 3.4 Retire the schedule attachment
 
@@ -161,13 +186,14 @@ resolve by postcode as today (BulkZonePostcode)
 
 ## 4. Where coordinates come from
 
-Postcode resolution works from text. Polygon resolution needs a point.
+Postcode resolution (rule 1) works from text. Rule 2 also works from text (the polygon's tagged
+postcodes). Only rule 3 needs a point.
 
 | Entry | Coordinates available? |
 | :- | :- |
 | Web booking | Yes - address is geocoded on entry. |
 | Bulk Import | Yes when rows carry From/To lat/long or the client site is geocoded (origin spec 4.4-4.5); otherwise AddressService geocodes. |
-| API (`WS_stpJob_Insert` callers) | Sometimes. Where absent -> postcode fallback, no behaviour change. |
+| API (`WS_stpJob_Insert` callers) | Sometimes. Where absent -> rule 1 only; rule 3 cannot run (decision 7.4). |
 | Availability preview on the booking page | Only after the address is entered; the schedule list refreshes once coordinates exist. |
 
 ---
@@ -176,10 +202,14 @@ Postcode resolution works from text. Polygon resolution needs a point.
 
 1. In Polygon Builder, add "Test Regional Cambridge - Tirau" to Zone 4 of the Auckland zone group;
    the drawer shows it under Zone 4; `BulkZonePolygon` has the row.
-2. A web booking to an address inside that shape, on a schedule whose delivery zone group is that
-   group and which fulfils Zone 4, is **offered and rated as Zone 4** even if the address's postcode
-   is not in Zone 4's postcode list.
-3. The same booking with coordinates stripped resolves by postcode as it does today.
+2. A web booking to an address whose postcode is **in no zone** of that group but is tagged on
+   that shape, and whose point is inside the shape, on a schedule whose delivery zone group is that
+   group and which fulfils Zone 4, is **offered and rated as Zone 4**.
+2a. The same address but with the point **outside** the shape (same postcode) is **not** offered.
+2b. An address whose postcode **is** in Zone 3's postcode list, inside a Zone 4 polygon, is offered
+   as **Zone 3** (rule 1 wins).
+3. The same booking as (2) with coordinates stripped is not offered via the polygon (decision 7.4
+   default), and behaves exactly as today otherwise.
 4. A schedule with polygons in `tblSchedulePolygon` shows them read-only on the Coverage tab with
    "not yet placed in a zone" until ops adds them to a zone.
 5. Part 1: typing a polygon name in the route modal's Coverage box offers it; saving binds it; the
@@ -206,3 +236,5 @@ Postcode resolution works from text. Polygon resolution needs a point.
    client's group as well as the depot default? (Recommend yes; same table, no extra rule.)
 3. **Pickup side**: polygons resolve the collection zone (`PickupPostcodeGroupId`) the same way as
    delivery? (Recommend yes; the Collection card is gaining the zone group now - origin spec 3.2.)
+4. **No coordinates** (rule 3 cannot run): not bookable via polygon (recommended - a tagged postcode
+   is only *partly* inside the shape, so rule 2 alone is a guess), or accept rule 2 alone?
