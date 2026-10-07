@@ -158,7 +158,10 @@ because `tblBulkRunPolygon.PartiallyIncludedZips` lists the postcodes the shape 
        keep only candidates whose p.GeographyData.STIntersects(@point) = 1
        IF any -> book and rate on those (lowest Zone if more than one, logged). STOP.
        ELSE -> not bookable.
-   IF the address has no coordinates -> see decision 7.4 (default: not bookable via polygon).
+   IF the address has no coordinates (decided 7 Oct):
+       geocode it now (HereGeocodeService - the booking surface already has the address text)
+       IF geocoding returns a point -> run the STIntersects test above
+       ELSE -> REJECT with reason "No geolocation available for this address" (not silent)
 ```
 
 - Rule 1 before rule 2 means a polygon **extends** coverage to postcodes not already zoned; it never
@@ -242,13 +245,16 @@ Polygon-vs-polygon overlap within a zone group is prevented where the shapes are
 ## 4. Where coordinates come from
 
 Postcode resolution (rule 1) works from text. Rule 2 also works from text (the polygon's tagged
-postcodes). Only rule 3 needs a point.
+postcodes). Only rule 3 needs a point - and **only when rule 2 produced a candidate**, i.e. the
+postcode is reachable solely through a polygon. In that case the function geocodes the address if
+no point was supplied, and rejects with a stated reason if geocoding fails (decision 7.4). Addresses
+resolved by rule 1 never trigger a geocode.
 
 | Entry | Coordinates available? |
 | :- | :- |
 | Web booking | Yes - address is geocoded on entry. |
 | Bulk Import | Yes when rows carry From/To lat/long or the client site is geocoded (origin spec 4.4-4.5); otherwise AddressService geocodes. |
-| API (`WS_stpJob_Insert` callers) | Sometimes. Where absent -> rule 1 only; rule 3 cannot run (decision 7.4). |
+| API (`WS_stpJob_Insert` callers) | Sometimes. Where absent and the postcode is polygon-only -> geocode at booking; if that fails, reject with "No geolocation available" (decision 7.4). |
 | Availability preview on the booking page | Only after the address is entered; the schedule list refreshes once coordinates exist. |
 
 ---
@@ -263,8 +269,9 @@ postcodes). Only rule 3 needs a point.
 2a. The same address but with the point **outside** the shape (same postcode) is **not** offered.
 2b. An address whose postcode **is** in Zone 3's postcode list, inside a Zone 4 polygon, is offered
    as **Zone 3** (rule 1 wins).
-3. The same booking as (2) with coordinates stripped is not offered via the polygon (decision 7.4
-   default), and behaves exactly as today otherwise.
+3. The same booking as (2) with coordinates stripped: the function geocodes the address and the
+   outcome matches (2) / (2a). With an address that cannot be geocoded, the booking is **rejected
+   with the reason "No geolocation available for this address"**, not silently dropped.
 4. A schedule with polygons in `tblSchedulePolygon` shows them read-only on the Coverage tab with
    "not yet placed in a zone" until ops adds them to a zone.
 5. Part 1: typing a polygon name in the route modal's Coverage box offers it; saving binds it; the
@@ -288,9 +295,18 @@ postcodes). Only rule 3 needs a point.
 
 1. ~~Overlap rule~~ - **decided 7 Oct:** prevent at authoring with snap-to-boundary and a save-time
    intersection check (3.6). Whole-postcode overlap is moot because rule 1 wins.
-2. **Client-specific zone groups** (`BulkZonePostcodeGroup.ClientId`): can a polygon be added to a
-   client's group as well as the depot default? (Recommend yes; same table, no extra rule.)
-3. **Pickup side**: polygons resolve the collection zone (`PickupPostcodeGroupId`) the same way as
-   delivery? (Recommend yes; the Collection card is gaining the zone group now - origin spec 3.2.)
-4. **No coordinates** (rule 3 cannot run): not bookable via polygon (recommended - a tagged postcode
-   is only *partly* inside the shape, so rule 2 alone is a guess), or accept rule 2 alone?
+2. ~~Client-specific zone groups~~ - **decided 7 Oct: yes.** A polygon can be a member of a
+   client's zone group as well as a depot default group. Same table, no extra rule.
+3. ~~Pickup side~~ - **decided 7 Oct: yes.** The three-step rule applies to the pickup address
+   against `PickupPostcodeGroupId` / `BulkPickupZoneSchedule`. **Consequence Steve wants captured:**
+   once a schedule can select *which zone numbers* it collects from (origin spec 3.2, "Zones this
+   leg collects from"), the many pickup zone groups that exist today only to express "this subset of
+   zones" can be **retired** into the depot default group. Kevin: after the Collection card ships,
+   report the pickup zone groups per depot that are strict subsets of the default group's zones, as
+   the candidate retirement list.
+4. ~~No coordinates~~ - **decided 7 Oct:** if the postcode is reachable **only** through a polygon
+   (rule 2 produced a candidate) and no coordinates were supplied, **geocode the address at booking
+   time**; if geocoding returns no point, **reject with the reason "No geolocation available for
+   this address"**. Rule-1 addresses never trigger a geocode.
+
+All four decided. Nothing open.
