@@ -255,6 +255,12 @@ DEPOT   Client address                         edit v  Remove
   Kevin to confirm whether `UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule` filter on
   `BulkPickupZoneSchedule` today (they do on `PickupPostcodeGroupId`); if not, the zone picks are
   stored now and consumed when the zone functions are extracted (polygons spec, section 3.3).
+
+  **Why this matters beyond parity (Steve, 7 Oct):** many pickup zone groups exist today only to say
+  "this schedule collects from a subset of zones", because there was no way to pick zone numbers on
+  the pickup side. Once "Zones this leg collects from" exists, those groups collapse into the depot
+  default group. After this ships, report per depot the pickup zone groups whose zone set is a
+  strict subset of the default group's as the retirement candidates (polygons spec, decision 7.3).
 - "Add Collection" button disabled with tooltip when the first Depot leg is "Client address".
 - Linehaul card on a Client-origin schedule: `fromClientAddress` defaults true on the first LH
   leg; From-depot select disabled while it is on (already the behaviour at `ChainBuilder.tsx:686`).
