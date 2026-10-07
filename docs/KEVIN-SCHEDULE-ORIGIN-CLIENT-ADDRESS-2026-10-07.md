@@ -21,7 +21,7 @@ dbmigrationsv2 SP re-emits of 2026-09-25 / 2026-09-28.
 | **Booking SPs** | The **bulk** path (`WS_/DD_stpBulkScheduleJob_Insert`) already produces the right job: one job from the booking's own From address. The **web/API single-job path** does not: `WS_stpJob_Insert`, `WS_stpJob_Topup_Insert` and `DD_stpJob_InsertExcelerator` overwrite the pickup address and coordinates with the depot's for a no-collection schedule. Three-line fix in each, reading a **stored** `OriginType` (section 4.3). |
 | **Real blockers (two)** | (1) Route Builder's region filter finds jobs by matching **pickup lat/long or From address to `tblBulkRegion`**; a client-address pickup matches no depot, so the job never appears when filtering by region. The filter must also admit `tblBulkJob.RegionID` for these schedules. (2) **Bulk Import** resolves a routed job's origin from the **schedule's Region depot first** (NZ: only), so imported jobs on a client-origin schedule would be stamped with the dispatch depot's coordinates. The resolver must take the client's saved site address instead (section 4.4). |
 | **Remove** | The Pickup source dropdown on the Collection leg, including the "Booking-declared" value on develop that has no backend meaning. |
-| **Dispatch region** | When the Depot leg is "Client address" nothing writes `Region`, which is how Route Builder / Route Viewer scope work to a team. The Depot card shows a **Dispatch region** picker in that case. |
+| **Origin region** | `Region` comes from the **Delivery** leg and stays the delivery region. A client-origin schedule needs an **origin region** too, exactly where a collection schedule has `PickupDepotId`: new column **`OriginRegionId`**, set by a picker on the Client-address Depot card. First-leg jobs are stamped with it; delivery jobs with `Region`. The linehaul leg needs nothing extra. |
 | **Storage** | `OriginType` on `tblBulkRunScheduleDetail` (collapse plan M1). Interim derivation rule in section 5 until that ships. |
 
 ---
@@ -126,7 +126,7 @@ dropdown gains one value, **Client address**, alongside the real depots.
 | First Depot leg | Chain | Booking result | Run |
 | :- | :- | :- | :- |
 | **A real depot** (today's model) | optional **Collection** (collect from client into the depot, zone-driven per F10) -> **Depot** -> 0..n **Linehaul** -> **Delivery** | `BookPickup` as set; LHP if a Collection leg exists; DEL from depot | Starts at the depot (or wherever the operator marks `IsStart`) |
-| **Client address** (new) | **Depot (Client address)** -> 0..n **Linehaul** (`BookFromClientAddress = 1`, optionally landing at a real Depot) -> **Delivery**. **No Collection leg.** | `BookPickup = 0`, `PickupDepotId = NULL`; one DEL job from the client's From address (or LH legs from the client, then DEL) | Jobs grouped under the schedule's **Dispatch region**; start = client site, from the booking's own pickup coordinates |
+| **Client address** (new) | **Depot (Client address, origin region R1)** -> 0..n **Linehaul** (`FromClientAddress = 1`, optionally landing at a real Depot) -> **Delivery (region R2)**. **No Collection leg.** | `BookPickup = 0`, `PickupDepotId = NULL`, `OriginRegionId = R1`, `Region = R2`; one DEL job from the client's From address (or LH legs from the client, then DEL) | First-leg jobs under R1, delivery jobs under R2 - the same split a collection schedule has between `PickupDepotId` and `Region`; start = client site, from the booking's own pickup coordinates |
 
 Examples: *Afternoon home from the Auckland depot* = Depot (Auckland) -> Delivery.
 *PB Tech warehouse* = Depot (Client address) -> Delivery. *HelloFresh* = Depot (Client address)
@@ -139,16 +139,22 @@ Rules:
 - A **Collection leg cannot coexist** with a Client-address first depot. Collection means
   "collect from the client into the depot"; when the depot *is* the client there is nothing to
   collect. ChainBuilder disables "Add Collection" and removes an existing one on confirm.
-- **Dispatch region** is mandatory. For a real depot it is the depot's region as today. For
-  Client address, the Depot card shows a Dispatch region picker (the same `tblBulkRegion` list)
-  and that value is written to `Region`. It means "which dispatch team owns these runs", not
-  "where the truck starts". The list column stays as it is.
+- **Two regions, as today.** `Region` is derived from the **Delivery** leg (`ScheduleDetailModal`
+  derive: `regionId = leg.regionId` on the delivery leg) and is unchanged by this spec. The
+  **origin region** is new: on a real first depot it is that depot; on Client address the Depot
+  card shows an **Origin region** picker (same `tblBulkRegion` list) and the value is written to
+  **`OriginRegionId`**. It is the counterpart of `PickupDepotId` on a collection schedule: which
+  branch owns the start of the chain. PB Tech: origin Auckland, delivery Auckland. HelloFresh shape:
+  origin Auckland, delivery Wellington.
+- **The linehaul leg needs no region of its own.** Its from side is the client (`FromClientAddress
+  = 1`), its to side is a real depot; the origin region lives on the schedule.
 - The Collection leg means exactly one thing from now on: **collect from the client's address
   into the depot**. Its "Pickup source" dropdown is deleted. Its zones (F10) decide coverage.
 
-### 2.1b What "Dispatch region" is for - and what it is not
+### 2.1b What the regions are for - and what they are not
 
-`Region` on a client-origin schedule is the **owning branch**, not a place. It is needed for:
+Neither `Region` (delivery) nor `OriginRegionId` (origin) is a place on a client-origin schedule.
+They are the **owning branches**, needed for:
 
 - **Zones and pricing.** Zone groups belong to a region (`tblBulkRegion` -> `BulkZonePostcodeGroup`).
   The schedule's delivery zone group is one of its region's groups, and the rating function
@@ -213,15 +219,16 @@ depots). When selected:
 ```
 DEPOT   Client address                         edit v  Remove
         Goods are at the client's own address at the start of this schedule.
-        Dispatch region  [ Auckland            v ]      Storage state  [ - v ]
+        Origin region  [ Auckland            v ]        Storage state  [ - v ]
 ```
 
-- **Dispatch region** picker appears (same `tblBulkRegion` list). Required. Writes `Region`.
+- **Origin region** picker appears (same `tblBulkRegion` list). Required. Writes
+  **`OriginRegionId`** - never `Region`, which stays the Delivery leg's region.
 - Card title reads "From client address" instead of "{Depot name}".
 - If a Collection leg exists: confirm "Client-origin schedules have no collection job. Remove the
   Collection leg?" Yes removes it; No reverts the dropdown.
 - Switching back to a real depot: Collection leg is **not** auto-added; the operator adds it if the
-  schedule really collects. Dispatch region picker hides; `Region` = the chosen depot.
+  schedule really collects. Origin region picker hides; `OriginRegionId` = the chosen depot.
 - Only the **first** Depot leg offers "Client address". A later Depot leg (after a Linehaul) is a
   real depot.
 
@@ -236,7 +243,7 @@ DEPOT   Client address                         edit v  Remove
 
 ### 3.3 Schedules NEW list
 
-The existing Origin / depot column shows "Client address" (with the dispatch region in the
+The existing Origin / depot column shows "Client address" (with the origin region in the
 tooltip) for these schedules. Filterable. Useful for ops to find
 the client-origin set when building runs.
 
@@ -253,16 +260,16 @@ Remove the `BookPickup` checkbox from Advanced (`ScheduleDetailModal.tsx:1757`,
 
 `RunService` ~line 64 and the `JobService` R2.1 block: extend the raw SQL so a job qualifies if
 **either** its pickup matches a depot (today's rule) **or** it belongs to a Client-origin
-schedule whose `Region` is in the filter:
+schedule whose **origin region** is in the filter (the delivery jobs are already found by `Region`):
 
 ```sql
 WHERE ( breg.BulkRegionId IN ({inList})
-     OR ( j.RegionID IN ({inList})
-          AND EXISTS (SELECT 1
-                      FROM dbo.tblBulkRunSchedule s           -- compat view after collapse M2
-                      JOIN dbo.tblBulkRunScheduleDetail x ON x.ScheduleId = s.ScheduleId
-                      WHERE s.BulkRunScheduleId = j.ScheduleId
-                        AND x.OriginType = 'client') ) )
+     OR EXISTS (SELECT 1
+                FROM dbo.tblBulkRunSchedule s                 -- compat view after collapse M2
+                JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId
+                WHERE s.BulkRunScheduleId = j.ScheduleId
+                  AND h.OriginType = 'client'
+                  AND h.OriginRegionId IN ({inList})) )
   AND ISNULL(j.Done, 0) = 0
   {dateClause}
 ```
@@ -275,8 +282,8 @@ check. Copy that shape into `RunService` / `JobService`; Route Viewer needs no c
 
 ### 4.2 Grouping and start
 
-- Jobs from a Client-origin schedule group into runs by `(RegionID, ClientId, BookDate)` in the
-  cockpit's default grouping, so one client's fan-out does not mix with depot runs.
+- Jobs from a Client-origin schedule group into runs by `(OriginRegionId, ClientId, BookDate)` in
+  the cockpit's default grouping, so one client's fan-out does not mix with depot runs.
 - Default `IsStart` for such a run: the first job's **pickup** stop (which is the client site,
   from the booking's own `PickUpLatitude` / `PickUpLongitude`). Today the operator picks it;
   defaulting it is a convenience, not a requirement. No `tblBulkRegion` row is involved.
@@ -369,9 +376,18 @@ So the column lands on **`tblBulkRunScheduleHeader`** first:
 
 ```sql
 ALTER TABLE dbo.tblBulkRunScheduleHeader
-    ADD OriginType CHAR(6) NOT NULL CONSTRAINT DF_tblBulkRunScheduleHeader_OriginType DEFAULT ('depot')
-        CONSTRAINT CK_tblBulkRunScheduleHeader_OriginType CHECK (OriginType IN ('depot','client'));
+    ADD OriginType     CHAR(6) NOT NULL CONSTRAINT DF_tblBulkRunScheduleHeader_OriginType DEFAULT ('depot')
+        CONSTRAINT CK_tblBulkRunScheduleHeader_OriginType CHECK (OriginType IN ('depot','client')),
+        OriginRegionId INT NULL
+        CONSTRAINT FK_tblBulkRunScheduleHeader_OriginRegion FOREIGN KEY (OriginRegionId)
+            REFERENCES dbo.tblBulkRegion (BulkRegionId),
+    CONSTRAINT CK_tblBulkRunScheduleHeader_ClientOriginHasRegion
+        CHECK (OriginType = 'depot' OR OriginRegionId IS NOT NULL);
 ```
+
+`OriginRegionId` is NULL for depot-origin schedules (their origin region is `PickupDepotId` /
+the first Depot leg, as today) and required for client-origin ones. Both columns move to the detail
+table in collapse M1.
 
 Additive, so the migration ships **before** the app and the SP change. It moves to the detail table
 in collapse M1. Never on the day row.
@@ -442,8 +458,8 @@ by a derivation.
 ## 6. Acceptance
 
 1. A schedule saved with the first Depot leg = Client address has `BookPickup = 0`,
-   `PickupDepotId = NULL`, `Region` = the chosen dispatch region, no Collection leg, and
-   `OriginType = 'client'`. Booking a job on it creates **one** tucJob (or LH legs + DEL when
+   `PickupDepotId = NULL`, `OriginRegionId` = the chosen origin region, `Region` = the Delivery
+   leg's region (unchanged), no Collection leg, and `OriginType = 'client'`. Booking a job on it creates **one** tucJob (or LH legs + DEL when
    linehaul legs exist) with From = the client's address. No LHP. **Exercised on both the bulk
    path and the web/API path, on a home-delivery speed (SH), asserting `PickUpLatitude /
    PickUpLongitude` equal the client's** - not merely that the job appears.
@@ -482,8 +498,12 @@ by a derivation.
   depot -> depot, so they have a `PickupDepotId` and are offered by the function's second branch.
   What has never been configured is a linehaul leg that **loads at the client's address**
   (`FromClientAddress = 1` on 0 of 9,547 linehaul rows, both production tenants). Only that new
-  shape hits the first-branch restriction. **Steve to decide** whether it is in scope for this build (relax the first branch to test
-  the To side only for `OriginType = 'client'`) or a recorded follow-up. Recommendation: follow-up.
+  shape hits the first-branch restriction. **With `OriginRegionId` the fix is one substitution**, not a
+  redesign: the function's second branch today is "From postcode -> `PickupDepotId`, To postcode ->
+  `Region`"; for `OriginType = 'client'` it reads "From postcode -> `OriginRegionId`, To postcode ->
+  `Region`". Same for `DD_fncJob_GetClientAvailableBulkRunSchedule`. **Steve to decide** scope;
+  recommendation now: **in scope**, since it is the same change the origin region already requires
+  everywhere else and leaves no known gap behind.
 - `ReturnToStart` default for client-origin runs: ops preference, not a dev decision.
 
 ## 9. Changes after Kevin's review (7 Oct)
@@ -499,4 +519,8 @@ by a derivation.
 7. Collection card loses its depot picker too; `PickupDepotId` derived from the Depot leg (2.2, 3.2).
 8. `PickupNoDepot` cleanup task removed - count is 0 on all tenants (5.3).
 9. Acceptance 1 and 2 exercised on both booking paths, asserting coordinates (6).
+10. **Correction (Steve, 7 Oct):** the Client-address card's picker writes a new **`OriginRegionId`**,
+    not `Region`. `Region` is the Delivery leg's region and is untouched. The linehaul leg needs no
+    region. Cross-region client origin becomes a one-branch substitution in the availability
+    functions (section 8).
 - Whether ops wants `ReturnToStart` on by default for client-origin runs (section 4.2).
