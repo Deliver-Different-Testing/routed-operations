@@ -72,8 +72,9 @@ change for a delivery-only client-origin schedule.
 Linehaul legs that load at the client site are also already supported:
 `tblBulkScheduleLinehaul.FromClientAddress = 1` (column confirmed against production 7 Oct; the SP's
 local variable is `@LinehaulBookFromClientAddress`) makes `InsertChildJobs` (~line 710) address the
-LH leg from the booking's `From*` instead of `tblBulkRegion`. That is the HelloFresh case. **It has
-never been used:** 0 of 9,547 linehaul rows across both production tenants have it set.
+LH leg from the booking's `From*` instead of `tblBulkRegion`. That is the HelloFresh case. **The flag has
+never been used:** 0 of 9,547 linehaul rows across both production tenants have it set. (Plenty of
+cross-region schedules exist; they all collect into a depot first and linehaul depot -> depot.)
 
 **But the web/API single-job path is different.** `WS_stpJob_Insert:243` derives
 
@@ -476,8 +477,12 @@ by a derivation.
   **same** depot equal to `s.Region`. PB Tech (Auckland site -> Auckland deliveries, Region
   Auckland) is offered. A client-origin schedule whose deliveries are in another region via
   linehaul (Auckland site -> LH -> Wellington, Region Wellington) would **not** be offered to the
-  client. Never configured on any tenant today (`FromClientAddress = 1` on 0 of 9,547 linehaul
-  rows). **Steve to decide** whether it is in scope for this build (relax the first branch to test
+  client. To be precise about what is new here: Auckland -> Wellington schedules exist in numbers,
+  but every one of them collects from the client **into the Auckland depot** and runs the linehaul
+  depot -> depot, so they have a `PickupDepotId` and are offered by the function's second branch.
+  What has never been configured is a linehaul leg that **loads at the client's address**
+  (`FromClientAddress = 1` on 0 of 9,547 linehaul rows, both production tenants). Only that new
+  shape hits the first-branch restriction. **Steve to decide** whether it is in scope for this build (relax the first branch to test
   the To side only for `OriginType = 'client'`) or a recorded follow-up. Recommendation: follow-up.
 - `ReturnToStart` default for client-origin runs: ops preference, not a dev decision.
 
