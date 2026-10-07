@@ -23,6 +23,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerRunService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    INpScopeGuard scopeGuard,
     SqlTimeZoneNormalizer tzNormalizer,
     IHttpContextAccessor httpContextAccessor,
     ILogger<RouteViewerRunService> logger) : BaseService(contextFactory)
@@ -67,9 +68,17 @@ public class RouteViewerRunService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        // Primary: RVW_stpBulkRuns_2. Tenant SP signature (verified 2026-08-07):
-        // 7 params - RunDate, ClientID, Regions, ClientIDs, SpeedIDs,
-        // NpAgentId, TenantTimeZone.
+        // Primary: RVW_stpBulkRuns_2. Tenant SP signature: 8 params as of
+        // dbmigrationsv2 20260930170700 (Feature 5.4) - RunDate, ClientID,
+        // Regions, ClientIDs, SpeedIDs, NpAgentId, TenantTimeZone, Group.
+        //
+        // @Group filters SYNTHETIC route runs by Routes.Direction. Real bulk
+        // runs are left alone: they have no route behind them and therefore no
+        // direction, and their jobs are already filtered per row on the client
+        // by matchesViewMode. NULL and 'Combined' are both no-ops server-side.
+        //
+        // DEPLOY ORDER: the migration must reach a tenant before this does, or
+        // the call fails with Msg 8145 on an unknown parameter.
         var rawPrimary = await Context.Database.SqlQueryRaw<RawBulkRunRow>(
             @"EXEC dbo.RVW_stpBulkRuns_2
                 @RunDate = @RunDate,
@@ -78,24 +87,50 @@ public class RouteViewerRunService(
                 @ClientIDs = @ClientIDs,
                 @SpeedIDs = @SpeedIDs,
                 @NpAgentId = @NpAgentId,
-                @TenantTimeZone = @TenantTimeZone",
+                @TenantTimeZone = @TenantTimeZone,
+                @Group = @Group",
             SpParam.Of("@RunDate", request.RunDate),
             SpParam.Of("@ClientID", effectiveClientId),
             SpParam.Of("@Regions", request.RegionIds),
             SpParam.Of("@ClientIDs", effectiveClientIds),
             SpParam.Of("@SpeedIDs", request.SpeedIds),
             SpParam.Of("@NpAgentId", scope.NpAgentId),
-            SpParam.Of("@TenantTimeZone", normalizedTz))
+            SpParam.Of("@TenantTimeZone", normalizedTz),
+            SpParam.Of("@Group", request.Group))
             .ToListAsync();
 
-        // Missing branch: RVW_stpGetMissingJobRuns takes only @RunDate.
+        // Missing branch: RVW_stpGetMissingJobRuns.
+        //
+        // S6 (Kevin 2026-09-30, dbmigrationsv2 20260930170800): this used to
+        // take ONLY @RunDate, so its rows were concatenated onto the
+        // already-filtered primary list without any of the operator's
+        // narrowing applied. Filter to one client and the missing runs of
+        // every other client stayed on the board. It now takes the same five
+        // filters as the primary call and gets the same values, including the
+        // NP-scope overrides computed above.
+        //
+        // DEPLOY ORDER: the migration must reach a tenant before this does, or
+        // the call fails with Msg 8145 on an unknown parameter.
+        //
         // Result-set shape is a SUBSET of BulkRuns_2 (no TotalPickup /
         // IncompletePickup / FromCities / ToLocationName / AgentID /
         // AgentName / IsNpAgent columns) so a dedicated row class is
-        // needed to satisfy EF's column-presence check.
+        // needed to satisfy EF's column-presence check. That shape is
+        // unchanged by S6.
         var rawMissing = await Context.Database.SqlQueryRaw<RawMissingRunRow>(
-            @"EXEC dbo.RVW_stpGetMissingJobRuns @RunDate = @RunDate",
-            SpParam.Of("@RunDate", request.RunDate))
+            @"EXEC dbo.RVW_stpGetMissingJobRuns
+                @RunDate = @RunDate,
+                @ClientID = @ClientID,
+                @Regions = @Regions,
+                @ClientIDs = @ClientIDs,
+                @SpeedIDs = @SpeedIDs,
+                @NpAgentId = @NpAgentId",
+            SpParam.Of("@RunDate", request.RunDate),
+            SpParam.Of("@ClientID", effectiveClientId),
+            SpParam.Of("@Regions", request.RegionIds),
+            SpParam.Of("@ClientIDs", effectiveClientIds),
+            SpParam.Of("@SpeedIDs", request.SpeedIds),
+            SpParam.Of("@NpAgentId", scope.NpAgentId))
             .ToListAsync();
 
         return rawPrimary
@@ -652,9 +687,18 @@ public class RouteViewerRunService(
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<SiblingJobDto>();
 
         // SP signature is (@JobID) only - does NOT accept @NpAgentId.
-        // NP scoping happens implicitly because the family is derived
-        // from tucJob.ParentID/RootParentId, so an NP-owned anchor job
-        // will only walk to NP-owned siblings.
+        // The family is derived from tucJob.ParentID/RootParentId, so an
+        // NP-owned anchor walks only to NP-owned siblings.
+        //
+        // That reasoning protects the SIBLINGS of an in-scope anchor. It
+        // never validated the ANCHOR, so a partner could pass any jobId
+        // and receive the family, Amount included (mapped at
+        // MapRawBulkJobRowToDto). Guard the anchor explicitly, the same
+        // way GetBulkJobAsync does at RouteViewerJobService.cs:49.
+        // Kevin's call 2026-10-01 (D7): app-side guard rather than adding
+        // @NpAgentId to RVW_stpJobSiblings, because filtering siblings by
+        // agent can return a partial family, which is the wrong semantic
+        // for a siblings view. See NP-PAY-PART4-TODO.md T13.
         //
         // CRITICAL: @JobID here is tucJob.ucjbID (the LIVE job id),
         // NOT tblBulkJob.BulkJobID. If the caller passes 0 / negative /
@@ -663,6 +707,10 @@ public class RouteViewerRunService(
         // surfaces the empty reader as "column missing", not "0 rows",
         // so guard here rather than letting the raw exception bubble.
         if (jobId <= 0) return new List<SiblingJobDto>();
+
+        // Throws NpLabelScopeException -> 403 at RunViewerRunController:142.
+        // No-op for admin scope.
+        await scopeGuard.EnsureTucJobInScopeAsync(jobId);
 
         // Both RVW_stpJobSiblings and RVW_stpBulkRunJobs return the SAME
         // wide-row shape (sp-reference/runviewer-overview.md line 121

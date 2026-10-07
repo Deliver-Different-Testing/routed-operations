@@ -9,7 +9,7 @@ import { routeViewerService } from '../../services/routeViewerService';
 import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '../../lib/tenantDate';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvGpsEditModal } from '../../components/route-viewer/RvGpsEditModal';
-import { EditableRow } from '../../components/route-viewer/EditableInfoRow';
+import { EditableRow, InfoRow } from '../../components/route-viewer/EditableInfoRow';
 
 // Mobile RunViewer surface (master Section 13). Single-column layout
 // tuned for handheld / tablet operators. Nav flow:
@@ -333,15 +333,15 @@ export default function Mobile() {
                   then item / order details, then delivery / charge). Each
                   editable row is a large tap target for one-handed operators. */}
               <div className="border-t border-border pt-2 mt-2 space-y-2">
-                {/* 1. To Address - free-text, backed by WS_stpBulkJob_Update.@ToAddress */}
-                <EditableRow
-                  label="To"
-                  displayValue={job.toAddress ?? ''}
-                  editValue={job.toAddress ?? ''}
-                  kind="textarea"
-                  readOnly={readOnlyEdit(job.bulkJobId)}
-                  onSave={(v) => saveJobField(job.bulkJobId, { toAddress: v })}
-                />
+                {/* 1. To Address - read-only. This was an EditableRow posting
+                    { toAddress } to the text-fields endpoint, but
+                    WS_stpBulkJob_Update declares @ToAddress and never reads
+                    it, so every save was discarded while the UI reported
+                    success. Fix GPS immediately below is the path that
+                    actually persists an address change, via
+                    RVW_stpUpdateBulkJobDeliveryAddress. Desktop RvJobDetail
+                    never offered this edit either. */}
+                <InfoRow label="To" value={job.toAddress ?? null} />
                 {/* Fix GPS lives beside the To row for touch-first access
                     (Mobile has no right-click). Kept in a separate button
                     row so tapping the address value never accidentally
@@ -370,15 +370,25 @@ export default function Mobile() {
 
                 {/* 3. Phone (deliverToPhone). Legacy targeted tblBulkJob.ProofOfDeliveryMobile.
                     NO SP path: WS_stpBulkJob_Update does not carry a phone
-                    parameter. Rendered readOnly pending SP support. */}
-                <EditableRow
-                  label="Phone"
-                  displayValue={job.deliverToPhone ?? ''}
-                  editValue={job.deliverToPhone ?? ''}
-                  kind="text"
-                  readOnly
-                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Phone parameter)"
-                />
+                    parameter. Rendered readOnly pending SP support.
+
+                    Hidden for network partners, matching the desktop pane.
+                    RvJobDetail's header rule is "Pricing tile + Phone rows
+                    hidden for network-partner sessions" and it implements the
+                    phone half at RvJobDetail.tsx:268 / :280 by passing null to
+                    AddressCard. Mobile had neither half. The row is removed
+                    rather than blanked so it does not read as "no phone on
+                    file". See NP-PAY-PART4-TODO.md T11. */}
+                {!user.isNetworkPartner && (
+                  <EditableRow
+                    label="Phone"
+                    displayValue={job.deliverToPhone ?? ''}
+                    editValue={job.deliverToPhone ?? ''}
+                    kind="text"
+                    readOnly
+                    readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Phone parameter)"
+                  />
+                )}
 
                 {/* 4. Email (trackingEmail). NO SP path - see Phone. */}
                 <EditableRow
@@ -470,15 +480,33 @@ export default function Mobile() {
                   readOnlyReason="Not yet editable via API (no matching tblBulkJob column - legacy was broken)"
                 />
 
-                {/* 12. Charge (amount) - decimal. NO SP path. */}
-                <EditableRow
-                  label="Charge"
-                  displayValue={job.amount != null ? job.amount.toFixed(2) : ''}
-                  editValue={job.amount != null ? job.amount.toFixed(2) : ''}
-                  kind="number"
-                  readOnly
-                  readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Amount parameter)"
-                />
+                {/* 12. Charge (amount) - decimal. NO SP path.
+
+                    Hidden for network partners, matching the desktop
+                    Pricing tile at RvJobDetail.tsx:231. `job.amount` is
+                    TENANT revenue (tblBulkJob.Amount / tucJob.ucjbAmount),
+                    which a partner must never see.
+
+                    INTERIM. Steve's preference is to relabel this "Your
+                    Pay" and show CourierPayment + CourierFuel instead of
+                    hiding it. That needs the pay to exist: the trigger
+                    migration is not applied to urgent-prod, is a no-op on
+                    US tenants by its own CountryCode gate, and NpAgentId
+                    is NULL on 100% of rows on both prod tenants, so the
+                    partner would be shown 0.00 today. Hiding is correct
+                    until the data is real; flipping to "Your Pay" is a
+                    cheap change once item H lands.
+                    See NP-PAY-PART4-TODO.md T10 / D6 / B1 / B2. */}
+                {!user.isNetworkPartner && (
+                  <EditableRow
+                    label="Charge"
+                    displayValue={job.amount != null ? job.amount.toFixed(2) : ''}
+                    editValue={job.amount != null ? job.amount.toFixed(2) : ''}
+                    kind="number"
+                    readOnly
+                    readOnlyReason="Not yet editable via API (WS_stpBulkJob_Update needs Amount parameter)"
+                  />
+                )}
               </div>
 
               <MobileRow k="Speed" v={job.speedName ?? '-'} />

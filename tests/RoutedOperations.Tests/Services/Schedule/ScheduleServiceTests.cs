@@ -342,6 +342,36 @@ public class ScheduleServiceTests
     }
 
     [Fact]
+    public async Task CopyAsync_with_CopyClientLinks_false_creates_no_client_links()
+    {
+        // Regression guard for the 2026-10-05 defect: POST /api/v2/schedules/{id}/copy
+        // sends an empty ClientIds and its modal promises "Client link rows are NOT
+        // copied", but the resolver's fall-through inherited the source's junction, so
+        // copying a 40-client schedule produced a second 40-client schedule. The empty
+        // list cannot carry that intent on its own because the legacy endpoint relies
+        // on the same emptiness to mean "inherit", so the caller states it explicitly.
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.ClientIds = new List<int> { 100, 200 };
+        await svc.UpsertAsync(src);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceName = "Source", NewName = "Source (copy)",
+            ClientCodes = new List<string>(),
+            ClientIds = new List<int>(),
+            CopyClientLinks = false,
+        });
+
+        Assert.Empty(copy.ClientIds);
+
+        // The source keeps its own clients - this is a copy, not a move.
+        var reread = await svc.GetDetailAsync("Source", null);
+        Assert.Equal(new[] { 100, 200 }, reread.ClientIds.OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task DeleteAsync_removes_group_and_junctions()
     {
         var svc = NewSvc();
@@ -434,5 +464,119 @@ public class ScheduleServiceTests
         Assert.Equal("BBB", overrides[1].ClientCode);
         Assert.Single(overrides[1].DeltaLabels);
         Assert.Equal("Cut-off Fri 13:00 (base Fri 15:00)", overrides[1].DeltaLabels[0]);
+    }
+
+    // ── LegOrder (Bug 1, Steve "Linehaul Leg Fixes" 2026-09-25) ────────────
+    //
+    // Why these matter rather than just asserting a field round-trips:
+    // tblBulkScheduleLinehaul.LegOrder is what DD_/WS_stpBulkScheduleJob_
+    // InsertChildJobs walk to number the legs LH1..LHn and, on the US branch,
+    // to time each hop. Before it existed those SPs ordered by clustered Id,
+    // i.e. the order the legs were first typed in, and hops were being
+    // dispatched before the freight reached them (Steve's NEOGE P4206 had the
+    // Burbank hop scheduled four hours before the flight landed).
+    //
+    // The save path does a RemoveRange + re-add, so every leg gets a fresh
+    // identity Id. If the order is not written back on save, the backfilled
+    // values are wiped and the schedule silently regresses to Id order. That
+    // is the failure these tests exist to catch.
+
+    private static ScheduleLinehaulUpsertRequest Leg(string name, int from, int to, int? legOrder = null) => new()
+    {
+        Name = name,
+        FromDepotId = from,
+        ToDepotId = to,
+        WeekDay = new[] { 1, 0, 0, 0, 0, 0, 0 },
+        LegOrder = legOrder,
+    };
+
+    [Fact]
+    public async Task UpsertAsync_assigns_LegOrder_from_request_position_when_the_caller_omits_it()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        // Names deliberately in the opposite order to travel order, so a Name
+        // sort anywhere in the read path would fail this test.
+        req.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        req.Linehauls.Add(Leg("Yankee leg", 2, 3));
+        req.Linehauls.Add(Leg("Xray leg", 3, 4));
+
+        var result = await svc.UpsertAsync(req);
+
+        Assert.Equal(new int?[] { 1, 2, 3 }, result.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "Zulu leg", "Yankee leg", "Xray leg" },
+            result.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_explicit_LegOrder_wins_over_the_request_position()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        // Sent in the wrong order on purpose, with the true travel order
+        // declared explicitly. A client that reorders its own array and a
+        // client that sends LegOrder must both end up with the same chain.
+        req.Linehauls.Add(Leg("second hop", 2, 3, legOrder: 2));
+        req.Linehauls.Add(Leg("first hop", 1, 2, legOrder: 1));
+
+        var result = await svc.UpsertAsync(req);
+
+        Assert.Equal(new int?[] { 1, 2 }, result.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "first hop", "second hop" },
+            result.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_resave_preserves_travel_order_instead_of_wiping_it()
+    {
+        // The regression this whole change exists for. The save path removes and
+        // re-adds every linehaul row, so a resave used to hand the legs back in
+        // fresh-Id order with no travel order at all.
+        var svc = NewSvc();
+        var first = ValidRequest();
+        first.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        first.Linehauls.Add(Leg("Alpha leg", 2, 3));
+        var created = await svc.UpsertAsync(first);
+        Assert.Equal(new int?[] { 1, 2 }, created.Linehauls.Select(l => l.LegOrder).ToArray());
+
+        // Post the legs back exactly as the editor received them.
+        var second = ValidRequest();
+        foreach (var l in created.Linehauls)
+            second.Linehauls.Add(Leg(l.Name, l.FromDepotId ?? 0, l.ToDepotId ?? 0, l.LegOrder));
+
+        var resaved = await svc.UpsertAsync(second);
+
+        Assert.Equal(new int?[] { 1, 2 }, resaved.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "Zulu leg", "Alpha leg" },
+            resaved.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task CopyAsync_carries_LegOrder_and_SpeedId_onto_the_copy()
+    {
+        // SpeedId was missing from the copy initialiser since the per-leg
+        // override shipped 2026-06-19, so copying a schedule silently dropped
+        // every leg's service class and the copy re-rated off the run speed.
+        // LegOrder would have had the same problem from day one.
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        req.Linehauls.Add(Leg("Alpha leg", 2, 3));
+        req.Linehauls[0].SpeedId = 77;
+        var source = await svc.UpsertAsync(req);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Copied Group",
+        });
+
+        Assert.Equal(new int?[] { 1, 2 }, copy.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal("Zulu leg", copy.Linehauls[0].Name);
+        Assert.Equal(77, copy.Linehauls[0].SpeedId);
+        Assert.Null(copy.Linehauls[1].SpeedId);
     }
 }

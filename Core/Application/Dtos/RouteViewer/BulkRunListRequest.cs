@@ -33,7 +33,23 @@ public class BulkRunListRequest
 
     public string? SpeedIds { get; set; }
 
-    /// <summary>Legacy group-by filter (Combined / Inbound / Outbound).
-    /// Passed verbatim to the SP - values are the legacy strings.</summary>
+    /// <summary>Direction filter (Combined / Inbound / Outbound), bound from
+    /// the query string. The Run Viewer frontend sends it on /runs,
+    /// /runs/{id}/jobs and /runs/overview.
+    ///
+    /// Since Feature 5.4 this IS read server-side, but only here on the run
+    /// LIST: it goes to RVW_stpBulkRuns_2's @Group, which filters synthetic
+    /// route runs by Routes.Direction. NULL and 'Combined' are no-ops.
+    ///
+    /// The other two endpoints still ignore it, deliberately. Job-level
+    /// direction filtering already happens on the client in
+    /// runViewerViewMode.ts, so a second server-side copy would be two
+    /// places to keep in sync for no behaviour change.
+    ///
+    /// Still true and still worth heeding: RVW_stpBulkRunJobs and
+    /// RVW_stpBulkJobSearchData do NOT declare a @Group parameter. Do not
+    /// wire it into either without checking that SP's signature first - a
+    /// previous attempt passed it to RVW_stpBulkJobSearchData positionally
+    /// and broke the call outright.</summary>
     public string? Group { get; set; }
 }

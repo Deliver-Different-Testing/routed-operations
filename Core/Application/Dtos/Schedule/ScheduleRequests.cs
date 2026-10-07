@@ -111,14 +111,27 @@ public class ScheduleCopyRequest
     public int? SourceLegacyClientId { get; set; }
     [Required, StringLength(200)] public string NewName { get; set; } = string.Empty;
     /// <summary>Client codes for the copy's new client link set. Empty
-    /// AND ClientIds empty = inherit source's junction (per CopyAsync's
-    /// three-tier resolver). Non-empty resolves each code -> id, throws on
-    /// unknown.</summary>
+    /// AND ClientIds empty falls through to CopyClientLinks below. Non-empty
+    /// resolves each code -> id, throws on unknown.</summary>
     public List<string> ClientCodes { get; set; } = new();
-    /// <summary>Client ids for the copy. Empty AND ClientCodes empty =
-    /// inherit source's junction. Non-empty takes priority over the
-    /// inherit branch when ClientCodes is empty.</summary>
+    /// <summary>Client ids for the copy. Empty AND ClientCodes empty falls
+    /// through to CopyClientLinks below. Non-empty takes priority over that
+    /// fall-through when ClientCodes is empty.</summary>
     public List<int> ClientIds { get; set; } = new();
+    /// <summary>
+    /// Only consulted when ClientCodes AND ClientIds are both empty, i.e.
+    /// when the caller named no clients. True (the default) inherits the
+    /// source's junction rows; false gives the copy no client links at all.
+    ///
+    /// The default is true because that is the documented contract of the
+    /// legacy POST /api/schedules/copy endpoint, whose modal seeds the
+    /// picker from the source's clients. POST /api/v2/schedules/{id}/copy
+    /// sets it false: its own modal tells the operator "Client link rows are
+    /// NOT copied", and before 2026-10-05 an empty list silently inherited
+    /// them anyway, so copying a 40-client schedule produced a second
+    /// 40-client schedule.
+    /// </summary>
+    public bool CopyClientLinks { get; set; } = true;
 }
 
 public class DayWindowUpsertRequest
@@ -165,4 +178,13 @@ public class ScheduleLinehaulUpsertRequest
     public int? DropOffLocationId { get; set; }
     /// <summary>Per-leg service class override. Null = inherit from run / schedule.</summary>
     public int? SpeedId { get; set; }
+
+    /// <summary>
+    /// 1-based travel order of this leg within the schedule. The chain editor
+    /// sends the leg's position in the chain. When a caller omits it the
+    /// service falls back to this leg's position in the Linehauls array, so
+    /// any client that sends legs in chain order gets the right answer without
+    /// having to know about this field.
+    /// </summary>
+    public int? LegOrder { get; set; }
 }

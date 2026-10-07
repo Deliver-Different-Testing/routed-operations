@@ -4,15 +4,36 @@ import { server } from '../test/server';
 import { bulkJobService } from './bulkJobService';
 
 describe('bulkJobService', () => {
-  it('listForLinehaulRun GETs /recurring-linehaul-runs/:runId/jobs and unwraps', async () => {
+  it('listForLinehaulRun GETs a page of /recurring-linehaul-runs/:runId/jobs', async () => {
+    const page = { total: 120, page: 1, pageSize: 50, entries: [{ id: 1, source: 'bulk', jobNumber: 'J1' }] };
     server.use(
-      http.get('/api/recurring-linehaul-runs/:runId/jobs', ({ params }) => {
+      http.get('/api/recurring-linehaul-runs/:runId/jobs', ({ params, request }) => {
         expect(params.runId).toBe('42');
-        return HttpResponse.json({ response: [{ id: 1, jobNumber: 'J1' }] });
+        const url = new URL(request.url);
+        expect(url.searchParams.get('page')).toBe('1');
+        expect(url.searchParams.get('pageSize')).toBe('50');
+        // Absent rather than empty when nothing was typed.
+        expect(url.searchParams.has('search')).toBe(false);
+        return HttpResponse.json({ response: page });
       }),
     );
     const r = await bulkJobService.listForLinehaulRun(42);
-    expect(r).toEqual([{ id: 1, jobNumber: 'J1' }]);
+    expect(r).toEqual(page);
+  });
+
+  it('listForLinehaulRun passes page, pageSize and a trimmed search to the server', async () => {
+    // The search has to reach the server: it filters before the paging, so a
+    // client-side filter would only ever search the loaded page.
+    server.use(
+      http.get('/api/recurring-linehaul-runs/:runId/jobs', ({ request }) => {
+        const url = new URL(request.url);
+        expect(url.searchParams.get('page')).toBe('3');
+        expect(url.searchParams.get('pageSize')).toBe('25');
+        expect(url.searchParams.get('search')).toBe('KWH57');
+        return HttpResponse.json({ response: { total: 0, page: 3, pageSize: 25, entries: [] } });
+      }),
+    );
+    await bulkJobService.listForLinehaulRun(42, 3, 25, '  KWH57  ');
   });
 
   it('listForRoute GETs /recurring-routes/:routeId/jobs', async () => {

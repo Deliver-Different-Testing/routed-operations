@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Application.Services.Courier;
 using RoutedOperations.Core.Application.Services.Job;
@@ -252,46 +253,45 @@ builder.Services.AddRequestTimeouts(options =>
     };
 });
 
+// Route Builder policy rules live in RouteBuilderPolicies so they can be unit
+// tested against a ClaimsPrincipal. Inline lambdas here could only be tested by
+// restating them, which proves nothing. Behaviour is identical to what was
+// here before, plus the network-partner denial.
+//
+// Read, Build and Admin deny a logged-in network partner (Kevin 2026-10-01,
+// D1 = B: stay inside the scope Steve's spec names). Quote and Polygon
+// deliberately do not, so a partner still reaches quoting margin and the
+// auto-assign diagnostics - see RouteBuilderPolicies for the full note.
+//
+// The RouteViewer.* policies below are deliberately untouched. Route Viewer is
+// the partner's lane; scoping there is row-level via INpScopeGuard and the
+// @NpAgentId SP parameter, not a policy denial.
+// See NP-PAY-PART4-TODO.md T1 / D1.
+
 // Authorization policies matching the parity build plan.
 builder.Services.AddAuthorization(options =>
 {
-    // Read - any authenticated tenant user can see the cockpit.
+    // Read - any authenticated tenant user can see the cockpit. Never
+    // excluded couriers, unlike Build and Admin.
     options.AddPolicy("RouteBuilder.Read", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            return !string.IsNullOrEmpty(tenantId);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanRead(context.User)));
 
     // Build - author runs. Same admit rule as Read for Stage 1; matrix will refine later.
     options.AddPolicy("RouteBuilder.Build", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanBuild(context.User)));
 
     // Admin - dispatch + destructive ops.
     options.AddPolicy("RouteBuilder.Admin", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var userGroupId = context.User.FindFirst("UserGroupID")?.Value;
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            if (string.Equals(userGroupId, "1", StringComparison.Ordinal)) return true;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanAdmin(context.User)));
 
-    // Placeholder policies for the deferred modules so controller scaffolds compile.
+    // Tenant claim only, NO network-partner check. Deliberate per D1 = B,
+    // although both now guard real surfaces: Quote returns CostPerJob /
+    // TotalCost / MarginPct / RecommendedQuote, and Polygon guards
+    // AutoAssignLogController and ZonesController.
     options.AddPolicy("RouteBuilder.Quote", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanUsePlaceholderModule(context.User)));
     options.AddPolicy("RouteBuilder.Polygon", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanUsePlaceholderModule(context.User)));
 
     // Route Viewer P0 policies (2026-08-07). Parallel to the RouteBuilder
     // set so downstream policy changes on RouteBuilder cannot silently

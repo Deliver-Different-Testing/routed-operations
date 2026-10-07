@@ -26,6 +26,12 @@ function renderActions(overrides: Partial<Parameters<typeof RvUtilityActions>[0]
 describe('RvUtilityActions', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    // window persists across tests in a file, so pin the role explicitly
+    // or the NP cases below leak into everything after them.
+    (window as any).__APP_USER__ = {
+      ...(window as any).__APP_USER__,
+      isNetworkPartner: false,
+    };
   });
 
   it('renders Print, Top Up, Layout buttons', () => {
@@ -133,6 +139,37 @@ describe('RvUtilityActions', () => {
     await user.click(await screen.findByText(/Save current layout/));
     // snapshotLayout is NOT called if operator cancels
     expect(props.snapshotLayout).not.toHaveBeenCalled();
+  });
+
+  // ── Network partner ──────────────────────────────────────────────
+  // Every Print entry is refused server-side for a partner: the four CSVs
+  // and the Woop XLSX short-circuit in RouteViewerReportService, and
+  // Labels runs the bulk flow which throws NpLabelScopeException. Top Up
+  // is a second entry point to the TopUpDialog that RvJobContextMenu
+  // already hides from partners. See NP-PAY-PART4-TODO.md T9 / M18.
+
+  it('hides Print and Top Up for a network partner, keeps Layout', () => {
+    (window as any).__APP_USER__ = {
+      ...(window as any).__APP_USER__, isNetworkPartner: true,
+    };
+    renderActions();
+    expect(screen.queryByRole('button', { name: /Print/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Top Up' })).toBeNull();
+    // Layout is per-viewer panel sizing in localStorage, no tenant data.
+    expect(screen.getByRole('button', { name: /Layout/ })).toBeInTheDocument();
+  });
+
+  it('keeps the Layout menu working for a network partner', async () => {
+    // The guard must take Print and Top Up only. Layout is per-viewer
+    // panel sizing and has to keep working, so this is the assertion that
+    // the hide was scoped rather than blanket.
+    (window as any).__APP_USER__ = {
+      ...(window as any).__APP_USER__, isNetworkPartner: true,
+    };
+    renderActions();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Layout/ }));
+    expect(await screen.findByText(/Save current layout/)).toBeInTheDocument();
   });
 
   it('closes print menu on backdrop click', async () => {

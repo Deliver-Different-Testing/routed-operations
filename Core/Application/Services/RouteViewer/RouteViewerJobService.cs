@@ -312,7 +312,13 @@ public class RouteViewerJobService(
         await scopeGuard.EnsureBulkJobInScopeAsync(bulkJobId);
 
         return await Context.Database.SqlQueryRaw<BulkJobDto>(
-            @"EXEC dbo.RVW_stpPrintJobChildren @RunDate, @BulkJobID",
+            // Named, not positional: the SP declares (@BulkJobID, @RunDate)
+            // in that order, and this call passed them the other way round.
+            // datetime -> int is not an implicit assignment conversion, so
+            // every call raised "Implicit conversion from data type datetime
+            // to int is not allowed" and the multibox chevron expand never
+            // opened. Verified against the live SP 2026-09-29.
+            @"EXEC dbo.RVW_stpPrintJobChildren @BulkJobID = @BulkJobID, @RunDate = @RunDate",
             SpParam.Of("@RunDate", runDate),
             SpParam.Of("@BulkJobID", bulkJobId))
             .ToListAsync();
@@ -451,15 +457,23 @@ public class RouteViewerJobService(
         try
         {
             return await Context.Database.SqlQueryRaw<BulkJobDto>(
+                // Named, not positional. The SP declares exactly
+                // (@RunDate, @ClientID, @Regions, @ClientIDs, @SpeedIDs) and has
+                // no @Group at all, so the previous 6-argument positional call
+                // failed with "too many arguments specified" and also had
+                // @ClientID landing in @Regions. Verified against the live SP on
+                // both staging tenants 2026-09-29.
                 @"EXEC dbo.RVW_stpBulkJobSearchData
-                    @RunDate, @Group, @ClientID, @ClientIds,
-                    @RegionIds, @SpeedIds",
+                    @RunDate   = @RunDate,
+                    @ClientID  = @ClientID,
+                    @Regions   = @Regions,
+                    @ClientIDs = @ClientIDs,
+                    @SpeedIDs  = @SpeedIDs",
                 SpParam.Of("@RunDate", request.RunDate),
-                SpParam.Of("@Group", request.Group),
                 SpParam.Of("@ClientID", request.ClientId),
-                SpParam.Of("@ClientIds", request.ClientIds),
-                SpParam.Of("@RegionIds", request.RegionIds),
-                SpParam.Of("@SpeedIds", request.SpeedIds))
+                SpParam.Of("@Regions", request.RegionIds),
+                SpParam.Of("@ClientIDs", request.ClientIds),
+                SpParam.Of("@SpeedIDs", request.SpeedIds))
                 .ToListAsync();
         }
         finally
