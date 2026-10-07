@@ -605,6 +605,43 @@ public partial class BulkImportServiceV2
         var schedule = await Context.TblBulkRunSchedules.Include(s => s.RegionNavigation)
             .FirstOrDefaultAsync(s => s.BulkRunScheduleId == request.ScheduleId);
 
+        // Client origin (schedule-origin spec 4.4). A schedule that starts at
+        // the client's address must stamp the client site's coordinates, never
+        // the dispatch depot's, so the import behaves as if the operator had
+        // ticked "Route starts from client site" and the schedule-depot step
+        // below is skipped. On BOTH tenants: the existing client-site branch
+        // was gated on isUs, which would have left NZ imports resolving at the
+        // depot step and producing silently wrong run starts.
+        //
+        // Reads the stored OriginType, never the spec's 5.2 derivation. This
+        // is a write path.
+        var clientOrigin = schedule != null && await Context.BulkRunScheduleHeaders
+            .AsNoTracking()
+            .AnyAsync(h => h.ScheduleId == schedule.ScheduleId && h.OriginType == "client");
+        if (clientOrigin)
+        {
+            request.RouteFromClientSite = true;
+
+            // Spec 4.5: refuse rather than fall back to a depot. A silently
+            // wrong run start is the exact failure this feature exists to
+            // remove, so a client-origin import with nothing to start from is
+            // an error, not something to paper over with the dispatch depot's
+            // coordinates.
+            var clientHasSite = client.Latitude != null && client.Longitude != null;
+            var anyRowHasCoords = request.Jobs.Any(j =>
+                !string.IsNullOrWhiteSpace(j.FromLatitude) &&
+                !string.IsNullOrWhiteSpace(j.FromLongitude));
+            if (!clientHasSite && !anyRowHasCoords)
+            {
+                return BulkImportResponseUtility.AddMessageAndReturnResponse(
+                    response,
+                    $"{client.ucclName} has no geocoded site address and the rows carry no "
+                    + "pickup coordinates. This schedule starts at the client's address, so "
+                    + "the runs would start in the wrong place. Geocode the client's site "
+                    + "address first.");
+            }
+        }
+
         if (client == null)
             return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
 
@@ -787,7 +824,10 @@ public partial class BulkImportServiceV2
             bool isUs = IsUsTenant();
             bool isNz = IsNzTenant();
 
-            if (schedule?.RegionNavigation != null)
+            // Step 1 is the schedule's Region depot. A client-origin schedule
+            // skips it entirely; its origin is the client's site, resolved by
+            // the RouteFromClientSite branch below.
+            if (!clientOrigin && schedule?.RegionNavigation != null)
             {
                 var r = schedule.RegionNavigation;
                 string nzAL5 = null;
@@ -822,30 +862,37 @@ public partial class BulkImportServiceV2
                 };
             }
 
+            // No longer gated on isUs (spec 4.4): a client-origin schedule
+            // needs this branch on NZ too, and on a US tenant the behaviour is
+            // unchanged because RouteFromClientSite still has to be set.
+            if (request.RouteFromClientSite && !string.IsNullOrWhiteSpace(j.FromAddress))
+            {
+                return new ResolvedRoutedOrigin
+                {
+                    FromCompany = string.IsNullOrWhiteSpace(j.FromCompany) ? null : j.FromCompany.Trim(),
+                    FromAddress = j.FromAddress.Trim(),
+                    FromSuburb = null,
+                    FromPostCode = 0,
+                    PickUpLatitude = string.IsNullOrWhiteSpace(j.FromLatitude) ? null : j.FromLatitude.Trim(),
+                    PickUpLongitude = string.IsNullOrWhiteSpace(j.FromLongitude) ? null : j.FromLongitude.Trim(),
+                    FromGeoType = j.FromGeoType,
+                    AddressLine1 = string.IsNullOrWhiteSpace(j.FromCompany) ? null : j.FromCompany.Trim(),
+                    AddressLine2 = string.IsNullOrWhiteSpace(j.FromUnit) ? null : j.FromUnit.Trim(),
+                    AddressLine3 = null,
+                    AddressLine4 = j.FromAddress.Trim(),
+                    AddressLine5 = string.IsNullOrWhiteSpace(j.FromCity) ? null : j.FromCity.Trim(),
+                    AddressLine6 = string.IsNullOrWhiteSpace(j.FromState) ? null : j.FromState.Trim(),
+                    AddressLine7 = string.IsNullOrWhiteSpace(j.FromZipCode) ? null : j.FromZipCode.Trim(),
+                    AddressLine8 = null
+                };
+            }
+
+            // US-only fallback, unchanged: an explicitly chosen origin
+            // location. Deliberately still inside isUs, because NZ has always
+            // resolved at the schedule-depot step and this spec only adds the
+            // client-origin path, it does not widen the US precedence chain.
             if (isUs)
             {
-                if (request.RouteFromClientSite && !string.IsNullOrWhiteSpace(j.FromAddress))
-                {
-                    return new ResolvedRoutedOrigin
-                    {
-                        FromCompany = string.IsNullOrWhiteSpace(j.FromCompany) ? null : j.FromCompany.Trim(),
-                        FromAddress = j.FromAddress.Trim(),
-                        FromSuburb = null,
-                        FromPostCode = 0,
-                        PickUpLatitude = string.IsNullOrWhiteSpace(j.FromLatitude) ? null : j.FromLatitude.Trim(),
-                        PickUpLongitude = string.IsNullOrWhiteSpace(j.FromLongitude) ? null : j.FromLongitude.Trim(),
-                        FromGeoType = j.FromGeoType,
-                        AddressLine1 = string.IsNullOrWhiteSpace(j.FromCompany) ? null : j.FromCompany.Trim(),
-                        AddressLine2 = string.IsNullOrWhiteSpace(j.FromUnit) ? null : j.FromUnit.Trim(),
-                        AddressLine3 = null,
-                        AddressLine4 = j.FromAddress.Trim(),
-                        AddressLine5 = string.IsNullOrWhiteSpace(j.FromCity) ? null : j.FromCity.Trim(),
-                        AddressLine6 = string.IsNullOrWhiteSpace(j.FromState) ? null : j.FromState.Trim(),
-                        AddressLine7 = string.IsNullOrWhiteSpace(j.FromZipCode) ? null : j.FromZipCode.Trim(),
-                        AddressLine8 = null
-                    };
-                }
-
                 if (originRegion != null)
                 {
                     return new ResolvedRoutedOrigin

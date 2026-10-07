@@ -17,9 +17,21 @@ export interface BulkPolygonAttachedRoute {
   routeName: string;
 }
 
+export interface PolygonZoneMembership {
+  id: number;
+  postcodeGroupId: number;
+  postcodeGroupName: string;
+  depotId: number;
+  depotName: string;
+  zone: number;
+}
+
 export interface BulkPolygon {
   polygonId: number;
   name: string;
+  /** The shape's own colour, used by the recurring-route Coverage chip so a
+   *  polygon reads as a polygon rather than a postcode. */
+  colorHex: string | null;
   /** 0 = Manual draw, 1 = seeded from a ZipPolygon. */
   sourceType: number;
   /** ZIP / postcode code when sourceType === 1; null when Manual. */
@@ -29,6 +41,10 @@ export interface BulkPolygon {
   active: boolean;
   points: PolygonPoint[];
   attachedRouteCount: number;
+  /** Zone memberships (custom-polygons spec 3.1): which zone number this
+   *  shape is in, in which zone group. Empty until ops places it. Defaulted
+   *  defensively because older fixtures omit it. */
+  zoneMemberships?: PolygonZoneMembership[];
   /** Active routes this polygon is attached to (empty if unattached).
    *  Polygon Builder sidebar renders these as clickable links that
    *  jump into the route editor via `?edit=<routeId>` on the
@@ -101,4 +117,17 @@ export const bulkPolygonService = {
     }),
   remove: (id: number) =>
     request<{ response: string }>(`/bulk-polygons/${id}`, { method: 'DELETE' }),
+
+  /** Place a shape in a zone of a zone group. The server refuses, naming the
+   *  clashing shape, when this would overlap a polygon already in a different
+   *  zone of the same group (custom-polygons spec 3.6). */
+  addToZone: (polygonId: number, postcodeGroupId: number, zone: number) =>
+    request<{ response: PolygonZoneMembership }>(`/bulk-polygons/${polygonId}/zones`, {
+      method: 'POST',
+      body: JSON.stringify({ postcodeGroupId, zone }),
+    }),
+
+  removeFromZone: (membershipId: number) =>
+    request<{ response: string }>(`/bulk-polygons/zones/${membershipId}`, { method: 'DELETE' }),
+
 };

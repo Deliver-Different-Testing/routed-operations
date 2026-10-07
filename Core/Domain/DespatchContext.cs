@@ -64,6 +64,8 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<Despatch.Route> Routes { get; set; }
     public virtual DbSet<ZipPolygon> ZipPolygons { get; set; }
     public virtual DbSet<BulkRunPolygon> BulkRunPolygons { get; set; }
+    public virtual DbSet<BulkZonePolygon> BulkZonePolygons { get; set; }
+    public virtual DbSet<BulkRunPolygonZip> BulkRunPolygonZips { get; set; }
     public virtual DbSet<BulkRunPolygonPoint> BulkRunPolygonPoints { get; set; }
     public virtual DbSet<DispatchRouteRoster> DispatchRouteRosters { get; set; }
     public virtual DbSet<TucAgent> TucAgents { get; set; }
@@ -107,6 +109,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<BulkZonePostcodeGroup> BulkZonePostcodeGroups { get; set; }
     public virtual DbSet<BulkZonePostcodeSurcharge> BulkZonePostcodeSurcharges { get; set; }
     public virtual DbSet<BulkZoneSchedule> BulkZoneSchedules { get; set; }
+    public virtual DbSet<BulkPickupZoneSchedule> BulkPickupZoneSchedules { get; set; }
     public virtual DbSet<JobDeliveryJourney> JobDeliveryJourneys { get; set; }
     public virtual DbSet<TblBulkJobNote> TblBulkJobNotes { get; set; }
     public virtual DbSet<TblClientAvailableSpeed> TblClientAvailableSpeeds { get; set; }
@@ -502,6 +505,25 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         {
             entity.HasKey(e => e.Id);
             entity.ToTable("BulkZoneSchedule");
+        });
+
+        modelBuilder.Entity<BulkPickupZoneSchedule>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkPickupZoneSchedule");
+        });
+
+        modelBuilder.Entity<BulkZonePolygon>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkZonePolygon");
+        });
+
+        modelBuilder.Entity<BulkRunPolygonZip>(entity =>
+        {
+            // Composite key matching PK_BulkRunPolygonZip (Zip, PolygonId).
+            entity.HasKey(e => new { e.Zip, e.PolygonId });
+            entity.ToTable("BulkRunPolygonZip");
         });
 
         modelBuilder.Entity<JobDeliveryJourney>(entity =>
@@ -955,6 +977,17 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             // zone rows via explicit RemoveRange before SaveChangesAsync.
             entity.HasOne(e => e.Schedule)
                 .WithMany(s => s.BulkZoneSchedules)
+                .HasForeignKey(e => e.ScheduleId)
+                .OnDelete(DeleteBehavior.NoAction);
+        });
+
+        modelBuilder.Entity<BulkPickupZoneSchedule>(entity =>
+        {
+            // Same explicit-both-sides shape as BulkZoneSchedule above, and
+            // for the same reason: without the lambda on WithMany EF mints a
+            // shadow FK that does not exist in the database.
+            entity.HasOne(e => e.Schedule)
+                .WithMany(s => s.BulkPickupZoneSchedules)
                 .HasForeignKey(e => e.ScheduleId)
                 .OnDelete(DeleteBehavior.NoAction);
         });

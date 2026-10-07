@@ -30,6 +30,22 @@ public class ScheduleGroupUpsertRequest
     public string Description { get; set; }
     [Required] public int RegionId { get; set; }
     public int? PickupDepotId { get; set; }
+
+    /// <summary>
+    /// 'depot' (default, every schedule today) or 'client' when the chain
+    /// starts at the client's own address. Defaulted rather than required
+    /// so the legacy POST /api/schedules contract keeps working: a caller
+    /// that never heard of origin types gets today's behaviour.
+    /// </summary>
+    [StringLength(6)] public string OriginType { get; set; } = "depot";
+
+    /// <summary>
+    /// Origin branch, required when OriginType is 'client' and ignored
+    /// otherwise. Counterpart of PickupDepotId, not of RegionId, which
+    /// stays the delivery branch taken from the Delivery leg.
+    /// </summary>
+    public int? OriginRegionId { get; set; }
+
     public int? SpeedId { get; set; }
     public int? ParentSpeedId { get; set; }
     public bool? AutoBook { get; set; }
@@ -51,6 +67,13 @@ public class ScheduleGroupUpsertRequest
     /// default) coerced absent to [], wiping live zone rows on saves that
     /// did not repopulate them.</summary>
     public List<ScheduleZoneUpsertRequest>? Zones { get; set; }
+
+    /// <summary>
+    /// Zones the collection leg collects from (schedule-origin spec 3.2),
+    /// persisted to BulkPickupZoneSchedule. Same null-means-leave-alone
+    /// contract as Zones: a payload that omits it does not wipe the rows.
+    /// </summary>
+    public List<ScheduleZoneUpsertRequest>? PickupZones { get; set; }
     /// <summary>F7 preservation (Steve 2026-09-20): see Zones. Same
     /// null-vs-empty semantics.</summary>
     public List<ScheduleLinehaulUpsertRequest>? Linehauls { get; set; }

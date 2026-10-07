@@ -167,6 +167,18 @@ export interface ScheduleGroup {
   pickupPostcodeGroupId: number | null;
   pickupPostcodeGroupName: string | null;
   pickupRatingSpeed: number | null;
+  /** 'depot' or 'client'. 'client' means the chain starts at the client's
+   *  own address: no collection job, and the booking's own From address is
+   *  kept instead of being replaced by a depot's. */
+  originType: string | null;
+  /** Origin branch for a client-origin schedule. Counterpart of
+   *  pickupDepotId, NOT of regionId, which stays the delivery branch. */
+  originRegionId: number | null;
+  originRegionName: string | null;
+  /** Linked clients with no site coordinates. Only populated for a
+   *  client-origin schedule, whose runs start at the client's site and so
+   *  would start in the wrong place without them. */
+  clientsMissingGeocode?: Array<{ clientId: number; clientName: string }>;
   autoBook: boolean | null;
   bookPickup: boolean | null;
   applyPickupCutoff: boolean | null;
@@ -179,6 +191,9 @@ export interface ScheduleGroup {
   description: string | null;
   dayWindows: DayWindow[];
   zones: ScheduleZone[];
+  /** Zones the collection leg collects from (BulkPickupZoneSchedule).
+   *  Empty on every schedule until the Collection card starts writing. */
+  pickupZones: ScheduleZone[];
   linehauls: ScheduleLinehaul[];
   clientIds: number[];
   /** Resolved client codes, same order as clientIds. Prefer these for display. */
@@ -242,6 +257,10 @@ export interface ScheduleGroupUpsertBody {
   description: string | null;
   regionId: number;
   pickupDepotId: number | null;
+  /** 'depot' or 'client'. Omitting it means 'depot', today's behaviour. */
+  originType?: string | null;
+  /** Required when originType is 'client', ignored otherwise. */
+  originRegionId?: number | null;
   speedId: number | null;
   parentSpeedId: number | null;
   autoBook: boolean | null;
@@ -270,6 +289,8 @@ export interface ScheduleGroupUpsertBody {
    *  picker so the backend null-guard preserves seeded zones (see
    *  ScheduleService.SaveAsync). */
   zones: Array<{ zone: number; active: boolean | null }> | null;
+  /** Same null-means-leave-alone contract as zones. */
+  pickupZones?: Array<{ zone: number; active: boolean | null }> | null;
   /** Steve F7 (2026-09-20): same null-vs-empty semantics as `zones`. */
   linehauls: Array<{
     name: string | null;

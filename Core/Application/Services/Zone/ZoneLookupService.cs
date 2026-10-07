@@ -34,8 +34,30 @@ public class ZoneLookupService(
             : await GetNzRatingZonesAsync();
     }
 
+    /// <summary>
+    /// Polygon members of each (zone group, zone), custom-polygons spec 3.2.
+    /// One query rather than one per bucket; the table is small.
+    /// </summary>
+    private async Task<Dictionary<(int, int), List<RatingZonePolygonDto>>> GetZonePolygonsAsync()
+    {
+        return (await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join poly in Context.BulkRunPolygons.AsNoTracking() on zp.PolygonId equals poly.PolygonId
+                where zp.Active && poly.Active
+                select new { zp.PostcodeGroupId, zp.Zone, poly.PolygonId, poly.Name, poly.ColorHex })
+            .ToListAsync())
+            .GroupBy(x => (x.PostcodeGroupId, x.Zone))
+            .ToDictionary(
+                grp => grp.Key,
+                grp => grp.Select(x => new RatingZonePolygonDto(x.PolygonId, x.Name, x.ColorHex))
+                          .OrderBy(x => x.Name)
+                          .ToList());
+    }
+
     private async Task<List<RatingZoneDepotDto>> GetNzRatingZonesAsync()
     {
+        var zonePolygons = await GetZonePolygonsAsync();
+
         // Load only depots that have at least one bound postcode - matches
         // Client Manager's "don't show empty depots" behaviour.
         var depots = await Context.TblBulkRegions
@@ -72,7 +94,10 @@ public class ZoneLookupService(
                             zg.Select(z => z.PostCode.ToString("D4"))
                               .Distinct()
                               .OrderBy(p => p, StringComparer.Ordinal)
-                              .ToList()))
+                              .ToList(),
+                            // Polygon members of this zone (spec 3.2).
+                            zonePolygons.TryGetValue((g.Key ?? 0, zg.Key), out var zps)
+                                ? zps : new List<RatingZonePolygonDto>()))
                         .ToList();
                     var postcodeCount = zones.Sum(z => z.Postcodes.Count);
                     return new RatingZoneGroupDto(g.Key, groupName, ZoneName: null, postcodeCount, zones);
@@ -91,6 +116,8 @@ public class ZoneLookupService(
 
     private async Task<List<RatingZoneDepotDto>> GetUsRatingZonesAsync()
     {
+        var zonePolygons = await GetZonePolygonsAsync();
+
         var depots = await Context.TblBulkRegions
             .AsNoTracking()
             .Where(d => (d.Active ?? true))
@@ -131,7 +158,10 @@ public class ZoneLookupService(
                             zg.Select(x => x.Zip)
                               .Distinct(StringComparer.OrdinalIgnoreCase)
                               .OrderBy(z => z, StringComparer.Ordinal)
-                              .ToList()))
+                              .ToList(),
+                            // Polygon members of this zone (spec 3.2).
+                            zonePolygons.TryGetValue((g.Key.ZoneZipGroupId ?? 0, zg.Key), out var zps)
+                                ? zps : new List<RatingZonePolygonDto>()))
                         .ToList();
                     var postcodeCount = zones.Sum(z => z.Postcodes.Count);
                     var groupName = g.Key.ZoneZipGroupId.HasValue
