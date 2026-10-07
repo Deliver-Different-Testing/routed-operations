@@ -134,33 +134,66 @@ export interface Bucket {
 }
 
 export function bucketJobs(jobs: BulkJob[], mode: 'maxBoxes' | 'deliveryWindow'): Bucket[] {
-  if (mode === 'deliveryWindow') {
+  // Client-origin jobs bucket on their own, by (OriginRegionId, ClientId,
+  // BookDate), before either mode runs (schedule-origin spec 4.2). A client
+  // warehouse's fan-out is one vehicle leaving one site; letting it share a
+  // postcode or window bucket with depot work would put stops from two
+  // different starting points in the same run.
+  //
+  // They are split out rather than filtered away: the remainder falls through
+  // to exactly today's logic, so depot-origin behaviour is untouched.
+  const clientOrigin = jobs.filter((j) => j.originRegionId != null);
+  const rest = jobs.filter((j) => j.originRegionId == null);
+
+  const clientBuckets: Bucket[] = [];
+  if (clientOrigin.length > 0) {
+    const byKey = new Map<string, BulkJob[]>();
+    for (const j of clientOrigin) {
+      // BookDate is an ISO string; take the date part so a time component
+      // cannot split one day's work across two runs.
+      const day = (j.bookDate ?? '').slice(0, 10);
+      const key = `CO:${j.originRegionId}:${j.clientId}:${day}`;
+      const list = byKey.get(key) ?? [];
+      list.push(j);
+      byKey.set(key, list);
+    }
+    for (const [key, list] of byKey) {
+      list.sort((a, b) => (a.toPostCode || 0) - (b.toPostCode || 0));
+      clientBuckets.push({ key, hhmm: null, jobs: list });
+    }
+  }
+
+  const bucketsFor = (subset: BulkJob[]): Bucket[] => {
+    if (mode === 'deliveryWindow') {
+      const buckets = new Map<string, BulkJob[]>();
+      for (const j of subset) {
+        if (!j.scheduleWindowStart || !j.scheduleWindowEnd) continue;
+        const key = String(j.scheduleWindowStart);
+        const list = buckets.get(key) ?? [];
+        list.push(j);
+        buckets.set(key, list);
+      }
+      return Array.from(buckets.entries()).map(([key, list]) => {
+        list.sort((a, b) => (a.toPostCode || 0) - (b.toPostCode || 0));
+        const d = new Date(list[0].scheduleWindowStart!);
+        const hhmm =
+          String(d.getUTCHours()).padStart(2, '0') +
+          String(d.getUTCMinutes()).padStart(2, '0');
+        return { key, hhmm, jobs: list };
+      });
+    }
+
+    // maxBoxes: group by postcode
     const buckets = new Map<string, BulkJob[]>();
-    for (const j of jobs) {
-      if (!j.scheduleWindowStart || !j.scheduleWindowEnd) continue;
-      const key = String(j.scheduleWindowStart);
+    for (const j of subset) {
+      if (!j.toPostCode) continue;
+      const key = String(j.toPostCode);
       const list = buckets.get(key) ?? [];
       list.push(j);
       buckets.set(key, list);
     }
-    return Array.from(buckets.entries()).map(([key, list]) => {
-      list.sort((a, b) => (a.toPostCode || 0) - (b.toPostCode || 0));
-      const d = new Date(list[0].scheduleWindowStart!);
-      const hhmm =
-        String(d.getUTCHours()).padStart(2, '0') +
-        String(d.getUTCMinutes()).padStart(2, '0');
-      return { key, hhmm, jobs: list };
-    });
-  }
+    return Array.from(buckets.entries()).map(([key, list]) => ({ key, hhmm: null, jobs: list }));
+  };
 
-  // maxBoxes: group by postcode
-  const buckets = new Map<string, BulkJob[]>();
-  for (const j of jobs) {
-    if (!j.toPostCode) continue;
-    const key = String(j.toPostCode);
-    const list = buckets.get(key) ?? [];
-    list.push(j);
-    buckets.set(key, list);
-  }
-  return Array.from(buckets.entries()).map(([key, list]) => ({ key, hhmm: null, jobs: list }));
+  return [...clientBuckets, ...bucketsFor(rest)];
 }

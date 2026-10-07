@@ -145,6 +145,19 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
 
     // ─── LOOKUPS ───────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// GET /api/recurring-routes/coverage/lookup?q= - one typeahead over both
+    /// postcodes and custom polygons (polygons spec part 1). Replaces the
+    /// modal's split "Postal Codes" box plus read-only "Coverage polygons"
+    /// list, which were two inputs for the same question.
+    /// </summary>
+    [HttpGet("coverage/lookup")]
+    public async Task<IActionResult> SearchCoverage([FromQuery] string q, [FromQuery] int max = 25)
+    {
+        var list = await routes.SearchCoverageAsync(q, max);
+        return Ok(new { response = list });
+    }
+
     [HttpGet("zipcodes/search")]
     public async Task<IActionResult> SearchZipcodes([FromQuery] string q, [FromQuery] int max = 25)
     {

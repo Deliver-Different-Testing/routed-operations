@@ -21,6 +21,10 @@ public record BulkPolygonAttachedRouteDto(int RouteId, string RouteName);
 public record BulkPolygonDto(
     int PolygonId,
     string Name,
+    /// <summary>The shape's own colour. Carried so a coverage chip can be
+    /// drawn in it and read as a polygon rather than a postcode (polygons
+    /// spec part 1).</summary>
+    string? ColorHex,
     byte SourceType,
     string? SourceCode,
     decimal CentroidLatitude,
@@ -29,6 +33,10 @@ public record BulkPolygonDto(
     List<PolygonPointDto> Points,
     int AttachedRouteCount,
     List<BulkPolygonAttachedRouteDto> AttachedRoutes,
+    /// <summary>Zone memberships (custom-polygons spec 3.1). Which zone
+    /// number this shape is in, in which zone group. Empty until ops places
+    /// it with "Add to zone".</summary>
+    List<BulkPolygonZoneMembershipDto> ZoneMemberships,
     string? PartiallyIncludedZips,
     DateTime CreatedUtc,
     string CreatedBy,
@@ -62,3 +70,19 @@ public record UpdateBulkPolygonShapeRequest(
     decimal CentroidLatitude,
     decimal CentroidLongitude,
     List<PolygonPointDto> Points);
+
+/// <summary>One row of a polygon's zone membership list.</summary>
+public record BulkPolygonZoneMembershipDto(
+    int Id,
+    int PostcodeGroupId,
+    string PostcodeGroupName,
+    int DepotId,
+    string DepotName,
+    int Zone);
+
+/// <summary>Body for POST /api/bulk-polygons/{polygonId}/zones.</summary>
+public class BulkPolygonAddToZoneRequest
+{
+    public int PostcodeGroupId { get; set; }
+    public int Zone { get; set; }
+}

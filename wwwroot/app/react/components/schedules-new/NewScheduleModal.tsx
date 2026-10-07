@@ -5,7 +5,7 @@ import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/sc
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
-import { ChainBuilder, type Leg } from './ChainBuilder';
+import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
@@ -114,7 +114,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const [dropOffLocationId, setDropOffLocationId] = useState<number | null>(null);
   const [applyPickupCutoff, setApplyPickupCutoff] = useState(false);
   const [pickupCutoff, setPickupCutoff] = useState<number | null>(null);
-  const [bookPickup, setBookPickup] = useState(false);
   // Tier 2 - Collection zone group + individual postcodes + coverage
   // polygons. Legacy /schedules has all three; parity requires them.
   const [pickupPostcodeGroupId, setPickupPostcodeGroupId] = useState<number | null>(null);
@@ -166,7 +165,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setDropOffLocationId(null);
     setApplyPickupCutoff(false);
     setPickupCutoff(null);
-    setBookPickup(false);
     setPickupPostcodeGroupId(null);
     setPostcodeIds([]);
     setPolygonIds([]);
@@ -200,6 +198,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const derived = useMemo(() => {
     let pickupDepotId: number | null = null;
     let pickupRatingSpeed: number | null = null;
+    let pickupPostcodeGroupId: number | null = null;
+    let pickupZones: number[] = [];
     let regionId = 0;
     let speedId: number | null = null;
     let postcodeGroupId: number | null = null;
@@ -217,8 +217,13 @@ export function NewScheduleModal({ open, onClose }: Props) {
     const zones: number[] = [];
     for (const leg of legs) {
       if (leg.type === 'collection') {
-        pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+        // The collection leg no longer carries a depot. Its destination, and
+        // therefore PickupDepotId, is resolved from the first Depot leg after
+        // this loop. It does carry the pickup zone group and zones,
+        // which mirror the Delivery card (spec 3.2).
         pickupRatingSpeed = leg.speedId;
+        pickupPostcodeGroupId = leg.postcodeGroupId;
+        pickupZones = [...leg.zones].sort((a, b) => a - b);
       } else if (leg.type === 'depot') {
         storageState = leg.storageState;
       } else if (leg.type === 'linehaul') {
@@ -253,8 +258,37 @@ export function NewScheduleModal({ open, onClose }: Props) {
         for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
       }
     }
+    // ── Origin resolution (schedule-origin spec, 2026-10-07) ──────────
+    // Origin is expressed by the chain's first Depot leg and stored on the
+    // header as OriginType / OriginRegionId.
+    //
+    //   client origin -> BookPickup = 0, PickupDepotId = NULL,
+    //                    OriginRegionId = the Depot card's picker
+    //   depot  origin -> PickupDepotId from the Depot leg, BookPickup = 1
+    //                    only when the chain actually has a Collection leg
+    //
+    // Region is NOT touched here. It keeps coming from the Delivery leg and
+    // names the delivery branch; OriginRegionId names the branch that owns the
+    // start of the chain. That is the same split a collection schedule already
+    // has between PickupDepotId and Region, which is why first-leg jobs and
+    // delivery jobs can sit under different teams.
+    //
+    // PickupDepotId is no longer picked on the Collection card; deriving it
+    // from the Depot leg is an identity round-trip, because seedLegsFromDto
+    // seeds that leg from PickupDepotId in the first place. That is what keeps
+    // existing LHP + DEL schedules behaving exactly as before.
+    const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
+    const hasCollection = legs.some((l) => l.type === 'collection');
+    const clientOrigin = firstDepot?.clientAddress === true;
+    const originType = clientOrigin ? 'client' : 'depot';
+    const originRegionId = clientOrigin ? (firstDepot?.originRegionId ?? null) : null;
+    let bookPickup = false;
+    if (!clientOrigin && hasCollection) {
+      bookPickup = true;
+      pickupDepotId = firstDepot?.depotId ?? null;
+    }
     zones.sort((a, b) => a - b);
-    return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
+    return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
   }, [legs, days]);
 
   const submit = () => {
@@ -284,11 +318,21 @@ export function NewScheduleModal({ open, onClose }: Props) {
       speedId: derived.speedId,
       parentSpeedId: parentSpeedId,
       autoBook: autoBook,
-      bookPickup: bookPickup,
+      // Derived from the chain, not a loose checkbox (spec 2.3).
+      bookPickup: derived.bookPickup,
+      originType: derived.originType,
+      originRegionId: derived.originRegionId,
+      pickupZones: derived.hasCollection
+        ? derived.pickupZones.map((z) => ({ zone: z, active: true }))
+        : null,
       applyPickupCutoff: applyPickupCutoff,
       pickupCutoff: applyPickupCutoff ? pickupCutoff : null,
       postcodeGroupId: derived.postcodeGroupId,
-      pickupPostcodeGroupId: pickupPostcodeGroupId,
+      // Owned by the Collection card when the chain has a collection leg;
+      // otherwise the Advanced value stands (spec 3.2).
+      pickupPostcodeGroupId: derived.hasCollection
+        ? derived.pickupPostcodeGroupId
+        : pickupPostcodeGroupId,
       pickupRatingSpeed: derived.pickupRatingSpeed,
       storageState: derived.storageState,
       deliveryState: deliveryState,
@@ -648,14 +692,9 @@ export function NewScheduleModal({ open, onClose }: Props) {
                     ))}
                 </select>
               </label>
-              <label className="col-span-2 flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={bookPickup}
-                  onChange={(e) => setBookPickup(e.target.checked)}
-                  className="accent-brand-cyan"
-                />
-                Book collection job (creates a separate collection job at booking time)
+              <label className="col-span-2 flex items-center gap-2 text-xs opacity-60">
+                <input type="checkbox" checked={derived.bookPickup} disabled className="accent-brand-cyan" />
+                Book collection job (derived: set by adding a Collection leg to the route)
               </label>
               <label className="col-span-2 flex items-center gap-2 text-xs">
                 <input

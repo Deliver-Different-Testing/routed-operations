@@ -23,6 +23,7 @@ import {
   type RouteOrigin,
   type PickupAddressSuggestion,
   type ZipcodeLookup,
+  type CoverageLookup,
   type ZipPolygonShape,
   type AssignableTargets,
   type AssignableTarget,
@@ -363,7 +364,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   const [zips, setZips] = useState<ZipcodeLookup[]>(
     initial?.zipcodes.map((z) => ({ zipPolygonId: z.zipPolygonId, zip: z.zip, latitude: null, longitude: null })) ?? []);
   const [zipSearch, setZipSearch] = useState('');
-  const [zipResults, setZipResults] = useState<ZipcodeLookup[]>([]);
+  const [coverageResults, setCoverageResults] = useState<CoverageLookup[]>([]);
   const [targets, setTargets] = useState<AssignableTargets | null>(null);
   const [schedules, setSchedules] = useState<ScheduleLookup[]>([]);
   const [saving, setSaving] = useState(false);
@@ -494,21 +495,39 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   }, []);
 
   useEffect(() => {
-    if (!zipSearch.trim()) { setZipResults([]); return; }
+    if (!zipSearch.trim()) { setCoverageResults([]); return; }
     const t = setTimeout(async () => {
       try {
-        const res = await recurringRouteService.searchZipcodes(zipSearch.trim(), 15);
-        setZipResults(res.response ?? []);
+        // Polygons spec part 1: one lookup over postcodes AND polygons.
+        const res = await recurringRouteService.searchCoverage(zipSearch.trim(), 15);
+        setCoverageResults(res.response ?? []);
       } catch { /* silent */ }
     }, 250);
     return () => clearTimeout(t);
   }, [zipSearch]);
 
+  // A result is either a postcode or a polygon; the chips and the save path
+  // differ, the box does not.
+  const addCoverage = (c: CoverageLookup) => {
+    if (c.kind === 'polygon') {
+      setBulkPolygonIds((prev) => {
+        if (prev.has(c.id)) return prev;
+        const next = new Set(prev);
+        next.add(c.id);
+        return next;
+      });
+    } else {
+      addZip({ zipPolygonId: c.id, zip: c.label, latitude: c.latitude, longitude: c.longitude });
+    }
+    setZipSearch('');
+    setCoverageResults([]);
+  };
+
   const addZip = (z: ZipcodeLookup) => {
     if (zips.some((x) => x.zipPolygonId === z.zipPolygonId)) return;
     setZips([...zips, z]);
     setZipSearch('');
-    setZipResults([]);
+    setCoverageResults([]);
   };
   const removeZip = (id: number) => setZips(zips.filter((z) => z.zipPolygonId !== id));
 
@@ -955,7 +974,10 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
             </FieldGroup>
           )}
 
-          <Field label={`${zipLongLabel}s (${zips.length})`}>
+          {/* One Coverage box (polygons spec part 1). Postcodes and custom
+              polygons answer the same question, so they share an input and a
+              chip row; the colour swatch is what tells them apart. */}
+          <Field label={`Coverage (${zips.length + bulkPolygonIds.size})`}>
             <div className="border border-border rounded-lg p-2 bg-surface-white">
               {zips.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-2">
@@ -979,47 +1001,24 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                   ))}
                 </div>
               )}
-              <input type="text" value={zipSearch} onChange={(e) => setZipSearch(e.target.value)}
-                className={INPUT_CLASS + ' text-xs'} placeholder={`Type to search ${zipLongLabel.toLowerCase()}s...`} />
-              {zipResults.length > 0 && (
-                <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white text-xs">
-                  {zipResults.map((z) => (
-                    <li key={z.zipPolygonId}>
-                      <button type="button" onClick={() => addZip(z)}
-                        className="w-full text-left px-2 py-1 hover:bg-surface-cream">
-                        {z.zip}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </Field>
-          <Field label={`Coverage polygons (${bulkPolygonIds.size})`}>
-            <div className="border border-border rounded-lg p-2 bg-surface-white">
-              {bulkPolygonIds.size === 0 ? (
-                <div className="text-[10px] text-text-muted italic">
-                  No coverage polygons attached. Attach via Polygon Builder -&gt;
-                  Save coverage as Route, or via the map on the right.
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-1">
+              {bulkPolygonIds.size > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
                   {[...bulkPolygonIds].map((id) => {
                     const shape = bulkPolygonShapes.get(id);
                     // Fall back to the RouteBulkPolygonRef name from the
                     // initial payload while the full shape is still fetching.
-                    const initialRef = initial?.bulkPolygons.find((p) => p.polygonId === id);
+                    const initialRef = initial?.bulkPolygons.find((pg) => pg.polygonId === id);
                     const label = shape?.name ?? initialRef?.name ?? `Polygon #${id}`;
+                    const colour = shape?.colorHex ?? '#7c3aed';
                     return (
-                      <span key={id}
-                        className="inline-flex items-center gap-0.5 rounded bg-brand-purple/15 text-brand-dark text-xs">
-                        {/* Label click = zoom map to this coverage
-                            polygon. × detaches. Two distinct hit
-                            targets so a mis-hit on the label doesn't
-                            drop coverage. */}
+                      <span key={`poly-${id}`}
+                        className="inline-flex items-center gap-0.5 rounded text-brand-dark text-xs border"
+                        style={{ backgroundColor: `${colour}26`, borderColor: `${colour}80` }}>
+                        <span className="inline-block w-2 h-2 ml-2 rounded-sm shrink-0"
+                          style={{ backgroundColor: colour }} />
                         <button type="button"
                           onClick={() => focusBulkPolygon(id)}
-                          className="pl-2 py-0.5 hover:underline"
+                          className="pl-1 py-0.5 hover:underline"
                           title={`Zoom map to "${label}"`}>
                           {label}
                         </button>
@@ -1031,6 +1030,39 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                     );
                   })}
                 </div>
+              )}
+              <input type="text" value={zipSearch} onChange={(e) => setZipSearch(e.target.value)}
+                className={INPUT_CLASS + ' text-xs'} placeholder={`Type a ${zipLongLabel.toLowerCase()} or a polygon name...`} />
+              {coverageResults.length > 0 && (
+                <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white text-xs">
+                  {(['postcode', 'polygon'] as const).map((kind) => {
+                    const rows = coverageResults.filter((c) => c.kind === kind);
+                    if (rows.length === 0) return null;
+                    return (
+                      <li key={kind}>
+                        <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-muted bg-surface-cream/60">
+                          {kind === 'postcode' ? `${zipLongLabel}s` : 'Polygons'}
+                        </div>
+                        <ul>
+                          {rows.map((c) => (
+                            <li key={`${c.kind}-${c.id}`}>
+                              <button type="button" onClick={() => addCoverage(c)}
+                                className="w-full text-left px-2 py-1 hover:bg-surface-cream flex items-center gap-1.5">
+                                {c.kind === 'polygon' && (
+                                  <span
+                                    className="inline-block w-2.5 h-2.5 rounded-sm border border-black/20 shrink-0"
+                                    style={{ backgroundColor: c.colorHex ?? '#7c3aed' }}
+                                  />
+                                )}
+                                {c.label}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           </Field>

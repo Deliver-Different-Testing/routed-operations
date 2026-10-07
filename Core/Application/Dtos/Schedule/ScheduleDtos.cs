@@ -31,6 +31,28 @@ public record ScheduleGroupDto(
     int? PickupPostcodeGroupId,
     string PickupPostcodeGroupName,
     int? PickupRatingSpeed,
+    /// <summary>'depot' or 'client'. 'client' means the chain starts at the
+    /// client's own address: no collection job, and the booking's own From
+    /// address survives instead of being replaced by a depot's. Stored on
+    /// tblBulkRunScheduleHeader (schedule-origin spec 5.1).</summary>
+    string OriginType,
+    /// <summary>Origin branch for a client-origin schedule. Counterpart of
+    /// PickupDepotId, not of RegionId: RegionId stays the delivery branch.
+    /// Null for depot-origin schedules.</summary>
+    int? OriginRegionId,
+    /// <summary>Name of OriginRegionId resolved from tblBulkRegion.</summary>
+    string OriginRegionName,
+    /// <summary>
+    /// Names of this schedule's linked clients that have no site coordinates
+    /// (schedule-origin spec 4.5). Only meaningful when OriginType is
+    /// 'client': a client-origin run starts at the client's site, so without
+    /// coordinates it starts in the wrong place. Always empty for depot
+    /// origin, which never reads the client's site.
+    ///
+    /// A warning, not a block: the booking path still works from the address
+    /// the booking itself carries.
+    /// </summary>
+    List<ClientGeocodeGapDto> ClientsMissingGeocode,
     bool? AutoBook,
     bool? BookPickup,
     bool? ApplyPickupCutoff,
@@ -43,6 +65,9 @@ public record ScheduleGroupDto(
     string Description,
     List<DayWindowDto> DayWindows,
     List<ScheduleZoneDto> Zones,
+    /// <summary>Zones the collection leg collects from. Empty on every
+    /// schedule until the Collection card starts writing them.</summary>
+    List<ScheduleZoneDto> PickupZones,
     List<ScheduleLinehaulDto> Linehauls,
     /// <summary>Client ids bound via the new tblScheduleClient junction. Empty for legacy per-client groups.</summary>
     List<int> ClientIds,
@@ -300,3 +325,10 @@ public record LinehaulRunDto(
     string DespatchTime,
     int? CourierId);
 public record StateOptionDto(int Id, string Label);
+
+/// <summary>
+/// A linked client with no site coordinates. Carries the id as well as the
+/// name so the warning can offer to geocode that client directly rather than
+/// sending the operator off to find it (schedule-origin spec 4.5).
+/// </summary>
+public record ClientGeocodeGapDto(int ClientId, string ClientName);

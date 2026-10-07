@@ -111,7 +111,30 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                               '>st<', '>street<'),
                             '<>', ' '
                           )))) COLLATE DATABASE_DEFAULT)
-                   WHERE breg.BulkRegionId IN ({inList})
+                   WHERE ( breg.BulkRegionId IN ({inList})
+                           -- Client-origin jobs (schedule-origin spec 4.1).
+                           -- Their pickup is a client address, so they match
+                           -- no tblBulkRegion row by coordinates or by name
+                           -- and the join above drops them from every
+                           -- region-filtered view. Admit them on the
+                           -- schedule's origin region instead. Delivery jobs
+                           -- are already found by Region.
+                           --
+                           -- Same shape Route Viewer already ships in
+                           -- RVW_stpBulkRuns_2:193-206, including its
+                           -- not-a-collection-job guard: a client-origin
+                           -- schedule has no collection leg, so an LHP row
+                           -- under one would be stale data, not something to
+                           -- surface here.
+                           OR ( UPPER(RTRIM(j.JobNumber)) NOT LIKE '%LHP'
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM dbo.tblBulkRunSchedule s
+                                    JOIN dbo.tblBulkRunScheduleHeader h
+                                      ON h.ScheduleId = s.ScheduleId
+                                    WHERE s.BulkRunScheduleId = j.ScheduleID
+                                      AND h.OriginType = 'client'
+                                      AND h.OriginRegionId IN ({inList}))) )
                      AND ISNULL(j.Done, 0) = 0
                      AND ISNULL(j.[Void], 0) = 0
                      {dateClause}";
@@ -313,6 +336,32 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             };
 
         var materialised = await joined.ToListAsync();
+
+        // Stamp the origin region on client-origin jobs (schedule-origin spec
+        // 4.2). Done AFTER materialisation on purpose: tblBulkJob is millions
+        // of rows on urgent-prod and this query is the cockpit's hot path, so
+        // a header join for a column that is null on every row today would be
+        // paid by every request forever. The client-origin set is tiny by
+        // design (ops flags a handful of warehouse schedules), so one small
+        // lookup plus an in-memory pass is the cheaper shape.
+        var clientOriginRegions = await (
+            from row in Context.TblBulkRunSchedules.AsNoTracking()
+            join h in Context.BulkRunScheduleHeaders.AsNoTracking()
+                on row.ScheduleId equals h.ScheduleId
+            where h.OriginType == "client" && h.OriginRegionId != null && h.RetiredUtc == null
+            select new { row.BulkRunScheduleId, OriginRegionId = h.OriginRegionId!.Value })
+            .ToDictionaryAsync(x => x.BulkRunScheduleId, x => x.OriginRegionId);
+        if (clientOriginRegions.Count > 0)
+        {
+            foreach (var m in materialised)
+            {
+                if (m.Dto.ScheduleId is int sid
+                    && clientOriginRegions.TryGetValue(sid, out var originRegionId))
+                {
+                    m.Dto.OriginRegionId = originRegionId;
+                }
+            }
+        }
         var baseDate = new DateTime(1900, 1, 1);
         return materialised
             // Legacy SP: ORDER BY BookTime, PrefixRunName, BuilderIndex.

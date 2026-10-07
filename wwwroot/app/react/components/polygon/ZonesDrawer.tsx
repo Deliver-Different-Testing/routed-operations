@@ -299,6 +299,28 @@ function DepotCard({
                       </div>
                       <div className="flex-1 text-text-secondary break-all">
                         {z.postcodes.join(', ')}
+                        {/* Polygon members, after the postcodes, so the zone
+                            reads as one coverage set (custom-polygons spec
+                            3.2). A shape here extends the zone to addresses
+                            whose postcode is in no zone at all; it never
+                            overrides a postcode that already has one. */}
+                        {(z.polygons?.length ?? 0) > 0 && (
+                          <span className="inline-flex flex-wrap gap-1 ml-1 align-middle">
+                            {z.polygons!.map((poly) => (
+                              <span key={poly.polygonId}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px]"
+                                style={{
+                                  backgroundColor: `${poly.colorHex ?? '#7c3aed'}26`,
+                                  borderColor: `${poly.colorHex ?? '#7c3aed'}80`,
+                                }}
+                                title={`Custom polygon "${poly.name}" is in this zone`}>
+                                <span className="inline-block w-2 h-2 rounded-sm"
+                                  style={{ backgroundColor: poly.colorHex ?? '#7c3aed' }} />
+                                {poly.name}
+                              </span>
+                            ))}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );

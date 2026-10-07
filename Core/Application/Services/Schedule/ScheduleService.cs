@@ -160,10 +160,25 @@ public class ScheduleService(
         var polygonCountsTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.SchedulePolygons.AsNoTracking()
-                .GroupBy(x => x.ScheduleName)
-                .Select(g => new { Name = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.Name, x => x.Count);
+            // Derived from zone membership now that tblSchedulePolygon is
+            // retired (custom-polygons spec 3.4). A polygon counts towards a
+            // schedule when it is a member of a zone that schedule fulfils,
+            // in that schedule's delivery or pickup zone group.
+            var pairs = await (
+                from row in ctx.TblBulkRunSchedules.AsNoTracking()
+                join h in ctx.BulkRunScheduleHeaders.AsNoTracking()
+                    on row.ScheduleId equals h.ScheduleId
+                join z in ctx.BulkZoneSchedules.AsNoTracking()
+                    on row.BulkRunScheduleId equals z.ScheduleId
+                join zp in ctx.BulkZonePolygons.AsNoTracking()
+                    on new { G = row.PostcodeGroupId ?? 0, z.Zone }
+                    equals new { G = zp.PostcodeGroupId, zp.Zone }
+                where h.RetiredUtc == null && z.Active == true && zp.Active
+                select new { h.Name, zp.PolygonId })
+                .Distinct().ToListAsync();
+            return pairs
+                .GroupBy(x => x.Name)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.PolygonId).Distinct().Count());
         });
         // SQL-side aggregate: one row per day-row (BulkRunScheduleId) with
         // its active-zone count. Retired-header day rows are filtered out
@@ -786,12 +801,11 @@ public class ScheduleService(
         var postcodeJunctions = await Context.SchedulePostcodes.AsNoTracking()
             .Where(x => x.ScheduleName == header.Name)
             .ToListAsync();
-        var polygonJunctions = await Context.SchedulePolygons.AsNoTracking()
-            .Where(x => x.ScheduleName == header.Name)
-            .ToListAsync();
+        var polygonJunctions = await GetZoneDerivedPolygonsAsync(new List<int> { header.ScheduleId });
 
         var rows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => s.ScheduleId == header.ScheduleId)
             .OrderBy(s => s.DayOfWeek)
@@ -799,8 +813,11 @@ public class ScheduleService(
         if (rows.Count == 0)
             throw new InvalidOperationException($"Schedule group '{header.Name}' has no day rows.");
 
+        var clientsWithoutGeocode = await GetClientsWithoutGeocodeAsync(
+            clientJunctions.Select(x => x.ClientId));
         return MapGroup(header, rows, clientJunctions, postcodeJunctions, polygonJunctions,
-            depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
+            depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames,
+            clientsWithoutGeocode);
     }
 
     /// <summary>
@@ -888,15 +905,21 @@ public class ScheduleService(
             .Where(sc => liveHeaderIds.Contains(sc.ScheduleId))
             .ToListAsync();
         var postcodeJunctions = await Context.SchedulePostcodes.AsNoTracking().ToListAsync();
-        var polygonJunctions = await Context.SchedulePolygons.AsNoTracking().ToListAsync();
+        var polygonJunctions = await GetZoneDerivedPolygonsAsync(liveHeaderIds.ToList());
 
         var rows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => liveHeaderIds.Contains(s.ScheduleId))
             .OrderBy(s => s.Name)
             .ThenBy(s => s.DayOfWeek)
             .ToListAsync();
+
+        // One lookup for the whole page rather than per group. Scoped to the
+        // clients actually linked here, so it stays small (spec 4.5).
+        var clientsWithoutGeocode = await GetClientsWithoutGeocodeAsync(
+            clientJunctions.Select(x => x.ClientId));
 
         var groups = rows
             .GroupBy(r => r.ScheduleId)
@@ -906,7 +929,8 @@ public class ScheduleService(
                 var header = headersById[g.Key];
                 var scoped = clientJunctions.Where(cj => cj.ScheduleId == header.ScheduleId).ToList();
                 return MapGroup(header, g.ToList(), scoped, postcodeJunctions, polygonJunctions,
-                    depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
+                    depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames,
+                    clientsWithoutGeocode);
             })
             .ToList();
 
@@ -1102,6 +1126,19 @@ public class ScheduleService(
         // where every schedule is bookable). Frontend always sends the
         // explicit boolean once the field ships.
         var isActive = req.IsActive ?? true;
+        // Origin (schedule-origin spec 5.1). Anything the caller does not
+        // recognise falls back to 'depot', which is today's behaviour, so the
+        // legacy POST /api/schedules contract is unaffected. The origin region
+        // is only meaningful for a client origin; a depot-origin schedule gets
+        // NULL so CK_tblBulkRunScheduleHeader_ClientOriginHasRegion stays
+        // satisfied either way.
+        var originType = string.Equals(req.OriginType, "client", StringComparison.OrdinalIgnoreCase)
+            ? "client" : "depot";
+        var originRegionId = originType == "client" ? req.OriginRegionId : null;
+        if (originType == "client" && originRegionId is null)
+            throw new InvalidOperationException(
+                "A client-origin schedule needs an origin region.");
+
         if (req.ScheduleId.HasValue && req.ScheduleId.Value > 0)
         {
             header = await Context.BulkRunScheduleHeaders
@@ -1112,8 +1149,19 @@ public class ScheduleService(
             header.DisplayName = displayName;
             header.DisplayDescription = displayDescription;
             header.IsActive = isActive;
+            // Spec 2.1: a default schedule cannot start at a client address,
+            // because "the client" is not defined for a schedule every client
+            // can book. Enforced here rather than in the UI so the API cannot
+            // be used to get around it.
+            if (originType == "client" && header.IsDefault)
+                throw new InvalidOperationException(
+                    "A default schedule cannot start at a client address. "
+                    + "Link it to a client first.");
+            header.OriginType = originType;
+            header.OriginRegionId = originRegionId;
             existing = await Context.TblBulkRunSchedules
                 .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
                 .Include(s => s.TblBulkScheduleLinehauls)
                 .Where(s => s.ScheduleId == header.ScheduleId)
                 .ToListAsync();
@@ -1131,6 +1179,17 @@ public class ScheduleService(
                 DisplayName = displayName,
                 DisplayDescription = displayDescription,
                 IsActive = isActive,
+                // Create always makes a default header, so the same rule
+                // applies: client origin is only reachable by editing a
+                // schedule that is already client-specific. See the note to
+                // Steve about section 3.1 offering the option in both modals.
+                OriginType = originType == "client"
+                    ? throw new InvalidOperationException(
+                        "A new schedule is created as a default schedule, which "
+                        + "cannot start at a client address. Create it, link a "
+                        + "client, then set the origin.")
+                    : originType,
+                OriginRegionId = originRegionId,
             };
             Context.BulkRunScheduleHeaders.Add(header);
             existing = new List<TblBulkRunSchedule>();
@@ -1146,6 +1205,7 @@ public class ScheduleService(
             if (matched == null)
             {
                 Context.BulkZoneSchedules.RemoveRange(row.BulkZoneSchedules);
+                Context.BulkPickupZoneSchedules.RemoveRange(row.BulkPickupZoneSchedules);
                 Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
                 Context.TblBulkRunSchedules.Remove(row);
                 existing.Remove(row);
@@ -1223,6 +1283,12 @@ public class ScheduleService(
                 foreach (var z in req.Zones)
                     row.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
             }
+            if (req.PickupZones != null)
+            {
+                Context.BulkPickupZoneSchedules.RemoveRange(row.BulkPickupZoneSchedules);
+                foreach (var z in req.PickupZones)
+                    row.BulkPickupZoneSchedules.Add(new BulkPickupZoneSchedule { Zone = z.Zone, Active = z.Active ?? true });
+            }
             if (req.Linehauls != null)
             {
                 // Bug 1 (Steve 2026-09-25): this is a remove-and-re-add, so every
@@ -1272,7 +1338,18 @@ public class ScheduleService(
 
         await SyncClientsAsync(header, resolvedClientIds);
         await SyncPostcodesAsync(header.Name, req.PostcodeIds);
-        await SyncPolygonsAsync(header.Name, req.PolygonIds);
+        // tblSchedulePolygon is retired (custom-polygons spec 3.4). No stored
+        // procedure, function, trigger or view ever read it, so a polygon
+        // attached to a schedule never affected booking: the attachment was
+        // wired to the wrong object. Coverage now comes from a polygon's
+        // membership of a ZONE (BulkZonePolygon), which is what zone groups
+        // actually decide bookability from.
+        //
+        // The write is removed rather than the call, so existing rows survive
+        // until the drop migration runs and nothing new accumulates. Zero rows
+        // on all four tenants as at 2026-10-07, so there is nothing to carry
+        // across by hand.
+        // await SyncPolygonsAsync(header.Name, req.PolygonIds);
 
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
@@ -1345,6 +1422,7 @@ public class ScheduleService(
 
         var sourceRows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => s.ScheduleId == source.ScheduleId)
             .ToListAsync();
@@ -1389,12 +1467,17 @@ public class ScheduleService(
             .Where(x => x.ScheduleName == source.Name)
             .Select(x => x.PostCode)
             .ToListAsync();
-        var srcPolygons = await Context.SchedulePolygons.AsNoTracking()
-            .Where(x => x.ScheduleName == source.Name)
-            .Select(x => x.PolygonId)
-            .ToListAsync();
+        // Retired with the junction (spec 3.4). Kept as an empty list so the
+        // copy path reads the same shape until the dead call below goes.
+        var srcPolygons = new List<int>();
 
         // New header + day-row clones + junction rows in one atomic save.
+        // Origin is deliberately NOT copied. A copy is created as a default
+        // header, and a default schedule cannot start at a client address
+        // (spec 2.1), so carrying OriginType = 'client' across would produce a
+        // row that violates its own rule. The copy lands as depot origin and
+        // the operator sets it after linking the client, the same order the
+        // create path forces.
         var newHeader = new BulkRunScheduleHeader
         {
             Name = newName,
@@ -1446,6 +1529,8 @@ public class ScheduleService(
             };
             foreach (var z in src.BulkZoneSchedules)
                 clone.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
+            foreach (var z in src.BulkPickupZoneSchedules)
+                clone.BulkPickupZoneSchedules.Add(new BulkPickupZoneSchedule { Zone = z.Zone, Active = z.Active });
             foreach (var l in src.TblBulkScheduleLinehauls)
                 clone.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
                 {
@@ -1474,7 +1559,10 @@ public class ScheduleService(
 
         await SyncClientsAsync(newHeader, targetClientIds);
         await SyncPostcodesAsync(newName, srcPostcodes);
-        await SyncPolygonsAsync(newName, srcPolygons);
+        // Polygon junction retired with the rest (spec 3.4). A copy no longer
+        // carries schedule-attached polygons because nothing reads them; the
+        // copy's coverage comes from its zone groups.
+        // await SyncPolygonsAsync(newName, srcPolygons);
 
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
@@ -1569,6 +1657,62 @@ public class ScheduleService(
         return candidates[0];
     }
 
+    /// <summary>
+    /// Polygons that cover a schedule, derived from its ZONE groups
+    /// (custom-polygons spec 3.4). Replaces the tblSchedulePolygon junction,
+    /// which is being dropped: nothing ever read it, so attaching a polygon
+    /// to a schedule had no effect on booking. A polygon covers a schedule
+    /// when it is a member of a zone the schedule actually fulfils, in the
+    /// schedule's delivery or pickup zone group.
+    ///
+    /// Read-only by design. The Coverage tab shows this; it no longer writes.
+    /// Keyed by header ScheduleId.
+    /// </summary>
+    private async Task<Dictionary<int, List<int>>> GetZoneDerivedPolygonsAsync(List<int> headerIds)
+    {
+        if (headerIds.Count == 0) return new Dictionary<int, List<int>>();
+
+        // (header, group, zone) triples the schedules actually fulfil, both
+        // sides. A schedule with no zone rows covers nothing, which is the
+        // same answer the junction gave once it stopped being written.
+        var delivery = await (
+            from row in Context.TblBulkRunSchedules.AsNoTracking()
+            join z in Context.BulkZoneSchedules.AsNoTracking()
+                on row.BulkRunScheduleId equals z.ScheduleId
+            where headerIds.Contains(row.ScheduleId) && row.PostcodeGroupId != null && z.Active == true
+            select new { row.ScheduleId, GroupId = row.PostcodeGroupId!.Value, z.Zone })
+            .Distinct().ToListAsync();
+        var pickup = await (
+            from row in Context.TblBulkRunSchedules.AsNoTracking()
+            join z in Context.BulkPickupZoneSchedules.AsNoTracking()
+                on row.BulkRunScheduleId equals z.ScheduleId
+            where headerIds.Contains(row.ScheduleId) && row.PickupPostcodeGroupId != null && z.Active
+            select new { row.ScheduleId, GroupId = row.PickupPostcodeGroupId!.Value, z.Zone })
+            .Distinct().ToListAsync();
+
+        var wanted = delivery.Concat(pickup).ToList();
+        if (wanted.Count == 0) return new Dictionary<int, List<int>>();
+
+        var groupIds = wanted.Select(w => w.GroupId).Distinct().ToList();
+        var members = await Context.BulkZonePolygons.AsNoTracking()
+            .Where(zp => zp.Active && groupIds.Contains(zp.PostcodeGroupId))
+            .Select(zp => new { zp.PostcodeGroupId, zp.Zone, zp.PolygonId })
+            .ToListAsync();
+
+        var byGroupZone = members
+            .GroupBy(m => (m.PostcodeGroupId, m.Zone))
+            .ToDictionary(g => g.Key, g => g.Select(x => x.PolygonId).ToList());
+
+        return wanted
+            .GroupBy(w => w.ScheduleId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.SelectMany(w =>
+                        byGroupZone.TryGetValue((w.GroupId, w.Zone), out var ps)
+                            ? ps : Enumerable.Empty<int>())
+                      .Distinct().OrderBy(x => x).ToList());
+    }
+
     private async Task SyncClientsAsync(BulkRunScheduleHeader header, IEnumerable<int> desired)
     {
         // When the header is brand-new (id == 0), we cannot query
@@ -1617,22 +1761,6 @@ public class ScheduleService(
         }
     }
 
-    private async Task SyncPolygonsAsync(string name, IEnumerable<int> desired)
-    {
-        var current = await Context.SchedulePolygons
-            .Where(x => x.ScheduleName == name)
-            .ToListAsync();
-        var desiredSet = new HashSet<int>(desired ?? Enumerable.Empty<int>());
-        Context.SchedulePolygons.RemoveRange(current.Where(x => !desiredSet.Contains(x.PolygonId)));
-        var currentSet = new HashSet<int>(current.Select(x => x.PolygonId));
-        foreach (var pid in desiredSet.Where(pid => !currentSet.Contains(pid)))
-        {
-            Context.SchedulePolygons.Add(new SchedulePolygon
-            {
-                ScheduleName = name, PolygonId = pid, CreatedUtc = DateTime.UtcNow,
-            });
-        }
-    }
 
     private static void ApplyGroupTemplateToRow(TblBulkRunSchedule row, ScheduleGroupUpsertRequest req)
     {
@@ -1654,18 +1782,40 @@ public class ScheduleService(
         row.Description = req.Description;
     }
 
+    /// <summary>
+    /// Client ids among <paramref name="clientIds"/> with no site coordinates
+    /// on tucClient (schedule-origin spec 4.5). Only client-origin schedules
+    /// care, so callers pass the ids they actually have and the query stays
+    /// small.
+    /// </summary>
+    private async Task<HashSet<int>> GetClientsWithoutGeocodeAsync(IEnumerable<int> clientIds)
+    {
+        var ids = clientIds.Distinct().ToList();
+        if (ids.Count == 0) return new HashSet<int>();
+        var found = await Context.TucClients.AsNoTracking()
+            .Where(c => ids.Contains(c.UcclId) && (c.Latitude == null || c.Longitude == null))
+            .Select(c => c.UcclId)
+            .ToListAsync();
+        return found.ToHashSet();
+    }
+
     private static ScheduleGroupDto MapGroup(
         BulkRunScheduleHeader header,
         List<TblBulkRunSchedule> rows,
         List<ScheduleClient> clientJunctions,
         List<SchedulePostcode> postcodeJunctions,
-        List<SchedulePolygon> polygonJunctions,
+        // Derived from zone membership, keyed by header ScheduleId
+        // (custom-polygons spec 3.4). Was tblSchedulePolygon rows.
+        Dictionary<int, List<int>> polygonsByScheduleId,
         Dictionary<int, string> depotNames,
         Dictionary<int, string> speedNames,
         Dictionary<int, string> groupNames,
         Dictionary<int, string> dropOffNames,
         Dictionary<int, string> clientCodes,
-        Dictionary<int, string> clientNames)
+        Dictionary<int, string> clientNames,
+        // Client ids with no tucClient.Latitude/Longitude. Supplied by the
+        // caller because MapGroup is static and must not touch the DB.
+        HashSet<int> clientsWithoutGeocode)
     {
         string LookupClientCode(int id) =>
             clientCodes.TryGetValue(id, out var c) && !string.IsNullOrWhiteSpace(c) ? c : $"#{id}";
@@ -1687,17 +1837,28 @@ public class ScheduleService(
         var clientLinkedUtcs = linksForHeader
             .Select(x => (DateTime?)x.CreatedUtc)
             .ToList();
+        // Computed for every schedule, not just the ones already stored as
+        // client origin. The editor decides whether to SHOW it, from the live
+        // chain, so the warning appears the moment the operator switches the
+        // Depot leg to Client address rather than only after a save and a
+        // reopen. Gating it here on the stored OriginType made the list empty
+        // at exactly the moment it was needed.
+        //
+        // Harmless for depot origin: the client's site is never read there, so
+        // the field is simply ignored.
+        var clientsMissingGeocode = clientIds
+            .Where(clientsWithoutGeocode.Contains)
+            .Select(id => new ClientGeocodeGapDto(id, LookupClientName(id) ?? $"#{id}"))
+            .ToList();
         var legacyClientCode = header.LegacyClientId.HasValue ? LookupClientCode(header.LegacyClientId.Value) : null;
         var postcodeIds = postcodeJunctions
             .Where(x => x.ScheduleName == header.Name)
             .Select(x => x.PostCode)
             .OrderBy(x => x)
             .ToList();
-        var polygonIds = polygonJunctions
-            .Where(x => x.ScheduleName == header.Name)
-            .Select(x => x.PolygonId)
-            .OrderBy(x => x)
-            .ToList();
+        var polygonIds = polygonsByScheduleId.TryGetValue(header.ScheduleId, out var derivedPolys)
+            ? derivedPolys
+            : new List<int>();
 
         var dayWindows = rows
             .OrderBy(r => r.DayOfWeek)
@@ -1711,6 +1872,10 @@ public class ScheduleService(
             .ToList();
 
         var zones = t.BulkZoneSchedules
+            .OrderBy(z => z.Zone)
+            .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
+            .ToList();
+        var pickupZones = t.BulkPickupZoneSchedules
             .OrderBy(z => z.Zone)
             .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
             .ToList();
@@ -1742,12 +1907,17 @@ public class ScheduleService(
             t.PostcodeGroupId, LookupGroup(t.PostcodeGroupId),
             t.PickupPostcodeGroupId, LookupGroup(t.PickupPostcodeGroupId),
             t.PickupRatingSpeed,
+            // Origin lives on the header, not the day row: it is a property
+            // of the schedule, not of a weekday.
+            header.OriginType ?? "depot",
+            header.OriginRegionId, LookupDepot(header.OriginRegionId),
+            clientsMissingGeocode,
             t.AutoBook, t.BookPickup,
             t.ApplyPickupCutoff, t.PickupCutoff,
             t.StorageState, t.DeliveryState, t.PickupBoxDiscount,
             t.DropOffLocationId, LookupDropOff(t.DropOffLocationId),
             t.Description,
-            dayWindows, zones, linehauls,
+            dayWindows, zones, pickupZones, linehauls,
             clientIds, clientCodesForGroup, postcodeIds, polygonIds,
             clientLinkedUtcs, clientNamesForGroup,
             header.DisplayName, header.DisplayDescription, header.IsActive);
