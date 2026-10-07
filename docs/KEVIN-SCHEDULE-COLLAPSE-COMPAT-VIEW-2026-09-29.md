@@ -427,6 +427,22 @@ indicator is useful so ops can see the estate converging; nothing else changes.
   view-not-updatable error. Accepted. If that lands before ClientManager is switched off, the
   admin-ui schedules module should be pointed at Schedules NEW rather than patched.
 - **The 26 SPs / functions** (section 8): unchanged in this plan.
+- **Shopify integration (`shopifyapp`, gitlab.com/deliver-different; checked 8 Oct).** Reads
+  `tblBulkRunSchedule` through EF only, never writes it, calls no SP. `ShopWindow.ScheduleId` is an
+  FK to a **day row**: a shop's delivery window takes its `DayOfWeek`, `StartTime`, `EndTime` and
+  `CutoffHours` (as "Preparation") from that row, and the checkout's `QuoteId` is the day-row id with
+  the 3-digit speed appended - the same packing the booking SP unpacks. So the day-row id is the
+  live contract between Shopify and booking. Under this plan: reads come through the view with the
+  same ids and columns (fine); the FK follows the rename (fine); key rows are never deleted (fine).
+  **One new failure mode:** `WindowService` loads every schedule row its windows reference and
+  throws "Invalid schedule" for the whole window group if any is missing. Today a referenced day row
+  cannot disappear (the FK blocks the delete). After the collapse, unticking a day on a converted
+  schedule **hides that day row from the view**, so a shop window pointing at it would break the
+  shop's checkout. Rule: `uspScheduleConvert` and the Schedules NEW save **refuse to mask off a day
+  that has an active `ShopWindow`**, naming the shop, exactly as the FK refuses a delete today. F18
+  later re-keys `ShopWindow` to `(ScheduleId, DayOfWeek)`, which it already half carries. One more
+  note for whoever regenerates the Shopify EF model (EF Power Tools): after M2 `tblBulkRunSchedule`
+  is a view and the table is `tblBulkRunScheduleDay`.
 
 ---
 
@@ -458,8 +474,10 @@ Same contract convert-on-save uses, so the batch and the save path cannot disagr
    differing columns.
 4. `@Commit = 1` and `CanConvert = 1`, one transaction: insert the detail row, null the day rows'
    payload columns (keep `Name`, `ClientId`, `ScheduleId`, `DayOfWeek`), delete exact-duplicate
-   day rows that no booking / binding / zone row references, write a before-JSON row to
-   `tblBulkRunScheduleConvertLog` so `uspScheduleUnconvert` is exact.
+   day rows that no booking / binding / zone row / **`ShopWindow`** references, write a before-JSON
+   row to `tblBulkRunScheduleConvertLog` so `uspScheduleUnconvert` is exact.
+5. **Mask guard** (also enforced by the Schedules NEW save): a day whose key row is referenced by an
+   active `ShopWindow` cannot be masked off; the save names the shop. Mirrors today's FK behaviour.
 
 `uspScheduleUnconvert @ScheduleId`: restore day payload from the log, delete the detail row.
 
@@ -607,7 +625,7 @@ All decided. Nothing open.
 | `tblRouteSchedule` | `ScheduleId` | **ON DELETE CASCADE** — never delete key rows |
 | `tblBulkScheduleLinehaul` | `BulkRunScheduleId` | FK |
 | `BulkZoneSchedule` | `ScheduleId` | FK |
-| `ShopWindow` | (FK `FK_ShopWindow_tblBulkRunSchedule`) | FK - Shopify integration; confirmed A3 6 Oct |
+| `ShopWindow` | `ScheduleId` (FK `FK_ShopWindow_tblBulkRunSchedule`) | FK - Shopify checkout window per **day row**; `QuoteId` = day-row id + speed. Masking a referenced day off must be refused (section 4.3, 5a). |
 | `BulkPickupZoneSchedule` | `ScheduleId` (FK `FK__BulkPicku__Sched__3C2ACFCE`) | FK - collection-side zone junction; named by Kerran 7 Oct |
 | `tblSchedulePostcode`, `tblSchedulePolygon`, `tblScheduleClient` | `ScheduleName` | name-keyed (F18 Risk A) — unaffected by collapse, still wrong |
 
