@@ -21,12 +21,12 @@ Not a campaign to collapse the existing 11,000 rows.
 | **Goal** | Every schedule created or edited from now on is **one row** with a seven-day mask. Existing schedules are left alone until touched. |
 | **Mechanism** | A new **1:1 detail table keyed on the existing header id** holds the single-row shape. The physical day table is renamed and a **view with its old name** keeps the 26 dependent SPs working unchanged; where a detail row exists the view serves payload from it. |
 | **Identity** | Unchanged. `tblBulkRunScheduleHeader.ScheduleId` stays the one key (F18). No new identity, no id remap in this project. Day rows survive as three-column id anchors until F18. |
-| **What changes for ops** | Nothing they have to do. Schedules NEW writes the new shape; an old schedule moves to it when someone next saves it and its day rows agree. |
+| **What changes for ops** | Nothing they have to do. Schedules NEW writes the new shape; the ~2,488 schedules whose day rows already agree are converted in one batch after the view has baked; the rest convert when next saved, or the save explains why not. |
 | **Only risky step** | The rename plus view (M2). Metadata-only, diffable to zero rows on staging, reversible in minutes. Direct `INSERT`s into the old table name from outside (ClientManager, being retired) will fail against the view - known and accepted. |
 | **Cutoff / visibility** | One relative cutoff rule per schedule and `OccurrencesAhead`; the booking page shows the next N occurrences, which removes the reason for the inflated Monday cutoff (section 2.5). |
 | **Day mask format** | `CHAR(7)`, position 1 = Monday - the convention `ucbkDays`, `tblBulkRunScheduleOverride.WeekDays` and `uspPrebookSet` already use. |
-| **Not in scope** | Header widening, `IsCollapsed` flag, guard trigger, batch collapse runbook, dropping legacy columns. All can come later; none is needed to stop the bloat. |
-| **Decisions needed** | Section 9 (two). |
+| **Not in scope** | Header widening, `IsCollapsed` flag, guard trigger, dropping legacy columns, F18 re-key. All come later; none is needed to stop the bloat. |
+| **Decisions** | All closed (section 9). Handed to Kevin 8 Oct as the next piece after the origin/polygons branch merges. |
 
 ---
 
@@ -205,7 +205,12 @@ CREATE TABLE dbo.tblBulkRunScheduleDetail (
 );
 ```
 
-Not here: `Name`, `ClientId`, `IsActive`, `DisplayName` - all already on the header.
+Not here: `Name`, `ClientId`, `IsActive`, `DisplayName` - all already on the header. **Also not
+here: `OriginType` and `OriginRegionId`** (decided 8 Oct). The origin spec first said they would
+move to the detail table in M1; they landed on the header on 7 Oct (`20261007130000`) and are read
+by three booking SPs, two availability functions and the app. Moving them buys nothing and
+re-touches all of that. They stay on the header; the view and `fnScheduleForClient` keep reading
+them from `h`.
 `CutoffHours` is not carried; the view derives it for legacy readers (section 2.3).
 
 Why a detail table rather than widening the header: the header stays narrow for the F1
@@ -356,16 +361,21 @@ via the `sys.database_permissions` discovery pattern from `20260908120004`,
 | M1 | `..._ScheduleDetail_Create` | `tblBulkRunScheduleDetail` (section 2.1) + `OccurrencesAhead` on `tblBulkRunScheduleOverride` + `fnCutoffDayFor` / `fnCutoffHoursFor`. GRANTs. `procRefreshAllViews`. | **None** - additive, nothing reads it. | `DROP` |
 | M2 | `..._ScheduleDay_RenameAndCompatView` | `sp_rename` -> `tblBulkRunScheduleDay`; view `dbo.tblBulkRunSchedule` (section 2.3, tenant time-type branch section 2.4); GRANTs on both; `procRefreshAllViews`. **Behaviour identical**: no detail rows exist. | **Low, and the only one.** Metadata rename + view. Anything `INSERT`ing into the old name fails (section 2.3). | drop view, `sp_rename` back |
 | M3 | `..._fnScheduleForClient_ReadDetail` | F1 resolver reads detail-then-day via the view's columns plus `OccurrencesAhead`. Optional in this release; the view already feeds it. | Low | redeploy prior body |
+| M4 | `..._ScheduleDetail_ConvertProcedures` | `dbo.uspScheduleConvert @ScheduleId INT, @Commit BIT = 0, @By NVARCHAR(100)` and `dbo.uspScheduleUnconvert @ScheduleId INT` (section 5a). Used by convert-on-save **and** by the one-off batch over the clean set. | Low - additive; does nothing until called | `DROP` |
 
 **Gate for M2:** on staging, V1 (section 6) returns zero rows both ways, then the standard
 booking / availability / run viewer / `uspPrebookSet` regression passes. Then prod.
 
-**Ordering:** M2 must come after the last F11 / F19 SP re-emit in the same deploy; name them in
+**Ordering:** M2 must be numbered **after `20261007210000`** (Kevin's last SP / function re-emit on
+the origin-and-polygons branch) so the view is created over the final bodies, and after any F11 /
+F19 re-emit in the same deploy; name them in
 the `COLLISION-REVIEWED` header.
 
 **Deferred, deliberately** (each is a separate decision later): guard trigger on the day table;
-batch collapse procedure; dropping payload columns from `tblBulkRunScheduleDay`; F18 remap of
-`tucJobBooking` / `tblRouteSchedule` / linehaul / zones to `Header.ScheduleId`.
+dropping payload columns from `tblBulkRunScheduleDay`; **F18** remap of `tucJobBooking` /
+`tblRouteSchedule` / `BulkZoneSchedule` / `BulkPickupZoneSchedule` / linehaul to `Header.ScheduleId`
+- decided 8 Oct: F18 follows the collapse as its own piece, after the origin/polygons branch has
+merged (it added more day-row-keyed code, so re-keying now would re-touch fresh work).
 
 ---
 
@@ -390,7 +400,7 @@ After M1-M2:
   lowest-`DayOfWeek` key row, which is what they bind to today (F18 finding).
 - **Update of a new-shape schedule** edits the detail row. Unticking a day flips the mask bit;
   the key row is kept. Ticking a day that has no key row inserts one.
-- **Update of an old-shape schedule** (no detail row yet): if its day rows agree on every
+- **Convert-on-save is ON (decided 8 Oct).** **Update of an old-shape schedule** (no detail row yet): if its day rows agree on every
   payload column (after treating the Monday +48h `CutoffHours` as the visibility offset,
   section 2.5), the save writes a detail row and nulls the day-row payload, i.e. it converts.
   If they disagree, the save proceeds in the old shape and the UI shows why it did not convert
@@ -428,11 +438,30 @@ indicator is useful so ops can see the estate converging; nothing else changes.
 | **B** | M2 on staging | V1 = 0 rows both ways; regression on booking, availability, run viewer, `uspPrebookSet` | drop view, rename back |
 | **C** | M2 on prod | same V1 immediately after deploy | same, minutes |
 | **D** | `ScheduleService` writes new shape; list shows shape indicator | a week of new schedules on staging book identically; then prod | revert app; delete detail rows for anything created (day rows still carry nothing, so also re-fan payload from detail before deleting - trivial script) |
-| **E** | Opportunistic conversion on save (section 4.1) | watch the did-not-convert reasons for a fortnight | per schedule: copy detail back to day rows, delete detail row |
+| **E** | Opportunistic conversion on save (section 4.1) | watch the did-not-convert reasons for a fortnight | per schedule: `uspScheduleUnconvert` |
+| **F** | **One-off batch over the clean set** (decided 8 Oct): `uspScheduleConvert` with `@Commit = 0` across every header B1b marks `CollapsibleNow` (2,488 on Urgent Prod), review the report, then `@Commit = 1`. Staging first, then prod. | After C and D have been live a week. Staging: V1-style diff of `SELECT * FROM tblBulkRunSchedule` before and after the batch returns **zero** rows both ways (the view output must be identical, because the payload was identical). Then the same on prod inside a maintenance window. | `uspScheduleUnconvert` per schedule, or the whole batch from `tblBulkRunScheduleConvertLog`. |
 
-After E the estate converges on its own. A deliberate set-by-set collapse (the earlier
-`uspScheduleCollapse` design) remains available as a later, separate decision if ops wants the
-remaining rows gone faster.
+After F about 2,460 of 2,736 Urgent schedules are one row; E handles the remaining ~250 as they
+are touched (duplicate-day, per-day-window and cutoff-drift cases, each explained on save).
+
+### 5a. `uspScheduleConvert` - one schedule, dry run then commit
+
+Same contract convert-on-save uses, so the batch and the save path cannot disagree.
+
+1. Load the header; refuse if retired or already in the new shape (detail row exists).
+2. Load its day rows. **Checks**, all reported, any one refuses: `DuplicateDay` (same `DayOfWeek`
+   twice - report whether identical, safe to delete the higher id, or two windows, split needed);
+   `WindowVariesByDay`; `PayloadVaries:<column>`; `CutoffRuleVaries` (Tue-Sun relative rule
+   differs); the Monday +48h offset is **reconciled, not refused** (section 2.5).
+3. `@Commit = 0`: one row `(ScheduleId, Name, CanConvert, Reasons, ProposedWeekDays,
+   ProposedCutoffWorkingDaysBefore, ProposedCutoffTime, RowCount)` plus a detail rowset of
+   differing columns.
+4. `@Commit = 1` and `CanConvert = 1`, one transaction: insert the detail row, null the day rows'
+   payload columns (keep `Name`, `ClientId`, `ScheduleId`, `DayOfWeek`), delete exact-duplicate
+   day rows that no booking / binding / zone row references, write a before-JSON row to
+   `tblBulkRunScheduleConvertLog` so `uspScheduleUnconvert` is exact.
+
+`uspScheduleUnconvert @ScheduleId`: restore day payload from the log, delete the detail row.
 
 ---
 
@@ -548,10 +577,14 @@ off-PC caller inventory is complete.
    a visibility hack that next-N-occurrences removes (section 2.5).
 3. ~~Header vs new table~~ - **decided 2026-09-30:** 1:1 detail table keyed on the header id,
    header untouched (section 2.1).
-4. **Convert-on-save** (section 4.1): on, as written? It is the only way existing rows shrink in
-   this plan. Off means the estate stays as-is until F18.
-5. **F18 timing:** after the estate has largely converged, or held for the F9/F10 leg model so
-   `tblRouteSchedule` moves to the leg in the same pass?
+4. ~~Convert-on-save~~ - **decided 8 Oct: on**, and the ~2,488 schedules B1b marks clean are
+   converted in one batch (rollout step F) rather than waiting to be touched. The clean set is where
+   a batch is safe: identical payload means the view output is provably unchanged.
+5. ~~F18 timing~~ - **decided 8 Oct:** F18 follows the collapse as its own piece. The origin/polygons
+   branch merges first (8 Oct); it added more day-row-keyed code, so F18 after, not alongside.
+6. ~~OriginType / OriginRegionId location~~ - **decided 8 Oct:** they stay on the header (section 2.1).
+
+All decided. Nothing open.
 
 ---
 
