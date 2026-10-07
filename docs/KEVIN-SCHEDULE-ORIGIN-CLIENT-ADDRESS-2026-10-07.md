@@ -235,8 +235,26 @@ DEPOT   Client address                         edit v  Remove
 ### 3.2 Chain builder
 
 - Collection card: title "Collect from client address -> {depot from the chain's Depot leg}".
-  Fields: speed (rating), zones (F10), collection box discount. **No source dropdown, no depot
-  picker.**
+  **Mirrors the Delivery card** (Steve, 7 Oct - this is F10's outstanding item):
+
+  | Delivery card today | Collection card (to build) | Writes |
+  | :- | :- | :- |
+  | Region | - (destination is the chain's Depot leg) | `PickupDepotId` (derived) |
+  | Speed | Collection speed | `PickupRatingSpeed` |
+  | Delivery zone group | **Collection zone group** | `PickupPostcodeGroupId` |
+  | Zones this leg fulfils | **Zones this leg collects from** | `BulkPickupZoneSchedule` (`Zone`, `ScheduleId`) rows, same shape as `BulkZoneSchedule` on the delivery side |
+  | - | Collection box discount (schedule-level, as now) | `PickupBoxDiscount` |
+
+  **No source dropdown, no depot picker.** The old Schedules page exposes "Collection Postcode
+  Group" (the zone group only, no per-zone picks); Schedules NEW currently exposes neither.
+
+  ![Old page: Collection Postcode Group](images/schedule-origin-2026-10-07/old-schedule-collection-postcode-group.png)
+  ![Schedules NEW Collection card today - no zone group](images/schedule-origin-2026-10-07/new-schedule-collection-card-today.png)
+  ![Schedules NEW Delivery card - the shape to mirror](images/schedule-origin-2026-10-07/new-schedule-delivery-card.png)
+
+  Kevin to confirm whether `UTL_/DD_fncJob_GetClientAvailableBulkRunSchedule` filter on
+  `BulkPickupZoneSchedule` today (they do on `PickupPostcodeGroupId`); if not, the zone picks are
+  stored now and consumed when the zone functions are extracted (polygons spec, section 3.3).
 - "Add Collection" button disabled with tooltip when the first Depot leg is "Client address".
 - Linehaul card on a Client-origin schedule: `fromClientAddress` defaults true on the first LH
   leg; From-depot select disabled while it is on (already the behaviour at `ChainBuilder.tsx:686`).
@@ -475,6 +493,9 @@ by a derivation.
 5. `seedLegsFromDto` adds a Collection leg **only** when `BookPickup = 1`. F6 closes with it.
 6. A default schedule cannot be saved with a Client-address first depot.
 7. No new `tblBulkRegion` rows are needed for any of this.
+8. The Collection card shows and saves Collection zone group + zones; saving `(TEST) AKL > CHCH
+   Pre 10am Medical` round-trips its existing `PickupPostcodeGroupId` and pickup zone rows
+   unchanged.
 
 ---
 
@@ -520,7 +541,8 @@ by a derivation.
 7. Collection card loses its depot picker too; `PickupDepotId` derived from the Depot leg (2.2, 3.2).
 8. `PickupNoDepot` cleanup task removed - count is 0 on all tenants (5.3).
 9. Acceptance 1 and 2 exercised on both booking paths, asserting coordinates (6).
-10. **Correction (Steve, 7 Oct):** the Client-address card's picker writes a new **`OriginRegionId`**,
+10. **Collection card mirrors the Delivery card** - zone group + zones added (3.2, acceptance 8).
+11. **Correction (Steve, 7 Oct):** the Client-address card's picker writes a new **`OriginRegionId`**,
     not `Region`. `Region` is the Delivery leg's region and is untouched. The linehaul leg needs no
     region. Cross-region client origin becomes a one-branch substitution in the availability
     functions (section 8).
