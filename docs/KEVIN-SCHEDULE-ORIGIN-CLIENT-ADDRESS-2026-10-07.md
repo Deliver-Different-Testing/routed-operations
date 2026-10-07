@@ -22,7 +22,7 @@ dbmigrationsv2 SP re-emits of 2026-09-25 / 2026-09-28.
 | **Real blockers (two)** | (1) Route Builder's region filter finds jobs by matching **pickup lat/long or From address to `tblBulkRegion`**; a client-address pickup matches no depot, so the job never appears when filtering by region. The filter must also admit `tblBulkJob.RegionID` for these schedules. (2) **Bulk Import** resolves a routed job's origin from the **schedule's Region depot first** (NZ: only), so imported jobs on a client-origin schedule would be stamped with the dispatch depot's coordinates. The resolver must take the client's saved site address instead (section 4.4). |
 | **Remove** | The Pickup source dropdown on the Collection leg, including the "Booking-declared" value on develop that has no backend meaning. |
 | **Origin region** | `Region` comes from the **Delivery** leg and stays the delivery region. A client-origin schedule needs an **origin region** too, exactly where a collection schedule has `PickupDepotId`: new column **`OriginRegionId`**, set by a picker on the Client-address Depot card. First-leg jobs are stamped with it; delivery jobs with `Region`. The linehaul leg needs nothing extra. |
-| **Storage** | `OriginType` on `tblBulkRunScheduleDetail` (collapse plan M1). Interim derivation rule in section 5 until that ships. |
+| **Storage** | `OriginType` + `OriginRegionId` on `tblBulkRunScheduleHeader` (shipped `20261007130000`; stay there, decided 8 Oct). Derivation rule in section 5.2 is read-side only. |
 
 ---
 
@@ -410,8 +410,10 @@ ALTER TABLE dbo.tblBulkRunScheduleHeader
 ```
 
 `OriginRegionId` is NULL for depot-origin schedules (their origin region is `PickupDepotId` /
-the first Depot leg, as today) and required for client-origin ones. Both columns move to the detail
-table in collapse M1.
+the first Depot leg, as today) and required for client-origin ones. **Decided 8 Oct: both columns
+stay on the header permanently.** They landed there on 7 Oct (`20261007130000`) and are read by
+three booking SPs, two availability functions and the app; moving them to the collapse plan's
+detail table buys nothing. The earlier "move in M1" is struck.
 
 Additive, so the migration ships **before** the app and the SP change. It moves to the detail table
 in collapse M1. Never on the day row.
