@@ -146,11 +146,11 @@ because `tblBulkRunPolygon.PartiallyIncludedZips` lists the postcodes the shape 
 
 2. POLYGONS TAGGED WITH THE POSTCODE
    candidates := (g.DepotId, bzp.PostcodeGroupId, bzp.Zone, p.PolygonId)
-                 FROM tblBulkRunPolygon p
+                 FROM BulkRunPolygonZip pz                      -- normalised tags, indexed on Zip (3.5)
+                 JOIN tblBulkRunPolygon p ON p.PolygonId = pz.PolygonId AND p.Active = 1
                  JOIN BulkZonePolygon bzp ON bzp.PolygonId = p.PolygonId AND bzp.Active = 1
                  JOIN BulkZonePostcodeGroup g ON g.Id = bzp.PostcodeGroupId
-                 WHERE p.Active = 1
-                   AND ',' + p.PartiallyIncludedZips + ',' LIKE '%,' + @pc + ',%'
+                 WHERE pz.Zip = @pc
    IF none -> not bookable (as today). STOP.
 
 3. GEOMETRY CONFIRMS
@@ -163,7 +163,8 @@ because `tblBulkRunPolygon.PartiallyIncludedZips` lists the postcodes the shape 
 
 - Rule 1 before rule 2 means a polygon **extends** coverage to postcodes not already zoned; it never
   overrides a postcode that is already in a zone. That removes the postcode-vs-polygon conflict
-  entirely; only polygon-vs-polygon overlap remains (decision 7.1).
+  entirely. Polygon-vs-polygon overlap is prevented at **authoring** time (3.6), not resolved at
+  booking time; the "lowest zone, logged" clause in step 3 is only a safety net for legacy shapes.
 - `PartiallyIncludedZips` is already maintained on every polygon create/update
   (`BulkPolygonService`), and it is the same pre-filter the route resolver uses, so `STIntersects`
   runs against a handful of shapes.
@@ -172,6 +173,60 @@ because `tblBulkRunPolygon.PartiallyIncludedZips` lists the postcodes the shape 
 - Where this lives: the `@FromRegions` / `@ToRegions` population at the top of the two availability
   functions (so the rest of the function sees a polygon-derived depot exactly like a postcode-derived
   one), `UCL_fncT_GetBulkZone` / `UTL_fncBulkZonePostcode_IsActive` for rating, after extraction.
+
+### 3.5 Performance: the blunt prefilter is postcode -> depots, by index seek
+
+Steve asked whether postcodes or zip polygons are tied to sites or depots so the lookup can be
+pre-filtered instead of considering every zone group nationwide. Checked (7 Oct):
+
+| Object | Ties to |
+| :- | :- |
+| `tucPostCode` | `SiteID` only (site = branch: Auckland / Wellington - two values) |
+| `tblSuburb` / `tucSuburb` | `SiteID`, `AreaID`, `ucsuRegion` (on-demand despatch region used by client region filters) |
+| `ZipPolygon` / `ZipPolygonCity` | zip, centroid, WKT; city/state (US). No depot, no region |
+| `tblBulkRegion` | no site column (the function hard-codes depot 16 -> site 2, else 1) |
+| `BulkZonePostcode` | **the only postcode -> depot association in the database** |
+
+So there is no native postcode -> depot lookup outside the zone tables. But the existing function
+is **already a seek, not a scan**: `@FromRegions` / `@ToRegions` are populated by
+`SELECT DISTINCT DepotId, PostcodeGroupId FROM bulkzonepostcode WHERE postcode = @X`, an index
+seek that returns the handful of depots listing that postcode, and only those depots' schedules are
+then joined. Rule 1 is the blunt prefilter.
+
+Rule 2 as first drafted (`LIKE '%,pc,%'` over `PartiallyIncludedZips`) **was** a nationwide scan
+of every polygon. Fix: normalise the tags.
+
+```sql
+CREATE TABLE dbo.BulkRunPolygonZip (
+    PolygonId INT NOT NULL CONSTRAINT FK_BulkRunPolygonZip_Polygon
+                  FOREIGN KEY REFERENCES dbo.tblBulkRunPolygon (PolygonId) ON DELETE CASCADE,
+    Zip       VARCHAR(10) NOT NULL,
+    CONSTRAINT PK_BulkRunPolygonZip PRIMARY KEY CLUSTERED (Zip, PolygonId)   -- seek by Zip
+);
+```
+
+Maintained in `BulkPolygonService` at the same point `PartiallyIncludedZips` is derived (create /
+update shape), backfilled once from the existing column. `PartiallyIncludedZips` stays for the
+route resolver until it is pointed at the same table. With it, rule 2 is one seek by postcode, and
+rules 1 + 2 together yield "postcode -> candidate depots" in the exact `@FromRegions` /
+`@ToRegions` shape the function already consumes.
+
+A site-level cut (depot -> site) would be blunter still, but two sites against ~35 depots buys
+almost nothing; not worth adding a `SiteId` to `tblBulkRegion` for it.
+
+### 3.6 Polygon Builder: snap-to-boundary, no overlaps (decided Steve, 7 Oct)
+
+Overlap with a **whole postcode** is not a problem: rule 1 means the postcode has already won.
+Polygon-vs-polygon overlap within a zone group is prevented where the shapes are drawn:
+
+- When a vertex is dragged within N metres of an existing custom polygon's edge (in the same tenant;
+  highlight those in the same zone group), it **snaps** to that edge, so adjacent shapes share a
+  boundary rather than overlap.
+- On save, if the new shape still intersects another polygon that is in the same zone group with a
+  different zone, the save is refused with the overlapping polygon named. Same-zone overlap is
+  allowed (harmless).
+- The resolver's "lowest zone, logged" fallback stays only to cover shapes created before this
+  rule.
 
 ### 3.4 Retire the schedule attachment
 
@@ -221,7 +276,8 @@ postcodes). Only rule 3 needs a point.
 
 1. Part 1 (route modal lookup) - UI + one lookup endpoint, independent, can ship first.
 2. Extract the zone/rating functions into dbmigrationsv2 (snapshots, no behaviour change).
-3. `BulkZonePolygon` + Polygon Builder "Add to zone".
+3. `BulkRunPolygonZip` (normalised tags, backfill) + `BulkZonePolygon` + Polygon Builder "Add to
+   zone" + snap-to-boundary / save-time overlap check.
 4. Polygon branch in the extracted functions, behind a tenant setting until acceptance 2 passes
    on staging for both NZ and US.
 5. Retire `tblSchedulePolygon` (report, then drop).
@@ -230,8 +286,8 @@ postcodes). Only rule 3 needs a point.
 
 ## 7. Decisions needed from Steve
 
-1. **Overlap rule**: lowest zone wins (section 3.3), or refuse to add an overlapping polygon to a
-   group?
+1. ~~Overlap rule~~ - **decided 7 Oct:** prevent at authoring with snap-to-boundary and a save-time
+   intersection check (3.6). Whole-postcode overlap is moot because rule 1 wins.
 2. **Client-specific zone groups** (`BulkZonePostcodeGroup.ClientId`): can a polygon be added to a
    client's group as well as the depot default? (Recommend yes; same table, no extra rule.)
 3. **Pickup side**: polygons resolve the collection zone (`PickupPostcodeGroupId`) the same way as
