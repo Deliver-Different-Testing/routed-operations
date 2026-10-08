@@ -16,6 +16,7 @@
 | **Fix** | One definition of a leg's **operating region**: the depot the leg physically departs from or arrives at. Stamp it once on `tucJob.DepotId` for every leg at insert (LHP and LH already carry it; DEL legs get the chain terminus the Feature 5.3 code already computes), then make every Route Viewer proc filter on it. Section 5. |
 | **Linehaul placement** | LH legs are excluded from Route Viewer entirely and live only on the Linehaul page. Steve does not think that is good design. Decided: option B in section 7, read-only linehaul in/out rows per region in Route Viewer, actions stay on the Linehaul page, Overview gets its own Linehaul column. |
 | **Not changed** | Auto-assign, booking SPs' RegionID stamp (other systems read it), the Linehaul page's own From/To filters. |
+| **Added 9 Oct** | Dane's four rules as the acceptance bar; proof from Medical production that child legs cannot be admitted to any region today (9a, with an interim one-liner); linehaul legs found carrying the final-mile RouteId (9b, booking-SP fix); run list must clear on date/region change (9c). |
 
 ---
 
@@ -130,6 +131,32 @@ Nothing open. If the build turns up something the spec did not anticipate, raise
 ---
 
 ## 9. Acceptance (Medical staging, then production)
+
+**Dane's rules (9 Oct), which are the plain-English statement of this spec and the acceptance bar:**
+
+1. Jobs are assigned to the delivery run day correctly; the problem is filtering, not run assignment.
+2. Outbound filtered by depot shows one run that expands into its jobs.
+3. Linehauls are not depot inbound. Inbound means pickups in the depot area coming to that depot.
+4. Combined shows only routed runs into and out of the filtered depot. Depot staff work from Combined, so it must not drop anything that touches the depot.
+
+**Observed 9 Oct on Medical production, date 16 Oct, Region = Burbank, view Outbound** (screenshots with Steve): Overview counts 45 Burbank jobs; run list is empty after Refresh; before Refresh it still shows the previous date's pickup runs with a "0 runs" counter. Kevin's diagnostic query over `tucJob` rows with `RouteId = 15` on that date returned 72 rows, all **linehaul legs** (LH1 to LH5), every one with `RegionID` NULL (no `tblBulkJob` row of its own) and pickup coordinates that do not equal region 38's stored pair. No DEL legs and no parents carried the RouteId on that date. Two defects fall out, both now in scope:
+
+- **9a. Child legs cannot be admitted to any region today.** Only parents have `tblBulkJob` rows, and the coordinate fallback needs an exact match. This is the proof of section 3's problem. Interim one-liner for the synthetic branch, ahead of the full fix: look the bulk-job row up by the job **or its parent**, `bjr.JobID IN (j.ucjbID, j.ParentID)`. Keep it as the fallback under section 5.
+- **9b. Linehaul legs carry the final-mile RouteId.** Bug 2.1 (28 Sep) set LH legs to `RouteId NULL`; on these bookings every LH leg carries route 15, which is the delivery-side result stamped across the family. Whether the DEL legs for the 16th exist and what they carry is the open question (query in section 9c). The run list and Overview exclude LH legs by job number, so the symptom is hidden there, but the Linehaul page and anything keyed on `RouteId` see it. To be fixed in the booking SPs, not worked around in the viewer.
+- **9c. Front end:** the run list must clear when the date or region changes, not only on Refresh. The stale pickup runs in the first screenshot are the previous date's result set.
+
+```sql
+-- 9c: every leg of the 16 Oct families, with what each carries
+SELECT j.ucjbNumber, CONVERT(date, j.ucjbDate) AS JobDate, j.RouteId, j.DepotId, j.ParentID,
+       bj.RegionID
+FROM dbo.tucJob j
+LEFT JOIN dbo.tblBulkJob bj ON bj.JobID = j.ucjbID AND ISNULL(bj.Void,0) = 0
+WHERE (j.ucjbNumber LIKE 'P48%' OR j.ucjbNumber LIKE 'P49%')
+  AND j.ucjbDate >= '2026-10-15' AND j.ucjbDate < '2026-10-18'
+ORDER BY j.ucjbNumber;
+```
+
+**Acceptance steps:**
 
 1. Region = Burbank, Combined: the run list shows "Burbank to Lab" (once its DEL legs exist) and any real run whose jobs touch depot 38. None of Central Valley, Hayward Pick up Route 1, RNO200/300, SMF2-5 appear.
 2. Region = Hayward: Hayward Pick up Route 1 appears; "Burbank to Lab" does not.
