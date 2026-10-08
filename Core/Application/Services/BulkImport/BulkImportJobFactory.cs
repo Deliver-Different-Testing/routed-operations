@@ -618,6 +618,17 @@ public partial class BulkImportServiceV2
         var clientOrigin = schedule != null && await Context.BulkRunScheduleHeaders
             .AsNoTracking()
             .AnyAsync(h => h.ScheduleId == schedule.ScheduleId && h.OriginType == "client");
+        // Direct origin (2026-10-08). The row's OWN From address is the
+        // pickup, so unlike client origin this does NOT imply
+        // RouteFromClientSite: the client's saved site address has nothing to
+        // do with where a Direct job starts, and setting the flag would let
+        // the preprocessing block below backfill the client's address over an
+        // unmapped row instead of refusing it. The schedule-depot step is
+        // skipped for the same reason client origin skips it - stamping the
+        // dispatch depot would put the run start in the wrong place.
+        var directOrigin = schedule != null && await Context.BulkRunScheduleHeaders
+            .AsNoTracking()
+            .AnyAsync(h => h.ScheduleId == schedule.ScheduleId && h.OriginType == "direct");
         if (clientOrigin)
         {
             request.RouteFromClientSite = true;
@@ -826,8 +837,9 @@ public partial class BulkImportServiceV2
 
             // Step 1 is the schedule's Region depot. A client-origin schedule
             // skips it entirely; its origin is the client's site, resolved by
-            // the RouteFromClientSite branch below.
-            if (!clientOrigin && schedule?.RegionNavigation != null)
+            // the RouteFromClientSite branch below. A direct-origin schedule
+            // skips it too, and resolves at its own branch directly below.
+            if (!clientOrigin && !directOrigin && schedule?.RegionNavigation != null)
             {
                 var r = schedule.RegionNavigation;
                 string nzAL5 = null;
@@ -862,10 +874,33 @@ public partial class BulkImportServiceV2
                 };
             }
 
+            // Direct origin with nothing to start from: refuse the row rather
+            // than letting it fall through to the US-only Origin Location
+            // fallback or to the generic "enable Route starts from client
+            // site" message, neither of which is the right instruction here.
+            // Same reasoning as the client-origin geocode refusal above - a
+            // silently wrong run start is the failure this feature removes.
+            if (directOrigin && string.IsNullOrWhiteSpace(j.FromAddress))
+            {
+                return new ResolvedRoutedOrigin
+                {
+                    Error = "This schedule is Direct, so the pickup address comes from the "
+                        + "import row itself. This row has no From address, so the job would "
+                        + "start in the wrong place. Map a From address column at Step 2."
+                };
+            }
+
             // No longer gated on isUs (spec 4.4): a client-origin schedule
             // needs this branch on NZ too, and on a US tenant the behaviour is
             // unchanged because RouteFromClientSite still has to be set.
-            if (request.RouteFromClientSite && !string.IsNullOrWhiteSpace(j.FromAddress))
+            //
+            // Direct origin resolves here too (2026-10-08) and shares the
+            // projection verbatim, because "the row's own From address and
+            // coordinates" is exactly what it returns. It is admitted by its
+            // own flag rather than by setting RouteFromClientSite, so the
+            // client-site backfill further up never runs for it and the
+            // client's saved site address is never substituted in.
+            if ((request.RouteFromClientSite || directOrigin) && !string.IsNullOrWhiteSpace(j.FromAddress))
             {
                 return new ResolvedRoutedOrigin
                 {

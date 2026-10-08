@@ -218,7 +218,13 @@ public record ScheduleGroupSummaryDto(
     /// 13:00 (base Fri 15:00)", etc). Empty when the schedule has no
     /// overrides. Rendered as nested rows under the base in the Schedules
     /// NEW list view. Appended so positional callers don't break.</summary>
-    List<ScheduleOverrideRowDto> Overrides);
+    List<ScheduleOverrideRowDto> Overrides,
+    /// <summary>'depot', 'client' or 'direct', straight off
+    /// tblBulkRunScheduleHeader.OriginType. The Schedules NEW list needs it
+    /// for the ORIGIN column: PickupDepotName is NULL for BOTH 'client' and
+    /// 'direct', so the column cannot tell them apart without this.
+    /// Appended so positional callers don't break.</summary>
+    string OriginType = "depot");
 
 /// <summary>
 /// One nested override-row entry under a base schedule in the Schedules

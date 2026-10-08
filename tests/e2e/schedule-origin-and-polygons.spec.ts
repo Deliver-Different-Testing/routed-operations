@@ -137,6 +137,25 @@ const CLIENT_ORIGIN_DETAIL = {
   pickupZones: [],
 };
 
+// Direct origin (2026-10-08 follow-on). The goods leave whatever pickup
+// address the booking declares and go straight to the delivery address, with
+// no depot touched. Stored shape: BookPickup = 0, PickupDepotId NULL (same as
+// client origin) but OriginRegionId NULL too, which is what distinguishes the
+// two on read - PickupDepotName alone cannot.
+const DIRECT_ORIGIN_DETAIL = {
+  ...DEPOT_ORIGIN_DETAIL,
+  scheduleId: 20451,
+  name: 'WHK DIRECT TO SITE',
+  bookPickup: false,
+  pickupDepotId: null,
+  pickupDepotName: null,
+  originType: 'direct',
+  originRegionId: null,
+  originRegionName: null,
+  pickupZones: [],
+  linehauls: [],
+};
+
 const LIST_ROW = {
   scheduleId: 1042,
   name: 'AKL > CHCH Pre 10am Medical',
@@ -292,6 +311,106 @@ test.describe('Schedule origin: the Depot card', () => {
     await expect(page.getByText('From client address')).toBeVisible();
     await expect(page.getByText(/Origin region Auckland/)).toBeVisible();
     await expect(page.locator('span').filter({ hasText: /^COLLECTION$/ })).toHaveCount(0);
+  });
+});
+
+test.describe('Schedule origin: Direct', () => {
+  // The 2026-10-08 follow-on. Direct is the third origin and the one with the
+  // tightest chain: one job, booking pickup address straight to the delivery
+  // address, so BOTH the Collection and the Linehaul controls have to be shut
+  // off (client origin only shuts off Collection).
+  const DIRECT_ROW = { ...LIST_ROW, scheduleId: 20451, name: 'WHK DIRECT TO SITE' };
+
+  test('saves Direct from the Depot card and still reads Direct after a reload', async ({ page }) => {
+    // Starts as an ordinary depot-origin schedule with no collection, which is
+    // the shape an operator would be converting. `stored` stands in for the
+    // row: the PUT handler mutates it so the reload below genuinely re-reads
+    // what the save wrote rather than a hard-coded fixture.
+    let stored: Record<string, unknown> = {
+      ...DELIVERY_ONLY_DETAIL,
+      scheduleId: 20451,
+      name: 'WHK DIRECT TO SITE',
+    };
+    let putBody: Record<string, unknown> | null = null;
+
+    await stubSchedules(page, stored, DIRECT_ROW);
+    // Registered AFTER stubSchedules so it wins for this id (page.route
+    // matches in reverse registration order).
+    await page.route('**/api/v2/schedules/20451', (r: Route) => {
+      if (r.request().method() === 'PUT') {
+        putBody = r.request().postDataJSON();
+        stored = {
+          ...stored,
+          originType: putBody!.originType,
+          bookPickup: false,
+          pickupDepotId: null,
+          pickupDepotName: null,
+          originRegionId: null,
+          originRegionName: null,
+        };
+        return json(r, { response: stored });
+      }
+      return json(r, { response: stored });
+    });
+
+    await openRoute(page, 'WHK DIRECT TO SITE');
+
+    // Depot leg is index 0 (no Collection leg on this schedule) and
+    // ChainBuilder expands index 0 on mount, so the picker is already open.
+    const depotSelect = page.locator('select:has(option[value="direct"])').first();
+    await depotSelect.selectOption('direct');
+
+    // Named on the card as the dispatch region, which is the Delivery leg's
+    // region (Christchurch here) - a Direct schedule has no OriginRegionId of
+    // its own, so there is no second picker to read.
+    await expect(page.getByText(/Direct: booking pickup address, dispatched from Christchurch/)).toBeVisible();
+    // No Origin region picker either: that control belongs to client origin.
+    await expect(page.locator('label').filter({ hasText: 'Origin region' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 3, name: /WHK DIRECT TO SITE/ })).toHaveCount(0);
+
+    // The wire body is the part the server validates. originRegionId must be
+    // null and there must be no collection and no linehaul legs, or
+    // ScheduleService.UpsertAsync rejects the save outright.
+    expect(putBody).not.toBeNull();
+    expect(putBody!.originType).toBe('direct');
+    expect(putBody!.originRegionId).toBeNull();
+    expect(putBody!.bookPickup).toBe(false);
+    // The modal sends null rather than [] when the chain has no linehaul
+    // legs, which the server treats the same (Linehauls?.Count ?? 0).
+    expect(putBody!.linehauls ?? []).toEqual([]);
+
+    // Reload and reopen: the stored OriginType seeds the dropdown, so the
+    // chain has to read Direct again without the operator re-picking it.
+    await page.reload();
+    await openRoute(page, 'WHK DIRECT TO SITE');
+    await expect(page.getByText(/Direct: booking pickup address, dispatched from Christchurch/)).toBeVisible();
+  });
+
+  test('a stored Direct schedule disables both the Collection and the Linehaul control', async ({ page }) => {
+    await stubSchedules(page, DIRECT_ORIGIN_DETAIL, DIRECT_ROW);
+    await openRoute(page, 'WHK DIRECT TO SITE');
+
+    await expect(page.getByText(/Direct: booking pickup address, dispatched from Christchurch/)).toBeVisible();
+    // Both, not just Collection. This is the one behaviour that separates
+    // Direct from client origin in the chain editor: a Direct schedule is a
+    // single job, so there is nothing to collect AND nothing to trunk.
+    await expect(page.getByRole('button', { name: /COLLECTION/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /LINEHAUL/ })).toBeDisabled();
+    await expect(page.locator('span').filter({ hasText: /^COLLECTION$/ })).toHaveCount(0);
+    await expect(page.locator('span').filter({ hasText: /^LINEHAUL$/ })).toHaveCount(0);
+  });
+
+  test('client origin still allows Linehaul, so the two origins are not the same rule', async ({ page }) => {
+    // Guard against "disable both whenever the depot is not a real depot".
+    // Client origin deliberately keeps linehauls: goods leave the client's
+    // site and may still be trunked between branches.
+    await stubSchedules(page, CLIENT_ORIGIN_DETAIL, { ...LIST_ROW, scheduleId: 13342, name: 'PB TECH TEST (AIRPORT)' });
+    await openRoute(page, 'PB TECH TEST (AIRPORT)');
+
+    await expect(page.getByRole('button', { name: /COLLECTION/ })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /LINEHAUL/ })).toBeEnabled();
   });
 });
 

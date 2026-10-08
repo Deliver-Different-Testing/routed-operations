@@ -16,7 +16,7 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
@@ -190,13 +190,20 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   // from the Depot leg is an identity round-trip, because seedLegsFromDto
   // seeds that leg from PickupDepotId in the first place. That is what keeps
   // existing LHP + DEL schedules behaving exactly as before.
+  //
+  // Three-way since 2026-10-08 (Direct). The three-way resolution itself
+  // lives in ChainBuilder's deriveOriginFromLegs so this modal and
+  // NewScheduleModal cannot disagree about it.
+  //
+  //   direct origin -> BookPickup = 0, PickupDepotId = NULL,
+  //                    OriginRegionId = NULL. No Collection leg and no
+  //                    linehaul legs, both blocked in the chooser and
+  //                    rejected server-side.
   const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
   const hasCollection = legs.some((l) => l.type === 'collection');
-  const clientOrigin = firstDepot?.clientAddress === true;
-  const originType = clientOrigin ? 'client' : 'depot';
-  const originRegionId = clientOrigin ? (firstDepot?.originRegionId ?? null) : null;
+  const { originType, originRegionId } = deriveOriginFromLegs(legs);
   let bookPickup = false;
-  if (!clientOrigin && hasCollection) {
+  if (originType === 'depot' && hasCollection) {
     bookPickup = true;
     pickupDepotId = firstDepot?.depotId ?? null;
   }
@@ -252,6 +259,9 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   // section 5.2 derivation is read-side only; using it to seed the editor
   // would let an unflagged schedule be saved back as client origin.
   const clientOrigin = d.originType === 'client';
+  // Same rule for Direct (2026-10-08): seeded from the stored OriginType so
+  // the Depot card's dropdown reopens on the value that was saved.
+  const directOrigin = d.originType === 'direct';
   // A Collection leg only when the schedule actually books a collection.
   // This used to be unconditional, which is why a delivery-only schedule
   // rendered as "Collect from Auckland" (F6).
@@ -266,14 +276,24 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
         .sort((a, b) => a - b),
     });
   }
-  if (clientOrigin) {
+  if (directOrigin) {
+    // Direct carries no depot and no origin region. The Depot card still
+    // exists because it is where the origin is expressed; it names the
+    // Delivery leg's region as the dispatch branch, read live rather than
+    // stored here.
     legs.push({
-      type: 'depot', depotId: null, clientAddress: true,
+      type: 'depot', depotId: null, clientAddress: false, directOrigin: true,
+      originRegionId: null, storageState: d.storageState,
+    });
+  } else if (clientOrigin) {
+    legs.push({
+      type: 'depot', depotId: null, clientAddress: true, directOrigin: false,
       originRegionId: d.originRegionId ?? null, storageState: d.storageState,
     });
   } else if (d.pickupDepotName) {
     legs.push({
       type: 'depot', depotId: d.pickupDepotId ?? null, clientAddress: false,
+      directOrigin: false,
       originRegionId: null, storageState: d.storageState,
     });
   }
