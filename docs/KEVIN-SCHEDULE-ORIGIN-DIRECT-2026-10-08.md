@@ -3,7 +3,7 @@
 **For:** Kevin  **From:** Steve (via EasyEA)  **Date:** 8 October 2026
 **Repos:** routed-operations (Schedules NEW chain builder, ScheduleService, Route Builder filters, Bulk Import), dbmigrationsv2 (three single-job booking procs, one CHECK constraint)
 **Builds on:** `KEVIN-SCHEDULE-ORIGIN-CLIENT-ADDRESS-2026-10-07.md` (shipped 7 Oct). This is a follow-on, not an addendum: that spec is in production and stays as written.
-**Status:** draft for Steve's review. Decisions in section 8.
+**Status:** approved by Steve 8 Oct 2026 for build, after the collapse piece. Section 8 recommendations stand as the decisions unless Steve says otherwise in Slack.
 
 ---
 
