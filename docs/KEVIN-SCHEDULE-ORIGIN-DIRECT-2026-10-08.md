@@ -59,7 +59,7 @@ The first Depot leg already carries a dropdown with Depot and Client address (Ch
 | Collection leg | allowed | not allowed | **not allowed** |
 | Linehaul legs | allowed | allowed (loads at client site) | **not allowed** |
 | `OriginRegionId` | null | required | null |
-| `Region` (dispatch) | the Depot leg's depot | the Delivery leg's depot | the Depot leg's depot, relabelled "Dispatch region" |
+| `Region` (dispatch) | the Depot leg's depot | the Delivery leg's depot | **the Delivery leg's depot** (corrected 8 Oct, Kevin's reading 1). A Direct schedule has no linehaul, so the only depot in it is the delivery region's, and that is what `Region` already stores. No separate dispatch-depot control or field. |
 | Route Builder admits by | depot coordinates / `tblBulkJob.RegionID` | `OriginRegionId` | **`tblBulkJob.RegionID`** |
 | Bulk Import From | the Region depot | client site (`RouteFromClientSite` implied) | **the import row's own From** |
 | Can be default | yes | no (address is client-specific) | **yes** (address comes from each booking) |
@@ -97,11 +97,11 @@ Numbering: after the latest file on develop at the time of writing.
 | A1 | `Core/Application/Dtos/Schedule/ScheduleRequests.cs` (OriginType, `[StringLength(6)]`) | accept 'direct'. |
 | A2 | `Core/Application/Services/Schedule/ScheduleService.cs` ~1135-1191 (origin write) | `originType` resolves 'direct' as well as 'client'. Validation for 'direct': no Collection leg (`bookPickup` must be false), no linehaul legs in the request, `OriginRegionId` forced null. Default allowed (section 8, D1). Error text names the rule: "A Direct schedule books one job from the pickup address given at booking time; remove the Collection and linehaul legs or choose Depot." |
 | A3 | `ScheduleService.cs` ~1477 (copy) and ~1912 (read) | copy carries 'direct' across unchanged (unlike 'client', there is no client-specific address to lose); read returns it. |
-| A4 | `wwwroot/app/react/components/schedules-new/ChainBuilder.tsx` ~725 (first-depot `<select>`) | add `<option value="direct">Direct (pickup address from the booking)</option>` on the first Depot card only. Card renders "Direct: booking pickup address, dispatched from {depot}". The Add Collection and Add Linehaul buttons disable with the same tooltip pattern used for client origin (~468). |
+| A4 | `wwwroot/app/react/components/schedules-new/ChainBuilder.tsx` ~725 (first-depot `<select>`) | add `<option value="direct">Direct (pickup address from the booking)</option>` on the first Depot card only. Choosing it consumes the depot pick on that card; the dispatch region is the Delivery leg's region. Card renders "Direct: booking pickup address, dispatched from {delivery region}", falling back to "dispatched from the delivery region" until the Delivery leg names one. The Add Collection and Add Linehaul buttons disable with the same tooltip pattern used for client origin (~468). |
 | A5 | `ScheduleDetailModal.tsx` ~196 / `NewScheduleModal.tsx` ~283 (derive `originType` from the chain) | three-way: client card selected = 'client', direct selected = 'direct', else 'depot'. `seedLegsFromDto` seeds the dropdown from the stored value. |
 | A6 | `Core/Application/Services/Run/RunService.cs` ~122 and `Core/Application/Services/Job/JobService.cs` ~136, ~351 (Route Builder region admission) | the 7 Oct clause admits client-origin jobs by `h.OriginType = 'client' AND h.OriginRegionId IN @regions`. Add the sibling: `h.OriginType = 'direct' AND bj.RegionID IN @regions`. A Direct job's pickup coordinates are wherever the booking says, so the coordinate test cannot be relied on. |
 | A7 | `Core/Application/Services/BulkImport/BulkImportJobFactory.cs` ~616-620 (routed origin precedence) | for 'direct', use the import row's own From address and coordinates; do not substitute the Region depot and do not imply `RouteFromClientSite`. Refuse the row if it has no From address, same message style as the client-origin geocode refusal. |
-| A8 | Schedules NEW list, ORIGIN column | shows "Direct". |
+| A8 | Schedules NEW list, ORIGIN column | shows "Direct". The column derived its value from `pickupDepotName ?? 'Client address'`, which is NULL for Direct too; Kevin added `OriginType` to `ScheduleGroupSummaryDto` so the column reads it (8 Oct). Accepted. |
 
 Tests: one Playwright E2E extending `tests/e2e/schedule-origin-and-polygons.spec.ts` with an `originType: 'direct'` case (save, reload, chain shows Direct, Collection and Linehaul disabled); vitest on the three-way derive in A5.
 
