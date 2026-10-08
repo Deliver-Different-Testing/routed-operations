@@ -2,7 +2,7 @@
 
 **For:** Kevin  **From:** Steve (via EasyEA)  **Date:** 8 October 2026
 **Repos:** routed-operations (Route Viewer pages, RouteViewerRunService), dbmigrationsv2 (RVW_* procs)
-**Status:** spec for review. Decisions in section 8; two are Steve's, one is Kevin's.
+**Status:** decided 8 Oct 2026 (Steve). All three decisions in section 8 are closed; ready to build. Suggested order: section 5 first (operating region), then section 7 option B as its own small piece.
 
 ---
 
@@ -14,7 +14,7 @@
 | **Cause** | A run is admitted to a region by its jobs' `tblBulkJob.RegionID`. That column is the **schedule's Region**, stamped on every leg of the family, and on Medical every schedule's Region is 38 (the chain terminus, "Burbank"). So a Hayward pickup is a "Burbank" job because its parcel ends up there. |
 | **Why it is confusing** | Route Viewer uses three different ideas of region on one screen: family region (real runs, overview, missing list), leg depot (synthetic LHP legs, the Linehaul page) and direction (Inbound / Outbound). Only the second matches what an operator means by "show me Burbank". |
 | **Fix** | One definition of a leg's **operating region**: the depot the leg physically departs from or arrives at. Stamp it once on `tucJob.DepotId` for every leg at insert (LHP and LH already carry it; DEL legs get the chain terminus the Feature 5.3 code already computes), then make every Route Viewer proc filter on it. Section 5. |
-| **Linehaul placement** | LH legs are excluded from Route Viewer entirely and live only on the Linehaul page. Steve does not think that is good design. Section 7 sets out three options and a recommendation; it is Steve's decision. |
+| **Linehaul placement** | LH legs are excluded from Route Viewer entirely and live only on the Linehaul page. Steve does not think that is good design. Decided: option B in section 7, read-only linehaul in/out rows per region in Route Viewer, actions stay on the Linehaul page, Overview gets its own Linehaul column. |
 | **Not changed** | Auto-assign, booking SPs' RegionID stamp (other systems read it), the Linehaul page's own From/To filters. |
 
 ---
@@ -111,17 +111,21 @@ Today LH legs are excluded from the Route Viewer run list and Overview and appea
 | **B. Linehaul rows in Route Viewer, actions stay on Linehaul page** (recommended) | each region's run list gets read-only rows "Linehaul in: Hayward to Burbank (n)" and "Linehaul out: ..." built from LH legs whose `FromDepotId` or `ToDepotId` is the selected region; clicking one opens the Linehaul page pre-filtered | one screen per depot; small change (a third branch in `RVW_stpBulkRuns_2` or a second call from `RouteViewerRunService`); Linehaul page keeps its specialist tooling | two places show the same legs; counts in Overview need a separate "Linehaul" column or they double up |
 | **C. Merge the Linehaul page into Route Viewer** | the Linehaul tab becomes a view mode of Route Viewer with its actions moved across | one page | large front-end change; the trunk actions (manifests, labels by ToDepot) do not fit the per-run context menu; not before the collapse and F18 |
 
-Recommendation: B now, as its own small piece after section 5, with the Overview gaining a Linehaul column rather than folding LH legs into the region totals. C is a later decision once Route Viewer has settled.
+**Decided 8 Oct (Steve): B.** Build it as its own small piece after section 5, with the Overview gaining a Linehaul column rather than folding LH legs into the region totals. C stays open as a later decision once Route Viewer has settled.
 
 ---
 
 ## 8. Decisions
 
-| # | Question | Owner | Recommendation |
-|---|---|---|---|
-| D1 | Adopt operating-region admission (section 5) across run list, missing list and Overview? | Steve | Yes. It is the rule the synthetic LHP branch and the Linehaul page already use. |
-| D2 | Linehaul placement: A, B or C (section 7)? | Steve | B. |
-| D3 | Persist the DEL departure depot on `tucJob.DepotId` (preferred) or compute it in each proc? | Kevin | Persist. Four procs would otherwise each carry the chain lookup, and the resolver already computes the value at insert. |
+All closed by Steve on 8 Oct 2026.
+
+| # | Question | Decision |
+|---|---|---|
+| D1 | Adopt operating-region admission (section 5) across run list, missing list and Overview? | **Yes.** It is the rule the synthetic LHP branch and the Linehaul page already use. |
+| D2 | Linehaul placement: A, B or C (section 7)? | **B.** Read-only linehaul in/out rows per region in Route Viewer; actions stay on the Linehaul page; Overview gets a Linehaul column. |
+| D3 | Persist the DEL departure depot on `tucJob.DepotId` or compute it in each proc? | **Persist.** Four procs would otherwise each carry the chain lookup, and the resolver already computes the value at insert. Backfill existing DEL legs per section 5 item 2. |
+
+Nothing open. If the build turns up something the spec did not anticipate, raise it in Slack rather than picking a default.
 
 ---
 
