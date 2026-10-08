@@ -779,3 +779,23 @@ FROM dbo.RouteAutoAssignLog
 WHERE CreatedAtUtc >= DATEADD(DAY, -14, SYSUTCDATETIME())
 GROUP BY ResolvedRouteId, Outcome, Side ORDER BY ResolvedRouteId, N DESC;
 ```
+
+---
+
+## 10. Build findings, 8 October (Kevin) and decisions (Steve)
+
+Kevin built M1 and M4 against `Despatch_Urgent_Staging` on 8 Oct and reported nine findings. Each is recorded here with the decision, so this document stays the single plan.
+
+| # | Finding | Decision / change to the plan |
+|---|---|---|
+| 1 | M1 (`tblBulkRunScheduleDetail`, `OccurrencesAhead` on the override table, `fnCutoffDayFor`, `fnCutoffHoursFor`) and M4 (`uspScheduleConvert`, `uspScheduleUnconvert`, convert log) built, additive, inert until M2. | Accepted as built. |
+| 2 | About 16% of schedules cannot be expressed as "N working days before". 330 day rows on ~324 live schedules pair a weekday run with a weekend cutoff; 307 are Monday runs with a Sunday cutoff. These are the F11 backfill of the old 24 to 30 hour Monday values, and a Sunday cutoff for a Monday run is real. | **Calendar-day unit.** The detail row's cutoff rule gains `CutoffDayUnit CHAR(1) NOT NULL` with values `W` (working days) and `C` (calendar days), default `W`. "1 day before at 11:00, calendar" covers Monday-to-Sunday and Tuesday-to-Friday-to-previous-day in one rule, so most of the 307 convert cleanly. `fnCutoffDayFor` / `fnCutoffHoursFor` take the unit. The converter tries `W`, then `C`, and refuses with `CutoffDayNotExpressible` only when neither fits all days. Section 2.5 is amended accordingly. Not an absolute-weekday escape hatch, and not data errors. |
+| 3 | Converter refuses `CutoffDayNotExpressible` rather than rounding Sunday back to Friday. | Agreed. Rounding would silently move a live cutoff by two days on 307 schedules. With finding 2 the refused slice shrinks to the genuinely mixed schedules. |
+| 4 | `StartTime`, `EndTime`, `MaxJobs`, `Region`, `CutoffHours` are `NOT NULL` on the day table; 5a step 4 nulls them. | Agreed. M2 relaxes all five to `NULL` beside the rename. M4's up-front `DayColumnsNotNullable` refusal stays as the guard. |
+| 5 | The Monday +48h pattern is not a hack: under the relative model it is the Friday-to-Monday wall-clock distance and `fnCutoffHoursFor` reproduces the 60 to 68 hour values from the one shared rule. | Accepted; section 2.5 reworded. The operative point stands: nobody is to "clean up" the Monday values by hand, on 734 schedules or any subset. |
+| 6 | Duplicate `(ScheduleId, DayOfWeek)` groups: 205 on staging against 112 on prod. | Staging is dirtier than prod. Budget the dry-run-then-fix loop in step F; no plan change. Re-run B1b on prod before F. |
+| 7 | `tblBulkRunScheduleConvertLog` designed and placed in M4 (5a and step F referenced it; no migration defined it). `OccurrencesAhead` has no source on the day row. | Log accepted in M4. `OccurrencesAhead` is **not** NULL and **not** a copy of the client-speed `DaysInFuture`: the converter writes the number of active days in the mask (one week's worth). Per-client values are seeded once in **M5**, which also retires `DaysInFuture` as a decision input. See `KEVIN-SCHEDULE-OCCURRENCES-AHEAD-2026-10-08.md`. |
+| 8 | The two ClientManager repairs as one re-runnable migration. The 5 missing links are `CreatedBy` ClientManager; the 16 headers with partial zone rows are `CreatedBy` the 8 Sep migration, so the zone repair may be a one-off. | Keep both re-runnable. The header `CreatedBy` says when the header was made, and every pre-September schedule's header was made by that migration; it does not say who wrote the zone rows. The evidence that ClientManager writes zones to one day row is #2900 on Urgent Prod, created in ClientManager on 8 Oct with zones on Monday only, repaired by Kerran before the sweep ran. Cheap to keep; retire with ClientManager. |
+| 9 | Zone repair skips and reports when two populated day rows disagree (fires on `Denver to ABQ test` on US). | Agreed. |
+
+**Step order after these findings:** M1 and M4 (built) -> M2 (rename, view, relax the five columns, unit column read by the view) -> M3 (`fnScheduleForClient` reads detail, gains `OccurrencesAhead`) -> **M5** (occurrences ahead: seed + both availability functions) -> rollout steps C to F. Step F runs after M5 so the batch writes the default N in the same pass.
