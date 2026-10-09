@@ -54,15 +54,19 @@ N = 1 is what the old `DaysInFuture = 0` "next available" branches did. They go.
 | `OccurrencesAhead` | `tblBulkRunScheduleDetail` (M1) | `TINYINT NOT NULL` | the number of `1`s in `WeekDays`, i.e. one week's worth. The converter writes this. Validation 1 to 14. |
 | `OccurrencesAhead` | `tblBulkRunScheduleOverride` (M1, Kevin has added it) | `TINYINT NULL` | NULL = inherit. Seeded once by M5 where a client's current window differs from the default (section 5). |
 
-Old-shape schedules (no detail row yet) resolve N as the count of distinct active `DayOfWeek` rows, which is the same one-week default. Expose this through the compatibility view so the functions read one column, `OccurrencesAhead`, whatever the schedule's shape:
+Old-shape schedules (no detail row yet) resolve N as the count of distinct `DayOfWeek` rows, which is the same one-week default. (The day table has no `Active` column; a day row existing is what "active" means. Corrected 9 Oct after Kevin's review.)
+
+**The compatibility view does not get this column** (corrected 9 Oct). The view's contract is column-for-column identity with the old table, so positional `INSERT ... SELECT *` keeps working and the V1 zero-row `EXCEPT` diff can run at all. The fallback lives in `fnScheduleForClient`, which gains one output column:
 
 ```sql
-COALESCE(x.OccurrencesAhead,
-         (SELECT COUNT(DISTINCT d2.DayOfWeek) FROM dbo.tblBulkRunScheduleDay d2
-           WHERE d2.ScheduleId = d.ScheduleId AND d2.Active = 1)) AS OccurrencesAhead
+COALESCE(ov.OccurrencesAhead,                       -- client override, Scope = 'schedule', DayOfWeek 0
+         x.OccurrencesAhead,                        -- detail row (converted schedules)
+         (SELECT COUNT(DISTINCT d2.DayOfWeek)       -- old-shape fallback: one week's worth
+            FROM dbo.tblBulkRunScheduleDay d2
+           WHERE d2.ScheduleId = h.ScheduleId)) AS OccurrencesAhead
 ```
 
-`fnScheduleForClient` gains one output column, `OccurrencesAhead = COALESCE(ov.OccurrencesAhead, s.OccurrencesAhead)`, from the `Scope = 'schedule'` override row, same pattern as `CutoffDay`.
+Section 4 reads N from `fnScheduleForClient`, so nothing else needs it.
 
 ---
 
@@ -107,7 +111,7 @@ JOIN dbo.tblScheduleClient sc ON sc.ClientId = cs.ClientID
 JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = sc.ScheduleId AND h.RetiredUtc IS NULL
 CROSS APPLY (SELECT COUNT(DISTINCT s.DayOfWeek) AS ActiveDays
              FROM dbo.tblBulkRunSchedule s
-             WHERE s.ScheduleId = h.ScheduleId AND s.Active = 1 AND s.SpeedId = cs.JobTypeID) ad
+             WHERE s.ScheduleId = h.ScheduleId AND s.SpeedId = cs.JobTypeID) ad   -- no Active column on the day table; a row = an active day
 WHERE ISNULL(cs.DaysInFuture, 6) <> 6
   AND ad.ActiveDays > 0
 ORDER BY cs.ClientID, h.ScheduleId;
@@ -115,7 +119,7 @@ ORDER BY cs.ClientID, h.ScheduleId;
 
 The insert writes one `Scope = 'schedule'` override row per (client, schedule) from that preview, `OccurrencesAhead = ProposedN`, only where no override row exists for that pair, else updates the column on the existing row. `ProposedN` is an approximation (the exact count depends on the weekday the window starts); accepted, D3. Defaults (`IsDefault = 1`) are covered through the same client speed rows because the join is on the client's linked schedules plus every default the client can see; Kevin to extend the join with `OR h.IsDefault = 1` and dedupe.
 
-Table name `tblClientAvailableSpeed` to be confirmed against the live schema; it is the table `UTL_fncJob_GetClientAvailableSpeed` reads `DaysInFuture` from.
+Table name `tblClientAvailableSpeed` confirmed by Kevin against Urgent Prod on 9 Oct; it is what `UTL_fncJob_GetClientAvailableSpeed` reads `DaysInFuture` from.
 
 ---
 

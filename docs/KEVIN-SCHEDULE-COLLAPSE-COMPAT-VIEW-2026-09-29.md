@@ -831,14 +831,14 @@ Kevin's staging figure of 22 refusals did not count the time class. The detail r
 
 Mechanism: the F1 override table `tblBulkRunScheduleOverride` already carries `ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek, CutoffDay, CutoffTime, CutoffHours`. Today the resolver reads only `DayOfWeek = 0` ("all days") rows for a specific client. Two extensions:
 
-1. **Schedule-wide rows.** `ClientId` NULL (or a 0 sentinel if the key forbids NULL - Kevin to check) means "every client".
+1. **Schedule-wide rows.** `ClientId = 0` means "every client" (`ClientId` is `int NOT NULL`, confirmed 9 Oct). The unique clustered key is already `(ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek)` with `DayOfWeek TINYINT NOT NULL DEFAULT 0`, so a schedule-wide Monday exception is `(ScheduleId, 0, 'schedule', 0, 1)` and needs no structural change.
 2. **Day-specific rows.** `DayOfWeek` 1 to 7 is read. Resolution order in `fnScheduleForClient` and in the compatibility view: client + day, then client all-days, then schedule-wide day, then the detail row's rule.
 
-Exception rows carry the relative rule shape (`CutoffDaysBefore`, `CutoffDayUnit`, `CutoffTime`), same as the detail row; add the two columns to the override table in M1.
+Exception rows carry the relative rule shape (`CutoffDaysBefore`, `CutoffDayUnit`, `CutoffTime`), same as the detail row; add the two columns to the override table in M1, with the same 1 to 14 CHECK on `OccurrencesAhead` that D2 of the occurrences spec asks for.
 
 **Converter (`uspScheduleConvert`):** when day rows disagree on cutoff only, write the **majority** rule to the detail row and one schedule-wide day exception per differing day. Report `ConvertedWithExceptions = N` and list them. Refuse only for `DuplicateDay` / `WindowVariesByDay` / `PayloadVaries` as before. `CutoffDayNotExpressible` disappears as a refusal reason.
 
-**Saturday / Sunday run days under `W`:** a weekend run day whose cutoff is the previous working day counts as 1 working day (Sat <- Fri = 1, Sun <- Fri = 1). `fnCutoffDayFor` / `fnCutoffHoursFor` to implement; clears most of the 22.
+**Saturday / Sunday run days under `W`:** already handled in the version Kevin has written. `fnCutoffDayFor` maps any weekend run day onto working-week position 6, so Sat and Sun both resolve "one working day before" to Friday. Nothing to add; it should clear the 22 Saturday cases on its own.
 
 **Ops report (`vwScheduleCutoffExceptions` or a saved query, Kevin's choice):** one row per exception - schedule, name, client (or "all"), day, the detail rule, the exception rule, the delta in hours - so ops can tidy them in Schedules NEW as they go. Schedules NEW shows exceptions on the Operating days tab as a marked day ("Monday differs: cutoff Fri 18:00") rather than seven free boxes.
 
