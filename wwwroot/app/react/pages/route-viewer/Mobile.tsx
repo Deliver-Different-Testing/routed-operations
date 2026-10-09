@@ -48,9 +48,9 @@ export default function Mobile() {
   // each address row gets a visible Fix GPS button (no right-click).
   const [gpsLeg, setGpsLeg] = useState<'pickup' | 'delivery' | null>(null);
 
-  const { clientInternal, multipleClients, regions, speeds } = useRouteViewerLookups(runDate, false);
+  const { regions, speeds } = useRouteViewerLookups(runDate, false);
   const runsQuery = useRouteViewerRuns({
-    runDate, clientInternal, multipleClients,
+    runDate,
     clientIds: [], regionIds, speedIds, group: 'Combined',
   });
 

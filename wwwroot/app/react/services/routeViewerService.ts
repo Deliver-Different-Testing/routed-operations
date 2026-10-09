@@ -154,8 +154,6 @@ export interface BulkJob {
 
 export interface RunFilters {
   runDate: string;                     // yyyy-MM-dd
-  clientInternal?: boolean;
-  multipleClients?: boolean;
   clientId?: number | null;
   clientIds?: number[];
   regionIds?: number[];
@@ -184,20 +182,11 @@ export const routeViewerService = {
   // -----------------------------------------------------------------
   // Filters
   // -----------------------------------------------------------------
-  /** Client dropdown lookup. Backend action signature is
-   *  `(runDate, multipleClients, contactId)` and the SP
-   *  `RVW_stpBulkClients` narrows the returned list to what the given
-   *  `@ContactID` may see. Legacy homeService.js:105-108 passes
-   *  contactId; without it every caller sees the full tenant client
-   *  list regardless of their contact-scope. */
-  getClients: (runDate: string, multipleClients = false, contactId?: number | null) =>
-    unwrap<Lookup[]>(
-      `/runviewer/filters/clients${buildQuery({
-        runDate,
-        multipleClients: String(multipleClients),
-        contactId: contactId ?? undefined,
-      })}`,
-    ),
+  /** Client dropdown lookup. The SP `RVW_stpBulkClients` narrows the
+   *  list to what the caller's contact may see; the server takes that
+   *  contact from the session ContactID claim, never from the request. */
+  getClients: (runDate: string) =>
+    unwrap<Lookup[]>(`/runviewer/filters/clients${buildQuery({ runDate })}`),
 
   getSpeeds: (runDate: string) =>
     unwrap<Lookup[]>(`/runviewer/filters/speeds${buildQuery({ runDate })}`),
@@ -216,8 +205,6 @@ export const routeViewerService = {
     unwrap<BulkRun[]>(
       `/runviewer/runs${buildQuery({
         runDate: filters.runDate,
-        clientInternal: String(filters.clientInternal ?? false),
-        multipleClients: String(filters.multipleClients ?? false),
         clientId: filters.clientId ?? undefined,
         clientIds: toCsv(filters.clientIds),
         regionIds: toCsv(filters.regionIds),
@@ -442,15 +429,14 @@ export const routeViewerService = {
    *  GET /runviewer/jobs/print-list. Emits full BulkJob shape so the
    *  Print Manager UI has access to Speed / RefA / RefB / OurRef /
    *  Mobile / Email / Notes for column display and free-text search.
-   *  clientInternal / regionIds / clientIds filters are optional. */
+   *  regionIds / clientIds filters are optional. */
   getPrintJobList: (
     runDate: string,
-    opts?: { clientInternal?: boolean; clientId?: number | null; clientIds?: number[]; regionIds?: number[] },
+    opts?: { clientId?: number | null; clientIds?: number[]; regionIds?: number[] },
   ) =>
     unwrap<BulkJob[]>(
       `/runviewer/jobs/print-list${buildQuery({
         runDate,
-        clientInternal: String(opts?.clientInternal ?? false),
         clientId: opts?.clientId ?? undefined,
         clientIds: toCsv(opts?.clientIds),
         regionIds: toCsv(opts?.regionIds),
@@ -472,7 +458,6 @@ export const routeViewerService = {
    *  source rather than the client dropping rows post-fetch. */
   getBulkScanJobs: (
     runDate: string,
-    clientInternal = false,
     clientIds?: number[],
     regionIds?: number[],
     speedIds?: number[],
@@ -494,7 +479,6 @@ export const routeViewerService = {
       transitScanned: number;
     }>>(`/runviewer/scans${buildQuery({
       runDate,
-      clientInternal: String(clientInternal),
       clientIds: (clientIds ?? []).join(',') || undefined,
       regionIds: (regionIds ?? []).join(',') || undefined,
       speedIds: (speedIds ?? []).join(',') || undefined,
@@ -587,11 +571,10 @@ export const routeViewerService = {
       role: string | null;
     }>>(`/runviewer/scans/detail${buildQuery({ runDate, scan, rootJobId })}`),
 
-  getEvents: (runDate: string, clientInternal = false, includeClosed = false) =>
+  getEvents: (runDate: string, includeClosed = false) =>
     unwrap<Array<{ eventId: number; jobNumber: string; createdByName: string; notes: string; closed: boolean }>>(
       `/runviewer/events${buildQuery({
         runDate,
-        clientInternal: String(clientInternal),
         includeClosed: String(includeClosed),
       })}`,
     ),

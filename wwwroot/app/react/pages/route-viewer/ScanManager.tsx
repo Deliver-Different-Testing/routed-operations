@@ -690,7 +690,6 @@ export default function ScanManager() {
   // operator can toggle. Not persisted since Scan Manager is a
   // read-mostly surface (persistence adds noise here).
   const [mode, setMode] = useState<Mode>(user.isUsTenant ? 'Routed' : 'Bulk');
-  const [clientInternal, setClientInternal] = useState(false);
   const [selectedRootJobId, setSelectedRootJobId] = useState<number | null>(null);
   // Track which routed rows are expanded so we can lazy-load item-
   // progress + render the per-item leg-track mini display beneath
@@ -735,7 +734,7 @@ export default function ScanManager() {
   // Reset the pager when the operative row set changes (mode / filters
   // / search / date all reshuffle the pool, so page 4 of the old view
   // rarely maps to a useful page 4 of the new view).
-  useEffect(() => { setBulkPage(1); }, [mode, runDate, clientIds, regionIds, speedIds, search, clientInternal]);
+  useEffect(() => { setBulkPage(1); }, [mode, runDate, clientIds, regionIds, speedIds, search]);
 
   // Row context-menu wiring (task #48). Section Z has not yet confirmed
   // which actions this menu should carry (legacy jobList.tpl:46 binds
@@ -768,9 +767,9 @@ export default function ScanManager() {
   );
 
   const bulkQ = useQuery({
-    queryKey: ['sm-bulk', runDate, clientInternal, clientIds, regionIds, speedIds],
+    queryKey: ['sm-bulk', runDate, clientIds, regionIds, speedIds],
     queryFn: () => routeViewerService.getBulkScanJobs(
-      runDate, clientInternal, clientIdsNum, regionIdsNum, speedIdsNum,
+      runDate, clientIdsNum, regionIdsNum, speedIdsNum,
     ),
     enabled: mode === 'Bulk' && !!runDate,
     staleTime: 5_000,
@@ -945,17 +944,6 @@ export default function ScanManager() {
             </Button>
           ))}
         </div>
-        {mode === 'Bulk' && !user.isNetworkPartner && (
-          <label className="flex items-center gap-1 text-xs text-text-muted">
-            <input
-              type="checkbox"
-              checked={clientInternal}
-              onChange={(e) => setClientInternal(e.target.checked)}
-              className="accent-brand-cyan"
-            />
-            Client internal
-          </label>
-        )}
         {mode === 'Bulk' && !user.isNetworkPartner && (
           // Admin-only bulk purge of missing LHP/DEL scan children for
           // the current date + filter slice. Fires legacy
