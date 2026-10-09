@@ -110,6 +110,7 @@ export function ClientOverrideEditor({
   const [dayPickerOpen, setDayPickerOpen] = useState(false);
   const [displayName, setDisplayName] = useState<string>('');
   const [displayDescription, setDisplayDescription] = useState<string>('');
+  const [occurrencesAhead, setOccurrencesAhead] = useState<string>('');
 
   // Collection scope
   const [collSpeedId, setCollSpeedId] = useState<string>('');
@@ -128,6 +129,11 @@ export function ClientOverrideEditor({
     setWeekDays(parseWeekDaysMask(existing?.schedule?.weekDays ?? null));
     setDisplayName(existing?.schedule?.displayName ?? '');
     setDisplayDescription(existing?.schedule?.displayDescription ?? '');
+    setOccurrencesAhead(
+      existing?.schedule?.occurrencesAhead != null
+        ? String(existing.schedule.occurrencesAhead)
+        : '',
+    );
     setCollSpeedId(existing?.collection?.speedId != null ? String(existing.collection.speedId) : '');
     setCollZoneGroupId(existing?.collection?.zoneGroupId != null ? String(existing.collection.zoneGroupId) : '');
     setCollPickupTimeMode(existing?.collection?.pickupTimeMode ?? '');
@@ -211,13 +217,26 @@ export function ClientOverrideEditor({
     isActive: null,
     displayName: nzOrNull(displayName),
     displayDescription: nzOrNull(displayDescription),
+    occurrencesAhead: parseInt10(occurrencesAhead),
   };
   const scheduleHasValues =
     scheduleScope.cutoffDay != null
     || scheduleScope.cutoffTime != null
     || scheduleScope.weekDays != null
     || scheduleScope.displayName != null
-    || scheduleScope.displayDescription != null;
+    || scheduleScope.displayDescription != null
+    || scheduleScope.occurrencesAhead != null;
+
+  // Decision D2 of the occurrences-ahead spec. Blank is valid and means
+  // inherit; a number outside 1 to 14 is not, and the API rejects it, so
+  // say so here rather than on round trip.
+  const occurrencesAheadError =
+    scheduleScope.occurrencesAhead != null
+    && (Number.isNaN(scheduleScope.occurrencesAhead)
+        || scheduleScope.occurrencesAhead < 1
+        || scheduleScope.occurrencesAhead > 14)
+      ? 'Enter a number from 1 to 14, or leave blank to inherit.'
+      : null;
 
   const collectionScope: LegScopeOverride = {
     speedId: parseInt10(collSpeedId),
@@ -299,7 +318,7 @@ export function ClientOverrideEditor({
           <button
             type="button"
             onClick={handleSave}
-            disabled={busy}
+            disabled={busy || occurrencesAheadError != null}
             className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
             data-testid="override-save"
           >
@@ -407,6 +426,26 @@ export function ClientOverrideEditor({
                 className={`mt-1 ${inputCls} resize-y`}
                 data-testid="override-display-description"
               />
+            </label>
+            <label className={`${labelCls} col-span-2`}>
+              <span className={labelSpanCls}>Occurrences ahead</span>
+              <input
+                type="number"
+                min={1}
+                max={14}
+                value={occurrencesAhead}
+                onChange={(e) => setOccurrencesAhead(e.target.value)}
+                placeholder="Inherit"
+                className={`mt-1 ${inputCls}`}
+                data-testid="override-occurrences-ahead"
+              />
+              <span
+                className={`mt-1 text-xs ${occurrencesAheadError ? 'text-rose-600' : 'text-slate-500'}`}
+                data-testid="override-occurrences-ahead-help"
+              >
+                {occurrencesAheadError
+                  ?? 'How many upcoming runs of this schedule the booking page offers this client. Blank inherits the schedule.'}
+              </span>
             </label>
           </div>
         </section>

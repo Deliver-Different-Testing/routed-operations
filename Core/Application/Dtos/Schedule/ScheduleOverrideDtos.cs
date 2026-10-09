@@ -1,4 +1,4 @@
-namespace RoutedOperations.Core.Application.Dtos.Schedule;
+﻿namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
 /// <summary>
 /// One client's full set of overrides against a schedule. Groups the delta
@@ -36,7 +36,8 @@ public record ScheduleScopeOverrideDto(
     string WeekDays,
     bool? IsActive,
     string DisplayName,
-    string DisplayDescription);
+    string DisplayDescription,
+    byte? OccurrencesAhead = null);
 
 /// <summary>
 /// Leg-scope override fields (used for both collection and delivery legs).

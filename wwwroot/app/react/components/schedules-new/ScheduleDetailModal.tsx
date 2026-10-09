@@ -430,6 +430,9 @@ export function ScheduleDetailModal({
   // back to the base). See computeOverridePutBody() below.
   const [ovIsActive, setOvIsActive] = useState<boolean | null>(null);
   const [ovDisplayName, setOvDisplayName] = useState<string>('');
+  // Not edited here, carried so a save does not drop it. See the comment
+  // where it goes back into scheduleScope.
+  const [ovOccurrencesAhead, setOvOccurrencesAhead] = useState<number | null>(null);
   const [ovDisplayDescription, setOvDisplayDescription] = useState<string>('');
   // WeekDays override lives as a set of ISO day numbers (1=Mon..7=Sun);
   // converted to the 7-char mask on save via daysToMask().
@@ -644,6 +647,7 @@ export function ScheduleDetailModal({
     // Schedule scope.
     setOvIsActive(ex?.schedule?.isActive ?? data.isActive);
     setOvDisplayName(ex?.schedule?.displayName ?? data.displayName ?? '');
+    setOvOccurrencesAhead(ex?.schedule?.occurrencesAhead ?? null);
     setOvDisplayDescription(ex?.schedule?.displayDescription ?? data.displayDescription ?? '');
     const maskDays = ex?.schedule?.weekDays
       ? parseMaskToDays(ex.schedule.weekDays)
@@ -760,6 +764,20 @@ export function ScheduleDetailModal({
       isActive: isActiveDiffers ? ovIsActive : null,
       displayName: displayNameDiffers ? nzOrNull(ovDisplayName) : null,
       displayDescription: displayDescDiffers ? nzOrNull(ovDisplayDescription) : null,
+      // Carried through unchanged, NOT diffed against the base.
+      //
+      // This panel has no input for occurrences ahead: it works by
+      // comparing the client's value against the base schedule's, and the
+      // schedule's own N lives on tblBulkRunScheduleDetail, which this app
+      // does not read yet. ClientOverrideEditor is where it is edited.
+      //
+      // Sending null would NOT mean "leave it alone". The PUT replaces the
+      // client's delta rows wholesale (ScheduleOverrideService removes the
+      // existing rows before inserting), and null means "clear this field",
+      // so a null here would wipe whatever the other editor, or the
+      // 20261009179000 seed, had set. Round-tripping the loaded value is
+      // what keeps this panel from silently undoing that.
+      occurrencesAhead: ovOccurrencesAhead,
     };
     const scheduleHasValues =
       scheduleScope.cutoffDay != null
@@ -767,7 +785,8 @@ export function ScheduleDetailModal({
       || scheduleScope.weekDays != null
       || scheduleScope.isActive != null
       || scheduleScope.displayName != null
-      || scheduleScope.displayDescription != null;
+      || scheduleScope.displayDescription != null
+      || scheduleScope.occurrencesAhead != null;
     // Collection scope.
     const collSpeedDiffers = ovCollSpeedId !== (data.pickupRatingSpeed ?? null);
     const collZoneDiffers = ovCollZoneGroupId !== (data.pickupPostcodeGroupId ?? null);
