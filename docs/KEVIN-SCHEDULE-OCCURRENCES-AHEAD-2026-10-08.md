@@ -72,7 +72,9 @@ Section 4 reads N from `fnScheduleForClient`, so nothing else needs it.
 
 ## 4. Function changes (both tenants)
 
-Full-body re-emit of each function, baselined from its latest emitter (NZ: `20260924112000`; US: the latest `DD_fncJob_...` file on develop at build time) and collision-reviewed against it.
+Full-body re-emit of each function. **Baseline from the latest emitter on master at build time, never from this document.** At the time of Kevin's review (9 Oct) that is NZ `20261007210000` (gated polygon fallback; after `20261007150000` origin-side OriginRegionId substitution) and US `20261007150000`. The `20260924112000` baseline first named here was already two emitters stale; building from it would have silently reverted client-origin availability, re-widened the no-pickup-depot branch, and removed the polygon fallback, which is invisible today because `tblSetting.PolygonZoneResolutionEnabled` is 0 everywhere. Collision-review against the resolved baseline.
+
+**Budget this as its own piece, not a tail on the collapse.** Collapsing the four INSERT branches into two has to carry the origin-side CASE from `20261007150000` in each branch and the gated polygon blocks before them, and Garry has asked for `UTL_fncBulkZonePostcode_IsActive` to stop being a per-row scalar in the same pass. It is the most load-bearing function in booking; one regression round, done once.
 
 1. **Date list.** `@Temp` is built from `master..spt_values` over a fixed horizon instead of `DaysInFuture`: `number BETWEEN 0 AND @HorizonDays`, where `@HorizonDays = 60` (D1). Holiday exclusion and the same-day time adjustments stay word for word. The `OUTER APPLY dbo.UTL_fncJob_GetClientAvailableSpeed` stays, because `NoSDailyLimit` and the speed set still come from it; only its `DaysInFuture` predicate is removed.
 2. **Branches.** The four INSERT sites become two: cross-region and standard. Each loses its `ISNULL(a.DaysInFuture, 0) = 0` / `> 0` predicate and its sibling. Everything else in the INSERT (header join, strict client rule, zone match, cutoff expression) is unchanged.

@@ -847,3 +847,13 @@ Exception rows carry the relative rule shape (`CutoffDaysBefore`, `CutoffDayUnit
 ### 11.3 Effect on step F
 
 With 11.2, the one-off batch converts the whole 2,751 cutoff population (the ~250 duplicate-day / window-varies schedules still go through the dry-run-then-fix loop). The V1 zero-row view diff still has to hold, exceptions included: the view output is identical by construction when every day's cutoff is reproduced.
+
+---
+
+## 12. Convention: baselines for full-body re-emits (added 9 Oct, Kevin)
+
+**Before any full-body re-emit of a procedure, function or view, resolve its latest emitter from master at build time. Never take the baseline from a spec.** A spec ages the moment it is written. Three times on 9 Oct a file that was correct in isolation would have reverted work that landed after the spec named its baseline: another team's pricing fix, the Medical route-stamping fix of the same afternoon, and the NZ availability function (the occurrences-ahead spec named `20260924112000`; the actual latest was `20261007210000`, two emitters later, carrying client-origin availability and the switch-gated polygon fallback that no test would have caught because the switch is off on every tenant).
+
+Where this plan or its companion specs name a migration as a baseline, read it as "the baseline at the time of writing"; the collision-review header of the new file must name the emitter actually used.
+
+**Step order, final (9 Oct):** M1 + M4 (built) -> M2 (rename, view at 29 columns, relax the five NOT NULL columns, `CutoffDayUnit`) -> M3 (`fnScheduleForClient`: detail + day exceptions + `OccurrencesAhead` fallback) -> rollout C to F -> **M5 as its own piece** (occurrences ahead: seed + both availability functions re-emitted from their current master baselines, with Garry's `UTL_fncBulkZonePostcode_IsActive` change in the same pass).
