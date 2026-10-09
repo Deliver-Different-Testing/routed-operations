@@ -799,3 +799,51 @@ Kevin built M1 and M4 against `Despatch_Urgent_Staging` on 8 Oct and reported ni
 | 9 | Zone repair skips and reports when two populated day rows disagree (fires on `Denver to ABQ test` on US). | Agreed. |
 
 **Step order after these findings:** M1 and M4 (built) -> M2 (rename, view, relax the five columns, unit column read by the view) -> M3 (`fnScheduleForClient` reads detail, gains `OccurrencesAhead`) -> **M5** (occurrences ahead: seed + both availability functions) -> rollout steps C to F. Step F runs after M5 so the batch writes the default N in the same pass.
+
+---
+
+## 11. Cutoff variations: day exceptions on the override table (decided 9 Oct)
+
+### 11.1 What Urgent Prod actually holds
+
+Kerran ran the three-way classification on Urgent Prod on 9 Oct (2,751 schedules carrying a CutoffDay):
+
+| Class | Schedules | Under the 8 Oct rules |
+|---|---|---|
+| Uniform, working days (`W`) | 1,760 | converts |
+| Uniform, calendar days (`C`) | 717 | converts |
+| Varies by **time** only | 247 | refused |
+| Varies, neither unit fits | 22 | refused |
+| Varies, working-day count differs | 5 | refused |
+
+Row-level breakdown of the 274 refusals:
+
+- **150 are "Monday differs only":** Tue to Fri share one cutoff time; Monday's Friday cutoff is at another time (example: schedule 13, Mon cutoff Fri 18:00, other days previous day 19:00). Offsets cluster at +4/+5 hours (59) and -1/-2 hours (25), long tail either way. Part business rule, part drift; only ops can say which.
+- **97 vary across several days** (example: Advance Marketing All Day Frozen - Mon cutoff Sun 15:00, Tue to Thu same-day 07:00, Fri cutoff Thu 15:00).
+- **22 "neither"** are mostly **Saturday runs**: Mon to Fri is a clean 1-working-day rule and the Saturday row's Friday cutoff breaks the working-day count because Saturday is not a working day. Converter definition, not data.
+- 1 duplicate-day case (Saturday 2 hour express).
+
+Kevin's staging figure of 22 refusals did not count the time class. The detail row has one `CutoffTime`, so the converter must.
+
+### 11.2 Decision (Steve, 9 Oct): exceptions, not refusals, and an ops report
+
+**Nothing refuses on cutoff variation. Every variation converts with zero drift, as an exception row, and all exceptions go on a report for ops to review as time allows.**
+
+Mechanism: the F1 override table `tblBulkRunScheduleOverride` already carries `ScheduleId, ClientId, Scope, LegOrdinal, DayOfWeek, CutoffDay, CutoffTime, CutoffHours`. Today the resolver reads only `DayOfWeek = 0` ("all days") rows for a specific client. Two extensions:
+
+1. **Schedule-wide rows.** `ClientId` NULL (or a 0 sentinel if the key forbids NULL - Kevin to check) means "every client".
+2. **Day-specific rows.** `DayOfWeek` 1 to 7 is read. Resolution order in `fnScheduleForClient` and in the compatibility view: client + day, then client all-days, then schedule-wide day, then the detail row's rule.
+
+Exception rows carry the relative rule shape (`CutoffDaysBefore`, `CutoffDayUnit`, `CutoffTime`), same as the detail row; add the two columns to the override table in M1.
+
+**Converter (`uspScheduleConvert`):** when day rows disagree on cutoff only, write the **majority** rule to the detail row and one schedule-wide day exception per differing day. Report `ConvertedWithExceptions = N` and list them. Refuse only for `DuplicateDay` / `WindowVariesByDay` / `PayloadVaries` as before. `CutoffDayNotExpressible` disappears as a refusal reason.
+
+**Saturday / Sunday run days under `W`:** a weekend run day whose cutoff is the previous working day counts as 1 working day (Sat <- Fri = 1, Sun <- Fri = 1). `fnCutoffDayFor` / `fnCutoffHoursFor` to implement; clears most of the 22.
+
+**Ops report (`vwScheduleCutoffExceptions` or a saved query, Kevin's choice):** one row per exception - schedule, name, client (or "all"), day, the detail rule, the exception rule, the delta in hours - so ops can tidy them in Schedules NEW as they go. Schedules NEW shows exceptions on the Operating days tab as a marked day ("Monday differs: cutoff Fri 18:00") rather than seven free boxes.
+
+**Why this and not two schedules:** splitting Mon-Thu / Fri doubles client links, route bindings, zone rows and Shopify windows for one service. The exception is the day-row model in a bounded, visible form; the common case stays one row and a wrong Monday is one row to delete.
+
+### 11.3 Effect on step F
+
+With 11.2, the one-off batch converts the whole 2,751 cutoff population (the ~250 duplicate-day / window-varies schedules still go through the dry-run-then-fix loop). The V1 zero-row view diff still has to hold, exceptions included: the view output is identical by construction when every day's cutoff is reproduced.
