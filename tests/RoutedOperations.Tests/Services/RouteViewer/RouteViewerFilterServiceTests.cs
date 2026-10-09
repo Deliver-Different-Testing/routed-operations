@@ -1,6 +1,7 @@
 // RouteViewerFilterService wraps 5 lookup SPs + a plain EF SuburbList read.
 // The SP-invoking methods (Client/Speed/Region/TopUp lists) throw under
 // InMemory. GetSuburbListAsync is EF-only so is fully covered.
+using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Services.Np;
@@ -12,7 +13,7 @@ namespace RoutedOperations.Tests.Services.RouteViewer;
 
 public class RouteViewerFilterServiceTests
 {
-    private static (RouteViewerFilterService sut, DynamicDespatchDbContext seed) NewSvc()
+    private static (RouteViewerFilterService sut, DynamicDespatchDbContext seed) NewSvc(params Claim[] claims)
     {
         var opts = RouteViewerTestHarness.NewOptions();
         var seed = RouteViewerTestHarness.Context(opts);
@@ -20,7 +21,10 @@ public class RouteViewerFilterServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(true, null));
         var accessor = Substitute.For<IHttpContextAccessor>();
-        accessor.HttpContext.Returns(new DefaultHttpContext());
+        accessor.HttpContext.Returns(new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")),
+        });
         var sut = new RouteViewerFilterService(factory, resolver, accessor,
             NullLogger<RouteViewerFilterService>.Instance);
         return (sut, seed);
@@ -55,9 +59,20 @@ public class RouteViewerFilterServiceTests
     [Fact]
     public async Task GetClientListAsync_ThrowsUnderInMemory()
     {
-        var (sut, _) = NewSvc();
+        // Staff with a contact reach the SP, which InMemory cannot run.
+        var (sut, _) = NewSvc(new Claim("ClientTypeId", "4"), new Claim("ContactID", "12"));
         await Assert.ThrowsAnyAsync<Exception>(() =>
-            sut.GetClientListAsync(DateTime.Today, multipleClients: false, contactId: null));
+            sut.GetClientListAsync(DateTime.Today));
+    }
+
+    [Fact]
+    public async Task GetClientListAsync_NonStaffWithNoContactClaim_ReturnsEmptyWithoutCallingTheSp()
+    {
+        // The contact used to come from the query string. It now comes only
+        // from the ContactID claim, and a non-staff caller without one gets
+        // nothing rather than whatever the SP returns for a NULL contact.
+        var (sut, _) = NewSvc(new Claim("IsNetworkPartner", "True"));
+        Assert.Empty(await sut.GetClientListAsync(DateTime.Today));
     }
 
     [Fact]

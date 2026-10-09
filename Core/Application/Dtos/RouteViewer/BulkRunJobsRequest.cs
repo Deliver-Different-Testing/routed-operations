@@ -17,8 +17,6 @@ public class BulkRunJobsRequest
     public DateTime? RunDate { get; set; }
 
     public int? ClientId { get; set; }
-    public bool ClientInternal { get; set; }
-    public bool MultipleClients { get; set; }
     public int? CourierId { get; set; }
     public bool PreAssigned { get; set; }
     public string? SpeedIds { get; set; }

@@ -11,15 +11,10 @@ public class BulkRunListRequest
     /// resolved via tenantTodayYmd() on the client.</summary>
     public DateTime? RunDate { get; set; }
 
-    /// <summary>true when the caller's Hub client is marked internal
-    /// (tenant staff / UCL ops). Drives SP branches that unlock the
-    /// full client scope. NP + external logins pass false.</summary>
-    public bool ClientInternal { get; set; }
-
-    /// <summary>true when the Hub session has multiple sub-accounts
-    /// (external multi-account client). Drives the SP's multi-client
-    /// SELECT branch.</summary>
-    public bool MultipleClients { get; set; }
+    // ClientInternal / MultipleClients were removed 2026-10-09. Nothing on
+    // the server read them, but they invited exactly that: scope must come
+    // from claims (INpScopeResolver), never from the request. Older clients
+    // still send them and model binding ignores the unknown keys.
 
     /// <summary>Single-client convenience filter; usually null for
     /// admin sessions and stamped by claim for external logins.</summary>

@@ -39,6 +39,7 @@
 //     the plan (forceTucJobPush = false, jobBookingID = 0, pickupReadyDateTime
 //     = @Time so the SP mirrors the ready-window off the pickup timestamp).
 using System.Collections.Immutable;
+using RoutedOperations.Core.Application.Security;
 using System.Data;
 using System.IO;
 using System.Net.Http;
@@ -135,12 +136,12 @@ public partial class BulkImportServiceV2 : BaseService
 
         try
         {
-            // Internal staff bypass the contact -> client join and see any
+            // Staff bypass the contact -> client join and see any
             // client with recent bulk activity. External contacts only see
             // clients they are explicitly linked to via tucClientContact or
             // tblClientContact.
-            var internalClaim = _httpContextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "Internal")?.Value;
-            var isInternal = !string.IsNullOrEmpty(internalClaim) && bool.TryParse(internalClaim, out var internalVal) && internalVal;
+            // Staff = ClientTypeId 4/5, not the "Internal" billing-flag claim.
+            var isInternal = _httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
 
             List<int> clientIds;
             if (isInternal)

@@ -26,14 +26,13 @@ public class RunViewerEventController(
         return Ok(new { response = rows });
     }
 
-    /// <summary>GET /api/runviewer/events/jobs?clientId=&clientInternal=
-    /// - job typeahead for the create-event dialog.</summary>
+    /// <summary>GET /api/runviewer/events/jobs?clientId=
+    /// - job typeahead for the create-event dialog. clientInternal is no
+    /// longer accepted; older clients still send it and it is ignored.</summary>
     [HttpGet("jobs")]
-    public async Task<IActionResult> GetEventJobs(
-        [FromQuery] int? clientId,
-        [FromQuery] bool clientInternal = false)
+    public async Task<IActionResult> GetEventJobs([FromQuery] int? clientId)
     {
-        var rows = await eventService.GetEventJobsAsync(clientId, clientInternal);
+        var rows = await eventService.GetEventJobsAsync(clientId);
         return Ok(new { response = rows });
     }
 

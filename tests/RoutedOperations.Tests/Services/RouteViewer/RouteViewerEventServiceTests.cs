@@ -45,7 +45,7 @@ public class RouteViewerEventServiceTests
     public async Task GetEventJobsAsync_Np_ReturnsEmpty()
     {
         var (sut, _) = NewSvc(new NpScope(false, 42));
-        var result = await sut.GetEventJobsAsync(clientId: 1, clientInternal: false);
+        var result = await sut.GetEventJobsAsync(clientId: 1);
         Assert.Empty(result);
     }
 
@@ -53,7 +53,7 @@ public class RouteViewerEventServiceTests
     public async Task GetEventJobsAsync_Admin_HitsSp()
     {
         var (sut, _) = NewSvc(new NpScope(true, null));
-        await Assert.ThrowsAnyAsync<Exception>(() => sut.GetEventJobsAsync(1, false));
+        await Assert.ThrowsAnyAsync<Exception>(() => sut.GetEventJobsAsync(1));
     }
 
     [Fact]

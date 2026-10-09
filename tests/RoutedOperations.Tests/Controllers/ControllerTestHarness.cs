@@ -41,7 +41,7 @@ internal static class ControllerTestHarness
     // behaviour (e.g. no CountryCode => IsNzTenant / IsUsTenant both false).
     internal static IHttpContextAccessor Accessor(
         string? countryCode = null,
-        string? internalClaim = null,
+        string? clientTypeId = null,
         string? tenantId = "1",
         string? contactId = null)
     {
@@ -49,7 +49,7 @@ internal static class ControllerTestHarness
         var ctx = new DefaultHttpContext();
         var claims = new List<Claim>();
         if (countryCode != null) claims.Add(new Claim("CountryCode", countryCode));
-        if (internalClaim != null) claims.Add(new Claim("Internal", internalClaim));
+        if (clientTypeId != null) claims.Add(new Claim("ClientTypeId", clientTypeId));
         if (tenantId != null) claims.Add(new Claim("CurrentTenantID", tenantId));
         if (contactId != null) claims.Add(new Claim("ContactID", contactId));
         ctx.User = new ClaimsPrincipal(new ClaimsIdentity(claims));
@@ -68,7 +68,7 @@ internal static class ControllerTestHarness
     internal static void AttachHttpContext(
         ControllerBase controller,
         string? contactId = null,
-        string? internalClaim = null,
+        string? clientTypeId = null,
         string? countryCode = null,
         string? tenantId = "1",
         string method = "GET",
@@ -77,7 +77,7 @@ internal static class ControllerTestHarness
         var ctx = new DefaultHttpContext();
         var claims = new List<Claim>();
         if (countryCode != null) claims.Add(new Claim("CountryCode", countryCode));
-        if (internalClaim != null) claims.Add(new Claim("Internal", internalClaim));
+        if (clientTypeId != null) claims.Add(new Claim("ClientTypeId", clientTypeId));
         if (tenantId != null) claims.Add(new Claim("CurrentTenantID", tenantId));
         if (contactId != null) claims.Add(new Claim("ContactID", contactId));
         ctx.User = new ClaimsPrincipal(new ClaimsIdentity(claims));

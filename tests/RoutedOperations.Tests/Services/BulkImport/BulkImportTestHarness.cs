@@ -44,7 +44,7 @@ internal static class BulkImportTestHarness
     // behaviour (e.g. no CountryCode => IsNzTenant / IsUsTenant both false).
     internal static IHttpContextAccessor Accessor(
         string countryCode = null,
-        string internalClaim = null,
+        string clientTypeId = null,
         string timeZone = null,
         string tenantId = "1")
     {
@@ -52,7 +52,7 @@ internal static class BulkImportTestHarness
         var ctx = new DefaultHttpContext();
         var claims = new List<Claim>();
         if (countryCode != null) claims.Add(new Claim("CountryCode", countryCode));
-        if (internalClaim != null) claims.Add(new Claim("Internal", internalClaim));
+        if (clientTypeId != null) claims.Add(new Claim("ClientTypeId", clientTypeId));
         if (timeZone != null) claims.Add(new Claim("TimeZone", timeZone));
         if (tenantId != null) claims.Add(new Claim("CurrentTenantID", tenantId));
         ctx.User = new ClaimsPrincipal(new ClaimsIdentity(claims));

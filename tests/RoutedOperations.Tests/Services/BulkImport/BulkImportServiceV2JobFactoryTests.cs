@@ -37,7 +37,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_OnDemand_BookDateInPast_ReturnsFutureMessage()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 1);
         await seed.SaveChangesAsync();
 
@@ -58,7 +58,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_OnDemand_MismatchedSpeed_ReturnsInvalidSpeed()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 42);
         await seed.SaveChangesAsync();
 
@@ -79,7 +79,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_OnDemand_EmptyJobs_ReturnsNoJobsMessage()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 1);
         await seed.SaveChangesAsync();
 
@@ -107,7 +107,7 @@ public class BulkImportServiceV2JobFactoryTests
         // downstream validator fires "Invalid speed." Locking this in as
         // current behaviour so a future fix to fall back on client.DefaultSpeed
         // flips this test cleanly.
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 7);
         await seed.SaveChangesAsync();
 
@@ -147,7 +147,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_Routed_InvalidOriginLocationId_ReturnsError()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 1);
         await seed.SaveChangesAsync();
 
@@ -169,7 +169,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_Routed_MismatchedSpeed_ReturnsInvalidSpeed()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 42);
         await seed.SaveChangesAsync();
 
@@ -190,7 +190,7 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_Routed_ScheduleIdSet_ButInvalid_ReturnsInvalidSchedule()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 1);
         await seed.SaveChangesAsync();
 
@@ -214,7 +214,7 @@ public class BulkImportServiceV2JobFactoryTests
     {
         // US tenant, no schedule region + no RouteFromClientSite + no
         // OriginLocationId -> Steve's 4-step precedence exhausts.
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         SeedMinimalClient(seed, 5, speedId: 1);
         await seed.SaveChangesAsync();
 
@@ -291,7 +291,7 @@ public class BulkImportServiceV2JobFactoryTests
 
     // Seed the minimum for the `client` anonymous type projection in Import
     // to return a non-null row. Contact link required for non-internal, but
-    // internalClaim="True" bypasses that.
+    // clientTypeId="4" (tenant staff) bypasses that.
     private static void SeedMinimalClient(DynamicDespatchDbContext seed, int clientId, int speedId)
     {
         seed.TucClients.Add(new TucClient

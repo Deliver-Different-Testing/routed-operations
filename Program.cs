@@ -253,30 +253,23 @@ builder.Services.AddRequestTimeouts(options =>
     };
 });
 
-// Route Builder policy rules live in RouteBuilderPolicies so they can be unit
-// tested against a ClaimsPrincipal. Inline lambdas here could only be tested by
-// restating them, which proves nothing. Behaviour is identical to what was
-// here before, plus the network-partner denial.
+// Policy rules live in RouteBuilderPolicies / RouteViewerPolicies (on top of
+// CallerLane) so they can be unit tested against a ClaimsPrincipal. Inline
+// lambdas here could only be tested by restating them, which proves nothing.
 //
-// Read, Build and Admin deny a logged-in network partner (Kevin 2026-10-01,
-// D1 = B: stay inside the scope Steve's spec names). Quote and Polygon
-// deliberately do not, so a partner still reaches quoting margin and the
-// auto-assign diagnostics - see RouteBuilderPolicies for the full note.
-//
-// The RouteViewer.* policies below are deliberately untouched. Route Viewer is
-// the partner's lane; scoping there is row-level via INpScopeGuard and the
-// @NpAgentId SP parameter, not a policy denial.
-// See NP-PAY-PART4-TODO.md T1 / D1.
+// RouteBuilder.* = tenant staff only (ClientTypeId 4/5, not a partner or
+// courier). RouteViewer.* = tenant staff or a network partner; partner rows
+// are cut down by INpScopeGuard and the @NpAgentId SP parameter. Customers are
+// admitted by neither until the customer view is scoped (Routed Ops switches
+// spec section 5a). See the class comments for what changed and why.
 
 // Authorization policies matching the parity build plan.
 builder.Services.AddAuthorization(options =>
 {
-    // Read - any authenticated tenant user can see the cockpit. Never
-    // excluded couriers, unlike Build and Admin.
     options.AddPolicy("RouteBuilder.Read", policy =>
         policy.RequireAssertion(context => RouteBuilderPolicies.CanRead(context.User)));
 
-    // Build - author runs. Same admit rule as Read for Stage 1; matrix will refine later.
+    // Build - author runs.
     options.AddPolicy("RouteBuilder.Build", policy =>
         policy.RequireAssertion(context => RouteBuilderPolicies.CanBuild(context.User)));
 
@@ -284,10 +277,8 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("RouteBuilder.Admin", policy =>
         policy.RequireAssertion(context => RouteBuilderPolicies.CanAdmin(context.User)));
 
-    // Tenant claim only, NO network-partner check. Deliberate per D1 = B,
-    // although both now guard real surfaces: Quote returns CostPerJob /
-    // TotalCost / MarginPct / RecommendedQuote, and Polygon guards
-    // AutoAssignLogController and ZonesController.
+    // Quote returns CostPerJob / TotalCost / MarginPct / RecommendedQuote, and
+    // Polygon guards AutoAssignLogController and ZonesController.
     options.AddPolicy("RouteBuilder.Quote", policy =>
         policy.RequireAssertion(context => RouteBuilderPolicies.CanUsePlaceholderModule(context.User)));
     options.AddPolicy("RouteBuilder.Polygon", policy =>
@@ -299,21 +290,11 @@ builder.Services.AddAuthorization(options =>
     // to run under NP-aware guard rails; the actual row-level enforcement
     // is done via INpScopeGuard.
     options.AddPolicy("RouteViewer.Read", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanRead(context.User)));
     options.AddPolicy("RouteViewer.Admin", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var userGroupId = context.User.FindFirst("UserGroupID")?.Value;
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            if (string.Equals(userGroupId, "1", StringComparison.Ordinal)) return true;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanAdmin(context.User)));
     options.AddPolicy("RouteViewer.NpScope", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanUseNpScope(context.User)));
 });
 
 builder.Services.AddHttpClient();

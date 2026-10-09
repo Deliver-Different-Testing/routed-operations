@@ -1,11 +1,12 @@
-// Historic Archive Upload endpoints. Gate: Internal claim (spec section
-// "Permissions"). TODO: replace the ad-hoc IsInternal() check with a
+// Historic Archive Upload endpoints. Gate: tenant staff by ClientTypeId
+// (CallerLane.IsStaff; the Internal claim was retired as a gate 2026-10-09). TODO: replace the ad-hoc IsInternal() check with a
 // dedicated `Roles.HistoricArchiveUpload` claim / policy once Hub can
 // stamp it. Same pattern as BulkImportController.StaffImport - a proper
 // [Authorize(Policy = ...)] plus Hub-side claim would be cleaner but is
 // not yet plumbed through.
 
 using System.Security.Claims;
+using RoutedOperations.Core.Application.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.HistoricArchive;
@@ -25,13 +26,10 @@ public class HistoricArchiveController(HistoricArchiveService service) : BaseCon
         return int.TryParse(raw, out var id) ? id : 0;
     }
 
-    private bool IsInternal()
-    {
-        var claim = User?.FindFirstValue("Internal");
-        return !string.IsNullOrEmpty(claim)
-            && bool.TryParse(claim, out var v)
-            && v;
-    }
+    // Staff by ClientTypeId 4/5, not the Hub "Internal" claim: that is the
+    // ucclInternal billing flag and carries no permission (Steve 2026-10-08).
+    // Narrowing this to DF Admin (5) comes with the ro-historic-archive switch.
+    private bool IsInternal() => User is not null && CallerLane.IsStaff(User);
 
     private IActionResult Forbidden(string message) =>
         StatusCode(StatusCodes.Status403Forbidden, new { message });

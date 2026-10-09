@@ -97,16 +97,15 @@ public class RouteViewerEventService(
         public DateTime Created { get; set; }
     }
 
-    /// <summary>GET /api/runviewer/events/jobs?clientId=&clientInternal=
+    /// <summary>GET /api/runviewer/events/jobs?clientId=
     /// - job typeahead for the create-event dialog. NP short-circuits
     /// to empty per T.1 interim (see GetEventListAsync).</summary>
-    public async Task<List<EventJobDto>> GetEventJobsAsync(int? clientId, bool clientInternal)
+    public async Task<List<EventJobDto>> GetEventJobsAsync(int? clientId)
     {
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<EventJobDto>();
 
-        // Tenant SP (1 param, verified): @ClientID only. clientInternal
-        // is a client-side concept.
+        // Tenant SP (1 param, verified): @ClientID only.
         return await Context.Database.SqlQueryRaw<EventJobDto>(
             @"EXEC dbo.RVW_stpEventJobs @ClientID = @ClientID",
             SpParam.Of("@ClientID", clientId))

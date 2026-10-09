@@ -51,7 +51,6 @@ public class EventListRequest
 {
     public DateTime? RunDate { get; set; }
     public int? ClientId { get; set; }
-    public bool ClientInternal { get; set; }
     public bool IncludeClosed { get; set; }
 }
 

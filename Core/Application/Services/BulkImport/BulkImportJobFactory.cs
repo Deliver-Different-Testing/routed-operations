@@ -13,6 +13,7 @@
 //     late-bound property shape the anonymous type produces. Kept the
 //     same to minimise diff risk.
 using Microsoft.EntityFrameworkCore;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Address;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
@@ -45,8 +46,9 @@ public partial class BulkImportServiceV2
                 j.CourierPercentageOverride = Math.Round(j.CourierPercentageOverride.Value, 4, MidpointRounding.AwayFromZero);
             }
 
-        var internalClaim = _httpContextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "Internal")?.Value;
-        var isInternal = !string.IsNullOrEmpty(internalClaim) && bool.TryParse(internalClaim, out var internalValue) && internalValue;
+        // Staff (ClientTypeId 4/5) may import for any client; anyone else only
+        // for a client they are linked to. Not the "Internal" billing-flag claim.
+        var isInternal = _httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
 
         var client = await Context.TucClients
             .Where(c => c.UcclId == request.ClientId && c.UcclActive

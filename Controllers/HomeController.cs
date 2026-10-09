@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using RoutedOperations.Core.Application.Security;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -104,15 +105,12 @@ public class HomeController(
             ? email
             : (identityName?.Contains('@') == true ? identityName : null);
 
-        // "Internal" claim is stamped by Hub for internal-staff logins - we
-        // read the boolean form and default false. Wired through here so the
-        // React SPA can gate the Staff Import affordance (NZ internal only)
-        // without a second round-trip to fetch it.
-        var internalClaim = HttpContext.User.Claims
-            .FirstOrDefault(x => x.Type == "Internal")?.Value;
-        var isInternal = !string.IsNullOrEmpty(internalClaim)
-            && bool.TryParse(internalClaim, out var internalValue)
-            && internalValue;
+        // IsInternal means "tenant staff" to the SPA (Staff Import, the
+        // staff client picker, Historic Archive). It is ClientTypeId 4/5, NOT
+        // the Hub "Internal" claim: that is the ucclInternal billing flag and
+        // carries no permission (Steve 2026-10-08). The server gates the same
+        // things the same way (CallerLane.IsStaff).
+        var isInternal = CallerLane.IsStaff(HttpContext.User);
 
         // Route Viewer P0 - stamp NP-scope + client-scope claims onto the
         // bootstrap. All optional; NP-scope guard + CS module downstream
