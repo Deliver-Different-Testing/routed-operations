@@ -75,6 +75,85 @@ test.describe('Route Viewer /runs regression - Palmerston North Run 1', () => {
     await expect(page.getByRole('cell', { name: 'Run 1' })).toHaveCount(0);
   });
 
+  // 2026-10-09. Steve's region-filtering spec, the front-end item in the
+  // acceptance section: the run list must clear when the date or region
+  // changes, not only when Refresh is pressed. Observed on Medical production
+  // as a depot region showing the PREVIOUS date's pickup runs next to a
+  // "0 runs" counter.
+  //
+  // Cause was `placeholderData: keepPreviousData` on useRouteViewerRuns. Its
+  // comment claimed it avoided a mid-poll flash of an empty grid, but the 25s
+  // poll refetches the SAME query key and a same-key refetch already serves
+  // that key's cached rows. placeholderData only applies when the key CHANGES,
+  // which is exactly when the operator has moved to another date or region.
+  //
+  // The second date answers slowly on purpose. The assertion window (1.5s) is
+  // deliberately shorter than that delay (3s), so this test distinguishes the
+  // two behaviours rather than just waiting for the new rows: with
+  // keepPreviousData the old row is still on screen for the whole 3s and the
+  // 1.5s assertion fails; without it the row goes on the next render.
+  test('changing the date clears the run list instead of serving the previous date', async ({ page }) => {
+    const NEXT_DATE = '2026-08-20';
+
+    await mockRouteViewerApis(page, { runDate: RUN_DATE, includePalmyRun: true });
+
+    // Registered after the fixture so it wins: Playwright invokes handlers in
+    // reverse registration order.
+    await page.route(/\/api\/runviewer\/runs(\?.*)?$/, async (route) => {
+      const requested = new URL(route.request().url()).searchParams.get('runDate');
+      const isNextDate = requested === NEXT_DATE;
+      if (isNextDate) {
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          response: [
+            {
+              id: isNextDate ? 96248 : 96247,
+              name: isNextDate ? 'Run 2' : 'Run 1',
+              area: 'Palmerston North',
+              suburbs: 'Hokowhitu',
+              fromCities: 'Roslyn',
+              toLocationName: null,
+              velocity: 'green',
+              hashKey: 'stub-hash',
+              status: 'LIVE',
+              jobs: 1,
+              incompleteJobs: 1,
+              totalPickup: 0,
+              incompletePickup: 0,
+              hasReturns: false,
+              returnsTotal: 0,
+              isMissing: false,
+              preAssigned: 0,
+              isActive: 1,
+              courierName: null,
+              courierCode: null,
+              courierPercentageFormatted: null,
+              courierOnlineStatus: '',
+              courierOfflineMins: '',
+              agentName: null,
+              isNpAgent: false,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto(`/route-viewer?runDate=${RUN_DATE}`);
+    await expect(page.getByRole('cell', { name: 'Run 1' })).toBeVisible();
+
+    await page.locator('input[type="date"]').first().fill(NEXT_DATE);
+
+    // The regression: Run 1 belongs to the previous date and must go at once.
+    await expect(page.getByRole('cell', { name: 'Run 1' })).toHaveCount(0, { timeout: 1_500 });
+
+    // And the new date's rows still arrive once the slow response lands.
+    await expect(page.getByRole('cell', { name: 'Run 2' })).toBeVisible({ timeout: 10_000 });
+  });
+
   test('surfaces a 500 as a visible failure, not silent zero runs', async ({ page }) => {
     // Simulate the pre-fix backend behaviour: /api/runviewer/runs 500s.
     // If a future change swallows the failure and shows the empty state
