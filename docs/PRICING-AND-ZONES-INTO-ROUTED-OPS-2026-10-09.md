@@ -222,16 +222,22 @@ attached to any schedule using this group, plus search for any client). Sub-view
 **Zone rates** (the grid):
 
 ```
-Zone group: Auckland postcodes          Client: [ Default v ]        [ + Speed ]  [ Export ]
+Zone group: Auckland postcodes      Client: [ Default v ]   [x] Show courier pay   [ + Speed ] [ Export ]
 
-           | Overnight | 8am     | Same day | Hamilton run | Collection |
- Zone 1    |   12.50   |  18.00  |   25.00  |    30.00     |    9.00    |
- Zone 2    |   14.00   |  19.50  |   27.00  |    32.00     |   10.00    |
+           |        Overnight        |          8am            |        Same day         | ...
+           | Rate $ | Courier % | Pays | Rate $ | Courier % | Pays | Rate $ | Courier % | Pays |
+ Zone 1    |  12.50 |    55%    | 6.88 |  18.00 |    55%    | 9.90 |  25.00 |    58%    |14.50 |
+ Zone 2    |  16.00 |    55%    | 8.80 |  22.50 |    55%    |12.38 |  31.00 |    58%    |17.98 |
  ...
- Zone 10   |   48.00   |  60.00  |   85.00  |    95.00     |   30.00    |
-
- Courier %  per column (CourierPercentage), shown as a footer row.
+ Zone 10   |  44.00 |    60%    |26.40 |  58.50 |    60%    |35.10 |  79.00 |    63%    |49.77 |
 ```
+
+**Courier % is set per cell** (zone x speed), because `BulkZoneRate.CourierPercentage` already lives on
+the row and outer zones pay the courier a different share. Each speed is a column group of Rate $,
+Courier %, and a computed, read-only Pays $ (rate x courier %, hideable). A "fill %" control in each
+speed header sets the courier % for every zone in that column, since most columns are uniform. A
+client override row carries both figures: typing either one on a client sheet creates the row with
+the other copied from the default (12 Oct, Steve).
 
 Switch Client to Zimmer: inherited cells render grey ("12.50"), overridden cells render black with a
 dot; typing into a grey cell creates the client row; clearing a black cell deletes it. A "Differs from
