@@ -1,4 +1,5 @@
 using DeliverDifferent.AccessControl.Features;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
@@ -22,6 +23,7 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/me")]
 [Authorize]
+[NoFeatureCheck("the menu reads the switches from here, so it cannot sit behind one")]
 public class FeaturesController(IClientTypeFeatureResolver resolver) : BaseController
 {
     /// <summary>GET /api/me/visible-features</summary>

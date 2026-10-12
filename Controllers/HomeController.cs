@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -46,6 +47,7 @@ public record AppUserBootstrap(
 /// login can resolve its DbContext without extra round-trips.
 /// </summary>
 [Authorize]
+[NoFeatureCheck("serves the SPA shell and bootstrap every page needs; pages are gated client side and by their APIs")]
 public class HomeController(
     IConnectionStringManager connectionStringManager,
     AppSettings appSettings,

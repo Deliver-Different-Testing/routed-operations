@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringLinehaul;
 using RoutedOperations.Core.Application.Services.RecurringLinehaul;
@@ -15,9 +16,14 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/recurring-linehaul-runs")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Recurring Routes (Linehaul tab) (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-recurring-routes")]
 public class RecurringLinehaulRunsController(RecurringLinehaulService service) : BaseController
 {
     [HttpGet]
+    // Also the Roster tab of the Schedules (NEW) detail modal, which Client Overrides also opens.
+    [RequireFeature("ro-recurring-routes", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetAll()
     {
         var list = await service.ListAsync();
@@ -34,6 +40,8 @@ public class RecurringLinehaulRunsController(RecurringLinehaulService service) :
     }
 
     [HttpGet("{id:int}")]
+    // Only the v1 Schedules LinehaulRunModal reads one run.
+    [RequireFeature("ro-schedules")]
     public async Task<IActionResult> Get(int id)
     {
         var dto = await service.GetAsync(id);
@@ -41,6 +49,8 @@ public class RecurringLinehaulRunsController(RecurringLinehaulService service) :
     }
 
     [HttpPost]
+    // the v1 Schedules LinehaulRunModal also edits runs.
+    [RequireFeature("ro-recurring-routes", "ro-schedules")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Create([FromBody] RecurringLinehaulRunUpsertDto dto)
     {
@@ -48,6 +58,7 @@ public class RecurringLinehaulRunsController(RecurringLinehaulService service) :
     }
 
     [HttpPut("{id:int}")]
+    [RequireFeature("ro-recurring-routes", "ro-schedules")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Update(int id, [FromBody] RecurringLinehaulRunUpsertDto dto)
     {
@@ -55,6 +66,7 @@ public class RecurringLinehaulRunsController(RecurringLinehaulService service) :
     }
 
     [HttpDelete("{id:int}")]
+    [RequireFeature("ro-recurring-routes", "ro-schedules")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Delete(int id)
     {

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringLinehaul;
 using RoutedOperations.Core.Application.Services.RecurringLinehaul;
@@ -11,6 +12,8 @@ namespace RoutedOperations.API.Controllers;
 /// </summary>
 [ApiController]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Recurring Routes (Mapped Stops drill-down, linehaul speed picker) (Routed Ops switches spec step 3b).
+[RequireFeature("ro-recurring-routes")]
 public class RecurringLinehaulJobsController(RecurringLinehaulJobsService service) : BaseController
 {
     // GET /api/recurring-linehaul-runs/{runId}/jobs?page=1&pageSize=50&search=

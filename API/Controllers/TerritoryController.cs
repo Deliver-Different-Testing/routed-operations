@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.Territory;
 using RoutedOperations.Core.Application.Services.Territory;
@@ -14,6 +15,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/territory")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: the v1 Schedules page (Zones, Zone Groups and Depots tabs) (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-schedules")]
 public class TerritoryController(TerritoryService svc, PolygonBindingService bindings) : BaseController
 {
     // ─── POLYGON BINDINGS ──────────────────────────────────────────────────
@@ -77,6 +81,9 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     /// should render. See PostcodesForScheduleRequest for the input shape.
     /// Reads only - unauthenticated / read-tier operators can call it.</summary>
     [HttpPost("postcodes-for-schedule")]
+    // LOAD-BEARING: on the Schedules (NEW) create/edit path. Narrowing this breaks
+    // schedule creation (an error, not a hidden page).
+    [RequireFeature("ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetPostcodesForSchedule([FromBody] PostcodesForScheduleRequest req) =>
         await Wrap(() => svc.GetPostcodesForScheduleAsync(req));
 
@@ -120,10 +127,16 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     }
 
     [HttpGet("nz/postcodes")]
+    // LOAD-BEARING: on the Schedules (NEW) create/edit path. Narrowing this breaks
+    // schedule creation (an error, not a hidden page).
+    [RequireFeature("ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetNzPostcodes() =>
         Ok(new { response = await svc.GetNzPostcodesAsync() });
 
     [HttpGet("us/zip-zones")]
+    // LOAD-BEARING: on the Schedules (NEW) create/edit path. Narrowing this breaks
+    // schedule creation (an error, not a hidden page).
+    [RequireFeature("ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetUsZipZones() =>
         Ok(new { response = await svc.GetUsZipZonesAsync() });
 
