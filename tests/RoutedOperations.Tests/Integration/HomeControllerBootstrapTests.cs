@@ -222,7 +222,8 @@ public class HomeControllerBootstrapTests
         Assert.Equal("Pacific/Auckland", boot.TimeZone);
         Assert.Equal("NZ", boot.CountryCode);
         Assert.False(boot.IsUsTenant);
-        Assert.True(boot.IsInternal);
+        // Internal=true but ClientTypeId is not 4/5: not staff (2026-10-09).
+        Assert.False(boot.IsInternal);
         Assert.Equal("here-key", boot.HereMapsApiKey);
         Assert.Equal("google-key", boot.GoogleMapsKey);
         Assert.True(boot.IsNetworkPartner);
@@ -433,27 +434,26 @@ public class HomeControllerBootstrapTests
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // IsInternal boolean parsing.
+    // IsInternal = tenant staff, by ClientTypeId 4/5 (2026-10-09). The Hub
+    // "Internal" claim is the ucclInternal billing flag and no longer counts.
     // ─────────────────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("true", true)]
-    [InlineData("True", true)]
-    [InlineData("TRUE", true)]
-    [InlineData("false", false)]
-    [InlineData("False", false)]
-    [InlineData("garbage", false)]
-    [InlineData("", false)]
-    public async Task Index_IsInternal_ParsedFromClaim(string raw, bool expected)
+    [InlineData("4", null, true)]
+    [InlineData("5", null, true)]
+    [InlineData("2", "true", false)]
+    [InlineData("1", "true", false)]
+    [InlineData("3", null, false)]
+    [InlineData("", "true", false)]
+    public async Task Index_IsInternal_FromClientTypeNotInternalClaim(string clientTypeId, string? internalClaim, bool expected)
     {
         var claims = new List<Claim>
         {
             new("Connection", ConnClaim),
             new("CurrentTenantID", "1"),
+            new("ClientTypeId", clientTypeId),
         };
-        // Empty string still adds the claim so we exercise the
-        // string.IsNullOrEmpty branch on the parsed side.
-        claims.Add(new Claim("Internal", raw));
+        if (internalClaim != null) claims.Add(new Claim("Internal", internalClaim));
 
         var (ctl, _, _) = NewCtl(claims);
 

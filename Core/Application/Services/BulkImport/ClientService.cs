@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using RoutedOperations.Core.Application.Security;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Clients;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
@@ -172,8 +173,9 @@ public class ClientService(
 
     private bool IsInternalUser()
     {
-        var internalClaim = httpContextAccessor.HttpContext?.User.Claims.FirstOrDefault(x => x.Type == "Internal")?.Value;
-        return !string.IsNullOrEmpty(internalClaim) && bool.TryParse(internalClaim, out var internalValue) && internalValue;
+        // Staff = ClientTypeId 4/5, not the "Internal" billing-flag claim
+        // (Steve 2026-10-08: ucclInternal carries no permission).
+        return httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
     }
 
     public async Task<ClientSettingsResponse> GetSettings(Guid messageId, int contactId, int clientId, bool isUsTenant = false)

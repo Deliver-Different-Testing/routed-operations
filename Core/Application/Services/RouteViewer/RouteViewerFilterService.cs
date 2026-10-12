@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
@@ -27,16 +28,29 @@ public class RouteViewerFilterService(
 {
     /// <summary>
     /// GET /api/runviewer/filters/clients - client dropdown for the
-    /// filter panel + client-scope switcher. Passes contactId + the
-    /// multipleClients flag through to the SP; SP handles the tenant /
-    /// external / multi-account branching internally.
+    /// filter panel + client-scope switcher. Passes the caller's own
+    /// ContactID claim to the SP, which handles the tenant / external /
+    /// multi-account branching internally.
+    ///
+    /// The contact used to come from the query string, so any caller could
+    /// pass another contact (or none) and get that contact's client list.
+    /// It is now the session's ContactID claim only (Routed Ops switches
+    /// spec section 4: never take scope from the request).
     /// </summary>
-    public async Task<List<LookupDto>> GetClientListAsync(DateTime? runDate, bool multipleClients, int? contactId)
+    public async Task<List<LookupDto>> GetClientListAsync(DateTime? runDate)
     {
         // Tenant SP (2 params, verified 2026-08-07): RunDate, ContactID.
         // No MultipleClients param on the SP itself; caller uses the
         // result-set count client-side to derive multi-account state.
         // Result columns: ClientID, ClientCode -> map to LookupDto.
+        var user = httpContextAccessor.HttpContext?.User;
+        int? contactId = int.TryParse(user?.FindFirst("ContactID")?.Value, out var cid) ? cid : null;
+
+        // Fail closed: what the SP does with a NULL contact is its business
+        // for staff, but a non-staff caller with no contact gets nothing.
+        if (contactId is null && (user is null || !CallerLane.IsStaff(user)))
+            return new List<LookupDto>();
+
         logger.LogInformation("GetClientListAsync date={Date} contact={Contact}", runDate, contactId);
 
         var raw = await Context.Database.SqlQueryRaw<RawClientRow>(

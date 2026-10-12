@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using RoutedOperations.Core.Application.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -157,11 +158,8 @@ public class BulkImportController(
             if (!ModelState.IsValid)
                 return HandleBulkInvalidModelState(request.MessageId);
 
-            var internalClaim = User?.FindFirstValue("Internal");
-            var isInternal = !string.IsNullOrEmpty(internalClaim)
-                && bool.TryParse(internalClaim, out var internalValue)
-                && internalValue;
-            if (!isInternal)
+            // Staff by ClientTypeId 4/5, not the "Internal" billing-flag claim.
+            if (User is null || !CallerLane.IsStaff(User))
             {
                 Log.Warning("({MessageId})({ContactId}) Unauthorized staff import attempt by non-internal user.",
                     request.MessageId, GetCurrentContactId());

@@ -15,12 +15,12 @@ public class ClientServiceTests
     private static ClientService NewSvc(
         out DynamicDespatchDbContext seed,
         string countryCode = "US",
-        string internalClaim = null,
+        string clientTypeId = null,
         string timeZone = null)
     {
         var opts = BulkImportTestHarness.NewOptions();
         seed = BulkImportTestHarness.Context(opts);
-        var accessor = BulkImportTestHarness.Accessor(countryCode, internalClaim, timeZone);
+        var accessor = BulkImportTestHarness.Accessor(countryCode, clientTypeId, timeZone);
         var cache = BulkImportTestHarness.Cache(accessor);
         return new ClientService(BulkImportTestHarness.Factory(opts), accessor, cache);
     }
@@ -30,7 +30,7 @@ public class ClientServiceTests
     [Fact]
     public async Task Get_InternalUser_ReturnsEmptyClientsAndInternalFlag()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 1, UcclCode = "A", UcclName = "Aa", UcclActive = true });
         await seed.SaveChangesAsync();
 
@@ -101,7 +101,7 @@ public class ClientServiceTests
     [Fact]
     public async Task Search_NameMatchIsCaseInsensitive()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.AddRange(
             new TucClient { UcclId = 1, UcclCode = "AB", UcclName = "Alphabet", UcclActive = true },
             new TucClient { UcclId = 2, UcclCode = "ZZ", UcclName = "Zenith", UcclActive = true });
@@ -115,7 +115,7 @@ public class ClientServiceTests
     [Fact]
     public async Task Search_CodeMatchIsCaseInsensitive()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 1, UcclCode = "acme", UcclName = "Any", UcclActive = true });
         await seed.SaveChangesAsync();
 
@@ -154,7 +154,7 @@ public class ClientServiceTests
     [Fact]
     public async Task Search_CapsAt20Results()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         for (int i = 0; i < 25; i++)
             seed.TucClients.Add(new TucClient { UcclId = i + 1, UcclCode = $"C{i:D2}", UcclName = $"Match{i:D2}", UcclActive = true });
         await seed.SaveChangesAsync();
@@ -169,7 +169,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_UnknownClient_ReturnsInvalidMessage()
     {
-        var svc = NewSvc(out _, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out _, countryCode: "US", clientTypeId: "4");
 
         var resp = await svc.GetSettings(Guid.NewGuid(), contactId: 1, clientId: 999);
 
@@ -180,7 +180,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_InternalUser_BypassesContactFilter()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient
         {
             UcclId = 5,
@@ -201,7 +201,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_UsesDefaultSpeedsWhenClientHasNoAvailableSpeeds()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
         seed.TucJobTypes.Add(new TucJobType { UcjtId = 1, UcjtName = "SameDay" });
         seed.TblClientDefaultAvailableSpeeds.Add(new TblClientDefaultAvailableSpeed
@@ -222,7 +222,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_UsesClientAvailableSpeedsWhenPresent()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
         seed.TucJobTypes.AddRange(
             new TucJobType { UcjtId = 1, UcjtName = "Rush" },
@@ -253,7 +253,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_BackfillsScheduleSpeedNames()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
         seed.TucJobTypes.Add(new TucJobType { UcjtId = 42, UcjtName = "Rush" });
         seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
@@ -279,7 +279,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_NzTenant_ClaimOverridesParameter()
     {
-        var svc = NewSvc(out var seed, countryCode: "NZ", internalClaim: "True");
+        var svc = NewSvc(out var seed, countryCode: "NZ", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
         await seed.SaveChangesAsync();
 
@@ -294,7 +294,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSchedulesByBookDate_ReturnsSchedulesBeforeCutoff()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         // Book date well in the future so cutoff (StartTime - 2h) still lies ahead of tenant Now.
         var future = DateTime.UtcNow.AddDays(30).Date;
         seed.TucJobTypes.Add(new TucJobType { UcjtId = 1, UcjtName = "SameDay" });
@@ -328,7 +328,7 @@ public class ClientServiceTests
     public async Task GetSchedulesByBookDate_FiltersOutSchedulesWhoseCutoffHasPassed()
     {
         // Yesterday's schedule (past cutoff) should be filtered out.
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         var past = DateTime.UtcNow.AddDays(-1).Date;
         seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
         {
@@ -361,7 +361,7 @@ public class ClientServiceTests
     {
         // Just make sure the conversion doesn't throw and the tenant-time
         // schedule still passes the filter.
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         var utc = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(7).Date, DateTimeKind.Utc);
         seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
         {
@@ -391,7 +391,7 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSchedulesByBookDate_DepotIdFiltersByRegion()
     {
-        var svc = NewSvc(out var seed, countryCode: "US", internalClaim: "True", timeZone: "UTC");
+        var svc = NewSvc(out var seed, countryCode: "US", clientTypeId: "4", timeZone: "UTC");
         var future = DateTime.UtcNow.AddDays(7).Date;
         var dow = future.DayOfWeek == DayOfWeek.Sunday ? (short)7 : (short)future.DayOfWeek;
         seed.TblBulkRunSchedules.AddRange(

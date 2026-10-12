@@ -86,7 +86,7 @@ public class RunViewerEventControllerTests : IDisposable
     {
         var (ctl, _) = NewCtl(isAdmin: false, npAgentId: 42);
 
-        var result = await ctl.GetEventJobs(clientId: 1, clientInternal: false);
+        var result = await ctl.GetEventJobs(clientId: 1);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var payload = ControllerTestHarness.ExtractResponse(ok);

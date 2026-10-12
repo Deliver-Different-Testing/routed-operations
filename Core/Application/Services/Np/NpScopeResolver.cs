@@ -5,6 +5,7 @@
 // do not re-run the DB fallback.
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Domain;
 
 namespace RoutedOperations.Core.Application.Services.Np;
@@ -34,14 +35,19 @@ public class NpScopeResolver(
             return adminScope;
         }
 
-        // Rule 2: tenant staff (not an NP portal login) - full read scope.
-        var isNpClaim = http.User.Claims.FirstOrDefault(x => x.Type == "IsNetworkPartner")?.Value;
-        var isNp = string.Equals(isNpClaim, "True", StringComparison.OrdinalIgnoreCase);
-        if (!isNp)
+        // Rule 2: not an NP portal login. Full read scope for tenant staff
+        // (ClientTypeId 4; 5 returned above) ONLY. Anyone else - a customer, an
+        // Internal-flagged client, a missing ClientTypeId - gets the deny
+        // scope, never "all". Until 2026-10-09 every non-NP caller landed
+        // here as IsAdmin, so a customer read every client's runs (Routed Ops
+        // switches spec section 4: fail closed).
+        if (!CallerLane.IsNetworkPartner(http.User))
         {
-            var staffScope = new NpScope(IsAdmin: true, NpAgentId: null);
-            http.Items[CacheKey] = staffScope;
-            return staffScope;
+            var nonNpScope = CallerLane.IsStaff(http.User)
+                ? new NpScope(IsAdmin: true, NpAgentId: null)
+                : new NpScope(IsAdmin: false, NpAgentId: null);
+            http.Items[CacheKey] = nonNpScope;
+            return nonNpScope;
         }
 
         // Rule 3: NP user. Prefer the direct NpAgentId claim; fall back to
