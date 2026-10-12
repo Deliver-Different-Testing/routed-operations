@@ -28,6 +28,10 @@ export interface AppUser {
   // link on the Recurring Routes page + the "Open ↗" deep-link inside the
   // Linehaul edit modal's Used-by-Schedules list. Null hides both.
   despatchWebBaseUrl?: string | null;
+  // True for whoever the server lets past every Access Control switch (DF
+  // Admin, ClientTypeId 5). The menu and route guard skip the switches for
+  // them, matching [RequireFeature]. Absent on an old bootstrap = false.
+  bypassesFeatureSwitches?: boolean;
 }
 
 declare global {

@@ -24,6 +24,7 @@ const defaultUser: AppUser = {
   clientCount: null,
   clientString: null,
   despatchWebBaseUrl: null,
+  bypassesFeatureSwitches: false,
 };
 
 const AuthContext = createContext<AppUser>(defaultUser);

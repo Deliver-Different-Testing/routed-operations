@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
+using DeliverDifferent.AccessControl;
 using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Application.Services.Courier;
@@ -452,6 +453,20 @@ builder.Services.AddScoped<IDbContextFactory<DynamicDespatchDbContext>>(sp =>
 {
     var inner = sp.GetRequiredService<IDbContextFactory<DespatchContext>>();
     return new DynamicDespatchDbContextFactoryAdapter(inner);
+});
+
+// Access Control switches (DeliverDifferent.AccessControl, Routed Ops switches
+// spec section 3). The resolver reads dbo.Feature x dbo.ClientTypeFeature from
+// the caller's tenant DB over its own short-lived connection, built from the
+// same per-tenant connection string the EF factory resolves. Defaults: DF Admin
+// (ClientTypeId 5) bypasses every switch; the client type comes from the
+// ClientTypeId claim.
+builder.Services.AddAccessControlFeatures();
+builder.Services.AddSqlFeatureCatalogueStore(async (sp, ct) =>
+{
+    var factory = sp.GetRequiredService<IDbContextFactory<DynamicDespatchDbContext>>();
+    await using var ctx = await factory.CreateDbContextAsync(ct);
+    return new Microsoft.Data.SqlClient.SqlConnection(ctx.Database.GetConnectionString());
 });
 
 // Warm the large EF model at startup so first-request latency stays low.
