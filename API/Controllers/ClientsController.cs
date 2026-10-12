@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -23,6 +24,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/clients")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch: Bulk Import (client picker, search, settings). GeocodeSite
+// below declares its own, which replaces this one (spec step 3b).
+[RequireFeature("ro-bulk-import")]
 public class ClientsController(
     ClientService clientService,
     ILogger<ClientsController> logger) : BaseController
@@ -73,6 +77,8 @@ public class ClientsController(
     // caller repeats it with confirm = true to save. The response always
     // carries the previous coordinates so nothing is overwritten unseen.
     [HttpPost("{clientId:int}/geocode")]
+    // Only ScheduleDetailModal calls this, on Schedules (NEW) and Client Overrides.
+    [RequireFeature("ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GeocodeSite(
         int clientId,
         [FromBody] ClientGeocodeRequest request,
