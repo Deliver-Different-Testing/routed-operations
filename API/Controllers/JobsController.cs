@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.Common;
@@ -16,6 +17,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/jobs")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Route Builder, the only page that calls this (Routed Ops switches spec step 3b).
+[RequireFeature("ro-route-builder")]
 public class JobsController(
     JobService jobService,
     VoidJobService voidJobService,

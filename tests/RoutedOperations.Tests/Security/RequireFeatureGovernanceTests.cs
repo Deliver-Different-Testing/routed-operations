@@ -58,4 +58,41 @@ public class RequireFeatureGovernanceTests
         var attr = Assert.Single(controller.GetCustomAttributes<RequireFeatureAttribute>(inherit: true));
         Assert.Equal([key], attr.FeatureKeys);
     }
+
+    [Theory]
+    [InlineData(typeof(CouriersController))]
+    [InlineData(typeof(FleetsController))]
+    [InlineData(typeof(RegionsController))]
+    [InlineData(typeof(JobsController))]
+    [InlineData(typeof(RunsController))]
+    [InlineData(typeof(RoutesController))]
+    [InlineData(typeof(SpeedsController))]
+    [InlineData(typeof(VehicleSizesController))]
+    public void Route_builder_lookups_sit_behind_route_builder(Type controller)
+    {
+        // Step 3b-2. Only the Route Builder cockpit calls these.
+        var attr = Assert.Single(controller.GetCustomAttributes<RequireFeatureAttribute>(inherit: true));
+        Assert.Equal(["ro-route-builder"], attr.FeatureKeys);
+    }
+
+    [Fact]
+    public void Address_admits_any_of_the_three_pages_that_call_it()
+    {
+        var attr = Assert.Single(typeof(AddressController).GetCustomAttributes<RequireFeatureAttribute>(inherit: true));
+        Assert.Equal(
+            new HashSet<string> { "ro-bulk-import", "ro-route-builder", "ro-recurring-routes" },
+            attr.FeatureKeys.ToHashSet());
+    }
+
+    [Fact]
+    public void Clients_is_bulk_import_except_geocode_which_schedules_new_owns()
+    {
+        var controllerAttr = Assert.Single(typeof(ClientsController).GetCustomAttributes<RequireFeatureAttribute>(inherit: true));
+        Assert.Equal(["ro-bulk-import"], controllerAttr.FeatureKeys);
+
+        // Action-level declaration REPLACES the controller's (most specific wins).
+        var geocode = typeof(ClientsController).GetMethod(nameof(ClientsController.GeocodeSite))!;
+        var actionAttr = Assert.Single(geocode.GetCustomAttributes<RequireFeatureAttribute>(inherit: true));
+        Assert.Equal(new HashSet<string> { "ro-schedules-new", "ro-client-overrides" }, actionAttr.FeatureKeys.ToHashSet());
+    }
 }
