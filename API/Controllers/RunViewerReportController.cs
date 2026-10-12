@@ -2,6 +2,7 @@
 // text/csv) for browser download. Woop XLSX + Linehaul remain 501
 // scaffolds - both are Section Z-gated (NZ-only hardcoded IDs).
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.RouteViewer;
@@ -11,6 +12,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/reports")]
 [Authorize(Policy = "RouteViewer.Admin")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs and Linehaul (report CSVs) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-linehaul")]
 public class RunViewerReportController(
     RouteViewerReportService reportService) : BaseController
 {
