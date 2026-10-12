@@ -7,6 +7,7 @@
 // side (assign, unassign, transfer). This controller owns the read
 // side.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
@@ -17,6 +18,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/jobs")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// every Route Viewer page (job detail, and the header job search on all of them) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-linehaul", "ro-scan-manager", "ro-print-manager", "ro-customer-services", "ro-mobile")]
 public class RunViewerJobController(
     RouteViewerJobService jobService) : BaseController
 {
