@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
@@ -30,6 +31,11 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/v2/schedules")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Schedules (NEW), and Client Overrides which opens the same detail modal.
+// Several routes here are absolute (~/api/v2/clients/..., /api/v2/schedule-bundles...),
+// so key by caller, not by route prefix (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-schedules-new", "ro-client-overrides")]
 public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService overrides) : BaseController
 {
     /// <summary>
@@ -211,6 +217,8 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// "you differ from N schedules" view.
     /// </summary>
     [HttpGet("~/api/v2/clients/{clientId:int}/overrides")]
+    // Only the Client Overrides page.
+    [RequireFeature("ro-client-overrides")]
     public async Task<IActionResult> ListClientOverrides(int clientId)
     {
         try
@@ -387,6 +395,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// existing ScheduleService.DeleteAsync retire path.
     /// </summary>
     [HttpPost("{scheduleId:int}/retire")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Retire(int scheduleId)
     {
@@ -409,6 +418,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// schedule can be booked at all (Steve F21 2026-09-22).
     /// </summary>
     [HttpPost("{scheduleId:int}/is-active")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> SetIsActive(int scheduleId, [FromBody] SetIsActiveRequest req)
     {
@@ -430,6 +440,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// empty for a "default" copy).
     /// </summary>
     [HttpPost("{scheduleId:int}/copy")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Copy(int scheduleId, [FromBody] CopyScheduleRequest req)
     {
@@ -485,6 +496,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// Returns the new bundleId.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> CreateBundle([FromBody] CreateBundleRequest req)
     {
@@ -503,6 +515,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>PUT /api/v2/schedule-bundles/{bundleId} - rename / redescribe.</summary>
     [HttpPut("/api/v2/schedule-bundles/{bundleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> UpdateBundle(int bundleId, [FromBody] CreateBundleRequest req)
     {
@@ -527,6 +540,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// the Schedules NEW tab.
     /// </summary>
     [HttpGet("/api/v2/clients/{clientId:int}/schedules")]
+    [RequireFeature("ro-schedules-new")]
     public async Task<IActionResult> ClientSchedules(int clientId)
     {
         try
@@ -545,6 +559,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// to a bundle. Body `{ scheduleIds: int[] }`. Idempotent.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/members")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> AddBundleMembers(int bundleId, [FromBody] AddBundleMembersRequest req)
     {
@@ -562,6 +577,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>DELETE /api/v2/schedule-bundles/{bundleId}/members/{scheduleId}.</summary>
     [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}/members/{scheduleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> RemoveBundleMember(int bundleId, int scheduleId)
     {
@@ -579,6 +595,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>DELETE /api/v2/schedule-bundles/{bundleId} - hard-delete.</summary>
     [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> DeleteBundle(int bundleId)
     {
@@ -601,6 +618,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// skipped). Returns the total number of link rows added.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/clients")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> AttachClientsToBundle(int bundleId, [FromBody] AttachClientsRequest req)
     {
