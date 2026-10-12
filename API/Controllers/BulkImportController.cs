@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -31,6 +32,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/bulk-import")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch: Bulk Import (Routed Ops switches spec step 3b).
+[RequireFeature("ro-bulk-import")]
 public class BulkImportController(
     BulkImportServiceV2 bulkService,
     ILogger<BulkImportController> logger) : BaseController

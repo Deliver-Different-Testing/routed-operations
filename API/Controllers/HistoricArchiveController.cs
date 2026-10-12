@@ -1,11 +1,16 @@
-// Historic Archive Upload endpoints. Gate: tenant staff by ClientTypeId
-// (CallerLane.IsStaff; the Internal claim was retired as a gate 2026-10-09). TODO: replace the ad-hoc IsInternal() check with a
-// dedicated `Roles.HistoricArchiveUpload` claim / policy once Hub can
-// stamp it. Same pattern as BulkImportController.StaffImport - a proper
-// [Authorize(Policy = ...)] plus Hub-side claim would be cleaner but is
-// not yet plumbed through.
+// Historic Archive Upload endpoints. A DFRNT-staff tool.
+//
+// Gate: the ro-historic-archive Access Control switch, seeded for DF Admin
+// (ClientTypeId 5) only (Routed Ops switches spec section 1; Garry confirmed
+// 2026-10-12 that tenant staff lose it). [RequireFeature] decides; DF Admin
+// bypasses the switches, and any other client type is refused unless DF Admin
+// grants them the switch in Access Control.
+//
+// IsInternal() below is the older staff check (ClientTypeId 4/5), kept as a
+// second line: it can only refuse, never widen what the switch allows.
 
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,6 +23,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/historic-archive")]
+// Access Control switch, DF Admin only by seed (Routed Ops switches spec step 3b).
+[RequireFeature("ro-historic-archive")]
 public class HistoricArchiveController(HistoricArchiveService service) : BaseController
 {
     private int GetContactId()
@@ -28,7 +35,7 @@ public class HistoricArchiveController(HistoricArchiveService service) : BaseCon
 
     // Staff by ClientTypeId 4/5, not the Hub "Internal" claim: that is the
     // ucclInternal billing flag and carries no permission (Steve 2026-10-08).
-    // Narrowing this to DF Admin (5) comes with the ro-historic-archive switch.
+    // The narrowing to DF Admin is the [RequireFeature] switch on the class.
     private bool IsInternal() => User is not null && CallerLane.IsStaff(User);
 
     private IActionResult Forbidden(string message) =>

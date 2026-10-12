@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Services.Zone;
 
@@ -12,6 +13,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/zones")]
 [Authorize(Policy = "RouteBuilder.Polygon")]
+// Access Control switch: Polygon Builder (Routed Ops switches spec step 3b).
+[RequireFeature("ro-polygon-builder")]
 public class ZonesController(ZoneLookupService svc) : BaseController
 {
     [HttpGet("rating-postcodes")]
