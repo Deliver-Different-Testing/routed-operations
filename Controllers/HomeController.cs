@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using RoutedOperations.Core.Application.Security;
+using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -34,7 +34,11 @@ public record AppUserBootstrap(
     // Powers the Recurring Routes page's "Recurring Jobs" external link + the
     // "Open ↗" schedule deep-links inside the Linehaul edit modal.
     // Empty/null hides both. Mirrors the Configurator AppUserBootstrap shape.
-    string? DespatchWebBaseUrl);
+    string? DespatchWebBaseUrl,
+    // True for whoever the server lets past every Access Control switch
+    // (IFeatureSwitchBypass: DF Admin, ClientTypeId 5). The SPA's menu and
+    // route guard skip the switches for them, matching [RequireFeature].
+    bool BypassesFeatureSwitches = false);
 
 /// <summary>
 /// SPA fallback + tenant claim enrichment. Also seeds the tenant Despatch
@@ -44,7 +48,8 @@ public record AppUserBootstrap(
 [Authorize]
 public class HomeController(
     IConnectionStringManager connectionStringManager,
-    AppSettings appSettings) : Controller
+    AppSettings appSettings,
+    DeliverDifferent.AccessControl.Features.IFeatureSwitchBypass featureSwitchBypass) : Controller
 {
     public async Task<IActionResult> Index()
     {
@@ -156,7 +161,8 @@ public class HomeController(
             ClientId: clientId,
             ClientCount: clientCount,
             ClientString: clientString,
-            DespatchWebBaseUrl: string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl) ? null : appSettings.DespatchWebBaseUrl);
+            DespatchWebBaseUrl: string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl) ? null : appSettings.DespatchWebBaseUrl,
+            BypassesFeatureSwitches: featureSwitchBypass.Bypasses(HttpContext.User));
 
         return View(bootstrap);
     }

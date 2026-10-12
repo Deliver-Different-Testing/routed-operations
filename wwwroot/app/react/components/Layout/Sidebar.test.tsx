@@ -1,5 +1,8 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { server } from '@/test/server';
+import { RO_FEATURE_KEYS } from '@/lib/accessSwitches';
 import { Sidebar } from './Sidebar';
 import { renderWithProviders } from '@/test/renderWithProviders';
 
@@ -10,6 +13,7 @@ describe('Sidebar', () => {
     (window as any).__APP_USER__ = {
       ...(window as any).__APP_USER__,
       isNetworkPartner: false,
+      bypassesFeatureSwitches: false,
     };
   });
 
@@ -97,5 +101,54 @@ describe('Sidebar', () => {
     renderWithProviders(<Sidebar />);
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
     expect(screen.getAllByText('Route Viewer').length).toBeGreaterThan(0);
+  });
+
+  // ── Access Control switches ──────────────────────────────────────
+  // Every entry is behind its ro-* switch. The default MSW handler grants
+  // all of them; these override it.
+
+  const grant = (keys: readonly string[]) =>
+    server.use(http.get('/api/me/visible-features', () => HttpResponse.json([...keys])));
+
+  it('hides an entry whose switch is off', async () => {
+    grant(RO_FEATURE_KEYS.filter((k) => k !== 'ro-quoting'));
+    renderWithProviders(<Sidebar />);
+    await waitFor(() => expect(screen.queryByText('Quoting')).not.toBeInTheDocument());
+    expect(screen.getByText('Route Builder')).toBeInTheDocument();
+  });
+
+  it('hides the whole Route Viewer group when the group switch is off', async () => {
+    grant(RO_FEATURE_KEYS.filter((k) => k !== 'ro-route-viewer'));
+    renderWithProviders(<Sidebar />, { initialRoute: '/dashboard' });
+    await waitFor(() => expect(screen.queryByText('Scan Manager')).not.toBeInTheDocument());
+    expect(screen.queryAllByText('Route Viewer')).toHaveLength(0);
+  });
+
+  it('drops a group left with no visible pages', async () => {
+    grant(RO_FEATURE_KEYS.filter((k) => !['ro-route-viewer-runs', 'ro-linehaul', 'ro-scan-manager',
+      'ro-print-manager', 'ro-customer-services'].includes(k)));
+    renderWithProviders(<Sidebar />);
+    await waitFor(() => expect(screen.queryAllByText('Route Viewer')).toHaveLength(0));
+  });
+
+  it('fails closed when the switches cannot be loaded', async () => {
+    server.use(http.get('/api/me/visible-features', () => new HttpResponse(null, { status: 500 })));
+    renderWithProviders(<Sidebar />);
+    await waitFor(() => expect(screen.queryByText('Dashboard')).not.toBeInTheDocument());
+    expect(screen.queryByText('Route Builder')).not.toBeInTheDocument();
+  });
+
+  it('shows everything to a caller who bypasses the switches, without asking', () => {
+    // DF Admin. No handler call is needed: an unhandled request would fail the test.
+    server.use(http.get('/api/me/visible-features', () => { throw new Error('should not be fetched'); }));
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, bypassesFeatureSwitches: true };
+    renderWithProviders(<Sidebar />);
+    expect(screen.getByText('Historic Archive Upload')).toBeInTheDocument();
+    expect(screen.getByText('Quoting')).toBeInTheDocument();
+  });
+
+  it('never renders Mobile, which has a switch but no menu entry', () => {
+    renderWithProviders(<Sidebar />, { initialRoute: '/route-viewer' });
+    expect(screen.queryByText('Mobile')).not.toBeInTheDocument();
   });
 });

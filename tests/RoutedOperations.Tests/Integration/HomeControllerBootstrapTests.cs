@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.AspNetCore.Routing;
+using DeliverDifferent.AccessControl.Features;
 using RoutedOperations.Controllers;
 using RoutedOperations.Infrastructure;
 
@@ -47,7 +48,7 @@ public class HomeControllerBootstrapTests
             DespatchWebBaseUrl = "https://despatch.test",
         };
 
-        var ctl = new HomeController(fake, appSettings);
+        var ctl = new HomeController(fake, appSettings, new DfAdminByClientType());
 
         var identity = new ClaimsIdentity(
             claims ?? Array.Empty<Claim>(),
@@ -474,6 +475,28 @@ public class HomeControllerBootstrapTests
         var view = Assert.IsType<ViewResult>(await ctl.Index());
         var boot = Assert.IsType<AppUserBootstrap>(view.Model);
         Assert.False(boot.IsInternal);
+    }
+
+    // BypassesFeatureSwitches tells the SPA menu and route guard who the
+    // server lets past every Access Control switch: DF Admin (ClientTypeId 5)
+    // only. Tenant staff (4) are held to the switches like everyone else.
+    [Theory]
+    [InlineData("5", true)]
+    [InlineData("4", false)]
+    [InlineData("2", false)]
+    public async Task Index_BypassesFeatureSwitches_IsDfAdminOnly(string clientTypeId, bool expected)
+    {
+        var (ctl, _, _) = NewCtl(new[]
+        {
+            new Claim("Connection", ConnClaim),
+            new Claim("CurrentTenantID", "1"),
+            new Claim("ClientTypeId", clientTypeId),
+            new Claim("UserGroupID", "1"),
+        });
+
+        var view = Assert.IsType<ViewResult>(await ctl.Index());
+        var boot = Assert.IsType<AppUserBootstrap>(view.Model);
+        Assert.Equal(expected, boot.BypassesFeatureSwitches);
     }
 
     // ─────────────────────────────────────────────────────────────────────
