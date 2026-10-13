@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Domain;
@@ -40,6 +40,23 @@ internal static class CockpitTestHarness
         using (var ctx = new DynamicDespatchDbContext(options))
         {
             ctx.Database.EnsureCreated();
+            // EnsureCreated builds TABLES from the model, and since
+            // 20261009177000 TblBulkRunSchedule is mapped ToView, so the view
+            // has to be created here or every read of it fails with "no such
+            // table". Created over the physical day table, the same shape the
+            // migration creates in production.
+            //
+            // SELECT * rather than a column list: the point of reading through
+            // a view in tests at all is that EF's generated SELECT names only
+            // columns that really exist, so the view exposes whatever the day
+            // table has and a wrong column name still fails.
+            //
+            // The real view also synthesises a converted schedule's payload
+            // from its detail row. That part is NOT reproduced: it is SQL
+            // Server logic under test against a real database, not here. A
+            // test that needs it must not use this harness.
+            ctx.Database.ExecuteSqlRaw(
+                "CREATE VIEW tblBulkRunSchedule AS SELECT * FROM tblBulkRunScheduleDay;");
         }
         return (options, connection);
     }

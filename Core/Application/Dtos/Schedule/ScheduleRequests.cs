@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
@@ -32,10 +32,17 @@ public class ScheduleGroupUpsertRequest
     public int? PickupDepotId { get; set; }
 
     /// <summary>
-    /// 'depot' (default, every schedule today) or 'client' when the chain
-    /// starts at the client's own address. Defaulted rather than required
-    /// so the legacy POST /api/schedules contract keeps working: a caller
-    /// that never heard of origin types gets today's behaviour.
+    /// 'depot' (default, every schedule today), 'client' when the chain
+    /// starts at the client's own address, or 'direct' when the goods go
+    /// from the pickup address the BOOKING declares straight to the
+    /// delivery address with no depot touched. Defaulted rather than
+    /// required so the legacy POST /api/schedules contract keeps working: a
+    /// caller that never heard of origin types gets today's behaviour.
+    ///
+    /// 'direct' is 6 characters, so the existing StringLength(6) already
+    /// admits it; the length is left alone deliberately so an unknown
+    /// longer value still fails validation rather than silently folding to
+    /// 'depot'.
     /// </summary>
     [StringLength(6)] public string OriginType { get; set; } = "depot";
 
@@ -43,6 +50,11 @@ public class ScheduleGroupUpsertRequest
     /// Origin branch, required when OriginType is 'client' and ignored
     /// otherwise. Counterpart of PickupDepotId, not of RegionId, which
     /// stays the delivery branch taken from the Delivery leg.
+    ///
+    /// Forced to NULL for OriginType 'direct': a Direct schedule has no
+    /// origin branch of its own, because the pickup address arrives with
+    /// the booking. Its dispatch/reporting region is RegionId, the same
+    /// Delivery-leg value every other schedule uses.
     /// </summary>
     public int? OriginRegionId { get; set; }
 
@@ -108,6 +120,18 @@ public class ScheduleGroupUpsertRequest
     /// update paths so callers that don't know about the field keep the
     /// pre-F21 behaviour. Added 2026-09-22 (Steve F21).</summary>
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// How many upcoming runs the booking page should offer for this
+    /// schedule, 1 to 14. Null leaves it alone: on a schedule that has just
+    /// collapsed the converter has already written one week's worth, which
+    /// is the count of days in the mask, and on an old-shape schedule there
+    /// is nowhere to store it.
+    ///
+    /// Writes the SCHEDULE's value. A client that needs a different number
+    /// gets an override row instead, which this never touches.
+    /// </summary>
+    public byte? OccurrencesAhead { get; set; }
 }
 
 /// <summary>

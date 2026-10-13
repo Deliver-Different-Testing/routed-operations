@@ -14,7 +14,7 @@ public class BulkImportServiceV2StaffImportTests
     [Fact]
     public async Task StaffImport_ClientNotFound_RecordsFailedJob()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out _, out _, countryCode: "US", internalClaim: "True");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out _, out _, countryCode: "US", clientTypeId: "4");
         var req = new StaffImportRequest
         {
             Jobs = new List<Dictionary<string, object>>
@@ -119,7 +119,7 @@ public class BulkImportServiceV2StaffImportTests
     [Fact]
     public async Task StaffImport_ClientCache_UsesCachedInstanceForRepeatedClient()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "X", UcclName = "N", UcclActive = true, JobPrefix = "P" });
         await seed.SaveChangesAsync();
 
@@ -147,7 +147,7 @@ public class BulkImportServiceV2StaffImportTests
     [Fact]
     public async Task StaffImport_ClientIdAsString_IsParsed()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "X", UcclName = "N", UcclActive = true, JobPrefix = "P" });
         await seed.SaveChangesAsync();
 
@@ -167,7 +167,7 @@ public class BulkImportServiceV2StaffImportTests
     [Fact]
     public async Task StaffImport_ClientCodeCaseInsensitiveMatch()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", internalClaim: "True");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "US", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "abc", UcclName = "N", UcclActive = true, JobPrefix = "P" });
         await seed.SaveChangesAsync();
 
@@ -188,7 +188,7 @@ public class BulkImportServiceV2StaffImportTests
     {
         // NZ tenant - failure happens further down but we exercise the NZ
         // codepath (INT_stpJob_BulkInsertAsync) at least until the SP call.
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "NZ", internalClaim: "True");
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "NZ", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "X", UcclName = "N", UcclActive = true, JobPrefix = "P" });
         await seed.SaveChangesAsync();
 

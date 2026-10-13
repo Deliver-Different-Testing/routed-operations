@@ -8,6 +8,7 @@
 // change. Not cached in P1; TenantScopedCache is available if we want to
 // layer it in.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -16,20 +17,22 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/filters")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs, Scan Manager, Print Manager and Linehaul (filter lookups; Mobile has them disabled) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-scan-manager", "ro-print-manager", "ro-linehaul")]
 public class RunViewerFilterController(
     RouteViewerFilterService filterService) : BaseController
 {
     /// <summary>
-    /// GET /api/runviewer/filters/clients?runDate=&multipleClients=&contactId=
-    /// Client dropdown for the filter panel + client scope switcher.
+    /// GET /api/runviewer/filters/clients?runDate=
+    /// Client dropdown for the filter panel + client scope switcher. The
+    /// contact comes from the session, never the query string; older
+    /// clients still send multipleClients / contactId and both are ignored.
     /// </summary>
     [HttpGet("clients")]
-    public async Task<IActionResult> GetClients(
-        [FromQuery] DateTime? runDate,
-        [FromQuery] bool multipleClients = false,
-        [FromQuery] int? contactId = null)
+    public async Task<IActionResult> GetClients([FromQuery] DateTime? runDate)
     {
-        var rows = await filterService.GetClientListAsync(runDate, multipleClients, contactId);
+        var rows = await filterService.GetClientListAsync(runDate);
         return Ok(new { response = rows });
     }
 

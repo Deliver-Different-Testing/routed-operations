@@ -47,20 +47,3 @@ public partial class SchedulePostcode
     [MaxLength(100)]
     public string CreatedBy { get; set; }
 }
-
-/// <summary>
-/// Schedule ↔ Coverage Polygon binding. Extends Phase-5 polygon binding
-/// (ZoneName + PostcodeGroup) with a third target: whole schedule
-/// groups. FK on PolygonId cascades: deleting a polygon clears every
-/// schedule binding automatically.
-/// </summary>
-[Table("tblSchedulePolygon")]
-public partial class SchedulePolygon
-{
-    [MaxLength(200)]
-    public string ScheduleName { get; set; }
-    public int PolygonId { get; set; }
-    public DateTime CreatedUtc { get; set; }
-    [MaxLength(100)]
-    public string CreatedBy { get; set; }
-}

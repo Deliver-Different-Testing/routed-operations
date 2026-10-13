@@ -139,6 +139,17 @@ export const schedulesV2Service = {
       { method: 'POST', body: JSON.stringify({ ...body, scheduleId: undefined }) },
     ).then((r) => r.response),
 
+  /**
+   * GET /api/v2/schedules/{id}/occurrences?n= - the next runs this
+   * schedule would offer. `n` lets the preview follow an UNSAVED edit, so
+   * the modal passes what is in the box rather than what is in the
+   * database.
+   */
+  occurrences: (scheduleId: number, n?: number | null) =>
+    request<{ response: ScheduleOccurrence[] }>(
+      `/v2/schedules/${scheduleId}/occurrences${n != null ? `?n=${n}` : ''}`,
+    ).then((r) => r.response),
+
   /** PUT /api/v2/schedules/{id} - update existing schedule (path id wins). */
   update: (scheduleId: number, body: ScheduleGroupUpsertBody) =>
     request<{ response: ScheduleGroup }>(
@@ -233,6 +244,18 @@ export const schedulesV2Service = {
  *  F11 Phase C (2026-09-24): cutoffHours dropped from the wire in favour
  *  of the absolute (cutoffDay, cutoffTime) pair. Tenant SPs coalesce the
  *  new pair over the legacy CutoffHours column on the row itself. */
+/** One run the booking page would offer. Preview only, never a booking. */
+export interface ScheduleOccurrence {
+  /** ISO yyyy-MM-dd. */
+  date: string;
+  /** 1 = Monday .. 7 = Sunday. */
+  dayOfWeek: number;
+  /** "HH:mm". */
+  startTime: string;
+  /** "yyyy-MM-dd HH:mm" - when ordering closes for this run. */
+  cutoffAt: string;
+}
+
 export interface ScheduleScopeOverride {
   cutoffDay: number | null;
   cutoffTime: string | null;
@@ -240,6 +263,11 @@ export interface ScheduleScopeOverride {
   isActive: boolean | null;
   displayName: string | null;
   displayDescription: string | null;
+  /**
+   * How many upcoming runs of this schedule the booking page offers this
+   * client. null inherits the schedule's own value. 1 to 14.
+   */
+  occurrencesAhead: number | null;
 }
 
 /** Leg-scope delta fields (used for both collection and delivery). */

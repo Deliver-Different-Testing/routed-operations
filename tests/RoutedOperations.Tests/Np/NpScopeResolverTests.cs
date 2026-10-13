@@ -60,7 +60,9 @@ public class NpScopeResolverTests
     [Fact]
     public async Task ResolveAsync_TenantStaff_NotNp_ReturnsAdminScope()
     {
-        var accessor = AccessorWith(new Claim("IsNetworkPartner", "False"));
+        var accessor = AccessorWith(
+            new Claim("IsNetworkPartner", "False"),
+            new Claim("ClientTypeId", "4"));
         var factory = Substitute.For<IDbContextFactory<DynamicDespatchDbContext>>();
         var sut = new NpScopeResolver(accessor, factory);
 
@@ -70,18 +72,29 @@ public class NpScopeResolverTests
         Assert.Null(scope.NpAgentId);
     }
 
-    [Fact]
-    public async Task ResolveAsync_NoNpClaimAtAll_ReturnsAdminScope()
+    // Until 2026-10-09 every non-NP caller fell into the tenant-staff branch,
+    // so a customer contact got the unfiltered tenant scope. Now only
+    // ClientTypeId 4/5 does; everyone else gets the deny scope.
+    [Theory]
+    [InlineData(null, null)]          // no claims at all
+    [InlineData("2", null)]           // customer contact
+    [InlineData("2", "True")]         // customer on an Internal-flagged client
+    [InlineData("1", "True")]         // ClientType 1 Internal: no grants (Steve 2026-10-08)
+    [InlineData("", null)]            // blank ClientTypeId
+    public async Task ResolveAsync_NonStaff_NotNp_ReturnsDenyScope(string? clientTypeId, string? internalClaim)
     {
-        // Absent IsNetworkPartner claim also flows into the tenant-staff branch
-        // because string.Equals(null, "True") is false.
-        var accessor = AccessorWith();
+        var claims = new List<Claim>();
+        if (clientTypeId != null) claims.Add(new Claim("ClientTypeId", clientTypeId));
+        if (internalClaim != null) claims.Add(new Claim("Internal", internalClaim));
+        var accessor = AccessorWith(claims.ToArray());
         var factory = Substitute.For<IDbContextFactory<DynamicDespatchDbContext>>();
         var sut = new NpScopeResolver(accessor, factory);
 
         var scope = await sut.ResolveAsync();
 
-        Assert.True(scope.IsAdmin);
+        Assert.False(scope.IsAdmin);
+        Assert.Null(scope.NpAgentId);
+        await factory.DidNotReceive().CreateDbContextAsync();
     }
 
     [Fact]

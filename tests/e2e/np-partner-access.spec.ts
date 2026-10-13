@@ -75,6 +75,14 @@ test.describe('Network partner - module lockout', () => {
   });
 
   test('every denied surface redirects', async ({ page }) => {
+    // Eight full SPA boots in one test, which is the slowest shape in
+    // this suite: 9.2s on an idle machine, so roughly 1.1s a navigation.
+    // Under full parallel load each navigation stretches and the default
+    // 30s budget runs out, which surfaced as a timeout on two branches
+    // that only added unrelated tests elsewhere. test.slow() triples the
+    // budget for this test alone. Nothing here is expensive per
+    // navigation; it is eight of a thing that costs a second.
+    test.slow();
     // /quoting and /auto-assign-log joined this list on 2026-10-07. The
     // earlier version of this test asserted they did NOT redirect, which was
     // correct while RouteBuilder.Quote and .Polygon admitted a partner.

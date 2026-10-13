@@ -16,23 +16,14 @@ const wrapPost = (path: string, body: unknown, capture?: (payload: unknown) => v
   });
 
 describe('routeViewerService - filters', () => {
-  it('getClients GETs /runviewer/filters/clients forwarding multipleClients + contactId', async () => {
+  it('getClients sends runDate only - scope comes from the session, not the request', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/filters/clients', [], (u) => (seen = u)));
-    await routeViewerService.getClients('2026-08-13', true, 555);
+    await routeViewerService.getClients('2026-08-13');
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
-    expect(seen.searchParams.get('multipleClients')).toBe('true');
-    expect(seen.searchParams.get('contactId')).toBe('555');
-    // clientInternal used to be sent but the SP ignores it; the DTO
-    // dropped it so it must NOT appear on the wire anymore.
-    expect(seen.searchParams.has('clientInternal')).toBe(false);
-  });
-
-  it('getClients omits contactId when the auth claim is null', async () => {
-    let seen!: URL;
-    server.use(wrapGet('/api/runviewer/filters/clients', [], (u) => (seen = u)));
-    await routeViewerService.getClients('2026-08-13', false, null);
     expect(seen.searchParams.has('contactId')).toBe(false);
+    expect(seen.searchParams.has('multipleClients')).toBe(false);
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
   });
 
   it('getSpeeds GETs /runviewer/filters/speeds', async () => {
@@ -65,12 +56,12 @@ describe('routeViewerService - runs', () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/runs', [], (u) => (seen = u)));
     await routeViewerService.getRuns({
-      runDate: '2026-08-13', clientInternal: true, multipleClients: false,
+      runDate: '2026-08-13',
       clientIds: [1, 2], regionIds: [3], speedIds: [4, 5], group: 'Combined',
     });
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
-    expect(seen.searchParams.get('clientInternal')).toBe('true');
-    expect(seen.searchParams.get('multipleClients')).toBe('false');
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
+    expect(seen.searchParams.has('multipleClients')).toBe(false);
     expect(seen.searchParams.get('clientIds')).toBe('1,2');
     expect(seen.searchParams.get('regionIds')).toBe('3');
     expect(seen.searchParams.get('speedIds')).toBe('4,5');
@@ -246,21 +237,20 @@ describe('routeViewerService - scans / events', () => {
   it('getBulkScanJobs GETs /runviewer/scans', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/scans', [], (u) => (seen = u)));
-    await routeViewerService.getBulkScanJobs('2026-08-13', true);
+    await routeViewerService.getBulkScanJobs('2026-08-13');
     expect(seen.searchParams.get('runDate')).toBe('2026-08-13');
-    expect(seen.searchParams.get('clientInternal')).toBe('true');
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
   });
 
   it('getPrintJobList GETs /runviewer/jobs/print-list with filters', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/jobs/print-list', [], (u) => (seen = u)));
     await routeViewerService.getPrintJobList('2026-08-14', {
-      clientInternal: true,
       clientIds: [1, 2],
       regionIds: [7],
     });
     expect(seen.searchParams.get('runDate')).toBe('2026-08-14');
-    expect(seen.searchParams.get('clientInternal')).toBe('true');
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
     expect(seen.searchParams.get('clientIds')).toBe('1,2');
     expect(seen.searchParams.get('regionIds')).toBe('7');
   });
@@ -311,9 +301,9 @@ describe('routeViewerService - scans / events', () => {
   it('getEvents GETs /runviewer/events with booleans stringified', async () => {
     let seen!: URL;
     server.use(wrapGet('/api/runviewer/events', [], (u) => (seen = u)));
-    await routeViewerService.getEvents('2026-08-13', true, true);
+    await routeViewerService.getEvents('2026-08-13', true);
     expect(seen.searchParams.get('includeClosed')).toBe('true');
-    expect(seen.searchParams.get('clientInternal')).toBe('true');
+    expect(seen.searchParams.has('clientInternal')).toBe(false);
   });
 });
 

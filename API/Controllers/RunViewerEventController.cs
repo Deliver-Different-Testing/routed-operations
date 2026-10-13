@@ -5,6 +5,7 @@
 // GetBulkJob + GetBulkJobPhotos are on RunViewerJobController; CS
 // module consumes them the same way Home Detail does.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.RouteViewer;
@@ -14,6 +15,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/events")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs and Customer Services (CS events) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-customer-services")]
 public class RunViewerEventController(
     RouteViewerEventService eventService) : BaseController
 {
@@ -26,14 +30,13 @@ public class RunViewerEventController(
         return Ok(new { response = rows });
     }
 
-    /// <summary>GET /api/runviewer/events/jobs?clientId=&clientInternal=
-    /// - job typeahead for the create-event dialog.</summary>
+    /// <summary>GET /api/runviewer/events/jobs?clientId=
+    /// - job typeahead for the create-event dialog. clientInternal is no
+    /// longer accepted; older clients still send it and it is ignored.</summary>
     [HttpGet("jobs")]
-    public async Task<IActionResult> GetEventJobs(
-        [FromQuery] int? clientId,
-        [FromQuery] bool clientInternal = false)
+    public async Task<IActionResult> GetEventJobs([FromQuery] int? clientId)
     {
-        var rows = await eventService.GetEventJobsAsync(clientId, clientInternal);
+        var rows = await eventService.GetEventJobsAsync(clientId);
         return Ok(new { response = rows });
     }
 

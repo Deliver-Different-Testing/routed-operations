@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -33,6 +33,97 @@ public class ScheduleModelShapeTests
         new DbContextOptionsBuilder<DespatchContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString(), b => b.EnableNullChecks(false))
             .Options;
+
+    // ─── the collapse: view for reads, table for writes ─────────────────
+
+    private static DbContextOptions<DespatchContext> NewSqlServerOptions() =>
+        new DbContextOptionsBuilder<DespatchContext>()
+            // No connection is opened. Building the model is enough, and it
+            // is the SQL Server provider that applies the relational rules
+            // InMemory skips entirely.
+            .UseSqlServer("Server=.;Database=none;Trusted_Connection=True;")
+            .Options;
+
+    [Fact]
+    public void RelationalModelValidatesUnderTheSqlServerProvider()
+    {
+        // 20261009177000 renamed the day table and put a view of the old
+        // name in its place, so TblBulkRunSchedule is now mapped ToView.
+        // BulkZoneSchedule, TblBulkScheduleLinehaul and the tblRouteSchedule
+        // many-to-many are tables that relate to it, and a table relating to
+        // a view is the kind of thing the relational provider validates and
+        // InMemory does not: every test in this project would pass with a
+        // model SQL Server refuses to build.
+        //
+        // Touching ctx.Model forces the build plus validation. The assertion
+        // is that it does not throw.
+        using var ctx = new DynamicDespatchDbContext(NewSqlServerOptions());
+        var model = ctx.Model;
+        Assert.NotNull(model.FindEntityType(typeof(TblBulkRunSchedule)));
+    }
+
+    [Fact]
+    public void DayRowsAreReadFromTheViewAndWrittenToTheTable()
+    {
+        // The split is the whole safety property of the collapse. For a
+        // CONVERTED schedule the physical table holds NULL payload and the
+        // view synthesises it from the detail row, so a read against the
+        // table silently returns nulls. Keeping TblBulkRunSchedule on the
+        // view means every existing read stays correct, and keeping it off
+        // any table means a stray write throws instead of going nowhere
+        // (the view is IS_UPDATABLE = NO).
+        using var ctx = new DynamicDespatchDbContext(NewSqlServerOptions());
+
+        var view = ctx.Model.FindEntityType(typeof(TblBulkRunSchedule));
+        Assert.Equal("tblBulkRunSchedule", view.GetViewName());
+        Assert.Null(view.GetTableName());
+
+        var table = ctx.Model.FindEntityType(typeof(TblBulkRunScheduleDay));
+        Assert.Equal("tblBulkRunScheduleDay", table.GetTableName());
+        Assert.Null(table.GetViewName());
+    }
+
+    [Fact]
+    public void ScheduleDetailIsOneToOneOnTheHeaderKey()
+    {
+        // The 1:1 is structural: ScheduleId is both the detail row's PK and
+        // its FK to the header, so a header cannot acquire a second body. A
+        // second body would mean two answers for one schedule's window,
+        // cutoff and occurrences, with nothing to say which the booking
+        // path should believe.
+        using var ctx = new DynamicDespatchDbContext(NewSqlServerOptions());
+        var detail = ctx.Model.FindEntityType(typeof(BulkRunScheduleDetail));
+
+        Assert.Equal("tblBulkRunScheduleDetail", detail.GetTableName());
+        Assert.Equal(
+            new[] { nameof(BulkRunScheduleDetail.ScheduleId) },
+            detail.FindPrimaryKey().Properties.Select(p => p.Name).ToArray());
+
+        var fk = Assert.Single(detail.GetForeignKeys());
+        Assert.True(fk.IsUnique, "detail must be 1:1 with the header, not 1:many");
+        Assert.Equal(
+            new[] { nameof(BulkRunScheduleDetail.ScheduleId) },
+            fk.Properties.Select(p => p.Name).ToArray());
+    }
+
+    [Theory]
+    [InlineData(typeof(TblBulkRunScheduleDay))]
+    [InlineData(typeof(BulkRunScheduleDetail))]
+    public void CollapseEntityHasNoShadowForeignKeyProperties(Type entityType)
+    {
+        // Same guard as the theory below, extended to the two entities the
+        // collapse adds. A shadow FK here would mean EF SELECTing a column
+        // that does not exist on the real table.
+        using var ctx = new DynamicDespatchDbContext(NewOptions());
+        var et = ctx.Model.FindEntityType(entityType)
+            ?? throw new Xunit.Sdk.XunitException($"Entity {entityType.Name} not found in model.");
+        var shadowProps = et.GetProperties()
+            .Where(p => p.IsShadowProperty())
+            .Select(p => p.Name)
+            .ToList();
+        Assert.True(shadowProps.Count == 0,
+            $"{entityType.Name} has shadow properties: {string.Join(", ", shadowProps)}");
+    }
 
     [Theory]
     [InlineData(typeof(TblBulkRunSchedule))]
@@ -102,6 +193,9 @@ public class ScheduleModelShapeTests
         try
         {
             using var ctx = new DynamicDespatchDbContext(opts);
+            // The compatibility view is created by NewSqliteOptions, because
+            // every Sqlite-based test that touches schedules needs it.
+            //
             // Issue a query with the same Include-graph as
             // ScheduleService.GetAsync. Empty DB returns empty list;
             // the point is that the SELECT compiles + runs cleanly.

@@ -16,6 +16,7 @@
 // to configure.
 
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -24,6 +25,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/booking")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs only (redelivery / top-up) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs")]
 public class RunViewerBookingController(
     NwShipBookingService bookingService) : BaseController
 {
