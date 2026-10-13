@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Domain.Despatch;
 
 namespace RoutedOperations.Core.Domain;
@@ -16,7 +16,23 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<TucJobType> TucJobTypes { get; set; }
     public virtual DbSet<TucCourier> TucCouriers { get; set; }
     public virtual DbSet<TucCourierFleet> TucCourierFleets { get; set; }
+    /// <summary>
+    /// READ ONLY. Mapped to the dbo.tblBulkRunSchedule compatibility VIEW,
+    /// which 20261009177000 put in place of the old table. Reads must come
+    /// through here, because for a converted schedule the physical day table
+    /// holds NULL payload and the view synthesises it from the detail row.
+    /// Writes go to TblBulkRunScheduleDays; a write attempted here throws
+    /// rather than silently going nowhere.
+    /// </summary>
     public virtual DbSet<TblBulkRunSchedule> TblBulkRunSchedules { get; set; }
+
+    /// <summary>WRITE side of the day rows: the physical table behind the
+    /// view above. See TblBulkRunScheduleDay for why the two are separate.</summary>
+    public virtual DbSet<TblBulkRunScheduleDay> TblBulkRunScheduleDays { get; set; }
+
+    /// <summary>The single-row body of a collapsed schedule, 1:1 with the
+    /// header. Absent for an old-shape schedule.</summary>
+    public virtual DbSet<BulkRunScheduleDetail> BulkRunScheduleDetails { get; set; }
     public virtual DbSet<TblBulkJobItems> TblBulkJobItems { get; set; }
     public virtual DbSet<VehicleSize> VehicleSizes { get; set; }
     public virtual DbSet<TucClient> TucClients { get; set; }
@@ -236,6 +252,20 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<TblBulkRunSchedule>(entity =>
         {
             entity.HasKey(e => e.BulkRunScheduleId);
+            // 20261009177000 renamed the table to tblBulkRunScheduleDay and
+            // left a view of the old name in its place. ToView keeps every
+            // existing read correct (the view synthesises the payload a
+            // converted schedule no longer stores per day) and makes EF
+            // refuse to write through it, which is what we want: the view is
+            // IS_UPDATABLE = NO, so a write here would fail at the database
+            // anyway, and failing in EF names the entity instead.
+            // ToTable(null) first, then ToView: ToView on its own ADDS a
+            // view mapping and leaves the [Table] attribute's table mapping
+            // in place, so the entity would be mapped to both and writes
+            // would still target the table. Dropping the table mapping is
+            // what makes a write through this entity fail.
+            entity.ToTable((string)null);
+            entity.ToView("tblBulkRunSchedule");
             // BulkZoneSchedules + TblBulkScheduleLinehauls collections were
             // added in the Schedules partial. The reciprocal navs are:
             //   * BulkZoneSchedule.Schedule - wired below in the
@@ -336,6 +366,30 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         // automatically thanks to [Timestamp] on the property; no fluent
         // config needed. Same for the new nullable string columns and
         // OverrideCount (int default 0).
+
+        // Write side of the day rows. Same ids and columns as the view
+        // above; separate entity because one entity cannot be both a view
+        // for reads and a table for writes.
+        modelBuilder.Entity<TblBulkRunScheduleDay>(entity =>
+        {
+            entity.HasKey(e => e.BulkRunScheduleId);
+            entity.ToTable("tblBulkRunScheduleDay");
+            entity.HasOne(e => e.Header)
+                  .WithMany()
+                  .HasForeignKey(e => e.ScheduleId)
+                  .HasPrincipalKey(h => h.ScheduleId);
+        });
+        // The collapsed schedule body. PK is the header id, which is also
+        // the FK, so the 1:1 is structural.
+        modelBuilder.Entity<BulkRunScheduleDetail>(entity =>
+        {
+            entity.HasKey(e => e.ScheduleId);
+            entity.ToTable("tblBulkRunScheduleDetail");
+            entity.HasOne(e => e.Header)
+                  .WithOne()
+                  .HasForeignKey<BulkRunScheduleDetail>(e => e.ScheduleId)
+                  .HasPrincipalKey<BulkRunScheduleHeader>(h => h.ScheduleId);
+        });
 
         modelBuilder.Entity<TblBulkJobItems>(entity =>
         {

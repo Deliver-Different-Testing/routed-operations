@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.AccessControl;
 using System.Threading.Tasks;
 using FluentValidation;
@@ -357,6 +357,12 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 // Schedules module (nightly booking templates + territory maintenance).
+// Collapses a schedule onto its detail row by calling
+// dbo.uspScheduleConvert. Behind an interface so service tests, which run on
+// the in-memory provider, can substitute it; the derivation itself must stay
+// in the procedure so there is only one implementation of the rule.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.IScheduleConverter,
+    RoutedOperations.Core.Application.Services.Schedule.SqlScheduleConverter>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleOverrideService>();
 // Steve F19b (2026-09-24) next-available-collection resolver. Interface

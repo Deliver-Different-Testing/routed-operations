@@ -191,6 +191,30 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// 2026-09-22 delta migration; supersedes the clone-based
     /// BaseScheduleId model (Steve F1 2026-09-20).
     /// </summary>
+    /// <summary>
+    /// GET /api/v2/schedules/{id}/occurrences?n= - the next runs this
+    /// schedule would offer. Feeds the preview under the "occurrences
+    /// ahead" field so a number the operator types turns into dates they
+    /// can read. Read-only.
+    ///
+    /// `n` is optional and lets the preview track an UNSAVED edit: the
+    /// modal passes what is in the box, not what is in the database.
+    /// Omitted, it falls back to the schedule's own value.
+    /// </summary>
+    [HttpGet("{scheduleId:int}/occurrences")]
+    public async Task<IActionResult> PreviewOccurrences(int scheduleId, [FromQuery] int? n)
+    {
+        try
+        {
+            var list = await svc.PreviewOccurrencesAsync(scheduleId, n);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpGet("{scheduleId:int}/overrides")]
     public async Task<IActionResult> ListOverrides(int scheduleId)
     {

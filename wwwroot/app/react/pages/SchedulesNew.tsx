@@ -714,6 +714,24 @@ function ScheduleRow({
           {sourceTag && <SourceTag source={sourceTag} />}
         </div>
         <div className="text-[11px] mt-0.5 leading-tight text-text-muted">
+          {/* Shape indicator (collapse plan 4.2). It rides on the name
+              cell's metadata line rather than beside the day pills: that
+              cell is sized for five pills and the chip either wrapped,
+              losing its first characters, or overflowed into the Origin
+              column. Deliberately quiet either way, because an old-shape
+              schedule is not broken, it has just not been saved since the
+              collapse shipped. */}
+          {s.isCollapsed && (
+            <span
+              title={s.occurrencesAhead != null
+                ? `One row for the whole schedule. Offers ${s.occurrencesAhead} upcoming runs.`
+                : 'One row for the whole schedule.'}
+              className="mr-1 px-1 rounded text-[9px] uppercase tracking-wide bg-surface-light border border-border"
+              data-testid="schedule-collapsed-chip"
+            >
+              1-row
+            </span>
+          )}
           {`#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
         </div>
       </td>

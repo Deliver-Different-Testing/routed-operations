@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
-import { schedulesV2Keys, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
+import { schedulesV2Keys, useScheduleOccurrences, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { scheduleService, type ScheduleGroup, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
 import {
@@ -17,11 +17,15 @@ import {
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
-// Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
+// Kevin 2026-09-25: the `<ClientOverrideEditor>` popup was retired as an
 // entry point (both nested-row click on the Schedules list and the
-// Clients tab "Edit / Configure override" buttons now re-open this
-// same modal in override-edit mode). The ClientOverrideEditor.tsx
-// file is left on disk untouched; nothing imports or renders it.
+// Clients tab "Edit / Configure override" buttons now re-open this same
+// modal in override-edit mode). Its file was left on disk at the time and
+// deleted on 2026-10-13: three weeks of nothing importing it was enough,
+// and leaving it there had already cost two people time. Garry hit it
+// mapping the feature switches and had to ask whether DeleteOverride was
+// live, and a per-client field was added to it in the meantime by someone
+// who did not know it was dead.
 import type {
   ScheduleOverride,
   ScheduleOverridePutBody,
@@ -38,7 +42,14 @@ import { clientsService, type ClientGeocodeResult } from '../../services/clients
 // section 2). 4 tabs: Clients / Route / Operating days / Roster.
 // Name + Description + Book-immediately + Route + Operating days are editable
 // in place; Save PUTs a ScheduleGroupUpsertBody via
-// scheduleService.upsert with the current scheduleId. Clients tab
+// schedulesV2Service.update, or create when there is no scheduleId yet.
+//
+// This said scheduleService.upsert, the v1 endpoint, until 2026-10-13. It
+// had been wrong since the v2 write path landed, and it cost real time:
+// Garry mapped the Routed Ops feature switches from it and keyed the v1
+// Schedules upsert to this page, which would have put the wrong switch in
+// front of the save. Schedules NEW calls v1 for lookups, client search and
+// the auto-book toggle, and for nothing else. Clients tab
 // still uses the dedicated /api/v2 attach/detach endpoints so the
 // audit trail on link rows carries "attach"/"detach" verbs; Roster
 // tab is display-only (linehauls are edited on the Route tab as
@@ -48,6 +59,18 @@ import { clientsService, type ClientGeocodeResult } from '../../services/clients
 type ModalTab = 'clients' | 'route' | 'days' | 'coverage' | 'roster';
 
 const DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+
+/**
+ * "Fri 10 Oct" from an ISO date. Weekday first because that is what an
+ * operator checks against the ticked days; no year, because the preview
+ * never reaches more than 60 days out.
+ */
+function formatOccurrence(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
+}
 
 interface DayForm {
   id: number | null;
@@ -388,7 +411,8 @@ export function ScheduleDetailModal({
   // list and the "Edit override" / "Configure override" buttons on the
   // Clients tab of a BASE schedule now re-open this same modal in
   // override-edit mode (see `overrideMode` prop + `onOpenOverride`
-  // callback above). The ClientOverrideEditor.tsx file is left on disk
+  // callback above). The ClientOverrideEditor.tsx file was deleted on
+  // 2026-10-13; see the note at the top of this file. It used to be left on disk
   // untouched; nothing renders it.
 
   const [formName, setFormName] = useState('');
@@ -402,10 +426,24 @@ export function ScheduleDetailModal({
   // F13 (Steve 2026-09-20): client-facing display copy. Empty string is
   // saved as NULL so the backend can distinguish "cleared" from "unset".
   const [formDisplayName, setFormDisplayName] = useState('');
+  // Occurrences ahead. Kept as a string so an empty box means "leave it
+  // alone", which is different from any number the operator could type.
+  const [formOccurrencesAhead, setFormOccurrencesAhead] = useState('');
+  // The preview follows the box, but a request per keystroke would be
+  // three wasted round trips on the way from 5 to 12. 350ms is long enough
+  // to finish typing a two-digit number and short enough to feel live.
+  const [debouncedOccurrences, setDebouncedOccurrences] = useState<string>('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedOccurrences(formOccurrencesAhead), 350);
+    return () => clearTimeout(t);
+  }, [formOccurrencesAhead]);
   const [formDisplayDescription, setFormDisplayDescription] = useState('');
   const [formLegs, setFormLegs] = useState<Leg[]>([]);
   const [formDays, setFormDays] = useState<DayForm[]>(() => seedDaysFromDto([]));
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Not an error: the save succeeded, the schedule just stayed on one row
+  // per day. Held so the modal can say so instead of closing silently.
+  const [convertNotice, setConvertNotice] = useState<string | null>(null);
   const [seededForId, setSeededForId] = useState<number | null>(null);
   // Tier 2 - Collection zone group + individual postcodes + coverage
   // polygons. Editable on the detail modal write-side, mirroring the
@@ -475,6 +513,7 @@ export function ScheduleDetailModal({
       name: formName, description: formDescription, autoBook: formAutoBook,
       isActive: formIsActive,
       displayName: formDisplayName, displayDescription: formDisplayDescription,
+      occurrencesAhead: formOccurrencesAhead,
       legs: formLegs, days: formDays,
       pickupPostcodeGroupId: formPickupPostcodeGroupId,
       parentSpeedId: formParentSpeedId,
@@ -487,12 +526,42 @@ export function ScheduleDetailModal({
       polygonIds: formPolygonIds,
     }),
     [formName, formDescription, formAutoBook, formIsActive,
-     formDisplayName, formDisplayDescription, formLegs, formDays,
+     formDisplayName, formDisplayDescription, formOccurrencesAhead,
+     formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
      formPickupBoxDiscount, formDropOffLocationId, formApplyPickupCutoff,
      formPickupCutoff, formPostcodeIds, formPolygonIds],
   );
   const isDirty = initialSnapshot !== '' && currentSnapshot !== initialSnapshot;
+
+  // Only ask for a preview once the typed value is usable. An out-of-range
+  // number has no answer worth showing, and blank means "the schedule's own
+  // value", which the server resolves.
+  const previewN = (() => {
+    const t = debouncedOccurrences.trim();
+    if (t === '') return null;
+    const v = Number.parseInt(t, 10);
+    return Number.isNaN(v) || v < 1 || v > 14 ? null : v;
+  })();
+  // Both shapes, deliberately. Storing a per-schedule N needs the detail
+  // row, so the FIELD is collapsed-only, but "which dates does this offer"
+  // is a fair question about any schedule and the server answers it the
+  // same way for both: an old-shape schedule falls back to one week's
+  // worth, which is what the booking page uses for it today. Gating the
+  // preview on isCollapsed would have hidden it from almost every schedule
+  // on the tenant, which is most of the value.
+  const occurrencesQuery = useScheduleOccurrences(scheduleId, previewN);
+
+  // 1 to 14, matching the CHECK on the column. Blank is valid and means
+  // leave it alone, so only a typed value is range-checked.
+  const occurrencesAheadError = (() => {
+    const t = formOccurrencesAhead.trim();
+    if (t === '') return null;
+    const n = Number.parseInt(t, 10);
+    return Number.isNaN(n) || n < 1 || n > 14
+      ? 'Enter a number from 1 to 14, or leave blank.'
+      : null;
+  })();
 
   // Seed form state once per scheduleId. Deliberately NOT keyed on
   // `data` reference: React Query invalidations after attach/detach
@@ -522,6 +591,10 @@ export function ScheduleDetailModal({
     const seedDropOffLocationId = data.dropOffLocationId ?? null;
     const seedApplyPickupCutoff = data.applyPickupCutoff === true;
     const seedPickupCutoff = data.pickupCutoff ?? null;
+    // Blank on an old-shape schedule: it has no detail row, so there is no
+    // value to show and nothing the box could usefully say.
+    const seedOccurrencesAhead = data.occurrencesAhead != null
+      ? String(data.occurrencesAhead) : '';
     const seedPostcodeIds = [...(data.postcodeIds ?? [])];
     const seedPolygonIds = [...(data.polygonIds ?? [])];
     setFormName(seedName);
@@ -530,6 +603,7 @@ export function ScheduleDetailModal({
     setFormIsActive(seedIsActive);
     setFormDisplayName(seedDisplayName);
     setFormDisplayDescription(seedDisplayDescription);
+    setFormOccurrencesAhead(seedOccurrencesAhead);
     setFormLegs(seedLegs);
     setFormDays(seedDays);
     setFormPickupPostcodeGroupId(seedPickupPostcodeGroupId);
@@ -551,6 +625,7 @@ export function ScheduleDetailModal({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
       isActive: seedIsActive,
       displayName: seedDisplayName, displayDescription: seedDisplayDescription,
+      occurrencesAhead: seedOccurrencesAhead,
       legs: seedLegs, days: seedDays,
       pickupPostcodeGroupId: seedPickupPostcodeGroupId,
       parentSpeedId: seedParentSpeedId,
@@ -699,10 +774,19 @@ export function ScheduleDetailModal({
       body.scheduleId != null && body.scheduleId > 0
         ? schedulesV2Service.update(body.scheduleId, body)
         : schedulesV2Service.create(body),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       if (data?.scheduleId != null) {
         qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+      }
+      // The save worked either way. When the schedule could not be
+      // collapsed onto one row the backend says why, and closing the modal
+      // here would throw that away: the operator would see a successful
+      // save and no hint that the occurrences field is still unavailable,
+      // or that two of their days disagree. So stay open and show it.
+      if (saved?.convertRefusalReasons) {
+        setConvertNotice(saved.convertRefusalReasons);
+        return;
       }
       onClose();
     },
@@ -842,6 +926,13 @@ export function ScheduleDetailModal({
       displayDescription: formDisplayDescription.trim() || null,
       // F21: header-level bookable flag.
       isActive: formIsActive,
+      // Blank means leave it alone. Only applies once the schedule has
+      // collapsed, because the value lives on the detail row; the backend
+      // ignores it on an old-shape schedule rather than failing, and the
+      // did-not-collapse notice is what tells the operator why.
+      occurrencesAhead: formOccurrencesAhead.trim() === ''
+        ? null
+        : Number.parseInt(formOccurrencesAhead, 10),
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
@@ -923,16 +1014,18 @@ export function ScheduleDetailModal({
   const savePending = isOverride ? ovSaveMut.isPending : saveMut.isPending;
   const saveDisabled = isOverride
     ? !data || ovSaveMut.isPending || !ovSeeded
-    : !data || saveMut.isPending || !isDirty;
+    : !data || saveMut.isPending || !isDirty || occurrencesAheadError != null;
   const saveTitle = isOverride
     ? !data
       ? 'Loading schedule...'
       : 'Save this client override.'
     : !data
       ? 'Loading schedule...'
-      : !isDirty
-        ? 'No changes to save.'
-        : 'Save changes.';
+      : occurrencesAheadError != null
+        ? occurrencesAheadError
+        : !isDirty
+          ? 'No changes to save.'
+          : 'Save changes.';
 
   return (
     <>
@@ -947,6 +1040,15 @@ export function ScheduleDetailModal({
         <div className="flex items-center justify-end gap-2 w-full">
           {saveError && (
             <span className="text-xs text-error mr-auto">{saveError}</span>
+          )}
+          {!saveError && convertNotice && (
+            <span
+              className="text-xs text-amber-600 mr-auto"
+              data-testid="schedule-convert-notice"
+            >
+              Saved. This schedule still runs on one row per day:
+              {' '}{convertNotice}
+            </span>
           )}
           <button
             type="button"
@@ -1135,6 +1237,95 @@ export function ScheduleDetailModal({
                 placeholder="Order by 3pm, delivered next business day"
                 data-testid="schedule-display-description-input"
               />
+            </label>
+            {/* Occurrences ahead. Only meaningful on a collapsed schedule,
+                because the value lives on its detail row, so an old-shape
+                schedule gets the explanation instead of an input it cannot
+                save. */}
+            <label className="block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">
+                Occurrences ahead
+                <span className="ml-2 text-text-muted normal-case">
+                  (upcoming runs the booking page offers)
+                </span>
+              </span>
+              {data.isCollapsed ? (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    max={14}
+                    value={formOccurrencesAhead}
+                    onChange={(e) => setFormOccurrencesAhead(e.target.value)}
+                    disabled={isOverride}
+                    className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 disabled:bg-surface-muted"
+                    placeholder={String(formDays.filter((d) => d.enabled).length || 1)}
+                    data-testid="schedule-occurrences-ahead-input"
+                  />
+                  <span
+                    className={`mt-1 block text-xs ${occurrencesAheadError ? 'text-rose-600' : 'text-text-muted'}`}
+                    data-testid="schedule-occurrences-ahead-help"
+                  >
+                    {occurrencesAheadError
+                      ?? (isOverride
+                        /* Said "set per-client values in the client override
+                           editor" until 2026-10-13, naming a component
+                           retired on 2026-09-25: override mode IS the
+                           override editor now. A per-client value for this
+                           field is not wired yet, and saying so is better
+                           than sending the operator somewhere that does not
+                           exist. */
+                        ? 'This number belongs to the schedule. A per-client value is not editable yet.'
+                        : 'Blank uses one week of runs, which is the number of days ticked.')}
+                  </span>
+                </>
+              ) : (
+                <span
+                  className="mt-1 block text-xs text-text-muted"
+                  data-testid="schedule-occurrences-ahead-unavailable"
+                >
+                  Available once this schedule runs on one row. Save it to
+                  collapse; if it cannot, the reason is shown on save.
+                </span>
+              )}
+              {/* What the number actually means, in dates, for BOTH shapes.
+                  A bare "3" does not say whether that is this week or next,
+                  and the mask, the cut-off and the holiday calendar all move
+                  the answer. An old-shape schedule has no field to edit but
+                  the question is just as fair about it, and the server
+                  answers it the same way. Tracks the box rather than the
+                  saved value, so the effect of an edit shows before saving. */}
+              {!occurrencesAheadError && (
+                <div className="mt-1.5" data-testid="schedule-occurrences-preview">
+                  {occurrencesQuery.isLoading ? (
+                    <span className="text-xs text-text-muted">Working out the dates...</span>
+                  ) : occurrencesQuery.isError ? (
+                    <span className="text-xs text-text-muted">
+                      Could not work out the dates just now.
+                    </span>
+                  ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
+                    <span className="text-xs text-text-muted">
+                      No runs in the next 60 days. Every date is either a holiday or
+                      already past its cut-off.
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-xs text-text-muted">Next runs offered:</span>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {occurrencesQuery.data!.map((o) => (
+                          <span
+                            key={o.date}
+                            title={`Order by ${o.cutoffAt}`}
+                            className="px-1.5 py-0.5 rounded text-[11px] bg-surface-light border border-border text-text-secondary whitespace-nowrap"
+                          >
+                            {formatOccurrence(o.date)}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </label>
           </div>
 

@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
@@ -108,6 +108,18 @@ public class ScheduleGroupUpsertRequest
     /// update paths so callers that don't know about the field keep the
     /// pre-F21 behaviour. Added 2026-09-22 (Steve F21).</summary>
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// How many upcoming runs the booking page should offer for this
+    /// schedule, 1 to 14. Null leaves it alone: on a schedule that has just
+    /// collapsed the converter has already written one week's worth, which
+    /// is the count of days in the mask, and on an old-shape schedule there
+    /// is nowhere to store it.
+    ///
+    /// Writes the SCHEDULE's value. A client that needs a different number
+    /// gets an override row instead, which this never touches.
+    /// </summary>
+    public byte? OccurrencesAhead { get; set; }
 }
 
 /// <summary>
