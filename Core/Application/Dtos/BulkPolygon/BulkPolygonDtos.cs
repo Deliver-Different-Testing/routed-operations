@@ -46,7 +46,7 @@ public record BulkPolygonDto(
     int? ZoneNameId = null,
     /// <summary>PostcodeGroup this polygon is bound to (Phase-5 tblBulkRunPolygon.PostcodeGroupId). Null when unbound.</summary>
     int? PostcodeGroupId = null,
-    /// <summary>Schedule groups bound via tblSchedulePolygon. Empty when unbound.</summary>
+    /// <summary>Always empty: the tblSchedulePolygon junction that populated this was retired (custom-polygons spec 3.4) and the table dropped by migration 20261007180000.</summary>
     List<string>? AttachedScheduleNames = null,
     /// <summary>Resolved ZoneName.ZoneName1 for the ZoneNameId binding. Null when unbound or the row was deleted.</summary>
     string? ZoneNameName = null,

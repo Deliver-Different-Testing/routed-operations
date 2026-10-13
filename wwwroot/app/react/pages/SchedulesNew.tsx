@@ -721,7 +721,11 @@ function ScheduleRow({
         <DayPills active={s.activeDays} />
       </td>
       <td className="py-1.5 pr-2 text-text-secondary">
-        {s.pickupDepotName ?? 'Client address'}
+        {/* pickupDepotName is null for client AND direct origin, so the
+            stored originType decides which of the two labels to show
+            (2026-10-08). A depot name still wins when there is one. */}
+        {s.pickupDepotName
+          ?? (s.originType === 'direct' ? 'Direct' : 'Client address')}
       </td>
       <td className="py-1.5 pr-2 text-text-secondary">{s.regionName ?? <span className="text-text-muted">-</span>}</td>
       <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{window}</td>

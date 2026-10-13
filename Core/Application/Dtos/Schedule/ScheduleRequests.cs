@@ -32,10 +32,17 @@ public class ScheduleGroupUpsertRequest
     public int? PickupDepotId { get; set; }
 
     /// <summary>
-    /// 'depot' (default, every schedule today) or 'client' when the chain
-    /// starts at the client's own address. Defaulted rather than required
-    /// so the legacy POST /api/schedules contract keeps working: a caller
-    /// that never heard of origin types gets today's behaviour.
+    /// 'depot' (default, every schedule today), 'client' when the chain
+    /// starts at the client's own address, or 'direct' when the goods go
+    /// from the pickup address the BOOKING declares straight to the
+    /// delivery address with no depot touched. Defaulted rather than
+    /// required so the legacy POST /api/schedules contract keeps working: a
+    /// caller that never heard of origin types gets today's behaviour.
+    ///
+    /// 'direct' is 6 characters, so the existing StringLength(6) already
+    /// admits it; the length is left alone deliberately so an unknown
+    /// longer value still fails validation rather than silently folding to
+    /// 'depot'.
     /// </summary>
     [StringLength(6)] public string OriginType { get; set; } = "depot";
 
@@ -43,6 +50,11 @@ public class ScheduleGroupUpsertRequest
     /// Origin branch, required when OriginType is 'client' and ignored
     /// otherwise. Counterpart of PickupDepotId, not of RegionId, which
     /// stays the delivery branch taken from the Delivery leg.
+    ///
+    /// Forced to NULL for OriginType 'direct': a Direct schedule has no
+    /// origin branch of its own, because the pickup address arrives with
+    /// the booking. Its dispatch/reporting region is RegionId, the same
+    /// Delivery-leg value every other schedule uses.
     /// </summary>
     public int? OriginRegionId { get; set; }
 
