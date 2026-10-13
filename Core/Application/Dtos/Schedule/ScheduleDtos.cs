@@ -1,4 +1,4 @@
-namespace RoutedOperations.Core.Application.Dtos.Schedule;
+﻿namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
 /// <summary>
 /// A schedule "group" - all tblBulkRunSchedule rows sharing (Name, ClientId).
@@ -90,7 +90,62 @@ public record ScheduleGroupDto(
     /// <summary>True if this schedule can be booked at all. Separate from
     /// AutoBook (which controls book-immediately vs stage). Added
     /// 2026-09-22 (Steve F21).</summary>
-    bool IsActive);
+    bool IsActive,
+    /// <summary>
+    /// True when this schedule has been collapsed onto a single detail row,
+    /// which is to say it has a tblBulkRunScheduleDetail row. Its day rows
+    /// are then key rows carrying no payload, and everything in this DTO
+    /// comes from the detail row by way of the compatibility view.
+    ///
+    /// False is not a problem to fix: an old-shape schedule is correct and
+    /// bookable. Schedules collapse opportunistically, when someone saves
+    /// one and its days agree, so the estate converges without a campaign.
+    /// Worth showing in the UI only so ops can see that happening.
+    /// </summary>
+    bool IsCollapsed,
+    /// <summary>
+    /// How many upcoming runs the booking page offers. Null on an old-shape
+    /// schedule, which has nowhere to store it and falls back to one week's
+    /// worth. A per-client override can raise or lower it; that lives on the
+    /// client's override row, not here.
+    /// </summary>
+    byte? OccurrencesAhead,
+    /// <summary>
+    /// Why the last save did NOT collapse this schedule, verbatim from
+    /// dbo.uspScheduleConvert, or null when it did collapse or the question
+    /// has not been asked. Reasons are semicolon-separated and name the
+    /// obstacle: WindowVariesByDay, PayloadVaries:&lt;column&gt;,
+    /// CutoffDayNotExpressible, ShopWindowReferenced:&lt;shop&gt;. Observed
+    /// verbatim from a save on a real database, not translated here, so the
+    /// operator sees the actual obstacle.
+    ///
+    /// Only populated on the DTO a save returns. A plain GET leaves it null,
+    /// because the question "why did it not convert" is only meaningful
+    /// about an attempt that just happened.
+    /// </summary>
+    string ConvertRefusalReasons);
+
+/// <summary>
+/// One run the booking page would offer, for the preview under the
+/// "occurrences ahead" field. NOT a booking and not persisted: it answers
+/// "if N were this, which dates would a client see".
+/// </summary>
+public record ScheduleOccurrenceDto(
+    /// <summary>Local date of the run, ISO yyyy-MM-dd.</summary>
+    string Date,
+    /// <summary>1 = Monday .. 7 = Sunday, matching the day rows.</summary>
+    int DayOfWeek,
+    /// <summary>Run start, "HH:mm". The window the day opens.</summary>
+    string StartTime,
+    /// <summary>
+    /// When ordering closes for this run, "yyyy-MM-dd HH:mm". Derived as
+    /// the run start minus the schedule's CutoffHours, which the database
+    /// already resolved: for a collapsed schedule the compatibility view
+    /// computes it from the relative rule through fnCutoffHoursFor, and for
+    /// an old-shape one it is the stored offset. Nothing about the working
+    /// day / calendar day rule is re-derived here.
+    /// </summary>
+    string CutoffAt);
 
 /// <summary>
 /// A single day-window entry within a schedule group. One tblBulkRunSchedule
@@ -219,11 +274,19 @@ public record ScheduleGroupSummaryDto(
     /// overrides. Rendered as nested rows under the base in the Schedules
     /// NEW list view. Appended so positional callers don't break.</summary>
     List<ScheduleOverrideRowDto> Overrides,
+    /// <summary>True when the schedule has been collapsed onto a single
+    /// detail row. See ScheduleGroupDto.IsCollapsed; this is the same flag on
+    /// the list row so ops can see the estate converging.</summary>
+    bool IsCollapsed,
+    /// <summary>How many upcoming runs the booking page offers, or null on an
+    /// old-shape schedule. See ScheduleGroupDto.OccurrencesAhead.</summary>
+    byte? OccurrencesAhead,
     /// <summary>'depot', 'client' or 'direct', straight off
     /// tblBulkRunScheduleHeader.OriginType. The Schedules NEW list needs it
     /// for the ORIGIN column: PickupDepotName is NULL for BOTH 'client' and
     /// 'direct', so the column cannot tell them apart without this.
-    /// Appended so positional callers don't break.</summary>
+    /// Last because it is the only optional parameter; IsCollapsed and
+    /// OccurrencesAhead landed in the same release and sit ahead of it.</summary>
     string OriginType = "depot");
 
 /// <summary>

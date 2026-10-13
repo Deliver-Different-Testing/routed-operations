@@ -129,6 +129,16 @@ export interface ScheduleGroupSummary {
   /** Whether the schedule can be booked at all. Independent of
    *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
   isActive: boolean;
+  /** True when the schedule has been collapsed onto a single row
+   *  (it has a tblBulkRunScheduleDetail row). False is NOT a problem to
+   *  fix: an old-shape schedule is correct and bookable. Schedules
+   *  collapse opportunistically when someone saves one whose days agree,
+   *  so this is here mainly so ops can watch the estate converge. */
+  isCollapsed: boolean;
+  /** How many upcoming runs the booking page offers. null on an
+   *  old-shape schedule, which has nowhere to store it and falls back to
+   *  one week's worth. A per-client override can change it. */
+  occurrencesAhead: number | null;
   /** Nested override rows for the Schedules NEW list (2026-09-24). One
    *  entry per client that owns any delta on this schedule; each row
    *  carries the delta labels the frontend joins with " . " under the
@@ -221,6 +231,22 @@ export interface ScheduleGroup {
   /** Whether the schedule can be booked at all. Independent of
    *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
   isActive: boolean;
+  /** True when the schedule has been collapsed onto a single row
+   *  (it has a tblBulkRunScheduleDetail row). False is NOT a problem to
+   *  fix: an old-shape schedule is correct and bookable. Schedules
+   *  collapse opportunistically when someone saves one whose days agree,
+   *  so this is here mainly so ops can watch the estate converge. */
+  isCollapsed: boolean;
+  /** How many upcoming runs the booking page offers. null on an
+   *  old-shape schedule, which has nowhere to store it and falls back to
+   *  one week's worth. A per-client override can change it. */
+  occurrencesAhead: number | null;
+  /** Why the save that returned this object did NOT collapse the
+   *  schedule, verbatim from the database. Semicolon-separated, naming
+   *  the obstacle (WindowVariesByDay, PayloadVaries:<column>,
+   *  ShopWindowReferenced:<shop>). null when it collapsed, or on a plain
+   *  read, where nothing was attempted. */
+  convertRefusalReasons: string | null;
 }
 
 export interface LookupItem {
@@ -346,6 +372,12 @@ export interface ScheduleGroupUpsertBody {
    *  `autoBook`. Omit to keep the existing value on update paths;
    *  defaults to true on create when unset. Steve F21 (2026-09-22). */
   isActive?: boolean;
+  /** How many upcoming runs the booking page should offer, 1 to 14. Omit
+   *  to leave it alone: a schedule that has just collapsed already has
+   *  one week's worth (the number of days in its mask), and an old-shape
+   *  schedule has nowhere to store it. Sets the SCHEDULE's value; a
+   *  client needing a different number gets an override instead. */
+  occurrencesAhead?: number | null;
 }
 
 export interface ScheduleCopyBody {

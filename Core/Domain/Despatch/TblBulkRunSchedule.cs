@@ -40,13 +40,14 @@ public partial class TblBulkRunSchedule
     // int in the DB (foreign key into a region table), not nvarchar.
     // Callers that read + coalesce it treat the value as an opaque discriminator.
     public int? Region { get; set; }
-    // On US this column is TIME (TimeSpan in .NET); on NZ it's DATETIME.
-    // We declare it as TimeSpan? here because that's what the US tenant needs
-    // - the legacy SP resolved the cross-tenant difference with CAST(x AS
-    // datetime) which happens on the DB side. In EF LINQ we have to pick one
-    // CLR type; TimeSpan? works for US (Route Builder's initial target). NZ
-    // rollout will need a follow-up: either a per-tenant entity fork, or
-    // (cleaner) switch this specific query to Dapper with the same CAST.
+    // TIME on every tenant, so TimeSpan? is correct everywhere and no
+    // per-tenant fork is needed. This comment used to say NZ was DATETIME
+    // and that a fork or a Dapper CAST would be required; that was measured
+    // and found false. Urgent Prod (6 Oct 2026) and Medical Prod (7 Oct)
+    // both report TIME for StartTime, EndTime and CutoffTime, which is why
+    // the compatibility view in 20261009177000 is a single body rather than
+    // branching on sys.columns. Checked again on both local tenants after
+    // that migration applied: time(7).
     public TimeSpan? StartTime { get; set; }
     public TimeSpan? EndTime { get; set; }
     public bool? AutoBook { get; set; }

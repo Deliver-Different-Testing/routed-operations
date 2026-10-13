@@ -57,6 +57,11 @@ export const schedulesV2Keys = {
     ['schedules-v2-overrides', tenantId, baseScheduleId] as const,
   bulkPolygons: (tenantId: string | number) => ['bulk-polygons', tenantId] as const,
   lookups: (tenantId: string | number) => ['schedules-v2-lookups', tenantId] as const,
+  // n is part of the key on purpose: the preview is a function of the
+  // number in the box, so typing a different one must fetch rather than
+  // serve the previous answer.
+  occurrences: (tenantId: string | number, scheduleId: number, n: number | null) =>
+    ['schedules-v2-occurrences', tenantId, scheduleId, n] as const,
   clientScheduleSources: (tenantId: string | number, clientId: number) =>
     ['client-schedule-sources', tenantId, clientId] as const,
 } as const;
@@ -117,6 +122,29 @@ export function useSchedulesV2Detail(scheduleId: number | null) {
     // behind the loading spinner for the full 3-retry backoff.
     // Kevin observed the modal "loading forever" - almost always a
     // silent server-side failure that RQ was retrying quietly.
+    retry: false,
+  });
+}
+
+/**
+ * The next runs a schedule would offer, for the preview under the
+ * "occurrences ahead" field.
+ *
+ * `n` is the number currently in the box, not the saved one, so the
+ * preview follows an edit before it is saved. Null falls back to the
+ * schedule's own value server-side.
+ *
+ * Disabled while the modal has no schedule, and kept out of the detail
+ * cache deliberately: this is a derived view of today's clock, so it has
+ * a short staleTime rather than living as long as the schedule record.
+ */
+export function useScheduleOccurrences(scheduleId: number | null, n: number | null) {
+  const user = useAuth();
+  return useQuery({
+    queryKey: schedulesV2Keys.occurrences(user.currentTenantId ?? 0, scheduleId ?? 0, n),
+    queryFn: () => schedulesV2Service.occurrences(scheduleId as number, n),
+    enabled: scheduleId != null && scheduleId > 0,
+    staleTime: 30_000,
     retry: false,
   });
 }
