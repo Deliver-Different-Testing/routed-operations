@@ -654,7 +654,8 @@ public class ScheduleService(
                     header.IsActive,
                     overridesForSchedule,
                     detailsByScheduleId.TryGetValue(header.ScheduleId, out var det),
-                    det?.OccurrencesAhead);
+                    det?.OccurrencesAhead,
+                    header.OriginType ?? "depot");
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -1188,12 +1189,30 @@ public class ScheduleService(
         // is only meaningful for a client origin; a depot-origin schedule gets
         // NULL so CK_tblBulkRunScheduleHeader_ClientOriginHasRegion stays
         // satisfied either way.
-        var originType = string.Equals(req.OriginType, "client", StringComparison.OrdinalIgnoreCase)
-            ? "client" : "depot";
+        //
+        // 'direct' (2026-10-08) is the third origin: the goods leave the
+        // pickup address the BOOKING declares and go straight to the delivery
+        // address, so no depot is touched at all. It differs from 'client' in
+        // three ways that are all enforced below - no linehaul legs, no
+        // origin region, and a default schedule may use it (there is no
+        // client-specific address to be undefined).
+        var originType =
+            string.Equals(req.OriginType, "client", StringComparison.OrdinalIgnoreCase) ? "client"
+            : string.Equals(req.OriginType, "direct", StringComparison.OrdinalIgnoreCase) ? "direct"
+            : "depot";
+        // OriginRegionId is meaningful for 'client' only. 'direct' shares the
+        // NULL with 'depot': its dispatch/reporting region is the schedule's
+        // own Region, taken from the Delivery leg like everybody else's.
         var originRegionId = originType == "client" ? req.OriginRegionId : null;
         if (originType == "client" && originRegionId is null)
             throw new InvalidOperationException(
                 "A client-origin schedule needs an origin region.");
+        if (originType == "direct"
+            && (req.BookPickup == true || (req.Linehauls?.Count ?? 0) > 0))
+            throw new InvalidOperationException(
+                "A Direct schedule books one job from the pickup address given "
+                + "at booking time; remove the Collection and linehaul legs or "
+                + "choose Depot.");
 
         if (req.ScheduleId.HasValue && req.ScheduleId.Value > 0)
         {
@@ -1209,6 +1228,10 @@ public class ScheduleService(
             // because "the client" is not defined for a schedule every client
             // can book. Enforced here rather than in the UI so the API cannot
             // be used to get around it.
+            //
+            // 'direct' is deliberately NOT caught by this: its pickup address
+            // comes from the booking, so it is defined for every client and a
+            // default Direct schedule is a legitimate shape.
             if (originType == "client" && header.IsDefault)
                 throw new InvalidOperationException(
                     "A default schedule cannot start at a client address. "
@@ -1253,6 +1276,8 @@ public class ScheduleService(
                 // applies: client origin is only reachable by editing a
                 // schedule that is already client-specific. See the note to
                 // Steve about section 3.1 offering the option in both modals.
+                // 'direct' passes straight through - a brand-new default
+                // schedule is allowed to be Direct.
                 OriginType = originType == "client"
                     ? throw new InvalidOperationException(
                         "A new schedule is created as a default schedule, which "
@@ -1841,12 +1866,22 @@ public class ScheduleService(
         var srcPolygons = new List<int>();
 
         // New header + day-row clones + junction rows in one atomic save.
-        // Origin is deliberately NOT copied. A copy is created as a default
-        // header, and a default schedule cannot start at a client address
-        // (spec 2.1), so carrying OriginType = 'client' across would produce a
-        // row that violates its own rule. The copy lands as depot origin and
-        // the operator sets it after linking the client, the same order the
-        // create path forces.
+        // CLIENT origin is deliberately NOT copied. A copy is created as a
+        // default header, and a default schedule cannot start at a client
+        // address (spec 2.1), so carrying OriginType = 'client' across would
+        // produce a row that violates its own rule. Such a copy lands as depot
+        // origin and the operator sets it after linking the client, the same
+        // order the create path forces.
+        //
+        // DIRECT origin IS copied (2026-10-08). The reason client origin
+        // cannot be carried is that the address is client-specific, so it
+        // means nothing on a default header. A Direct schedule has no
+        // client-specific address at all - its pickup address arrives with the
+        // booking - so the copy is meaningful as-is, and dropping it would
+        // silently turn a Direct schedule into a depot one.
+        var copiedOriginType =
+            string.Equals(source.OriginType, "direct", StringComparison.OrdinalIgnoreCase)
+                ? "direct" : "depot";
         var newHeader = new BulkRunScheduleHeader
         {
             Name = newName,
@@ -1854,6 +1889,10 @@ public class ScheduleService(
             LegacyClientId = null,
             CreatedUtc = DateTime.UtcNow,
             CreatedBy = "RoutedOps",
+            OriginType = copiedOriginType,
+            // NULL either way: 'depot' never has one and 'direct' forces it
+            // null (its dispatch region is the day row's Region).
+            OriginRegionId = null,
         };
         Context.BulkRunScheduleHeaders.Add(newHeader);
 

@@ -58,6 +58,20 @@ export interface DepotLeg {
    *  booking SPs already read as @IsCollectFromClientAddress and which no
    *  schedule uses today (0 rows on all four tenants). */
   clientAddress: boolean;
+  /** True when this schedule is DIRECT: the goods leave whatever pickup
+   *  address the BOOKING declares and go straight to the delivery address,
+   *  with no depot touched at all. Only the FIRST depot leg may set it, and it
+   *  is mutually exclusive with clientAddress (the Depot picker is one
+   *  dropdown, so choosing one clears the other).
+   *
+   *  Differs from clientAddress in three ways, all enforced server-side in
+   *  ScheduleService.UpsertAsync: no Collection leg (same as client), no
+   *  linehaul legs (client allows them), and no origin region at all - a
+   *  Direct schedule's dispatch/reporting region is the Delivery leg's
+   *  region, which is why `originRegionId` stays null here.
+   *
+   *  Persists to tblBulkRunScheduleHeader.OriginType = 'direct'. */
+  directOrigin: boolean;
   /** Origin region. Only meaningful while clientAddress is true. It is the
    *  counterpart of PickupDepotId, NOT of Region: Region keeps coming from
    *  the Delivery leg and names the delivery branch, while this names the
@@ -113,6 +127,41 @@ export interface DeliveryLeg {
 
 export type Leg = CollectionLeg | DepotLeg | LinehaulLeg | DeliveryLeg;
 
+/** The three values tblBulkRunScheduleHeader.OriginType can hold. */
+export type ScheduleOriginType = 'depot' | 'client' | 'direct';
+
+/**
+ * Origin resolution for the save path: the chain's FIRST Depot leg decides
+ * what the header stores. Three-way since 2026-10-08, when Direct joined
+ * Depot and Client address.
+ *
+ *   direct -> OriginType = 'direct', OriginRegionId = NULL. The pickup
+ *             address arrives with the booking, so there is no origin branch
+ *             to name; the dispatch region is the Delivery leg's region, the
+ *             same column every other schedule uses.
+ *   client -> OriginType = 'client', OriginRegionId = the Depot card's picker.
+ *   depot  -> OriginType = 'depot',  OriginRegionId = NULL.
+ *
+ * Direct is tested first because the two flags are meant to be mutually
+ * exclusive; checking it first means a row that somehow carries both reads as
+ * the more restrictive of the two rather than silently allowing linehauls.
+ *
+ * Pure and exported so both modals derive the origin from ONE place. They each
+ * keep their own copy of the rest of the leg walk, and a divergence between
+ * the two on the origin specifically would be invisible until save time.
+ */
+export function deriveOriginFromLegs(legs: Leg[]): {
+  originType: ScheduleOriginType;
+  originRegionId: number | null;
+} {
+  const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
+  if (firstDepot?.directOrigin === true) return { originType: 'direct', originRegionId: null };
+  if (firstDepot?.clientAddress === true) {
+    return { originType: 'client', originRegionId: firstDepot.originRegionId ?? null };
+  }
+  return { originType: 'depot', originRegionId: null };
+}
+
 const LEG_STYLE: Record<LegType, { tag: string; bg: string; border: string; dot: string; strip: string; chevron: string }> = {
   collection: { tag: 'COLLECTION', bg: 'bg-blue-50',   border: 'border-blue-300',   dot: 'bg-blue-500',   strip: 'bg-blue-500',   chevron: 'text-blue-400' },
   depot:      { tag: 'DEPOT',      bg: 'bg-slate-100', border: 'border-slate-300', dot: 'bg-slate-500',  strip: 'bg-slate-500',  chevron: 'text-slate-400' },
@@ -155,7 +204,7 @@ interface Props {
 
 const NEW_LEG: Record<LegType, Leg> = {
   collection: { type: 'collection', speedId: null, postcodeGroupId: null, zones: [] },
-  depot: { type: 'depot', depotId: null, clientAddress: false, originRegionId: null, storageState: null },
+  depot: { type: 'depot', depotId: null, clientAddress: false, directOrigin: false, originRegionId: null, storageState: null },
   linehaul: {
     type: 'linehaul', linehaulRunId: null, fromDepotId: null, toDepotId: null,
     dayOffset: 0, transitMinutes: 0, speedId: null,
@@ -183,8 +232,17 @@ export function ChainBuilder({
   const firstDepotIndex = legs.findIndex((l) => l.type === 'depot');
   const originLeg = firstDepotIndex >= 0 ? (legs[firstDepotIndex] as DepotLeg) : null;
   const originIsClientAddress = originLeg?.clientAddress === true;
-  const originDepotName = originLeg && !originLeg.clientAddress && originLeg.depotId
+  const originIsDirect = originLeg?.directOrigin === true;
+  const originDepotName = originLeg && !originLeg.clientAddress && !originLeg.directOrigin && originLeg.depotId
     ? (lookups.depots.find((d) => d.id === originLeg.depotId)?.name ?? `#${originLeg.depotId}`)
+    : null;
+  // Direct names a depot, but only as the dispatch / reporting region, and
+  // that region is the Delivery leg's - a Direct schedule has no
+  // OriginRegionId of its own. Read here so the Depot card can say which
+  // branch the single job is dispatched from.
+  const deliveryLeg = legs.find((l) => l.type === 'delivery') as DeliveryLeg | undefined;
+  const dispatchRegionName = deliveryLeg?.regionId
+    ? (lookups.depots.find((d) => d.id === deliveryLeg.regionId)?.name ?? `#${deliveryLeg.regionId}`)
     : null;
 
   const addLeg = (type: LegType) => {
@@ -204,6 +262,10 @@ export function ChainBuilder({
     // IS the client. Mirrors the server rule that client origin persists as
     // PickupDepotId NULL, which leaves a collection job no destination.
     if (type === 'collection' && originIsClientAddress) return;
+    // Direct is one job, pickup address to delivery address, nothing in
+    // between. Both a Collection leg and a linehaul leg contradict that, and
+    // the server rejects either outright, so the chooser must not create one.
+    if (originIsDirect && (type === 'collection' || type === 'linehaul')) return;
     let next: Leg[];
     let insertAt: number;
     if (type === 'delivery') {
@@ -399,7 +461,8 @@ export function ChainBuilder({
                   </span>
                   <div className="flex-1 text-sm min-w-0">
                     <LegSummary leg={leg} lookups={lookups} originDepotName={originDepotName}
-                      originIsClientAddress={originIsClientAddress} />
+                      originIsClientAddress={originIsClientAddress}
+                      dispatchRegionName={dispatchRegionName} />
                   </div>
                   {!readOnly && (
                     <>
@@ -455,10 +518,21 @@ export function ChainBuilder({
           <div className="flex gap-2 justify-center flex-wrap">
             {(['collection', 'depot', 'linehaul', 'delivery'] as LegType[]).map((t) => {
               const s = LEG_STYLE[t];
+              // Direct blocks BOTH Collection and Linehaul (2026-10-08).
+              // Client origin blocks Collection only - it still allows a
+              // linehaul chain out of the client's site.
+              const directBlocks = originIsDirect && (t === 'collection' || t === 'linehaul');
               const disabled =
                 (t === 'delivery' && hasDelivery) ||
-                (t === 'collection' && (hasCollection || originIsClientAddress));
-              const disabledReason = t === 'delivery'
+                (t === 'collection' && (hasCollection || originIsClientAddress)) ||
+                directBlocks;
+              const directReason =
+                'This schedule is Direct: one job from the booking pickup address straight to '
+                + 'the delivery address, with no depot in between. Change the first Depot leg '
+                + 'to a real depot first.';
+              const disabledReason = directBlocks
+                ? directReason
+                : t === 'delivery'
                 ? 'Only one Delivery leg allowed. Remove the existing one to change destination.'
                 : t === 'collection'
                   ? originIsClientAddress
@@ -497,8 +571,12 @@ export function ChainBuilder({
 
 // ─── One-line leg summary shown in the collapsed header ──────────────
 
-function LegSummary({ leg, lookups, originDepotName, originIsClientAddress }:
-  { leg: Leg; lookups: LookupCatalogue; originDepotName: string | null; originIsClientAddress: boolean }) {
+function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, dispatchRegionName }:
+  { leg: Leg; lookups: LookupCatalogue; originDepotName: string | null;
+    originIsClientAddress: boolean;
+    /** Delivery-leg region name, used as the dispatch region on a Direct
+     *  Depot card. Null until a Delivery leg names a region. */
+    dispatchRegionName: string | null }) {
   const depotName = (id: number | null | undefined) =>
     id ? (lookups.depots.find((d) => d.id === id)?.name ?? `#${id}`) : null;
   const speedName = (id: number | null | undefined) =>
@@ -535,10 +613,17 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress }:
           ? `Origin region ${depotName(leg.originRegionId)}`
           : 'Origin region not set')
       : null;
+    // Direct names the depot it is dispatched from, which is the Delivery
+    // leg's region: nothing is trucked through it, it is the reporting branch.
+    const headline = leg.directOrigin
+      ? `Direct: booking pickup address, dispatched from ${dispatchRegionName ?? 'the delivery region'}`
+      : leg.clientAddress
+        ? 'From client address'
+        : (depotName(leg.depotId) ?? 'Depot (not set)');
     return (
       <>
         <div className="font-medium text-text-primary">
-          {leg.clientAddress ? 'From client address' : (depotName(leg.depotId) ?? 'Depot (not set)')}
+          {headline}
         </div>
         <div className="text-xs text-text-muted">
           {leg.clientAddress && `${regionLabel} - `}
@@ -701,16 +786,27 @@ function LegEditor({
         <label className="block text-xs">
           Depot
           <select
-            value={leg.clientAddress ? 'client' : (leg.depotId ?? '')}
+            value={leg.directOrigin ? 'direct' : leg.clientAddress ? 'client' : (leg.depotId ?? '')}
             onChange={(e) => {
               const v = e.target.value;
               if (v === 'client') {
-                onPatch({ clientAddress: true, depotId: null } as Partial<Leg>);
+                onPatch({ clientAddress: true, directOrigin: false, depotId: null } as Partial<Leg>);
+              } else if (v === 'direct') {
+                // Direct carries neither a depot nor an origin region: the
+                // pickup address arrives with the booking and the dispatch
+                // region is the Delivery leg's.
+                onPatch({
+                  directOrigin: true,
+                  clientAddress: false,
+                  originRegionId: null,
+                  depotId: null,
+                } as Partial<Leg>);
               } else {
                 // Leaving client origin drops the origin region: a real
                 // depot IS the origin.
                 onPatch({
                   clientAddress: false,
+                  directOrigin: false,
                   originRegionId: null,
                   depotId: v ? Number(v) : null,
                 } as Partial<Leg>);
@@ -720,14 +816,24 @@ function LegEditor({
           >
             <option value="">-</option>
             {/* Only the chain's first Depot leg can be the client's own
-                address. A depot after a linehaul is somewhere we actually
-                land, so it has to be a real one. */}
+                address, or Direct. A depot after a linehaul is somewhere we
+                actually land, so it has to be a real one. */}
             {isFirstDepot && <option value="client">Client address</option>}
+            {isFirstDepot && <option value="direct">Direct (pickup address from the booking)</option>}
             {lookups.depots.map((d) => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
         </label>
+        {leg.directOrigin && (
+          <p className="col-span-2 text-[11px] text-text-muted">
+            One job, from whatever pickup address the booking declares straight
+            to the delivery address. No depot is touched: the depot named on
+            this card is the Delivery leg's region, which is the dispatch and
+            reporting branch only. A Collection leg and linehaul legs are both
+            unavailable while the origin is Direct.
+          </p>
+        )}
         {leg.clientAddress && (
           <label className="block text-xs">
             Origin region

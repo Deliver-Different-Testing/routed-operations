@@ -263,6 +263,11 @@ export interface ScheduleScopeOverride {
   isActive: boolean | null;
   displayName: string | null;
   displayDescription: string | null;
+  /**
+   * How many upcoming runs of this schedule the booking page offers this
+   * client. null inherits the schedule's own value. 1 to 14.
+   */
+  occurrencesAhead: number | null;
 }
 
 /** Leg-scope delta fields (used for both collection and delivery). */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { schedulesV2Keys, useScheduleOccurrences, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
@@ -16,16 +16,17 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
-// Kevin 2026-09-25: the `<ClientOverrideEditor>` popup was retired as an
+import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
+// Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
-// Clients tab "Edit / Configure override" buttons now re-open this same
-// modal in override-edit mode). Its file was left on disk at the time and
-// deleted on 2026-10-13: three weeks of nothing importing it was enough,
-// and leaving it there had already cost two people time. Garry hit it
-// mapping the feature switches and had to ask whether DeleteOverride was
-// live, and a per-client field was added to it in the meantime by someone
-// who did not know it was dead.
+// Clients tab "Edit / Configure override" buttons now re-open this
+// same modal in override-edit mode). ClientOverrideEditor.tsx was left on
+// disk at the time and deleted on 2026-10-13: three weeks of nothing
+// importing it was enough, and leaving it there had already cost two
+// people time. Garry hit it mapping the Routed Ops feature switches and
+// had to ask whether DeleteOverride was still live, and the per-client
+// occurrences field was built into it by someone who did not know it was
+// dead, so that field shipped invisible until it was moved here.
 import type {
   ScheduleOverride,
   ScheduleOverridePutBody,
@@ -213,13 +214,20 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   // from the Depot leg is an identity round-trip, because seedLegsFromDto
   // seeds that leg from PickupDepotId in the first place. That is what keeps
   // existing LHP + DEL schedules behaving exactly as before.
+  //
+  // Three-way since 2026-10-08 (Direct). The three-way resolution itself
+  // lives in ChainBuilder's deriveOriginFromLegs so this modal and
+  // NewScheduleModal cannot disagree about it.
+  //
+  //   direct origin -> BookPickup = 0, PickupDepotId = NULL,
+  //                    OriginRegionId = NULL. No Collection leg and no
+  //                    linehaul legs, both blocked in the chooser and
+  //                    rejected server-side.
   const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
   const hasCollection = legs.some((l) => l.type === 'collection');
-  const clientOrigin = firstDepot?.clientAddress === true;
-  const originType = clientOrigin ? 'client' : 'depot';
-  const originRegionId = clientOrigin ? (firstDepot?.originRegionId ?? null) : null;
+  const { originType, originRegionId } = deriveOriginFromLegs(legs);
   let bookPickup = false;
-  if (!clientOrigin && hasCollection) {
+  if (originType === 'depot' && hasCollection) {
     bookPickup = true;
     pickupDepotId = firstDepot?.depotId ?? null;
   }
@@ -275,6 +283,9 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   // section 5.2 derivation is read-side only; using it to seed the editor
   // would let an unflagged schedule be saved back as client origin.
   const clientOrigin = d.originType === 'client';
+  // Same rule for Direct (2026-10-08): seeded from the stored OriginType so
+  // the Depot card's dropdown reopens on the value that was saved.
+  const directOrigin = d.originType === 'direct';
   // A Collection leg only when the schedule actually books a collection.
   // This used to be unconditional, which is why a delivery-only schedule
   // rendered as "Collect from Auckland" (F6).
@@ -289,14 +300,24 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
         .sort((a, b) => a - b),
     });
   }
-  if (clientOrigin) {
+  if (directOrigin) {
+    // Direct carries no depot and no origin region. The Depot card still
+    // exists because it is where the origin is expressed; it names the
+    // Delivery leg's region as the dispatch branch, read live rather than
+    // stored here.
     legs.push({
-      type: 'depot', depotId: null, clientAddress: true,
+      type: 'depot', depotId: null, clientAddress: false, directOrigin: true,
+      originRegionId: null, storageState: d.storageState,
+    });
+  } else if (clientOrigin) {
+    legs.push({
+      type: 'depot', depotId: null, clientAddress: true, directOrigin: false,
       originRegionId: d.originRegionId ?? null, storageState: d.storageState,
     });
   } else if (d.pickupDepotName) {
     legs.push({
       type: 'depot', depotId: d.pickupDepotId ?? null, clientAddress: false,
+      directOrigin: false,
       originRegionId: null, storageState: d.storageState,
     });
   }
@@ -411,8 +432,8 @@ export function ScheduleDetailModal({
   // list and the "Edit override" / "Configure override" buttons on the
   // Clients tab of a BASE schedule now re-open this same modal in
   // override-edit mode (see `overrideMode` prop + `onOpenOverride`
-  // callback above). The ClientOverrideEditor.tsx file was deleted on
-  // 2026-10-13; see the note at the top of this file. It used to be left on disk
+  // callback above). ClientOverrideEditor.tsx was deleted on 2026-10-13;
+  // see the note at the top of this file. It used to be left on disk
   // untouched; nothing renders it.
 
   const [formName, setFormName] = useState('');
@@ -468,6 +489,12 @@ export function ScheduleDetailModal({
   // back to the base). See computeOverridePutBody() below.
   const [ovIsActive, setOvIsActive] = useState<boolean | null>(null);
   const [ovDisplayName, setOvDisplayName] = useState<string>('');
+  // Not edited here, carried so a save does not drop it. See the comment
+  // where it goes back into scheduleScope.
+  // A string, not a number, because blank has to stay tellable apart from
+  // every number the operator could type: blank means this client inherits
+  // the schedule, and 1 is a real and very different answer.
+  const [ovOccurrencesAhead, setOvOccurrencesAhead] = useState<string>('');
   const [ovDisplayDescription, setOvDisplayDescription] = useState<string>('');
   // WeekDays override lives as a set of ISO day numbers (1=Mon..7=Sun);
   // converted to the 7-char mask on save via daysToMask().
@@ -719,6 +746,9 @@ export function ScheduleDetailModal({
     // Schedule scope.
     setOvIsActive(ex?.schedule?.isActive ?? data.isActive);
     setOvDisplayName(ex?.schedule?.displayName ?? data.displayName ?? '');
+    setOvOccurrencesAhead(
+      ex?.schedule?.occurrencesAhead != null ? String(ex.schedule.occurrencesAhead) : '',
+    );
     setOvDisplayDescription(ex?.schedule?.displayDescription ?? data.displayDescription ?? '');
     const maskDays = ex?.schedule?.weekDays
       ? parseMaskToDays(ex.schedule.weekDays)
@@ -844,6 +874,25 @@ export function ScheduleDetailModal({
       isActive: isActiveDiffers ? ovIsActive : null,
       displayName: displayNameDiffers ? nzOrNull(ovDisplayName) : null,
       displayDescription: displayDescDiffers ? nzOrNull(ovDisplayDescription) : null,
+      // Carried through unchanged, NOT diffed against the base.
+      //
+      // This panel has no input for occurrences ahead: it works by
+      // comparing the client's value against the base schedule's, and the
+      // schedule's own N lives on tblBulkRunScheduleDetail, which this app
+      // does not read yet. The per-client value is edited in this same
+      // modal in override mode, by the field below.
+      //
+      // Sending null would NOT mean "leave it alone". The PUT replaces the
+      // client's delta rows wholesale (ScheduleOverrideService removes the
+      // existing rows before inserting), and null means "clear this field",
+      // so a null here would wipe whatever the other editor, or the
+      // 20261009179000 seed, had set. Round-tripping the loaded value is
+      // what keeps this panel from silently undoing that.
+      // Blank clears the client's own number so it inherits the schedule
+      // again, which is what a null on this field means to the API.
+      occurrencesAhead: ovOccurrencesAhead.trim() === ''
+        ? null
+        : Number.parseInt(ovOccurrencesAhead, 10),
     };
     const scheduleHasValues =
       scheduleScope.cutoffDay != null
@@ -851,7 +900,8 @@ export function ScheduleDetailModal({
       || scheduleScope.weekDays != null
       || scheduleScope.isActive != null
       || scheduleScope.displayName != null
-      || scheduleScope.displayDescription != null;
+      || scheduleScope.displayDescription != null
+      || scheduleScope.occurrencesAhead != null;
     // Collection scope.
     const collSpeedDiffers = ovCollSpeedId !== (data.pickupRatingSpeed ?? null);
     const collZoneDiffers = ovCollZoneGroupId !== (data.pickupPostcodeGroupId ?? null);
@@ -1012,13 +1062,27 @@ export function ScheduleDetailModal({
   //    (semantically equivalent to Delete). Operators expect Save to
   //    persist that intent even without a "change", so no dirty gate.
   const savePending = isOverride ? ovSaveMut.isPending : saveMut.isPending;
+  // Decision D2 of the occurrences-ahead spec: 1 to 14, the same range the
+  // CHECK on the column enforces. Blank is valid and means inherit, so only
+  // a typed value is checked.
+  const ovOccurrencesError = (() => {
+    const t = ovOccurrencesAhead.trim();
+    if (t === '') return null;
+    const v = Number.parseInt(t, 10);
+    return Number.isNaN(v) || v < 1 || v > 14
+      ? 'Enter a number from 1 to 14, or leave blank to inherit.'
+      : null;
+  })();
+
   const saveDisabled = isOverride
-    ? !data || ovSaveMut.isPending || !ovSeeded
+    ? !data || ovSaveMut.isPending || !ovSeeded || ovOccurrencesError != null
     : !data || saveMut.isPending || !isDirty || occurrencesAheadError != null;
   const saveTitle = isOverride
     ? !data
       ? 'Loading schedule...'
-      : 'Save this client override.'
+      : ovOccurrencesError != null
+        ? ovOccurrencesError
+        : 'Save this client override.'
     : !data
       ? 'Loading schedule...'
       : occurrencesAheadError != null
@@ -1275,7 +1339,11 @@ export function ScheduleDetailModal({
                            field is not wired yet, and saying so is better
                            than sending the operator somewhere that does not
                            exist. */
-                        ? 'This number belongs to the schedule. A per-client value is not editable yet.'
+                        /* Said a per-client value was not editable yet until
+                           the override field below landed in the same release.
+                           It is editable now, so point at it rather than deny
+                           it exists. */
+                        ? "This is the schedule's own number. Set this client's below."
                         : 'Blank uses one week of runs, which is the number of days ticked.')}
                   </span>
                 </>
@@ -1310,7 +1378,13 @@ export function ScheduleDetailModal({
                     </span>
                   ) : (
                     <>
-                      <span className="text-xs text-text-muted">Next runs offered:</span>
+                      <span className="text-xs text-text-muted">
+                        {/* Keyed on scheduleId and the schedule's own number, so
+                            in override mode these are the schedule's dates, not
+                            this client's. Whether it should follow the override
+                            is open with Steve; until then it says which it is. */}
+                        {isOverride ? 'Next runs offered (schedule default):' : 'Next runs offered:'}
+                      </span>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {occurrencesQuery.data!.map((o) => (
                           <span
@@ -1327,6 +1401,39 @@ export function ScheduleDetailModal({
                 </div>
               )}
             </label>
+            {/* Per-client occurrences ahead. Override mode only: this is the
+                client's own number, and the schedule's own belongs with the
+                schedule. It was built into ClientOverrideEditor.tsx first,
+                which had been retired as an entry point three weeks earlier
+                and rendered nowhere, so the field shipped invisible. It
+                lives here now because override mode IS the override editor. */}
+            {isOverride && (
+              <label className="block">
+                <span className="text-xs uppercase tracking-wide text-text-muted">
+                  Occurrences ahead
+                  <span className="ml-2 text-text-muted normal-case">
+                    (override for this client)
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={14}
+                  value={ovOccurrencesAhead}
+                  onChange={(e) => setOvOccurrencesAhead(e.target.value)}
+                  placeholder="Inherit"
+                  className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                  data-testid="override-occurrences-ahead"
+                />
+                <span
+                  className={`mt-1 block text-xs ${ovOccurrencesError ? 'text-rose-600' : 'text-text-muted'}`}
+                  data-testid="override-occurrences-ahead-help"
+                >
+                  {ovOccurrencesError
+                    ?? 'How many upcoming runs the booking page offers this client. Blank inherits the schedule.'}
+                </span>
+              </label>
+            )}
           </div>
 
           <nav

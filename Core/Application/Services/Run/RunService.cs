@@ -120,7 +120,41 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                                       ON h.ScheduleId = s.ScheduleId
                                     WHERE s.BulkRunScheduleId = j.ScheduleID
                                       AND h.OriginType = 'client'
-                                      AND h.OriginRegionId IN ({inList}))) )
+                                      AND h.OriginRegionId IN ({inList})))
+                           -- Direct-origin jobs (2026-10-08). Sibling of the
+                           -- client-origin branch above and dropped by the
+                           -- same join: a Direct job's pickup is whatever
+                           -- address the booking declared, so it matches no
+                           -- tblBulkRegion row. A Direct schedule has no
+                           -- OriginRegionId (it is forced NULL), so admission
+                           -- is on the job's OWN dispatch region instead.
+                           --
+                           -- COALESCE, not a bare tblBulkJob.RegionID, on
+                           -- purpose: the Route Viewer region-filtering work
+                           -- moves admission onto tucJob.DepotId with
+                           -- RegionID as the fallback, and writing it that way
+                           -- now means this clause does not have to be
+                           -- revisited then. DO NOT reduce it to RegionID
+                           -- alone. It changes nothing today - the branch only
+                           -- evaluates for OriginType = 'direct' and no
+                           -- schedule can be Direct until this ships, so it
+                           -- matches zero existing rows.
+                           --
+                           -- Correlated subquery rather than a LEFT JOIN to
+                           -- tucJob so the FROM clause the other branches rely
+                           -- on is untouched.
+                           OR ( EXISTS (
+                                    SELECT 1
+                                    FROM dbo.tblBulkRunSchedule s
+                                    JOIN dbo.tblBulkRunScheduleHeader h
+                                      ON h.ScheduleId = s.ScheduleId
+                                    WHERE s.BulkRunScheduleId = j.ScheduleID
+                                      AND h.OriginType = 'direct')
+                                AND COALESCE(
+                                      (SELECT tj.DepotId
+                                         FROM dbo.tucJob tj
+                                        WHERE tj.ucjbID = j.JobID),
+                                      j.RegionID) IN ({inList}) ) )
                      AND ISNULL(j.Done, 0) = 0
                      {dateClause}";
             var jobIds = await Context.Database.SqlQueryRaw<int>(sql, parameters.ToArray()).ToListAsync();

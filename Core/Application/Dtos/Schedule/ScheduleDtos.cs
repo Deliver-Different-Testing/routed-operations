@@ -280,7 +280,14 @@ public record ScheduleGroupSummaryDto(
     bool IsCollapsed,
     /// <summary>How many upcoming runs the booking page offers, or null on an
     /// old-shape schedule. See ScheduleGroupDto.OccurrencesAhead.</summary>
-    byte? OccurrencesAhead);
+    byte? OccurrencesAhead,
+    /// <summary>'depot', 'client' or 'direct', straight off
+    /// tblBulkRunScheduleHeader.OriginType. The Schedules NEW list needs it
+    /// for the ORIGIN column: PickupDepotName is NULL for BOTH 'client' and
+    /// 'direct', so the column cannot tell them apart without this.
+    /// Last because it is the only optional parameter; IsCollapsed and
+    /// OccurrencesAhead landed in the same release and sit ahead of it.</summary>
+    string OriginType = "depot");
 
 /// <summary>
 /// One nested override-row entry under a base schedule in the Schedules

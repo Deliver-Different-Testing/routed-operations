@@ -149,6 +149,11 @@ export interface ScheduleGroupSummary {
     clientName: string;
     deltaLabels: string[];
   }>;
+  /** 'depot', 'client' or 'direct' from tblBulkRunScheduleHeader.OriginType.
+   *  The list's ORIGIN column needs it because `pickupDepotName` is null for
+   *  BOTH client and direct origin, so the column cannot tell them apart
+   *  without it. Optional for legacy payloads that pre-date the field. */
+  originType?: string | null;
 }
 
 export interface ScheduleGroup {

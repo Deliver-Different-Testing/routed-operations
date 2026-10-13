@@ -48,11 +48,10 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<BulkRunScheduleHeader> BulkRunScheduleHeaders { get; set; }
     // Client link table: reshaped 2026-09-08 from (ScheduleName, ClientId)
     // to (BulkRunScheduleId, ClientId) FK-referencing the header.
-    // Postcode + polygon junctions still keyed on ScheduleName (out of
-    // scope for this MR).
+    // Postcode junction still keyed on ScheduleName (out of scope for
+    // this MR).
     public virtual DbSet<ScheduleClient> ScheduleClients { get; set; }
     public virtual DbSet<SchedulePostcode> SchedulePostcodes { get; set; }
-    public virtual DbSet<SchedulePolygon> SchedulePolygons { get; set; }
     // Schedule Bundles (Dane's bundle-of-schedules concept). Added
     // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables; renamed
     // 2026-09-22 by RenameScheduleGroupToBundle per Steve F18. The
@@ -325,15 +324,11 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
                   .HasForeignKey(e => e.ScheduleId)
                   .HasPrincipalKey(h => h.ScheduleId);
         });
-        // Postcode + polygon junctions still keyed on ScheduleName (out
-        // of scope for this MR).
+        // Postcode junction still keyed on ScheduleName (out of scope
+        // for this MR).
         modelBuilder.Entity<SchedulePostcode>(entity =>
         {
             entity.HasKey(e => new { e.ScheduleName, e.PostCode });
-        });
-        modelBuilder.Entity<SchedulePolygon>(entity =>
-        {
-            entity.HasKey(e => new { e.ScheduleName, e.PolygonId });
         });
         // Schedule Bundles (Dane's bundle-of-schedules concept, added
         // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables and

@@ -124,7 +124,15 @@ interface StubOptions {
   onPreview?: (n: string | null) => void;
   /** Return no occurrences, for the empty-state test. */
   emptyPreview?: boolean;
+  /** Hang a client override off the collapsed schedule, so the nested row
+   *  renders and the modal can be opened in override-edit mode. */
+  withOverride?: boolean;
 }
+
+/** The one client whose override the override-mode tests open. Its own
+ *  occurrencesAhead (2) is deliberately different from the schedule's (3),
+ *  because the whole question in override mode is which number is which. */
+const OV_CLIENT = { clientId: 77, clientCode: 'ACME', clientName: 'Acme Ltd' };
 
 async function stubApis(page: Page, opts: StubOptions = {}) {
   await page.route('**/api/schedules/lookups', (route: Route) =>
@@ -154,14 +162,45 @@ async function stubApis(page: Page, opts: StubOptions = {}) {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        response: { rows: [COLLAPSED, OLD_SHAPE], total: 2, page: 0, pageSize: 0 },
+        response: {
+          rows: [
+            opts.withOverride
+              ? { ...COLLAPSED, overrides: [{ ...OV_CLIENT, deltaLabels: ['Cut-off'] }] }
+              : COLLAPSED,
+            OLD_SHAPE,
+          ],
+          total: 2, page: 0, pageSize: 0,
+        },
       }),
     }));
 
   // Routed before the generic /schedules/{id} match, or the wildcard
   // short-circuits it.
   await page.route('**/api/v2/schedules/*/overrides', (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response: [] }) }));
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        response: opts.withOverride
+          ? [{
+              scheduleId: COLLAPSED.scheduleId,
+              ...OV_CLIENT,
+              // Only occurrencesAhead is set: every other scoped field
+              // inherits, which is the ordinary shape of an override and
+              // keeps the test about the one field.
+              schedule: {
+                cutoffDay: null, cutoffTime: null, weekDays: null,
+                isActive: null, displayName: null, displayDescription: null,
+                occurrencesAhead: 2,
+              },
+              collection: null,
+              delivery: null,
+              updatedUtc: '2026-10-13T00:00:00Z',
+              updatedBy: null,
+            }]
+          : [],
+      }),
+    }));
 
   await page.route('**/api/v2/schedules/*/occurrences*', (route: Route) => {
     const n = new URL(route.request().url()).searchParams.get('n');
@@ -390,5 +429,56 @@ test.describe('Schedule collapse - what the operator sees', () => {
 
     // Still open, so the operator can read it and act.
     await expect(page.getByTestId('schedule-occurrences-ahead-input')).toBeVisible();
+  });
+
+  test('override mode shows the client number editable and the schedule number read-only', async ({ page }) => {
+    // Two branches put an "Occurrences ahead" control in this modal in the
+    // same release: the schedule's own, and the client's override. Merged,
+    // override mode shows both, and the only thing that makes them readable
+    // is that each says which it is. Before the merge the schedule-level
+    // helper text said a per-client value was not editable, which the other
+    // branch had just made false.
+    await stubApis(page, { withOverride: true });
+    await page.goto('/schedules-new');
+    await page.getByText('ACME').first().click();
+
+    // The client's own number, editable, seeded from their override.
+    const clientInput = page.getByTestId('override-occurrences-ahead');
+    await expect(clientInput).toBeVisible();
+    await expect(clientInput).toHaveValue('2');
+    await expect(clientInput).toBeEnabled();
+
+    // The schedule's own number, visible for comparison but not editable
+    // here: it belongs to the schedule, not to this client.
+    const scheduleInput = page.getByTestId('schedule-occurrences-ahead-input');
+    await expect(scheduleInput).toHaveValue('3');
+    await expect(scheduleInput).toBeDisabled();
+
+    // And it points at the client field instead of denying it exists.
+    await expect(page.getByTestId('schedule-occurrences-ahead-help'))
+      .toContainText("Set this client's below");
+
+    // The preview is keyed on the schedule, so in override mode it must say
+    // so rather than let 3 schedule dates read as this client's 2.
+    await expect(page.getByTestId('schedule-occurrences-preview'))
+      .toContainText('schedule default');
+  });
+
+  test('a per-client value outside 1 to 14 blocks the save', async ({ page }) => {
+    await stubApis(page, { withOverride: true });
+    await page.goto('/schedules-new');
+    await page.getByText('ACME').first().click();
+
+    const clientInput = page.getByTestId('override-occurrences-ahead');
+    await clientInput.fill('15');
+    await expect(page.getByTestId('override-occurrences-ahead-help'))
+      .toContainText('Enter a number from 1 to 14');
+    // Override mode renames the save button's testid, so this is
+    // override-modal-save and not the schedule one.
+    await expect(page.getByTestId('override-modal-save')).toBeDisabled();
+
+    // Blank is not an error: it means this client inherits the schedule.
+    await clientInput.fill('');
+    await expect(page.getByTestId('override-modal-save')).toBeEnabled();
   });
 });
