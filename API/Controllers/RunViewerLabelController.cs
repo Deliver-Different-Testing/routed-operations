@@ -7,6 +7,7 @@
 // controller. This one was missing the translation, so the two bulk
 // flows that already guarded NP users surfaced a 500 instead.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
@@ -17,6 +18,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/labels")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs, Print Manager and Linehaul (label PDFs, linehaul manifest) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-print-manager", "ro-linehaul")]
 public class RunViewerLabelController(
     RouteViewerLabelService labelService) : BaseController
 {

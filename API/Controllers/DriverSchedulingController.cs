@@ -12,6 +12,7 @@
 // 400 today; can be lifted to 409 in a follow-up if UX wants
 // distinct treatment).
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.DriverScheduling;
 using RoutedOperations.Core.Application.Services.DriverScheduling;
@@ -20,6 +21,8 @@ namespace RoutedOperations.API.Controllers;
 
 [ApiController]
 [Route("api/driver-scheduling")]
+// Access Control switch: Driver Rostering (Routed Ops switches spec step 3b).
+[RequireFeature("ro-driver-rostering")]
 public class DriverSchedulingController(DriverSchedulingService svc) : BaseController
 {
     // ─── Reads ─────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -20,6 +21,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/templates")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch: Bulk Import (its column-mapping templates) (Routed Ops switches spec step 3b).
+[RequireFeature("ro-bulk-import")]
 public class TemplatesController(
     TemplateService templateService,
     ILogger<TemplatesController> logger) : BaseController

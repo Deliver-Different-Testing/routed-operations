@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
+using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -33,7 +35,11 @@ public record AppUserBootstrap(
     // Powers the Recurring Routes page's "Recurring Jobs" external link + the
     // "Open ↗" schedule deep-links inside the Linehaul edit modal.
     // Empty/null hides both. Mirrors the Configurator AppUserBootstrap shape.
-    string? DespatchWebBaseUrl);
+    string? DespatchWebBaseUrl,
+    // True for whoever the server lets past every Access Control switch
+    // (IFeatureSwitchBypass: DF Admin, ClientTypeId 5). The SPA's menu and
+    // route guard skip the switches for them, matching [RequireFeature].
+    bool BypassesFeatureSwitches = false);
 
 /// <summary>
 /// SPA fallback + tenant claim enrichment. Also seeds the tenant Despatch
@@ -41,9 +47,11 @@ public record AppUserBootstrap(
 /// login can resolve its DbContext without extra round-trips.
 /// </summary>
 [Authorize]
+[NoFeatureCheck("serves the SPA shell and bootstrap every page needs; pages are gated client side and by their APIs")]
 public class HomeController(
     IConnectionStringManager connectionStringManager,
-    AppSettings appSettings) : Controller
+    AppSettings appSettings,
+    DeliverDifferent.AccessControl.Features.IFeatureSwitchBypass featureSwitchBypass) : Controller
 {
     public async Task<IActionResult> Index()
     {
@@ -104,15 +112,12 @@ public class HomeController(
             ? email
             : (identityName?.Contains('@') == true ? identityName : null);
 
-        // "Internal" claim is stamped by Hub for internal-staff logins - we
-        // read the boolean form and default false. Wired through here so the
-        // React SPA can gate the Staff Import affordance (NZ internal only)
-        // without a second round-trip to fetch it.
-        var internalClaim = HttpContext.User.Claims
-            .FirstOrDefault(x => x.Type == "Internal")?.Value;
-        var isInternal = !string.IsNullOrEmpty(internalClaim)
-            && bool.TryParse(internalClaim, out var internalValue)
-            && internalValue;
+        // IsInternal means "tenant staff" to the SPA (Staff Import, the
+        // staff client picker, Historic Archive). It is ClientTypeId 4/5, NOT
+        // the Hub "Internal" claim: that is the ucclInternal billing flag and
+        // carries no permission (Steve 2026-10-08). The server gates the same
+        // things the same way (CallerLane.IsStaff).
+        var isInternal = CallerLane.IsStaff(HttpContext.User);
 
         // Route Viewer P0 - stamp NP-scope + client-scope claims onto the
         // bootstrap. All optional; NP-scope guard + CS module downstream
@@ -158,7 +163,8 @@ public class HomeController(
             ClientId: clientId,
             ClientCount: clientCount,
             ClientString: clientString,
-            DespatchWebBaseUrl: string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl) ? null : appSettings.DespatchWebBaseUrl);
+            DespatchWebBaseUrl: string.IsNullOrEmpty(appSettings.DespatchWebBaseUrl) ? null : appSettings.DespatchWebBaseUrl,
+            BypassesFeatureSwitches: featureSwitchBypass.Bypasses(HttpContext.User));
 
         return View(bootstrap);
     }

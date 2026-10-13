@@ -24,10 +24,10 @@ public class BulkImportControllerTests
 {
     private static (BulkImportController ctl, BulkImportServiceV2 svc) NewCtl(
         string? countryCode = null,
-        string? internalClaim = null)
+        string? clientTypeId = null)
     {
         var opts = ControllerTestHarness.NewOptions();
-        var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, internalClaim: internalClaim, contactId: "3");
+        var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, clientTypeId: clientTypeId, contactId: "3");
         var cache = ControllerTestHarness.Cache(accessor);
         var here = new HereGeocodeService(new HttpClient(), new AppSettings());
         var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache);
@@ -37,7 +37,7 @@ public class BulkImportControllerTests
         var logger = Substitute.For<ILogger<BulkImportController>>();
         var ctl = new BulkImportController(svc, logger);
         ControllerTestHarness.AttachHttpContext(ctl,
-            contactId: "3", countryCode: countryCode, internalClaim: internalClaim);
+            contactId: "3", countryCode: countryCode, clientTypeId: clientTypeId);
         return (ctl, svc);
     }
 
@@ -98,9 +98,9 @@ public class BulkImportControllerTests
     [Fact]
     public async Task StaffImport_NonInternalCaller_Returns403WithBaseResponse()
     {
-        // No "Internal" claim => the auth gate returns 403 before the
+        // No staff ClientTypeId (4/5) => the auth gate returns 403 before the
         // service is called (spec: only internal staff can direct-insert).
-        var (ctl, _) = NewCtl(countryCode: "NZ", internalClaim: null);
+        var (ctl, _) = NewCtl(countryCode: "NZ", clientTypeId: null);
         var req = new StaffImportRequest();
         var result = await ctl.StaffImport(req);
         var status = Assert.IsType<ObjectResult>(result);
@@ -112,7 +112,7 @@ public class BulkImportControllerTests
     [Fact]
     public async Task StaffImport_InvalidModelState_ReturnsBadRequestFirst()
     {
-        var (ctl, _) = NewCtl(internalClaim: "true");
+        var (ctl, _) = NewCtl(clientTypeId: "4");
         ctl.ModelState.AddModelError("Jobs", "required");
         var req = new StaffImportRequest();
         Assert.IsType<BadRequestObjectResult>(await ctl.StaffImport(req));

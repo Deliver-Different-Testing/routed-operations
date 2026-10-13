@@ -1,3 +1,4 @@
+﻿using System.Data.Common;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -22,18 +23,47 @@ namespace RoutedOperations.Tests.Services.Schedule;
 ///   * Junction sync: ClientIds / PostcodeIds / PolygonIds are
 ///     insert-and-delete-diffed on save
 /// </summary>
-public class ScheduleServiceTests
+public class ScheduleServiceTests : IDisposable
 {
-    private static ScheduleService NewSvc()
+    // Sqlite, not InMemory, since 2026-10-09. The write path targets
+    // tblBulkRunScheduleDay and every read comes back through the
+    // tblBulkRunSchedule VIEW over it, so the two have to be the same store
+    // or a save is invisible to the read that verifies it. InMemory keeps one
+    // dictionary per entity type and has no notion of a view, so these tests
+    // would pass or fail for reasons unrelated to the product.
+    private readonly List<DbConnection> _connections = new();
+
+    public void Dispose()
     {
-        var opts = CockpitTestHarness.NewInMemoryOptions();
+        foreach (var c in _connections) c.Dispose();
+    }
+
+    /// <summary>
+    /// A converter that reports "not attempted", which is what the real one
+    /// does on a provider with no stored procedures. The in-memory store
+    /// these tests run on is exactly that, so no test here can observe a
+    /// conversion; the tests that care about convert-on-save assert that it
+    /// was CALLED, and the derivation itself is verified against a real
+    /// database, not here.
+    /// </summary>
+    private static IScheduleConverter NewConverter() =>
+        Substitute.For<IScheduleConverter>();
+
+    private ScheduleService NewSvc() => NewSvc(out _);
+
+    private ScheduleService NewSvc(out IScheduleConverter converter)
+    {
+        var (opts, connection) = CockpitTestHarness.NewSqliteOptions();
+        _connections.Add(connection);
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
             new HttpContextAccessor());
+        converter = NewConverter();
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
-            cache);
+            cache,
+            converter);
     }
 
     /// <summary>Constructs the service AND hands back the shared
@@ -41,7 +71,23 @@ public class ScheduleServiceTests
     /// header + client + day-row + override rows before calling the
     /// service can do so directly (mirrors ScheduleOverrideServiceTests'
     /// NewSvc(out ..., out ...) pattern).</summary>
-    private static ScheduleService NewSvcWithSeed(
+    /// <summary>
+    /// InMemory variant, for a test that cannot use the Sqlite harness.
+    ///
+    /// ListSummaryAsync fans its queries out across ~11 contexts in parallel
+    /// waves on purpose (the 2026-09-17 perf pass). A Sqlite :memory:
+    /// database lives on ONE connection, and EF registers custom SQL
+    /// functions when a context first touches it, so the second context in a
+    /// wave fails with "database is locked". That is a property of the test
+    /// harness, not of the code under test.
+    ///
+    /// The cost of staying on InMemory: it has no notion of a view, so a seed
+    /// may write TblBulkRunSchedule, which a relational provider refuses.
+    /// Acceptable for a test about how the summary labels client overrides.
+    /// The view-versus-table split is covered by ScheduleModelShapeTests and
+    /// by verification against a real database.
+    /// </summary>
+    private static ScheduleService NewSvcWithSeedInMemory(
         out DynamicDespatchDbContext seed,
         out DbContextOptions<DespatchContext> opts)
     {
@@ -53,7 +99,26 @@ public class ScheduleServiceTests
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
-            cache);
+            cache,
+            NewConverter());
+    }
+
+    private ScheduleService NewSvcWithSeed(
+        out DynamicDespatchDbContext seed,
+        out DbContextOptions<DespatchContext> opts)
+    {
+        var (sqliteOpts, connection) = CockpitTestHarness.NewSqliteOptions();
+        _connections.Add(connection);
+        opts = sqliteOpts;
+        seed = CockpitTestHarness.Context(opts);
+        var cache = new TenantScopedCache(
+            new MemoryCache(new MemoryCacheOptions()),
+            new HttpContextAccessor());
+        return new ScheduleService(
+            CockpitTestHarness.Factory(opts),
+            NullLogger<ScheduleService>.Instance,
+            cache,
+            NewConverter());
     }
 
     private static ScheduleGroupUpsertRequest ValidRequest() => new()
@@ -75,6 +140,77 @@ public class ScheduleServiceTests
         },
         Linehauls = new List<ScheduleLinehaulUpsertRequest>(),
     };
+
+    // ─── convert-on-save ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UpsertAsync_asks_the_database_to_collapse_the_schedule()
+    {
+        // Convert-on-save is the entire migration of existing data in the
+        // collapse plan: schedules collapse when someone touches them, and
+        // there is no campaign to catch the ones nobody touches. If this
+        // call stops happening, nothing fails and nothing converts, which is
+        // the kind of regression that is invisible for months.
+        //
+        // Asserted at the seam rather than on its effect, because the
+        // derivation lives in dbo.uspScheduleConvert and the in-memory
+        // provider has no stored procedures. The effect is verified against
+        // a real database.
+        var svc = NewSvc(out var converter);
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        await converter.Received(1).ConvertAsync(
+            Arg.Any<DbContext>(), dto.ScheduleId, true, Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_surfaces_the_reason_a_schedule_did_not_collapse()
+    {
+        // A refusal is a normal answer, not a failure: the schedule saves,
+        // stays on one row per day, and is still bookable. What must not
+        // happen is the operator seeing a clean save with no hint that two
+        // of their days disagree, so the reason rides back on the DTO.
+        var svc = NewSvc(out var converter);
+        converter.ConvertAsync(Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>())
+            .Returns(new ScheduleConvertResult
+            {
+                CanConvert = false,
+                Reasons = "WindowVariesByDay;",
+            });
+
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        Assert.False(dto.IsCollapsed);
+        Assert.Null(dto.OccurrencesAhead);
+        Assert.Equal("WindowVariesByDay;", dto.ConvertRefusalReasons);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_reports_no_refusal_when_the_schedule_collapsed()
+    {
+        var svc = NewSvc(out var converter);
+        converter.ConvertAsync(Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>())
+            .Returns(new ScheduleConvertResult { CanConvert = true, Committed = true });
+
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        Assert.Null(dto.ConvertRefusalReasons);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(15)]
+    public async Task UpsertAsync_rejects_occurrences_ahead_outside_one_to_fourteen(byte n)
+    {
+        // The CHECK on the column says 1 to 14. Rejected here so the caller
+        // is told which field is wrong instead of getting a constraint
+        // violation from the database.
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.OccurrencesAhead = n;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(req));
+        Assert.Contains("1 and 14", ex.Message);
+    }
 
     [Fact]
     public async Task UpsertAsync_missing_name_is_rejected()
@@ -411,7 +547,7 @@ public class ScheduleServiceTests
         const int ScheduleId = 42;
         const int ClientA = 100;
         const int ClientB = 200;
-        var svc = NewSvcWithSeed(out var seed, out var opts);
+        var svc = NewSvcWithSeedInMemory(out var seed, out var opts);
         seed.BulkRunScheduleHeaders.Add(new BulkRunScheduleHeader
         {
             ScheduleId = ScheduleId,
@@ -422,6 +558,8 @@ public class ScheduleServiceTests
             CreatedUtc = DateTime.UtcNow,
             CreatedBy = "seed",
         });
+        // Seeded through the view entity, which only works because this test
+        // runs on InMemory; see NewSvcWithSeedInMemory for why it has to.
         seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
         {
             Name = "Nested Test",

@@ -46,4 +46,5 @@ afterAll(() => server.close());
   clientCount: null,
   clientString: null,
   despatchWebBaseUrl: null,
+  bypassesFeatureSwitches: false,
 };

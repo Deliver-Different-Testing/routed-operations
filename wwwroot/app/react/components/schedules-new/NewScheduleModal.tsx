@@ -5,7 +5,7 @@ import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/sc
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
-import { ChainBuilder, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
@@ -277,13 +277,20 @@ export function NewScheduleModal({ open, onClose }: Props) {
     // from the Depot leg is an identity round-trip, because seedLegsFromDto
     // seeds that leg from PickupDepotId in the first place. That is what keeps
     // existing LHP + DEL schedules behaving exactly as before.
+    //
+    // Three-way since 2026-10-08 (Direct). The three-way resolution itself
+    // lives in ChainBuilder's deriveOriginFromLegs so this modal and
+    // ScheduleDetailModal cannot disagree about it.
+    //
+    //   direct origin -> BookPickup = 0, PickupDepotId = NULL,
+    //                    OriginRegionId = NULL. No Collection leg and no
+    //                    linehaul legs, both blocked in the chooser and
+    //                    rejected server-side.
     const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
     const hasCollection = legs.some((l) => l.type === 'collection');
-    const clientOrigin = firstDepot?.clientAddress === true;
-    const originType = clientOrigin ? 'client' : 'depot';
-    const originRegionId = clientOrigin ? (firstDepot?.originRegionId ?? null) : null;
+    const { originType, originRegionId } = deriveOriginFromLegs(legs);
     let bookPickup = false;
-    if (!clientOrigin && hasCollection) {
+    if (originType === 'depot' && hasCollection) {
       bookPickup = true;
       pickupDepotId = firstDepot?.depotId ?? null;
     }

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.Run;
 using RoutedOperations.Core.Application.Services.Run;
@@ -13,6 +14,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runs")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Route Builder, the only page that calls this (Routed Ops switches spec step 3b).
+[RequireFeature("ro-route-builder")]
 public class RunsController(
     RunService runService,
     RunCommitService runCommitService) : BaseController

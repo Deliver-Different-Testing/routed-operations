@@ -35,17 +35,22 @@ describe('useRouteViewerLookups', () => {
     expect(result.current.errors).toEqual([]);
   });
 
-  it('derives clientInternal / multipleClients from auth defaults (no window.__APP_USER__ overrides in this test)', async () => {
+  it('asks for clients by runDate only and exposes no client-scope flags', async () => {
+    let clientsUrl!: URL;
     server.use(
-      http.get('/api/runviewer/filters/clients', () => HttpResponse.json({ response: [] })),
+      http.get('/api/runviewer/filters/clients', ({ request }) => {
+        clientsUrl = new URL(request.url);
+        return HttpResponse.json({ response: [] });
+      }),
       http.get('/api/runviewer/filters/regions', () => HttpResponse.json({ response: [] })),
       http.get('/api/runviewer/filters/speeds', () => HttpResponse.json({ response: [] })),
     );
     const { result } = renderHook(() => useRouteViewerLookups('2026-08-13'), { wrapper: makeWrapper() });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    // Default test AppUser has clientTypeId=null and clientCount=null.
-    expect(result.current.clientInternal).toBe(false);
-    expect(result.current.multipleClients).toBe(false);
+    // Scope comes from the session on the server; nothing on the wire.
+    expect([...clientsUrl.searchParams.keys()]).toEqual(['runDate']);
+    expect('clientInternal' in result.current).toBe(false);
+    expect('multipleClients' in result.current).toBe(false);
   });
 
   it('is disabled when runDate is empty (returns empty arrays, no fetch)', () => {
