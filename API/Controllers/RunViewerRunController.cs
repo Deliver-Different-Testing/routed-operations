@@ -13,6 +13,7 @@
 // service via INpScopeResolver (all rows filtered by @NpAgentId); the
 // controller does not need to short-circuit for NP callers.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
@@ -28,6 +29,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/runs")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// every Route Viewer page (runs list, overview, run jobs, job siblings) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-linehaul", "ro-scan-manager", "ro-print-manager", "ro-customer-services", "ro-mobile")]
 public class RunViewerRunController(
     RouteViewerRunService runService) : BaseController
 {

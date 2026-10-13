@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -23,6 +24,7 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/session")]
 [Authorize]
+[NoFeatureCheck("tenant-drift check on every page, no page data")]
 public class SessionController : ControllerBase
 {
     /// <summary>GET /api/session/current - returns the current authenticated

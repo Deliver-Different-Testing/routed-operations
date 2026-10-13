@@ -13,10 +13,10 @@ namespace RoutedOperations.Tests.Controllers;
 // response type.
 public class ClientsControllerTests
 {
-    private static ClientsController NewCtl(string? countryCode = null, string? internalClaim = null)
+    private static ClientsController NewCtl(string? countryCode = null, string? clientTypeId = null)
     {
         var opts = ControllerTestHarness.NewOptions();
-        var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, internalClaim: internalClaim);
+        var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, clientTypeId: clientTypeId);
         var cache = ControllerTestHarness.Cache(accessor);
         var svc = new ClientService(ControllerTestHarness.Factory(opts), accessor, cache);
         var logger = Substitute.For<ILogger<ClientsController>>();
@@ -25,7 +25,7 @@ public class ClientsControllerTests
         // attach a matching claim set (ContactID default = 5 is fine here;
         // empty DB means every scoped read returns Success=true regardless).
         ControllerTestHarness.AttachHttpContext(ctl,
-            contactId: "5", countryCode: countryCode, internalClaim: internalClaim);
+            contactId: "5", countryCode: countryCode, clientTypeId: clientTypeId);
         return ctl;
     }
 
@@ -42,7 +42,7 @@ public class ClientsControllerTests
     [Fact]
     public async Task Get_EmptyDb_InternalUser_ReturnsIsInternal()
     {
-        var ctl = NewCtl(internalClaim: "true");
+        var ctl = NewCtl(clientTypeId: "4");
         var ok = Assert.IsType<OkObjectResult>(await ctl.Get());
         var resp = Assert.IsType<ClientsResponse>(ok.Value!);
         Assert.True(resp.IsInternal);

@@ -16,6 +16,9 @@
         isUsTenant: false,
         hereMapsApiKey: null,
         googleMapsKey: null,
+        // Vite dev / Playwright harness: no server, so skip the Access Control
+        // switches the way DF Admin does. The e2e fixtures intercept /api/*.
+        bypassesFeatureSwitches: true,
       };
     </script>
   </head>
