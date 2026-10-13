@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.Diagnostics;
 using RoutedOperations.Core.Application.Services.Diagnostics;
@@ -14,6 +15,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/diagnostics/auto-assign-log")]
 [Authorize(Policy = "RouteBuilder.Polygon")]
+// Access Control switch: Auto-Assign Log (Routed Ops switches spec step 3b).
+[RequireFeature("ro-auto-assign-log")]
 public class AutoAssignLogController(AutoAssignLogService svc) : BaseController
 {
     [HttpGet]

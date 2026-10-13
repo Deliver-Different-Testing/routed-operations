@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.BulkPolygon;
@@ -17,9 +18,14 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/bulk-polygons")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Polygon Builder owns the polygons (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-polygon-builder")]
 public class BulkPolygonsController(BulkPolygonService svc) : BaseController
 {
     [HttpGet]
+    // polygon pickers on both schedule editors and Bind Polygons.
+    [RequireFeature("ro-polygon-builder", "ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetAll()
     {
         var list = await svc.GetAllAsync();
@@ -27,6 +33,8 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
     }
 
     [HttpGet("{id:int}")]
+    // Only Recurring Routes reads a single polygon.
+    [RequireFeature("ro-recurring-routes")]
     public async Task<IActionResult> GetOne(int id)
     {
         var row = await svc.GetByIdAsync(id);

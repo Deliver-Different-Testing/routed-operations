@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
+using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -30,6 +32,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/bulk-import")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch: Bulk Import (Routed Ops switches spec step 3b).
+[RequireFeature("ro-bulk-import")]
 public class BulkImportController(
     BulkImportServiceV2 bulkService,
     ILogger<BulkImportController> logger) : BaseController
@@ -157,11 +161,8 @@ public class BulkImportController(
             if (!ModelState.IsValid)
                 return HandleBulkInvalidModelState(request.MessageId);
 
-            var internalClaim = User?.FindFirstValue("Internal");
-            var isInternal = !string.IsNullOrEmpty(internalClaim)
-                && bool.TryParse(internalClaim, out var internalValue)
-                && internalValue;
-            if (!isInternal)
+            // Staff by ClientTypeId 4/5, not the "Internal" billing-flag claim.
+            if (User is null || !CallerLane.IsStaff(User))
             {
                 Log.Warning("({MessageId})({ContactId}) Unauthorized staff import attempt by non-internal user.",
                     request.MessageId, GetCurrentContactId());
