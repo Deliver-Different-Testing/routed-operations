@@ -13,7 +13,9 @@ public interface INpScopeResolver
     ///
     /// Resolution priority:
     ///   1. ClientTypeId claim == "5" -> IsAdmin=true (DF admin).
-    ///   2. IsNetworkPartner claim != "True" -> IsAdmin=true (tenant staff).
+    ///   2. IsNetworkPartner claim != "True" -> IsAdmin=true ONLY for tenant
+    ///      staff (ClientTypeId 4); any other non-NP caller (customer, missing
+    ///      ClientTypeId) gets IsAdmin=false + NpAgentId=null, i.e. no rows.
     ///   3. Otherwise NP user - reads NpAgentId claim; if absent, does a
     ///      DB fallback: TucClients where UcclID == ClientID -> NpAgentId.
     ///   4. NpAgentId still null -> IsAdmin=false, NpAgentId=null

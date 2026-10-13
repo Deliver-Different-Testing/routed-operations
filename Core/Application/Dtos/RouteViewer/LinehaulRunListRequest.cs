@@ -4,8 +4,6 @@ public class LinehaulRunListRequest
 {
     public DateTime? RunDate { get; set; }
     public int? ClientId { get; set; }
-    public bool ClientInternal { get; set; }
-    public bool MultipleClients { get; set; }
     public string? ClientIds { get; set; }
     public string? FromRegionIds { get; set; }
     public string? RegionIds { get; set; }

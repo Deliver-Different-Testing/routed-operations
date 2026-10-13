@@ -24,8 +24,9 @@ public class RunViewerFilterControllerTests
         var factory = ControllerTestHarness.Factory(opts);
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(true, null));
-        var accessor = Substitute.For<IHttpContextAccessor>();
-        accessor.HttpContext.Returns(new DefaultHttpContext());
+        // Tenant staff with a contact, so GetClients reaches the SP (the
+        // contact now comes from this claim, not the query string).
+        var accessor = ControllerTestHarness.Accessor(clientTypeId: "4", contactId: "12");
         var svc = new RouteViewerFilterService(factory, resolver, accessor,
             NullLogger<RouteViewerFilterService>.Instance);
         var controller = new RunViewerFilterController(svc);
@@ -56,7 +57,7 @@ public class RunViewerFilterControllerTests
         var ctl = NewCtl();
 
         await Assert.ThrowsAnyAsync<Exception>(() =>
-            ctl.GetClients(runDate: DateTime.Today, multipleClients: false, contactId: null));
+            ctl.GetClients(runDate: DateTime.Today));
     }
 
     [Fact]

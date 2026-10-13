@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.Quote;
 using RoutedOperations.Core.Application.Services.Quote;
@@ -13,6 +14,8 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/quote")]
 [Authorize(Policy = "RouteBuilder.Quote")]
+// Access Control switch: Quoting (Routed Ops switches spec step 3b).
+[RequireFeature("ro-quoting")]
 public class QuoteController(QuoteService quote) : BaseController
 {
     [HttpGet("sets")]

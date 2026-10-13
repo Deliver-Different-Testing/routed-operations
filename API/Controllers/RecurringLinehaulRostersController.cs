@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringLinehaul;
 using RoutedOperations.Core.Application.Services.RecurringLinehaul;
@@ -13,11 +14,16 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/recurring-linehaul-rosters")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Recurring Routes (Linehaul Roster tab) (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-recurring-routes")]
 public class RecurringLinehaulRostersController(RecurringLinehaulService service) : BaseController
 {
     // weekStart accepted for forward-compat with v1.1 date overrides; v1
     // returns the recurring weekly grid regardless.
     [HttpGet]
+    // Also the Roster tab of the Schedules (NEW) detail modal, which Client Overrides also opens.
+    [RequireFeature("ro-recurring-routes", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetGrid([FromQuery] string? weekStart = null)
     {
         _ = weekStart;

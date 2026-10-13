@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -22,6 +23,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/address")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch, ANY of: Bulk Import (wizard address fixes), Route Builder (Fix GPS)
+// and Recurring Routes (ScheduledRoutes geocode / regions) all call it (spec step 3b).
+[RequireFeature("ro-bulk-import", "ro-route-builder", "ro-recurring-routes")]
 public class AddressController(
     AddressService addressService,
     HereGeocodeService hereGeocodeService,

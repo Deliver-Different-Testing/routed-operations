@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
 using RoutedOperations.Core.Application.Services.RecurringRoute;
@@ -14,11 +15,16 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/recurring-routes")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Recurring Routes owns the routes (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-recurring-routes")]
 public class RecurringRoutesController(RecurringRouteService routes) : BaseController
 {
     // ─── ROUTES ────────────────────────────────────────────────────────────
 
     [HttpGet]
+    // Also the Roster tab of the Schedules (NEW) detail modal, which Client Overrides also opens.
+    [RequireFeature("ro-recurring-routes", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetAll()
     {
         var list = await routes.GetAllAsync();
@@ -44,6 +50,8 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     }
 
     [HttpPost]
+    // Polygon Builder creates a route from a drawn polygon.
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Create([FromBody] UpsertRouteRequest req)
     {
@@ -113,6 +121,8 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     // ─── ROSTER ────────────────────────────────────────────────────────────
 
     [HttpGet("{routeId:int}/roster")]
+    // Also the Roster tab of the Schedules (NEW) detail modal, which Client Overrides also opens.
+    [RequireFeature("ro-recurring-routes", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetRoster(int routeId)
     {
         var list = await routes.GetRosterAsync(routeId);
@@ -159,6 +169,8 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     }
 
     [HttpGet("zipcodes/search")]
+    // Only Polygon Builder searches zipcodes.
+    [RequireFeature("ro-polygon-builder")]
     public async Task<IActionResult> SearchZipcodes([FromQuery] string q, [FromQuery] int max = 25)
     {
         var list = await routes.SearchZipcodesAsync(q, max);
@@ -172,6 +184,7 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     /// the shapes endpoint below.
     /// </summary>
     [HttpGet("zipcodes/centroids")]
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder")]
     public async Task<IActionResult> GetAllZipcodeCentroids()
     {
         var list = await routes.GetAllZipcodeCentroidsAsync();
@@ -179,6 +192,8 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     }
 
     [HttpPost("zipcodes/shapes")]
+    // ScheduleCoverageMap on both schedule editors, Polygon Builder and Recurring Routes.
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder", "ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetPolygonShapes([FromBody] List<int> zipPolygonIds)
     {
         var list = await routes.GetPolygonShapesAsync(zipPolygonIds ?? new List<int>());
@@ -186,6 +201,7 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     }
 
     [HttpGet("assignable-targets")]
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder")]
     public async Task<IActionResult> GetAssignableTargets()
     {
         var res = await routes.GetAssignableTargetsAsync();
@@ -193,6 +209,7 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     }
 
     [HttpGet("schedules/lookup")]
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder")]
     public async Task<IActionResult> GetSchedulesLookup()
     {
         var list = await routes.GetSchedulesLookupAsync();

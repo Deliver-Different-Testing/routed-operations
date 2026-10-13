@@ -65,13 +65,13 @@ public class BulkImportServiceV2CoreTests
         out DynamicDespatchDbContext seed,
         out IHttpContextAccessor accessor,
         string countryCode = "US",
-        string internalClaim = null,
+        string clientTypeId = null,
         string timeZone = null,
         HttpMessageHandler httpHandler = null)
     {
         var opts = BulkImportTestHarness.NewOptions();
         seed = BulkImportTestHarness.Context(opts);
-        accessor = BulkImportTestHarness.Accessor(countryCode, internalClaim, timeZone);
+        accessor = BulkImportTestHarness.Accessor(countryCode, clientTypeId, timeZone);
         var factory = new FakeHttpClientFactory(httpHandler ?? new FakeHandler());
         var cache = BulkImportTestHarness.Cache(accessor);
         var addressSvc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, StubHereSvc(), cache);
@@ -598,7 +598,7 @@ public class BulkImportServiceV2CoreTests
     [Fact]
     public async Task GetBulkJobs_InternalUser_EmptyDb_SucceedsWithEmpty()
     {
-        var svc = NewSvc(out _, out _, internalClaim: "True");
+        var svc = NewSvc(out _, out _, clientTypeId: "4");
         var resp = await svc.GetBulkJobs(contactId: 1, Guid.NewGuid());
         Assert.True(resp.Success);
         Assert.Empty(resp.Jobs);

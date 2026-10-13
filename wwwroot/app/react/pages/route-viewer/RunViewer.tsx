@@ -141,12 +141,8 @@ export default function RunViewer() {
   // homeView.html:128-138 getClientIntel(mobile) behaviour.
   const clientIntelRef = useRef<HTMLDivElement | null>(null);
 
-  const { clientInternal, multipleClients } = useRouteViewerLookups(filters.runDate, false);
-
   const runsQuery = useRouteViewerRuns({
     runDate: filters.runDate,
-    clientInternal,
-    multipleClients,
     clientIds: filters.clientIds,
     regionIds: filters.regionIds,
     speedIds: filters.speedIds,

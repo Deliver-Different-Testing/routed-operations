@@ -9,6 +9,7 @@
 // controller (NP has its own courier-scoped action surface on the
 // existing AssignmentController).
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
@@ -19,6 +20,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/jobs")]
 [Authorize(Policy = "RouteViewer.Admin")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs, Print Manager, Mobile, Customer Services and Linehaul (job actions, text fields, GPS) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-print-manager", "ro-mobile", "ro-customer-services", "ro-linehaul")]
 public class RunViewerJobActionController(
     RouteViewerJobActionService actions) : BaseController
 {
