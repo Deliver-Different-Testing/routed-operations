@@ -1,4 +1,4 @@
-import { request, buildQuery } from './api';
+﻿import { request, buildQuery } from './api';
 
 // Wire shapes for /api/schedules (group-shaped). Mirror the C# DTOs in
 // RoutedOperations.Core.Application.Dtos.Schedule.ScheduleDtos. A
@@ -372,7 +372,7 @@ export interface ScheduleGroupUpsertBody {
    *  `autoBook`. Omit to keep the existing value on update paths;
    *  defaults to true on create when unset. Steve F21 (2026-09-22). */
   isActive?: boolean;
-  /** How many upcoming runs the booking page should offer, 1 to 14. Omit
+  /** How many upcoming runs the booking page should offer, 1 to 60. Omit
    *  to leave it alone: a schedule that has just collapsed already has
    *  one week's worth (the number of days in its mask), and an old-shape
    *  schedule has nowhere to store it. Sets the SCHEDULE's value; a

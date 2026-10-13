@@ -1,4 +1,4 @@
-import { request, buildQuery } from './api';
+﻿import { request, buildQuery } from './api';
 import type { ScheduleGroup, ScheduleGroupSummary, ScheduleGroupUpsertBody } from './scheduleService';
 
 // Client for /api/v2/schedules (Steve's 2026-09-08 id-keyed view).
@@ -265,7 +265,7 @@ export interface ScheduleScopeOverride {
   displayDescription: string | null;
   /**
    * How many upcoming runs of this schedule the booking page offers this
-   * client. null inherits the schedule's own value. 1 to 14.
+   * client. null inherits the schedule's own value. 1 to 60.
    */
   occurrencesAhead: number | null;
 }
