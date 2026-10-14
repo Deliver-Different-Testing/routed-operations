@@ -561,6 +561,8 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 
 ---
 
+9. to 12. **Team feedback items** (sheets, additional item % level, linehaul leg migration, courier % into pay): see 11.4.
+
 ## 10. Acceptance
 
 1. Phase 1: for every zone-rated job booked in the 30 days before cut-over, on both tenants,
@@ -579,3 +581,172 @@ The last query decides how much of the Phase 2 rewrite is automatic.
    Medical group default sheet.
 6. Legacy `/schedules` page is gone; Zone groups and Pricing tabs are reachable from Schedules NEW
    with `?tab=` deep links.
+
+---
+
+## 11. Team feedback, 14 Oct 2026 ("Schedules Pricing Format" doc)
+
+Twelve items from the team on the mock. Each is placed below with the model change it needs. The
+mock at https://deliver-different-testing.github.io/routed-ops-pricing-mock/ shows all of them.
+
+### 11.1 Rate sheets inside a zone group (items 1, 8, 9)
+
+A zone group holds **named rate sheets**: Default (always present, the "default default"), plus
+sheets for a client type such as Medical or Home delivery. A sheet carries **only the speeds it sets
+up**; anything else falls back to the group's Default sheet. A client prices from **one sheet** per
+group and may override single cells on it. Loading "standard medical pricing" is therefore: create the
+Medical sheet once, point each medical client at it, override the odd cell.
+
+```sql
+CREATE TABLE dbo.BulkZoneRateSheet (
+    Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BulkZoneRateSheet PRIMARY KEY,
+    PostcodeGroupId INT NOT NULL CONSTRAINT FK_BulkZoneRateSheet_Group FOREIGN KEY REFERENCES dbo.BulkZonePostcodeGroup (Id),
+    Name            NVARCHAR(50) NOT NULL,
+    IsDefault       BIT NOT NULL CONSTRAINT DF_BulkZoneRateSheet_IsDefault DEFAULT (0),
+    CourierPayHere  BIT NOT NULL CONSTRAINT DF_BulkZoneRateSheet_CourierPayHere DEFAULT (0),   -- 11.3
+    Active          BIT NOT NULL CONSTRAINT DF_BulkZoneRateSheet_Active DEFAULT (1),
+    CONSTRAINT UQ_BulkZoneRateSheet UNIQUE (PostcodeGroupId, Name)
+);
+CREATE UNIQUE INDEX UX_BulkZoneRateSheet_OneDefault ON dbo.BulkZoneRateSheet (PostcodeGroupId) WHERE IsDefault = 1;
+
+ALTER TABLE dbo.BulkZoneRate ADD SheetId INT NULL CONSTRAINT FK_BulkZoneRate_Sheet FOREIGN KEY REFERENCES dbo.BulkZoneRateSheet (Id);
+
+CREATE TABLE dbo.BulkZoneRateSheetClient (          -- which sheet a client prices from, per group
+    ClientId        INT NOT NULL,
+    PostcodeGroupId INT NOT NULL,
+    SheetId         INT NOT NULL CONSTRAINT FK_BulkZoneRateSheetClient_Sheet FOREIGN KEY REFERENCES dbo.BulkZoneRateSheet (Id),
+    CONSTRAINT PK_BulkZoneRateSheetClient PRIMARY KEY (ClientId, PostcodeGroupId)
+);
+```
+
+Phase 1 backfill: one Default sheet per `BulkZonePostcodeGroup`; every group row gets that `SheetId`.
+`BulkZoneRateSheetClient` starts empty (everyone prices from Default), so nothing changes on day one.
+
+**Resolution in the rating function** (replaces the ORDER BY in 2.2):
+
+```
+candidates: rows for the zone where
+   (ClientId = @ClientId OR ClientId IS NULL)
+   AND (SheetId = @ClientSheetId OR SheetId = @DefaultSheetId)      -- client's sheet, else Default
+   AND (SpeedId = @SpeedId OR SpeedId IS NULL)                      -- exact speed, else any-speed fallback (11.5)
+   AND (StockSizeId = @StockSizeId OR StockSizeId IS NULL) AND Active = 1
+ORDER BY ClientId DESC,                                             -- own cell first
+         CASE WHEN SheetId = @ClientSheetId THEN 1 ELSE 0 END DESC, -- then the client's sheet
+         SpeedId DESC,                                              -- exact speed over any-speed
+         StockSizeId DESC
+```
+
+`@ClientSheetId` = `BulkZoneRateSheetClient.SheetId` for (client, group), else the Default sheet.
+Legacy `DepotId` rows (Phase 1 transition) sort after these, as in 2.2.
+
+**UI (mock):** Sheet picker beside the zone group; a client picker shows "prices from [sheet]" and
+lets ops move the client between sheets; "+ Sheet" creates one. **Columns show only the speeds this
+sheet (or this client) has priced**; "Show N inherited speeds" reveals the fallbacks greyed with an
+"inherited" tag. "+ Speed" adds a priced column, seeded from the any-speed fallback where one exists.
+
+### 11.2 Dimension rule sets (item 2)
+
+Same shape for `BulkZonePackageRate`: a named **rule set** (Default, Medical, Home delivery); a client
+uses exactly one set (no band merging, which is today's rule and stays).
+
+```sql
+CREATE TABLE dbo.BulkZonePackageRateSet (Id INT IDENTITY PRIMARY KEY, Name NVARCHAR(50) NOT NULL UNIQUE, IsDefault BIT NOT NULL DEFAULT 0, Active BIT NOT NULL DEFAULT 1);
+ALTER TABLE dbo.BulkZonePackageRate ADD SetId INT NULL CONSTRAINT FK_BulkZonePackageRate_Set FOREIGN KEY REFERENCES dbo.BulkZonePackageRateSet (Id);
+CREATE TABLE dbo.BulkZonePackageRateSetClient (ClientId INT NOT NULL PRIMARY KEY, SetId INT NOT NULL FOREIGN KEY REFERENCES dbo.BulkZonePackageRateSet (Id));
+```
+
+Backfill: `ClientId IS NULL` bands -> Default set; each client with its own bands -> a set named by
+the client code, with the client mapped to it; `BulkZonePackageRate.ClientId` then drops. Rating:
+`CubicRate` comes from the client's set, else Default (one lookup instead of the client-or-global
+branch in `fncT_BulkZoneRate_WithLinehaul`).
+
+### 11.3 Courier pay is an opt-in per sheet (item 3)
+
+`BulkZoneRateSheet.CourierPayHere` (above). Off: the grid shows Rate $ only; `CourierPercentage` is
+not shown or edited and courier pay stays on the agent default at allocation (30 Sep NP pay rule).
+On: the Courier % and Pays $ columns appear, with "fill %" per column. **Note for Decision 12:**
+today nothing in the pay path reads `BulkZoneRate.CourierPercentage`; switching a sheet on only
+means something once the NP pay triggers take it for zone-rated jobs. That wiring is its own item.
+
+### 11.4 Decisions added
+
+9. **Additional item % level** (item 11): per speed (recommended; it is `tucJobType.AddonPercentage`
+   today with `tblClientAvailableSpeed.AddonPercentage` as the client override, both already exist
+   and the Pricing > Speeds view just becomes their home), or per speed x zone (needs a new column
+   on `BulkZoneRate` and a function change). MFV and the available-speeds setup stay speed settings
+   and move to the Settings menu with the rest of AdminManager's speed setup (out of scope here).
+10. **Linehaul leg migration** (item 10): new `BulkLinehaulRoute` / `BulkLinehaulRate` (11.6) and
+    `tblBulkScheduleLinehaul.RouteId`; legs with a RouteId price from the table, legs without keep
+    their Amount / AmountPercentage. Decide whether ops migrates legs by hand (recommended; dozens
+    of linehaul legs, each a deliberate choice of route) or a script maps (from depot, to depot) to a
+    route automatically.
+11. **Any-speed fallback** (item 5): expose `SpeedId NULL` rows as an "Any speed" column (recommended;
+    the function already prefers an exact speed over NULL), or refuse to book a speed with no
+    column. Recommended because it is what the team asked for and it removes the "schedule speed
+    not priced" booking failure.
+12. **Courier % into pay** (11.3): leave as display-only until the NP pay triggers are extended to read
+    `CourierPercentage` for zone-rated jobs on sheets with `CourierPayHere = 1`, or scope that
+    extension into Phase 1 now. Recommended: separate item, after Jacob's NP pay branches merge.
+
+### 11.5 Any-speed fallback (item 5)
+
+No schema change: `BulkZoneRate.SpeedId NULL` already means any speed and the function already sorts
+exact speed first. The UI shows it as a first, italic "Any speed" column on the sheet; "+ Speed" on a
+new column seeds its cells from the fallback. Acceptance: a schedule on a speed with no column of
+its own rates at the Any speed figure for the zone; add the speed's column and it rates at that.
+
+### 11.6 Linehaul pricing (item 10)
+
+Takes the linehaul amount out of the schedule leg so one schedule can serve clients on different
+linehaul prices (fewer per-client schedules).
+
+```sql
+CREATE TABLE dbo.BulkLinehaulRoute (
+    Id INT IDENTITY PRIMARY KEY, FromDepotId INT NOT NULL REFERENCES dbo.tblBulkRegion (BulkRegionId),
+    ToDepotId INT NOT NULL REFERENCES dbo.tblBulkRegion (BulkRegionId), Name NVARCHAR(100) NOT NULL, Active BIT NOT NULL DEFAULT 1,
+    CONSTRAINT UQ_BulkLinehaulRoute UNIQUE (FromDepotId, ToDepotId));
+CREATE TABLE dbo.BulkLinehaulRate (
+    Id INT IDENTITY PRIMARY KEY, RouteId INT NOT NULL REFERENCES dbo.BulkLinehaulRoute (Id),
+    SpeedId INT NULL, ClientId INT NULL, Amount MONEY NULL, AmountPercentage DECIMAL(5,2) NULL, Active BIT NOT NULL DEFAULT 1,
+    CONSTRAINT CK_BulkLinehaulRate_OneOf CHECK ((Amount IS NULL) <> (AmountPercentage IS NULL)));
+ALTER TABLE dbo.tblBulkScheduleLinehaul ADD RouteId INT NULL REFERENCES dbo.BulkLinehaulRoute (Id);   -- columns to confirm
+```
+
+Resolution: client over default, exact speed over NULL (same ORDER BY idea). In
+`fncT_BulkZoneRate_WithLinehaul`, where the LH leg's Amount / AmountPercentage is read, prefer the
+route rate when `RouteId` is set. **UI:** Pricing > Linehaul: routes down, speeds across (plus Any
+speed), a cell is "$18.00" or "35%", Default or client; each route lists the schedules using it.
+
+### 11.7 Surcharges stay optional, and are visible on the grid (item 4)
+
+No model change. On the rate grid, a zone whose postcodes include a surcharged postcode (for the
+client being viewed, or default) shows a "+n" marker with the postcodes in the tooltip, so the zone
+figure is not read as the whole price. Surcharges sub-view gains an "in this zone group: Zone n"
+column. Query: `EXISTS (SELECT 1 FROM BulkZonePostcodeSurcharge s JOIN BulkZonePostcode p ON p.PostCode
+= s.PostCode WHERE p.PostcodeGroupId = @G AND p.Zone = @Z AND (s.ClientId = @C OR s.ClientId IS NULL))`.
+
+### 11.8 Zone groups: bulk postcode paste, suburb names, map (items 6, 7, 12)
+
+- **Paste**: "+ postcodes" on a zone opens a box; comma, space, semicolon or newline separated; all
+  added in one call: `POST api/territory/postcode-groups/{id}/zones/{zone}/postcodes` with the list,
+  returning added / skipped-already-in-another-zone (named) / ignored-not-a-postcode. A postcode
+  already in another zone of the same group is never moved silently.
+- **Suburb**: every postcode chip shows its suburb (`tucPostCode` -> `tblSuburb`, column names to
+  confirm) with a "show suburb names" toggle; the Territory lookups return it alongside the postcode.
+- **Map** (nice-to-have, Phase 3): a HERE panel beside the group showing its postcodes shaded by zone
+  and the home depot pinned; hovering a zone row highlights it. Whether NZ postcode boundary geometry
+  exists in the database is to confirm (US has `ZipPolygon`; NZ may need centroids from `FromLatLng`).
+  Editing on the map (drag a postcode to another zone) is the stretch after that.
+
+### 11.9 Additional item % (item 11)
+
+Pricing > Speeds gains an "Additional item %" column per speed: the default is
+`tucJobType.AddonPercentage`, a client value is `tblClientAvailableSpeed.AddonPercentage` (exists),
+grey when inheriting, "use default" to clear. Nothing new in the schema under Decision 9's
+recommendation. The same view keeps "offered" (`BulkImportSpeed`) per speed.
+
+### 11.10 Not changed by the feedback
+
+Zone groups off depots (2.1), dollars not rate codes (2.4), the 6.1 default-schedule rule and the
+6.2 suppression rule all stand. Phase 1 (section 5) grows by the sheet and rule-set tables plus
+their backfills, which are additive and reversible.
