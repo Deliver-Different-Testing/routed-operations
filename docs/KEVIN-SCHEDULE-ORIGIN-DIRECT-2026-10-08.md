@@ -84,6 +84,32 @@ The first Depot leg already carries a dropdown with Depot and Client address (Ch
 
 Baseline each body from `20261007140000` (the last emitter) and collision-review against it. Blast radius: none on existing data; no header carries 'direct' until the app writes it.
 
+**M4 (added 14 Oct, found on Urgent staging). Both booking availability functions.** `UTL_fncJob_GetClientAvailableBulkRunSchedule` (NZ) and `DD_fncJob_GetClientAvailableBulkRunSchedule` (US). Neither admits a Direct schedule. On staging, #2900 disappeared from the booking page the moment it was saved as Direct; VALUA was offered only the defaults, including #1666 "Outer BOP > Tauranga" with the identical 12:00-17:00 window, and a test booking (E10380REG) landed on that default and split into LHP + DEL. M2 touched only the three single-job procs, exactly as this spec told it to. The gap is this spec's, not the build's.
+
+Mechanism, Standard-schedules block of the NZ body (latest emitter `20261009179000`, lines 428-447; DD twin 767-778, to confirm):
+
+- first arm: `ISNULL(s.PickupDepotId, 0) = 0 AND ISNULL(h.OriginType, 'depot') = 'depot'` (narrowed to 'depot' by `20261007150000`);
+- second arm: origin depot = `CASE WHEN OriginType = 'client' THEN h.OriginRegionId ELSE s.PickupDepotId END`, which is NULL for Direct because choosing Direct consumes the depot pick (A4);
+- cross-region block: `s.PickupDepotId IS NOT NULL`.
+
+A Direct schedule matches none of the three. The zone groups are not the problem: #2900 still carries `PostcodeGroupId` 12 (Std Regional Tauranga) and `PickupPostcodeGroupId` 53 (Outer BOP) after the switch.
+
+Fix: in the second arm, resolve the origin for 'direct' to the dispatch region, and keep the pickup zone group predicate:
+
+```sql
+WHERE fr.DepotId = CASE WHEN ISNULL(h.OriginType, 'depot') = 'client' THEN h.OriginRegionId
+                        WHEN ISNULL(h.OriginType, 'depot') = 'direct' THEN s.Region
+                        ELSE s.PickupDepotId END
+  AND (ISNULL(h.OriginType, 'depot') = 'client'
+       OR ISNULL(fr.PostcodeGroupId, 0) = ISNULL(s.PickupPostcodeGroupId, 0))
+```
+
+That is the test #2900 passed before 14 Oct, when it had `PickupDepotId` = Tauranga and pickup group 53: a Whakatane From is admitted under Tauranga because it sits in the Outer BOP pickup group. Do not use the first arm for Direct; it requires the From postcode to sit in the *delivery* zone group, which excludes Whakatane. The DD twin resolves through `@FromDepots fd.LocationID` with no pickup-group predicate; mirror the CASE there (to confirm against the body). Nothing changes for 'depot' or 'client'. Baseline both bodies from the latest emitter on master at build time and EXCEPT-gate depot and client rows against the previous emitter.
+
+Also check (to confirm): the six schedule-selection sites in `uspPrebookSet` for the same `'depot'` narrowing, so a Direct schedule with AutoBook on still materialises occurrences.
+
+**Until M4 is deployed, do not move any schedule to Direct in production.** It books nothing.
+
 **M3. Nothing for the bulk path.** Assert in the migration header, as 7 Oct did, that `WS_/DD_stpBulkScheduleJob_Insert` already fall through to the booking address when BookPickup = 0 and no linehaul. No re-emit.
 
 Numbering: after the latest file on develop at the time of writing.
@@ -109,6 +135,8 @@ Tests: one Playwright E2E extending `tests/e2e/schedule-origin-and-polygons.spec
 
 ## 5. Moving #2900 and its lookalikes
 
+**Not before M4 is on the tenant.** A Direct schedule is invisible to the booking page until both availability functions admit it (section 3, M4). #2900 on Urgent staging is Direct since 14 Oct for the M4 test; production #2900 stays on depot origin.
+
 No data migration. Ops opens each schedule, sets the first Depot leg to Direct, saves. Candidates are per-client schedules with no Collection leg and no linehaul whose bookings' From is not the depot. Read-only, Urgent Prod:
 
 ```sql
@@ -133,6 +161,7 @@ Most of those will be genuine depot-origin schedules (goods already at the depot
 
 ## 6. Acceptance (Urgent staging, then production)
 
+0. Booking page as VALUA, From Whakatane 3120 to Mount Maunganui 3116: #2900 is offered by name with its dates (M4). Failed on staging 14 Oct before M4; the defaults with the same window stay listed beside it until the pricing spec's Decision 8 restores default suppression.
 1. Open #2900, set the first Depot leg to Direct, save, reload: dropdown shows Direct, Collection and Linehaul controls disabled, list ORIGIN column reads Direct.
 2. Book as VALUA from Nicholson United Autos to Value Tyres with the client's Book immediately **on**: job From = the garage, `PickUpLatitude/Longitude` = the garage, price NZ$14.56. Same result as today.
 3. Same booking with Book immediately **off** for VALUA on Regional Run (staging only): identical job. Today this case stamps the Tauranga depot; after M2 it must not.
