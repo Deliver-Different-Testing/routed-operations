@@ -174,8 +174,12 @@ EXEC sp_recompile N'dbo.DD_stpJob_Scheduler_Rates';
 - The 18:00 SQL Agent statistics job and whether its sampled refresh on these four tables should be excluded
   once PERSIST_SAMPLE_PERCENT is on everywhere: Garry.
 - The alarm: Garry.
-- Whether the scalar is referenced from application code (DespatchWeb, API) rather than only from SQL: Steve
-  will grep the repos and say.
+- Application code: checked 15 Oct. No app repo (DespatchWeb, API, Booking, Configurator, Hub, Routed Ops,
+  AdminManager) references `UTL_fncBulkZonePostcode_IsActive`. The only non-SQL hits are prose strings in
+  dfrnt-ops docs and the proposed MCP tools, none of which execute it. It is SQL-only. Attributing every real
+  call line on master to its enclosing object gives exactly four callers: the three rating procs above and
+  `UTL_fncJob_GetClientAvailableBulkRunSchedule` (which your 20261014160000 already fixes). `UCL_fncT_GetBulkZone`
+  shares the snapshot file but does not call it.
 
 ## Acceptance
 
