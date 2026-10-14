@@ -157,10 +157,10 @@ public class ScheduleOverrideServiceTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(15)]
-    public async Task PutAsync_rejects_occurrences_ahead_outside_one_to_fourteen(byte n)
+    [InlineData(61)]
+    public async Task PutAsync_rejects_occurrences_ahead_outside_one_to_sixty(byte n)
     {
-        // Decision D2 of the occurrences-ahead spec. Rejected here so the
+        // The bound is 1 to 60 since 2026-10-14. Rejected here so the
         // caller is told which field is wrong, rather than letting
         // CK_tblBulkRunScheduleOverride_OccurrencesAhead fail the write.
         var svc = NewSvc(out var seed, out _);

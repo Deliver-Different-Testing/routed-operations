@@ -1,4 +1,4 @@
-#nullable disable
+﻿#nullable disable
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace RoutedOperations.Core.Domain.Despatch;
@@ -81,7 +81,7 @@ public class BulkRunScheduleDetail
 
     /// <summary>
     /// How many upcoming runs of this schedule the booking page offers.
-    /// NOT NULL, 1 to 14 (CK on the table). The converter writes the number
+    /// NOT NULL, 1 to 60 (CK on the table). The converter writes the number
     /// of days in the mask, i.e. one week's worth. A per-client override
     /// lives on tblBulkRunScheduleOverride.OccurrencesAhead and wins over
     /// this value; dbo.fnScheduleForClient resolves the two.

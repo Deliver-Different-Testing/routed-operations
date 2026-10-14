@@ -123,7 +123,7 @@ public class ScheduleGroupUpsertRequest
 
     /// <summary>
     /// How many upcoming runs the booking page should offer for this
-    /// schedule, 1 to 14. Null leaves it alone: on a schedule that has just
+    /// schedule, 1 to 60. Null leaves it alone: on a schedule that has just
     /// collapsed the converter has already written one week's worth, which
     /// is the count of days in the mask, and on an old-shape schedule there
     /// is nowhere to store it.
