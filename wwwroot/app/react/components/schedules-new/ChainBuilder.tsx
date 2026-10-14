@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import type { LookupItem } from '../../services/scheduleService';
 
 // Vertical stacked leg builder - MVP of Dane's schedules-module
@@ -200,6 +200,13 @@ interface Props {
    *  per-leg. Optional; if omitted the picker is hidden. */
   pickupBoxDiscount?: number | null;
   onPickupBoxDiscountChange?: (v: number | null) => void;
+  /** Schedule-level DropOffLocationID. Rendered on the Collection leg
+   *  editor per F22, the same relocation F14 did for the box discount: the
+   *  write path still hits tblBulkRunSchedule.DropOffLocationID, this is
+   *  not a per-leg column. The per-leg one on a linehaul is a different
+   *  field (tblBulkScheduleLinehaul.DropOffLocationID) and stays there. */
+  dropOffLocationId?: number | null;
+  onDropOffLocationIdChange?: (v: number | null) => void;
 }
 
 const NEW_LEG: Record<LegType, Leg> = {
@@ -223,6 +230,8 @@ export function ChainBuilder({
   readOnly = false,
   pickupBoxDiscount,
   onPickupBoxDiscountChange,
+  dropOffLocationId,
+  onDropOffLocationIdChange,
 }: Props) {
   const [expanded, setExpanded] = useState<number | null>(0);
 
@@ -289,6 +298,40 @@ export function ChainBuilder({
   };
   const patchLeg = <T extends Leg>(i: number, patch: Partial<T>) => {
     const next = legs.map((l, idx) => idx === i ? { ...l, ...patch } as Leg : l);
+
+    // F22. A drop-off location belongs to one depot, so moving the depot
+    // leaves it pointing at a door in a building the freight no longer
+    // visits. Nothing complained about that before: the stale id survived
+    // the save and the child-job procs stamped it onto the LHP job, so the
+    // driver was told to leave it at the wrong depot. Cleared here, at the
+    // moment the depot changes, rather than validated later.
+    //
+    // Two independent fields: the schedule-level one hangs off the FIRST
+    // Depot leg, and each linehaul leg has its own hanging off that leg's
+    // toDepotId.
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'depotId')) {
+      const movedFirstDepot = next.findIndex((l) => l.type === 'depot') === i;
+      if (movedFirstDepot && dropOffLocationId != null && onDropOffLocationIdChange) {
+        const depotId = (next[i] as DepotLeg).depotId ?? null;
+        const stillValid = (lookups.dropOffLocations ?? [])
+          .some((d) => d.id === dropOffLocationId && d.depotId === depotId);
+        if (!stillValid) onDropOffLocationIdChange(null);
+      }
+    }
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'toDepotId')
+        && next[i].type === 'linehaul') {
+      const lh = next[i] as Leg & { toDepotId: number | null; dropOffLocationId: number | null };
+      if (lh.dropOffLocationId != null) {
+        const stillValid = (lookups.dropOffLocations ?? [])
+          .some((d) => d.id === lh.dropOffLocationId && d.depotId === lh.toDepotId);
+        if (!stillValid) {
+          onChange(next.map((l, idx) =>
+            idx === i ? ({ ...l, dropOffLocationId: null } as Leg) : l));
+          return;
+        }
+      }
+    }
+
     onChange(next);
   };
 
@@ -485,8 +528,11 @@ export function ChainBuilder({
                       lookups={lookups}
                       isFirstDepot={i === firstDepotIndex}
                       originDepotName={originDepotName}
+                      originDepotId={originLeg?.depotId ?? null}
                       pickupBoxDiscount={pickupBoxDiscount ?? null}
                       onPickupBoxDiscountChange={onPickupBoxDiscountChange}
+                      dropOffLocationId={dropOffLocationId ?? null}
+                      onDropOffLocationIdChange={onDropOffLocationIdChange}
                     />
                   </div>
                 )}
@@ -585,6 +631,8 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
     id ? (lookups.postcodeGroups.find((g) => g.id === id)?.name ?? `#${id}`) : null;
   const runName = (id: number | null | undefined) =>
     id ? (lookups.linehaulRuns.find((r) => r.id === id)?.runName ?? `run #${id}`) : null;
+  const dropOffName = (id: number | null | undefined) =>
+    id ? ((lookups.dropOffLocations ?? []).find((d) => d.id === id)?.name ?? null) : null;
   const storageLabel = (id: number | null | undefined) =>
     id ? (lookups.storageStates.find((s) => s.id === id)?.label ?? `#${id}`) : null;
 
@@ -644,6 +692,12 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
         <div className="text-xs text-text-muted">
           {depotName(leg.fromDepotId) ?? '?'} - {depotName(leg.toDepotId) ?? '?'} · +{leg.dayOffset}d
           {leg.speedId != null && <> · Speed {speedName(leg.speedId)}</>}
+          {/* F22. The select is inside the card's edit view, so a dispatcher
+              reading the chain had to open every leg to see where the
+              freight is actually left. */}
+          {leg.dropOffLocationId != null && (
+            <> · drop-off {dropOffName(leg.dropOffLocationId) ?? `#${leg.dropOffLocationId}`}</>
+          )}
           {leg.amount != null && <> · ${leg.amount.toFixed(2)}</>}
           {leg.amountPercentage != null && leg.amountPercentage !== 0 && (
             <> · +{leg.amountPercentage}%</>
@@ -674,8 +728,11 @@ function LegEditor({
   lookups,
   isFirstDepot,
   originDepotName,
+  originDepotId,
   pickupBoxDiscount,
   onPickupBoxDiscountChange,
+  dropOffLocationId,
+  onDropOffLocationIdChange,
 }: {
   leg: Leg;
   onPatch: (patch: Partial<Leg>) => void;
@@ -686,21 +743,39 @@ function LegEditor({
   /** Name of the depot the Collection leg lands at, read from that same
    *  first Depot leg. Null when it is not set or is the client address. */
   originDepotName: string | null;
+  /** Id of that same first Depot leg's depot. The drop-off options are the
+   *  tblDropOffLocation rows for it: that is the depot the LHP job delivers
+   *  into, which is exactly what the old Advanced filter on pickupDepotId
+   *  meant, so this keeps one identity rather than adding a second. */
+  originDepotId: number | null;
   /** Schedule-level PickupBoxDiscount value. Rendered on the Collection
    *  leg editor per Steve's F14 relocation; the write path still hits
    *  tblBulkRunSchedule.PickupBoxDiscount (not a per-leg column). */
   pickupBoxDiscount?: number | null;
   onPickupBoxDiscountChange?: (v: number | null) => void;
+  dropOffLocationId?: number | null;
+  onDropOffLocationIdChange?: (v: number | null) => void;
 }) {
   if (leg.type === 'collection') {
     const boxDiscounts = lookups.pickupBoxDiscounts ?? [];
     const showBoxDiscount = boxDiscounts.length > 0 && onPickupBoxDiscountChange != null;
+    // Same filter the Advanced panel used, on the same identity: the first
+    // Depot leg's depot IS the pickup depot the schedule stores.
+    const scheduleDropOffs = (lookups.dropOffLocations ?? []).filter(
+      (d) => !originDepotId || d.depotId === originDepotId,
+    );
+    const scheduleDropOffName = dropOffLocationId != null
+      ? ((lookups.dropOffLocations ?? []).find((d) => d.id === dropOffLocationId)?.name ?? null)
+      : null;
     return (
       <div className="grid grid-cols-2 gap-3">
         <p className="col-span-2 text-[11px] text-text-muted">
+          {/* F22. The old sentence said the destination is set elsewhere,
+              which is true of the depot and was being read as true of the
+              drop-off too, so nobody setting up a collection ever saw it. */}
           Collects from the client's address into{' '}
-          {originDepotName ?? 'the first depot in this route'}. The destination
-          follows the Depot leg below, so it is set there, not here.
+          {originDepotName ?? 'the first depot in this route'}, drop-off{' '}
+          {scheduleDropOffName ?? 'depot default'}.
         </p>
         <label className="block text-xs">
           Collection speed
@@ -728,6 +803,21 @@ function LegEditor({
             ))}
           </select>
         </label>
+        {onDropOffLocationIdChange && (
+          <label className="block text-xs" data-testid="collection-drop-off-location">
+            Drop-off at {originDepotName ?? 'the first depot'}
+            <select
+              value={dropOffLocationId ?? ''}
+              onChange={(e) => onDropOffLocationIdChange(e.target.value ? Number(e.target.value) : null)}
+              className="mt-1 w-full px-2 py-1 border border-border rounded"
+            >
+              <option value="">- depot default -</option>
+              {scheduleDropOffs.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {(lookups.zoneNumbers?.length ?? 0) > 0 && (
           <div className="block col-span-2 text-xs">
             <div className="mb-1">Zones this leg collects from</div>
