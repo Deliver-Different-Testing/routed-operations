@@ -146,6 +146,7 @@ from walking the deployed view.
 | # | Item | Kind |
 | :- | :- | :- |
 | **F21** | **The Active toggle writes `AutoBook`** — switching a schedule Active/Inactive changes whether it books immediately or stages into bulk. Live in the deployed view | **Urgent — disable today** |
+| **F22** | **Drop-off location is buried in Advanced** — the old modal shows it beside Collection Depot; Schedules NEW hides the schedule-level one under "Advanced" and the linehaul one behind "edit". Surface it on the Collection card and on the linehaul card summary (added 14 Oct) | UI — small |
 | **F1** | A client override creates a **full clone** of the schedule. It should be a scoped delta row keyed on ScheduleId. | Model — biggest item |
 | **F2** | Override rows sit in the schedule list as schedules, so Days / Origin / Dest / Mode render as `—` | Follows from F1 |
 | **F3** | "Differs on" is stored, computed three different ways, and discarded on one save path | Bug |
@@ -1846,6 +1847,43 @@ No schema change is needed for F5–F8, F14 or F16 — they are mapper and view 
 ---
 
 # 5. Order of work
+
+## F22 — Drop-off location: surface it on the Collection card and the linehaul legs (added 14 Oct)
+
+### What it is
+
+`tblDropOffLocation` is one row per operator-owned drop point per depot (for example *Auckland Inwards*). Two schedule fields point at it:
+
+- `tblBulkRunSchedule.DropOffLocationID` (now carried by the collapse day table and the compatibility view): stamped on the **collection child job** (`...LHP`) as `tucJob.DropOffLocationID` by `WS_/DD_stpBulkScheduleJob_InsertChildJobs` (NZ emitter `20261007120000`, the `@PickupDropOffLocationID` read at ~2510 and the LHP insert at ~2597). The LHP job's delivery address stays the pickup depot's address; the drop-off is where at that depot the driver leaves it.
+- `tblBulkScheduleLinehaul.DropOffLocationID`: fetched by the linehaul cursor (~2628) and stamped on **each linehaul job** (~2812, ~2880).
+
+### What the two UIs show (Steve's screenshots, 14 Oct, #591 "Auckland > Tauranga Regional Run 9-5 Express")
+
+- Old Schedules modal, COLLECTION section: *Drop-off Location* = **Auckland Inwards**, beside Collection Depot, where the person setting up a collection expects it.
+- Schedules NEW, Route tab, Collection card expanded: collection speed, collection zone group, zones, box discount, and the line "The destination follows the Depot leg below, so it is set there, not here". **No drop-off.** The schedule-level select exists but lives in the ADVANCED panel as "Drop-off location (schedule)" (`ScheduleDetailModal.tsx` ~1729-1740, filtered by `pickupDepotId`), and the same on `NewScheduleModal.tsx` ~624.
+- Linehaul card: the per-leg select exists inside the card's edit view (`ChainBuilder.tsx` ~812-824, filtered by the leg's `toDepotId`) but the collapsed card line does not show the chosen drop-off, so a dispatcher reading the chain cannot see it without opening every leg.
+
+### Fix
+
+1. **Collection card** gets a *Drop-off at {first Depot leg's depot}* select, bound to the existing schedule-level field (`formDropOffLocationId`), options = `tblDropOffLocation` rows whose `DepotId` is the first Depot leg's depot. That is the depot the LHP job delivers into, which is what today's Advanced filter on `pickupDepotId` already means; keep that identity, do not add a second field. Shown only while Book Collection is on. Default option reads "- depot default -".
+2. **Remove it from Advanced** so there is one place to set it. If Advanced must keep a trace, make it read-only text: "set on the Collection card".
+3. **Collection card wording**: "Collects from the client's address into {depot}, drop-off {name or depot default}." Drop the sentence that says the destination is set elsewhere; the depot is, the drop-off point is not.
+4. **Linehaul card collapsed line**: append "· drop-off {name}" when the leg has one. The select stays in the edit view, filtered by `toDepotId` as now.
+5. **Depot change clears a mismatched drop-off**: when the first Depot leg changes depot, clear the schedule drop-off if its `DepotId` no longer matches; same rule on a linehaul leg when `toDepotId` changes. Today a stale id survives silently and stamps a drop point at the wrong depot on the LHP job.
+6. **New Schedule modal**: same Collection-card control; the Advanced copy goes the same way.
+
+No database change. The collapse view keeps the column, and `PayloadVaries` already covers it per day.
+
+### To confirm while there
+
+Steve's screenshot shows the Collection card's *Collection zone group* as "-" where the old modal shows "Default Pickup Postcode Group" for the same schedule. Check whether that is the null option's label on one side only, or a value the new modal is not seeding from `pickupPostcodeGroupId`.
+
+### Acceptance
+
+1. Open #591: Collection card shows drop-off **Auckland Inwards**; Advanced no longer offers it. Change it to another Auckland drop point, save, reopen: persisted; the old Schedules modal shows the same value.
+2. Book a job on #591 as a linked client: the `...LHP` job carries the chosen `DropOffLocationID`.
+3. A schedule with a linehaul leg that has a drop-off (any `tblBulkScheduleLinehaul` row with `DropOffLocationID` set): the collapsed linehaul card shows "drop-off {name}"; the LH job carries it after a booking.
+4. Change the first Depot leg from Auckland to Hamilton on a test schedule: the drop-off clears and the select now lists Hamilton drop points only.
 
 ## Before anything else — all small, and all before the view is wired
 
