@@ -1946,6 +1946,8 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
           readOnly={readOnly}
           pickupBoxDiscount={advanced.pickupBoxDiscount}
           onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
+          dropOffLocationId={advanced.dropOffLocationId}
+          onDropOffLocationIdChange={advanced.onDropOffLocationIdChange}
         />
       </div>
 
@@ -2098,19 +2100,25 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                 {lookups.deliveryStates.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
               </select>
             </label>
-            <label className="block text-xs">
+            {/* F22. The select moved to the Collection card, where whoever
+                sets up a collection actually looks. A trace stays here
+                because this panel is where people have been finding it,
+                and a field that silently vanishes reads as a regression. */}
+            <div className="block text-xs" data-testid="advanced-drop-off-moved">
               Drop-off location (schedule)
-              <select
-                value={advanced.dropOffLocationId ?? ''}
-                onChange={(e) => advanced.onDropOffLocationIdChange(e.target.value ? Number(e.target.value) : null)}
-                className="mt-1 w-full px-2 py-1 border border-border rounded"
-              >
-                <option value="">- default -</option>
-                {lookups.dropOffLocations
-                  .filter((d) => !advanced.pickupDepotId || d.depotId === advanced.pickupDepotId)
-                  .map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
-              </select>
-            </label>
+              <p className="mt-1 text-text-muted">
+                Set on the Collection card.
+                {advanced.dropOffLocationId != null && (
+                  <>
+                    {' '}Currently{' '}
+                    <span className="text-text-primary">
+                      {lookups.dropOffLocations.find((d) => d.id === advanced.dropOffLocationId)?.name
+                        ?? `#${advanced.dropOffLocationId}`}
+                    </span>.
+                  </>
+                )}
+              </p>
+            </div>
             <label className="block text-xs">
               Collection zone group
               <select
