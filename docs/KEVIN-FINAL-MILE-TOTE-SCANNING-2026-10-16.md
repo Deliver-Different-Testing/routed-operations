@@ -24,7 +24,7 @@ So the `DEL` leg is correct; what is missing is a tote lifecycle that continues 
 | # | Decision |
 |---|---|
 | **D1** | The design case is a **sealed tote that travels through**: packed and sealed at origin, off the flight, through the depot, onto the final-mile vehicle, to the lab. Same physical tote, same barcode, same membership. A repack at the depot is allowed but is the exception (section 4.7). |
-| **D2** | The **final-mile run has a master job**, like a linehaul run. Steve: it already exists on the recurring route. Code check 16 Oct: master linking exists only for linehaul runs (`tucJobBooking.IsLinehaulMaster` + `LinehaulRunId`, `RecurringLinehaulService.ApplyMasterBookingAsync`); `Routes` has no master binding, and `RecurringRouteService` / `RecurringRoutesController` have no master endpoint. Section 4.1 defines the final-mile master on the same mechanism keyed on `RouteId`. **To confirm on Medical:** which booking Kenneth opens today as "the Burbank to Lab run" (if it is a plain recurring booking on route 15, promote it; do not create a second one). |
+| **D2** | The **final-mile run has a master job**, like a linehaul run. Steve: it already exists on the recurring route. Code check 16 Oct: master linking exists only for linehaul runs (`tucJobBooking.IsLinehaulMaster` + `LinehaulRunId`, `RecurringLinehaulService.ApplyMasterBookingAsync`); `Routes` has no master binding, and `RecurringRouteService` / `RecurringRoutesController` have no master endpoint. Section 4.1 defines the final-mile master on the same mechanism keyed on `RouteId`. **Resolved 16 Oct (Steve):** the "Burbank to Lab" recurring booking on route 15 is the final-mile master. Promote that booking (`IsLinehaulMaster = 1`, `RouteId = 15`, `LinehaulRunId NULL`); do not create a second one. Its daily realised job is the master Kenneth opens. |
 | **D3** | **Delivery mode is per final-mile master**: *Accept sealed totes* (scan the tote, every shipment inside is delivered) or *Scan each item out* (scan the tote, then every item). Stored on the master booking (section 4.4), sent to the handset with the master. |
 | **D4** | **Kevin builds all of it**: DB (dbmigrationsv2), marsapi, driver app (JupiterMaui), Routed Operations UI. |
 
@@ -146,7 +146,7 @@ The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ig
 
 ## 7. Open questions
 
-- **Q1.** Which booking is the route 15 master today (D2, to confirm on Medical prod)?
+- **Q1.** Resolved 16 Oct: the "Burbank to Lab" booking on route 15 is the final-mile master (section 3, D2).
 - **Q2.** Does the lab ever need a location barcode check (the `WRONG_LOCATION` equivalent)? Assumed no: the lab is the `DEL` leg's delivery address, GPS on the delivery is the evidence.
 - **Q3.** Undo: `LinehaulInwardsUndoReceipt` has no final-mile twin. Assumed a wrongly delivered tote is corrected in DespatchWeb for now.
 - **Q4.** Do `DEL` legs carry their own `tucJobItems` rows on Medical, or only the root (section 4.3 loose-item rule)?
