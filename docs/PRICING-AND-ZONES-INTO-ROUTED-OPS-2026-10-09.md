@@ -497,6 +497,100 @@ availability functions. The six `uspPrebookSet` selection sites take the same pr
 
 ---
 
+### 6.3 Active zones must limit every speed on the schedule (ticket 296, Marcus 30 Jun / 15 Oct)
+
+**Reported:** Urgent Connection ticket 296. A two-hour point-to-point speed on a client schedule can be
+booked to Silverdale, Pukekohe and Piha although those postcodes are not in the schedule's active
+zones. 15 Oct: Hyper wants the two-hour service on their website and cannot afford two-hour jobs to
+those areas. Ticket 208 (P2P price on a schedule, Kerran, released 12 Oct) confirms P2P speeds on
+schedules are a supported pattern (WILRO and MOUMI on 3-hour, Hyper on 2-hour).
+
+**Cause.** The availability function applies the schedule's active zones only when the speed is
+zone-rated. Latest emitter `20261014160000`, both candidate blocks of the NZ body:
+
+```sql
+AND (ISNULL(jt.ZoneRated, 0) = 0
+     OR EXISTS (SELECT 1 FROM @ZoneActiveSchedules za WHERE za.BulkRunScheduleId = s.BulkRunScheduleId))
+```
+
+`@ZoneActiveSchedules` is the set-based form of `UTL_fncBulkZonePostcode_IsActive` (schedule has an
+active `BulkZoneSchedule` zone whose `BulkZonePostcode` rows on the schedule's depot and postcode
+group contain `@ToPostCode`). For a P2P speed `ZoneRated` is 0, the first arm is true, and the zones
+are never consulted; the only delivery limit left is the depot's postcode group, and with that blank
+the whole depot area qualifies. Schedules NEW saves the zones (`ScheduleService` writes
+`BulkZoneSchedule`) and paints them on the Coverage tab with the "individual postcodes bound to this
+schedule" (`tblSchedulePostcode`), but no SQL object on master reads `tblSchedulePostcode`: only the
+create (`20260825120000`) and grant (`20260825130000`) scripts mention it. For a P2P speed the
+Coverage tab is a picture, not a gate. `uspPrebookSet` does not check zones at all. The `DD_` twin has
+no zone gate (US zones hang off `ZoneName` / `ZoneZip`); no US change.
+
+**Rule.** A schedule that has any active zone or any bound postcode is limited to them, whatever its
+speed. A schedule with neither is open, as today. The zone-group predicate on `@ToRegions` is
+unchanged and still applies first.
+
+```sql
+-- next to the existing @ZoneActiveSchedules build, same set-based style
+DECLARE @ZoneLimitedSchedules TABLE (BulkRunScheduleId int PRIMARY KEY)
+INSERT INTO @ZoneLimitedSchedules
+SELECT DISTINCT s.BulkRunScheduleId
+FROM tblBulkRunSchedule s
+WHERE EXISTS (SELECT 1 FROM BulkZoneSchedule zs
+              WHERE zs.ScheduleId = s.BulkRunScheduleId AND zs.Active = 1)
+   OR EXISTS (SELECT 1 FROM tblSchedulePostcode sp
+              WHERE sp.ScheduleId = s.ScheduleId)              -- column names to confirm
+
+-- @ZoneActiveSchedules gains the bound-postcode match
+INSERT INTO @ZoneActiveSchedules (BulkRunScheduleId)
+SELECT DISTINCT s.BulkRunScheduleId
+FROM tblBulkRunSchedule s
+INNER JOIN tblSchedulePostcode sp ON sp.ScheduleId = s.ScheduleId
+WHERE sp.Postcode = @ToPostCode                                   -- to confirm
+  AND NOT EXISTS (SELECT 1 FROM @ZoneActiveSchedules za WHERE za.BulkRunScheduleId = s.BulkRunScheduleId)
+
+-- predicate, both candidate blocks, replaces the ZoneRated test
+AND (NOT EXISTS (SELECT 1 FROM @ZoneLimitedSchedules zl WHERE zl.BulkRunScheduleId = s.BulkRunScheduleId)
+     OR EXISTS  (SELECT 1 FROM @ZoneActiveSchedules  za WHERE za.BulkRunScheduleId = s.BulkRunScheduleId))
+```
+
+`ZoneRated` keeps its rating meaning everywhere else (rate sheets, `BulkImportRatingService`, the
+rating procs); it simply stops deciding availability. Ships in the same re-emit as the 6.2
+suppression rule, since both land in the same two candidate blocks of the same function; baseline is
+the latest emitter on master at build time. The six `uspPrebookSet` sites are out of scope for this
+item: prebook books onto a schedule the client already chose.
+
+**Count first (Kevin, production, read-only).** Schedules on a non-zone-rated speed that carry active
+zones or bound postcodes are the ones that narrow the day this lands:
+
+```sql
+SELECT s.ScheduleId, h.Name, s.SpeedId, jt.ZoneRated,
+       COUNT(DISTINCT zs.Zone) AS ActiveZones, COUNT(DISTINCT sp.Postcode) AS BoundPostcodes
+FROM dbo.tblBulkRunSchedule s
+JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId AND h.RetiredUtc IS NULL
+JOIN dbo.tblJobType jt ON jt.JobTypeID = s.SpeedId AND ISNULL(jt.ZoneRated, 0) = 0
+LEFT JOIN dbo.BulkZoneSchedule zs ON zs.ScheduleId = s.BulkRunScheduleId AND zs.Active = 1
+LEFT JOIN dbo.tblSchedulePostcode sp ON sp.ScheduleId = s.ScheduleId          -- to confirm
+GROUP BY s.ScheduleId, h.Name, s.SpeedId, jt.ZoneRated
+HAVING COUNT(zs.Zone) > 0 OR COUNT(sp.Postcode) > 0
+```
+
+For each, the bulk jobs of the last 90 days booked to a postcode outside those zones: that is the
+list of bookings that would have been refused. If it is short, ship as written; if it is long, the
+options are to clear the stale zones on those schedules before deploy (data, with ops) or to make
+the limit opt-in per schedule (a new field, a further decision). Expect WILRO and MOUMI in the count
+only if someone ticked zones on them.
+
+**Schedules NEW wording.** Once live, the Coverage tab says that active zones and bound postcodes limit
+where this schedule can be booked for every speed; today it says they render on the map. One line,
+with the F-list.
+
+**Acceptance (Urgent staging).** Hyper's two-hour schedule with active zones that exclude Silverdale,
+Pukekohe and Piha (postcodes to confirm): booking as Hyper on the two-hour speed to one of those
+postcodes offers no schedule; to a postcode inside the zones it offers the schedule. Bind one outside
+postcode on the Coverage tab and it is offered again. A schedule on the same speed with no zones and
+no bound postcodes books exactly as before. Zone-rated speeds are unchanged in every case.
+
+---
+
 ## 7. Queries to run before building (SELECT only, Urgent and Medical)
 
 ```sql
