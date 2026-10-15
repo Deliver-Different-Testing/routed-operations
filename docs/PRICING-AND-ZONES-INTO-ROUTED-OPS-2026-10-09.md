@@ -191,12 +191,13 @@ relative to `DepotId` during the transition.
 ### 3.1 Placement
 
 `pages/SchedulesNew.tsx` `type Tab = 'schedules' | 'bundles' | 'routes'` (line 47) gains
-`'zonegroups' | 'pricing'`; two `TabButton`s in the nav at lines 152-163; two bodies at 166-174.
+`'zonegroups' | 'pricing' | 'linehaul'`; three `TabButton`s in the nav at lines 152-163; three bodies at 166-174
+(Linehaul is its own tab per section 12.2).
 Tabs are local state, not routes; keep that, but add `?tab=` so a pricing link can be shared.
 
 ```
 Schedules NEW
-[ Schedules ] [ Schedule bundles ] [ Recurring routes ] [ Zone groups ] [ Pricing ]
+[ Schedules ] [ Schedule bundles ] [ Recurring routes ] [ Zone groups ] [ Pricing ] [ Linehaul ]
 ```
 
 Legacy `/schedules` page: its Zones / Zone Groups / Depots tabs move under **Zone groups**; the legacy
@@ -215,7 +216,7 @@ Re-home `ZoneGroupsTab.tsx`, `ZonesTab.tsx`, `DepotsTab.tsx` as sub-views. Chang
 
 ### 3.3 Pricing tab
 
-Header: **Zone group** picker (search), **Client** picker (Default, or a client; client list = clients
+Header: **Zone group** picker (every group, searchable; Decision 1 answered 15 Oct), **Client** picker (Default, or a client; client list = clients
 attached to any schedule using this group, plus search for any client). Sub-views: **Zone rates** |
 **Dimensions** | **Surcharges** | **Speeds**.
 
@@ -635,27 +636,27 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 
 ## 9. Decisions needed from Steve
 
-1. **Zone group scoping.** Flat tenant-wide list with search and a home-depot hint (recommended), or
+1. **Zone group scoping.** **Marcus 15 Oct: flat list, search box (12.1).** Flat tenant-wide list with search and a home-depot hint (recommended), or
    group by site (`tucPostCode.SiteID`: Auckland / Wellington) so Dunedin groups do not show on an
    Auckland schedule. Nothing finer exists in the data without inventing a region entity.
-2. **Transition precedence.** `PostcodeGroupId` outranks `DepotId` in the rate lookup from Phase 1
+2. **Transition precedence.** **Marcus 15 Oct: group outranks depot (12.1).** `PostcodeGroupId` outranks `DepotId` in the rate lookup from Phase 1
    (recommended; new rows are always group rows), or the reverse until Phase 2.
 3. **Home for on-demand rate-code maintenance** (`tucRateCode` for `tucClient` / `tblClientDefault`):
    Configurator Settings app (recommended; Kerran, beside the client form that uses the dropdowns) or
    a Settings area in Routed Operations (does not exist today).
-4. **Client Manager cut-off for bulk pricing.** Make Pricing > Zones / Rates / Dimensions read-only
+4. **Client Manager cut-off for bulk pricing.** **Marcus 15 Oct: read-only (12.1).** Make Pricing > Zones / Rates / Dimensions read-only
    in Client Manager at Phase 1 (recommended; prevents two writers), or leave it writable and rely on
    ops discipline.
-5. **Owner.** Kevin (owns Schedules NEW and the rating function changes are next to his schedule
+5. **Owner.** **Marcus 15 Oct: Kevin (12.1).** Kevin (owns Schedules NEW and the rating function changes are next to his schedule
    work) or Kerran (on pricing fixes now). Recommendation: Kevin for Phases 0 to 2, with Kerran on the
    Configurator side of Decision 3.
-6. **Grid axes.** Zone down, speed across, client as a selector (recommended), with stock size as an
+6. **Grid axes.** **Marcus 15 Oct: as recommended (12.1).** Zone down, speed across, client as a selector (recommended), with stock size as an
    expander. Alternative: speed as the selector and client across, which matches Client Manager's
    Rates tab but hides client differences.
-7. **"Turn on client" semantics.** Sparse overrides only (recommended; no rows until a cell differs)
+7. **"Turn on client" semantics.** **Marcus 15 Oct: see 12.1, Steve to confirm sparse.** Sparse overrides only (recommended; no rows until a cell differs)
    or copy the default sheet into client rows at turn-on (more rows, but a client sheet is then
    frozen against later default edits).
-8. **Suppression scope** (6.2). **Decided 15 Oct: (a).** (a) Legacy scope: a configured schedule hides defaults on the same
+8. **Suppression scope** (6.2). **Decided 15 Oct: (a). Marcus 15 Oct prefers (b); see 12.1, Steve to re-confirm.** (a) Legacy scope: a configured schedule hides defaults on the same
    lane with the same **speed** (restores pre-8 Sep behaviour exactly, so the Same-day
    default still shows beside a custom Overnight run). (b) Same lane, same speed **and day**
    (narrower: a Mon/Wed/Fri custom run leaves the default visible on Tue/Thu). (c) Same lane, any
@@ -665,6 +666,7 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 ---
 
 9. to 12. **Team feedback items** (sheets, additional item % level, linehaul leg migration, courier % into pay): see 11.4.
+13. **Speeds sub-view under Pricing**: see 12.3.
 
 ## 10. Acceptance
 
@@ -800,6 +802,10 @@ its own rates at the Any speed figure for the zone; add the speed's column and i
 
 ### 11.6 Linehaul pricing (item 10)
 
+**Superseded by 12.2 on 16 Oct:** no new route table; `BulkLinehaulRate` keys on the existing
+linehaul run (`tblBulkScheduleLinehaul.LinehaulRunId`), and Linehaul is its own tab. Kept for the
+reasoning.
+
 Takes the linehaul amount out of the schedule leg so one schedule can serve clients on different
 linehaul prices (fewer per-client schedules).
 
@@ -853,3 +859,103 @@ recommendation. The same view keeps "offered" (`BulkImportSpeed`) per speed.
 Zone groups off depots (2.1), dollars not rate codes (2.4), the 6.1 default-schedule rule and the
 6.2 suppression rule all stand. Phase 1 (section 5) grows by the sheet and rule-set tables plus
 their backfills, which are additive and reversible.
+
+---
+
+## 12. Marcus's answers and the linehaul leg card, 15 to 16 Oct 2026
+
+Marcus answered the section 9 decisions and reviewed the mock (15 Oct, Wispr Flow). Steve marked up
+the linehaul leg card from the real Schedules NEW modal (16 Oct). Both land here; the mock at
+https://deliver-different-testing.github.io/routed-ops-pricing-mock/ reflects them.
+
+### 12.1 Decisions answered by Marcus (pending Steve's tick)
+
+| # | Decision | Marcus | Spec effect |
+|---|---|---|---|
+| 1 | Zone group scoping | Show every group, make the picker a search box | As recommended. Pricing header and the schedule modal both use a searchable picker; no site grouping. |
+| 2 | Transition precedence | `PostcodeGroupId` outranks `DepotId`. "If the zone is available from the group id and the zone radio button on the schedule, that is what returns the rate." | As recommended. The rate lookup takes (group, zone, speed); the depot row is only the Phase 1 fallback. |
+| 3 | Where rates live | Move away from rate codes for bulk rating. Rates belong beside the zone group they are assigned to, so Schedules > Pricing in Routed Operations, not Settings. | Confirms sections 2.4 and 3.3. Decision 3 as written (where `tucRateCode` maintenance for on-demand clients goes) is still open; Marcus's answer is about bulk rates only. |
+| 4 | Client Manager cut-off | Read-only. "If changes there aren't going to change anything, we don't want people editing there." | As recommended. Phase 1 flips Pricing > Zones / Rates / Dimensions to read-only in Client Manager. |
+| 5 | Owner | Kevin owns the pricing UI and this project. Kerran is fixing rating logic (the courier percentage from Client Manager is not in the order of operations yet). | Kevin for phases 0 to 2. Kerran's order-of-operations fix is a separate ticket and must land before Decision 12 (courier % into pay) means anything. |
+| 6 | Grid axes | "Used to the grid axes." | Zone down, speed across, as recommended. |
+| 7 | Override semantics | "If you copy to a client, you copy across the default and then make changes. If you select that client, you see those changes every time." | The on-screen behaviour Marcus describes is what the sparse model gives: the client view always shows the full grid with the client's cells on top. The one difference is what happens when the default sheet changes later: sparse (recommended) lets the change flow through to every cell the client has not touched; a copy freezes the client at the copy. Marcus did not pick between those two. **Steve to confirm sparse.** |
+| 8 | Suppression scope | Narrowest, which is (b): same lane, same speed **and day**. "A Monday/Wednesday/Friday run like a top run should not hide something available on Tuesday or Thursday." | **Conflicts with 15 Oct, where (a) was decided.** Marcus's example is exactly the case (b) was written for. Either scope is the same `NOT EXISTS` with one more predicate (`t2.DayOfWeek = t1.DayOfWeek`), so the choice does not change the migration's shape. **Steve to re-confirm (a) or move to (b) before Kevin builds 6.2.** |
+
+### 12.2 Linehaul becomes its own tab, keyed on linehaul runs (Marcus 15 Oct, Steve 16 Oct)
+
+Marcus: with Linehaul selected the zone group banner still shows above it, which is wrong because
+linehaul has nothing to do with a zone group. Make Linehaul its own tab, filterable by from depot and
+to depot "so we can hunt for the correct runs", and allow adding a speed column, not only a route.
+
+Steve's leg-card markup (16 Oct) says the schedule leg should be **the run and the price, nothing else**:
+
+| Field on the leg card today (`ChainBuilder.tsx:775-960`) | Marked | Why |
+|---|---|---|
+| Leg name | remove | The run has a name (`tblBulkLinehaulRuns.RunName`, shown as "AKL to HAM 5am - 285"). |
+| Active leg | keep | |
+| **Linehaul run** (select) | keep, highlighted | The leg's identity. `tblBulkScheduleLinehaul.LinehaulRunId` already exists and the select already copies the run's depots onto the leg (`ChainBuilder.tsx:800-806`). |
+| From depot, To depot | remove | On the run (`FromDepotId`, `ToDepotId`). The leg's copies become read-only derived values. |
+| Day offset, Transit (min) | remove | Transit is on the run (`StartTime`, `DespatchTime`); the day offset follows from the run's times and the schedule's cut-off. `TblBulkScheduleLinehaul.Minutes` stops being edited here. |
+| Speed override | keep | `TblBulkScheduleLinehaul.SpeedId`, for reporting speed. |
+| Amount ($), Add-on % | keep for now | Move to the Linehaul tab under 11.6; the leg then shows the resolved figure read-only. |
+| Insert into bulk, Apply schedule discount, Apply add-on percentage | keep | Booking behaviour, not route data. |
+| Book from client address (overrides From depot) | remove | Goes with From depot. (Schedule origin = client address is the schedule-level setting from the 7 Oct spec, not a leg setting.) |
+| Drop-off location, Active days | keep | |
+
+**Model change to 11.6.** There is no need for a new `BulkLinehaulRoute` table: the route entity
+already exists as the linehaul run (`tblBulkLinehaulRuns`: `RunName`, `FromDepotId`, `ToDepotId`,
+`StartTime`, `DespatchTime`, `SpeedId`, `CourierId`, `DefaultAgentId`, `Mode`) and the leg already
+references it. Replace the 11.6 DDL with:
+
+```sql
+CREATE TABLE dbo.BulkLinehaulRate (
+    Id               INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BulkLinehaulRate PRIMARY KEY,
+    LinehaulRunId    INT NOT NULL CONSTRAINT FK_BulkLinehaulRate_Run FOREIGN KEY REFERENCES dbo.tblBulkLinehaulRuns (Id),   -- table name to confirm against the emitter
+    SpeedId          INT NULL,          -- NULL = any speed
+    ClientId         INT NULL,          -- NULL = default
+    Amount           MONEY NULL,
+    AmountPercentage DECIMAL(5,2) NULL,
+    Active           BIT NOT NULL CONSTRAINT DF_BulkLinehaulRate_Active DEFAULT (1),
+    CONSTRAINT CK_BulkLinehaulRate_OneOf CHECK ((Amount IS NULL) <> (AmountPercentage IS NULL))
+);
+CREATE UNIQUE INDEX UX_BulkLinehaulRate ON dbo.BulkLinehaulRate (LinehaulRunId, ISNULL(SpeedId, 0), ISNULL(ClientId, 0)) WHERE Active = 1;
+```
+
+`tblBulkScheduleLinehaul` gains nothing; `LinehaulRunId` is the key. Resolution stays client over
+default, exact speed over any speed. Where `fncT_BulkZoneRate_WithLinehaul` reads the leg's Amount
+or AmountPercentage, it first looks for a `BulkLinehaulRate` row on the leg's run; the leg's own
+figures remain the fallback for legs with no run (Decision 10 narrows to: migrate by hand, since
+the only step left is copying each leg's figure onto its run once).
+
+**UI.** Top-level tab **Linehaul** beside Pricing:
+
+```
+Schedules NEW
+[ Schedules ] [ Schedule bundles ] [ Recurring routes ] [ Zone groups ] [ Pricing ] [ Linehaul ]
+
+From depot: [ any v ]   To depot: [ Hamilton v ]   Client: [ Default v ]          [ + Speed ] [ + Run ]
+
+ Run                        | Any speed | Hamilton run | Flight | Used by schedules
+ AKL to HAM 5am - 285       |   18.00   |    14.50     |        | Medical Hamilton 8am, Hamilton run (default)
+ AKL to HAM 2pm - 286       |   18.00   |              |        | none
+```
+
+Rows are linehaul runs filtered by the two depot pickers; "+ Run" opens the run editor that already
+exists under Recurring routes; "+ Speed" adds a priced column (seeded from Any speed), which was the
+control Marcus found missing. The zone group and sheet pickers do not appear on this tab.
+
+### 12.3 Speeds sub-view: keep or drop (Decision 13)
+
+Marcus: the Speeds pill under Pricing looks like a copy of AdminManager's available-speeds setup.
+It is only needed if that setup leaves AdminManager without going to Settings.
+
+13. **Speeds under Pricing.** (a) Drop the sub-view; the additional item % (11.9) then needs a home
+    and the natural one is the Settings menu's speed setup when AdminManager's screen moves there
+    (recommended if that move is scheduled). (b) Keep it as the place for `BulkImportSpeed` (offered
+    on scheduled jobs) and the additional item %, since both only matter for scheduled work. Pick
+    with Decision 9. The mock keeps the pill with an "under review" marker until this is decided.
+
+### 12.4 Ticket 296
+
+The ticket Marcus tagged Steve in (Hyper, two-hour service online) is ticket 296 and is already
+section 6.3: active zones must limit every speed on the schedule. Nothing new to add.
