@@ -444,3 +444,76 @@ So yes — this work still includes the territory pieces schedules rely on, but 
 - **US zip/zone territory maintenance**
 
 while lifting the existing Configurator schedules/territory UI into Routed Operations and wiring it to the real legacy-backed data model.
+
+---
+
+## Addendum, 16 Oct 2026: Schedule bundles modal (code ready to review)
+
+Steve, 16 Oct: the Schedule bundles tab on Schedules NEW was "very ugly": add-member was a browser
+prompt for a schedule id, rename was a prompt, the tab showed a client count but never which clients,
+and there was no way to take a client off a bundle. A bundle is the same idea as a rate card in
+Settings: a named set of local and nationwide schedules that a new client of a given profile is
+dropped onto in one go.
+
+**Spec:** [SCHEDULE-BUNDLES-UI-2026-10-16.md](https://github.com/Deliver-Different-Testing/routed-operations/blob/docs/pricing-zones-from-clientmanager/docs/SCHEDULE-BUNDLES-UI-2026-10-16.md)
+**Mock (what Steve signed off):** https://deliver-different-testing.github.io/routed-ops-pricing-mock/?tab=bundles&bundle=1
+**Code:** branch [`feat/schedule-bundles-modal`](https://github.com/Deliver-Different-Testing/routed-operations/tree/feat/schedule-bundles-modal) on the GitHub mirror, one commit on top of mirror `main` (= GitLab `master` as of 16 Oct). Pull it into GitLab as an MR; nothing in it needs a DB migration.
+
+### What the branch does
+
+Frontend (`wwwroot/app/react`):
+
+- `components/schedules-new/BundleModal.tsx` (new). Opens from the tab. Schedules on the left with
+  depot, speed, day strip, "All clients" for a default member or "N linked" otherwise; name opens the
+  schedule detail modal through the existing `openBase`. "+ Schedule" is a server-side name search
+  over `/api/v2/schedules` (25 rows, current members filtered out), no ids typed. Clients on the right
+  with coverage ("On all m client schedules" or "On n of m" with a Complete button), Remove per
+  client, and the existing `ClientMultiPicker` plus an Add button to attach. Rename and description
+  edit inline in the header.
+- `pages/SchedulesNew.tsx`: `ScheduleBundlesTab` is now a plain list (name, description, schedules,
+  clients, status, Open) that opens `BundleModal`. `BundleCard`, `BundleAttachClientsModal` and every
+  `window.prompt` are gone. `CreateBundleModal` is kept and now opens the new bundle straight into
+  the modal.
+- `services/schedulesV2Service.ts`: `getBundle`, `detachClientFromBundle`, and `addBundleMembers`
+  gains a `linkExistingClients` flag. `hooks/queries/useSchedulesV2.ts`: `schedulesV2Keys.bundle` +
+  `useSchedulesV2Bundle(bundleId)`.
+
+Backend:
+
+- `GET /api/v2/schedule-bundles/{id}` -> `ScheduleBundleDetailDto` (members with `IsDefault`,
+  `ClientCount`, `RegionName`, `SpeedName`, `ActiveDays`; clients with `OnMembers` / `OfMembers`
+  counted over non-default live members only). `ScheduleService.GetBundleDetailAsync`.
+- `DELETE /api/v2/schedule-bundles/{id}/clients/{clientId}` -> removes that client's
+  `tblScheduleClient` rows on every member. `ScheduleService.DetachClientFromBundleAsync`. Link rows
+  only, the same as `DetachClientAsync` for one schedule; see the open question below.
+- `POST /api/v2/schedule-bundles/{id}/members` body gains `linkExistingClients` (default false).
+  When true, every client already on the bundle gets a link row on each new non-default member.
+  Idempotent. The modal asks "link the N clients too?" when the bundle already has clients.
+- Tests: `tests/RoutedOperations.Tests/Services/Schedule/ScheduleBundleTests.cs` (InMemory, same
+  pattern as the ListSummary override test): detail read with coverage, unknown bundle, detach across
+  members, add-member with and without the link flag.
+
+Unchanged: the two bundle tables, `AttachClientsToBundleAsync` (defaults skipped, idempotent),
+list / create / rename / delete / add-member / remove-member endpoints.
+
+### What to check before merging
+
+1. A quick click-through on staging: open a bundle, add a schedule by name, add a client, remove a
+   client, Complete a partially covered client. Acceptance list is section 6 of the spec.
+2. **Override rows on detach.** `DetachClientAsync` deletes only the link row. If
+   `tblBulkRunScheduleOverride` does not cascade from `tblScheduleClient`, orphan override rows are
+   already possible from the single-schedule path; the bundle detach does the same thing on purpose
+   so the two stay consistent. If you want both to clean up overrides, do it in one place and both
+   paths get it.
+3. Bundle `IsActive` has no toggle in the UI (the update endpoint only takes name and description).
+   Not in Steve's ask; add if cheap.
+4. No Playwright test yet for the modal (needs a seeded bundle on the test tenant). The vitest and
+   xUnit suites pass locally with the branch.
+
+### Related: pricing and zones spec (same branch as the bundles spec)
+
+[PRICING-AND-ZONES-INTO-ROUTED-OPS-2026-10-09.md](https://github.com/Deliver-Different-Testing/routed-operations/blob/docs/pricing-zones-from-clientmanager/docs/PRICING-AND-ZONES-INTO-ROUTED-OPS-2026-10-09.md)
+moves Client Manager's zones and pricing into Schedules NEW (Zone groups, Pricing and Linehaul tabs).
+Marcus named Kevin as owner on 15 Oct (section 12.1); Steve has not confirmed the assignment yet, so
+read it for context, do not start it. Sections 6.1 to 6.3 (default-schedule chip, default suppression,
+active zones on every speed) are the near-term fixes in that doc.
