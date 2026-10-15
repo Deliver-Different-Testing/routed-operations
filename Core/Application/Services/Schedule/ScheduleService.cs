@@ -58,8 +58,17 @@ public class ScheduleService(
     // niche legacy views; safer to leave them uncached than to grow the
     // invalidation surface.
     /// <summary>Upper bound on the occurrences field, matching the CHECK on
-    /// both columns (decision D2 of the occurrences spec).</summary>
-    private const int MaxOccurrencesAhead = 14;
+    /// both columns. 14 originally (decision D2 of the occurrences spec),
+    /// raised to 60 on 2026-10-14 by 20261014090000: 14 was arbitrary and
+    /// clamping at it cost 21 client and schedule pairs dates they are
+    /// offered today, the largest wanting 53.
+    ///
+    /// Note this counts OCCURRENCES while OccurrencePreviewHorizonDays
+    /// counts DAYS, and they are not the same 60. A schedule running once a
+    /// week asked for 60 will preview about 8, because the horizon runs out
+    /// first. That is correct and visible rather than silent: the preview
+    /// shows what the booking page would actually offer.</summary>
+    private const int MaxOccurrencesAhead = 60;
 
     /// <summary>How far the preview looks forward. Same 60 days the
     /// availability functions use, so a schedule the booking page cannot
@@ -1565,9 +1574,9 @@ public class ScheduleService(
             // to act on.
             if (req.OccurrencesAhead.HasValue)
             {
-                if (req.OccurrencesAhead.Value is < 1 or > 14)
+                if (req.OccurrencesAhead.Value is < 1 or > 60)
                     throw new InvalidOperationException(
-                        "Occurrences ahead must be between 1 and 14.");
+                        "Occurrences ahead must be between 1 and 60.");
                 var detailRow = await Context.BulkRunScheduleDetails
                     .FirstOrDefaultAsync(d => d.ScheduleId == header.ScheduleId);
                 if (detailRow != null && detailRow.OccurrencesAhead != req.OccurrencesAhead.Value)

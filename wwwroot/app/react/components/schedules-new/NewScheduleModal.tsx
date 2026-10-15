@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+﻿import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
@@ -560,6 +560,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
               }}
               pickupBoxDiscount={pickupBoxDiscount}
               onPickupBoxDiscountChange={setPickupBoxDiscount}
+              dropOffLocationId={dropOffLocationId}
+              onDropOffLocationIdChange={setDropOffLocationId}
             />
           </div>
         </div>
@@ -669,21 +671,25 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   ))}
                 </select>
               </label>
-              <label className="block text-xs">
+              {/* F22. Moved to the Collection card, same as the detail
+                  modal. The trace stays so the field does not read as
+                  deleted to anyone who has been setting it here. */}
+              <div className="block text-xs" data-testid="advanced-drop-off-moved">
                 Drop-off location (schedule)
-                <select
-                  value={dropOffLocationId ?? ''}
-                  onChange={(e) => setDropOffLocationId(e.target.value ? Number(e.target.value) : null)}
-                  className="mt-1 w-full px-2 py-1 border border-border rounded"
-                >
-                  <option value="">- default -</option>
-                  {(lookupsQuery.data?.dropOffLocations ?? [])
-                    .filter((d) => !derived.pickupDepotId || d.depotId === derived.pickupDepotId)
-                    .map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                </select>
-              </label>
+                <p className="mt-1 text-text-muted">
+                  Set on the Collection card.
+                  {dropOffLocationId != null && (
+                    <>
+                      {' '}Currently{' '}
+                      <span className="text-text-primary">
+                        {(lookupsQuery.data?.dropOffLocations ?? [])
+                          .find((d) => d.id === dropOffLocationId)?.name
+                          ?? `#${dropOffLocationId}`}
+                      </span>.
+                    </>
+                  )}
+                </p>
+              </div>
               <label className="block text-xs">
                 Collection zone group
                 <select

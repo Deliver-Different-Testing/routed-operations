@@ -67,8 +67,8 @@ public class BulkRunScheduleOverride
     // Leg-scope columns (NULL = inherit from base)
     /// <summary>
     /// Per-client "offer this many upcoming runs" override. NULL inherits
-    /// the schedule's own value. Range 1 to 14, decision D2 of the
-    /// occurrences-ahead spec, enforced here and by a CHECK constraint.
+    /// the schedule's own value. Range 1 to 60, raised on 2026-10-14 from
+    /// decision D2's 14, enforced here and by a CHECK constraint.
     ///
     /// Schedule scope only: N belongs to the schedule, not to a weekday or
     /// a leg. Added by 20261009179000, which also seeds it for every client

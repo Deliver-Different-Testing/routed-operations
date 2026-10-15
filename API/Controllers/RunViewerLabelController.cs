@@ -9,6 +9,8 @@
 using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
+using Serilog;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
@@ -99,6 +101,41 @@ public class RunViewerLabelController(
             return new ObjectResult(new { message = ex.Message })
             {
                 StatusCode = StatusCodes.Status501NotImplemented,
+            };
+        }
+        // Everything below used to be unhandled. There is no global exception
+        // handler in this project, so an unhandled exception here returned a
+        // bare 500 with an EMPTY body, and the frontend
+        // (routeViewerService.ts) falls back to the literal string
+        // "HTTP 500" when it cannot find body.message. That is the whole of
+        // what ticket #855 could see: "Print run failed: HTTP 500", with the
+        // real cause visible only in the server log.
+        catch (SqlException ex)
+        {
+            // The SQL message names the object and the problem, which for a
+            // permission or schema fault is the entire diagnosis. This
+            // endpoint is behind RouteViewer.Read, and the
+            // InvalidOperationException branch above already returns its own
+            // message, so this leaks nothing new to an unauthenticated
+            // caller.
+            Log.Error(ex, "Label generation failed ({Tag}): SQL error {Number} - {Message}",
+                tag, ex.Number, ex.Message);
+            return new ObjectResult(new { message = $"Database error: {ex.Message}" })
+            {
+                StatusCode = StatusCodes.Status500InternalServerError,
+            };
+        }
+        catch (Exception ex)
+        {
+            // Last resort. Carries the type name because the failure we are
+            // chasing may not be a SqlException at all: an empty routed run
+            // reached the PDF renderer with zero pages, and knowing which
+            // exception type comes back is what tells us so. Full detail,
+            // including the stack, goes to the log rather than the response.
+            Log.Error(ex, "Label generation failed ({Tag})", tag);
+            return new ObjectResult(new { message = $"{ex.GetType().Name}: {ex.Message}" })
+            {
+                StatusCode = StatusCodes.Status500InternalServerError,
             };
         }
     }
