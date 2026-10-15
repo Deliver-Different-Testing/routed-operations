@@ -464,11 +464,10 @@ reason no longer applies to the suppression rule itself.
 predicate sites in `uspPrebookSet`; baseline from the latest emitter on master at build time):
 
 ```
-keep row IF  linked to @ClientID
+keep row IF  linked to @ClientID                       -- includes a default the client is linked to (their override)
          OR  (IsDefault = 1
               AND NOT EXISTS (another candidate row linked to @ClientID
-                              with the same SpeedId          -- legacy scope
-                              [AND the same DayOfWeek]))     -- Decision 8
+                              with the same SpeedId))        -- Decision 8 = scope (a), decided 15 Oct
          OR  ShopifyShop special case, unchanged
 ```
 
@@ -484,7 +483,17 @@ configured clients (6.1).
 Hamilton postcode offers Medical Hamilton 8am and not the default Overnight Hamilton run; the default
 Same-day Hamilton run is still offered (Decision 8 scope a). Booking as Life Healthcare, not attached,
 still offers the default Overnight Hamilton run. Prebook (`uspPrebookSet`) books Zimmer's recurring
-jobs onto Medical Hamilton 8am only.
+jobs onto Medical Hamilton 8am only. Urgent: booking as Value Tyres (VALUA) for a Whakatane to
+Tauranga return offers #2900 (Direct, linked) and not the default #1666 "Outer BOP > Tauranga"; on
+15 Oct, with M4 live on staging, both were offered (Kevin, 15 Oct 09:39 item 3).
+
+**Decided 15 Oct (Steve): scope (a).** Same lane and same speed is the gate. A linked schedule on the
+lane hides the unlinked defaults of the same speed and nothing else; a default on the lane with no
+linked schedule of that speed still shows. A default the client is linked to (an override) counts as
+the client's own and survives. Pulled forward from Phase 2 to ship as its own forward migration after
+the plan-guard recorders (dbmigrationsv2 `20261009177400` / `20261015103000`); baseline is the latest
+emitter of each function on master at build time, which as of 15 Oct is `20261014160000` for the two
+availability functions. The six `uspPrebookSet` selection sites take the same predicate.
 
 ---
 
@@ -552,8 +561,8 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 7. **"Turn on client" semantics.** Sparse overrides only (recommended; no rows until a cell differs)
    or copy the default sheet into client rows at turn-on (more rows, but a client sheet is then
    frozen against later default edits).
-8. **Suppression scope** (6.2). (a) Legacy scope: a configured schedule hides defaults on the same
-   lane with the same **speed** (recommended; restores pre-8 Sep behaviour exactly, so the Same-day
+8. **Suppression scope** (6.2). **Decided 15 Oct: (a).** (a) Legacy scope: a configured schedule hides defaults on the same
+   lane with the same **speed** (restores pre-8 Sep behaviour exactly, so the Same-day
    default still shows beside a custom Overnight run). (b) Same lane, same speed **and day**
    (narrower: a Mon/Wed/Fri custom run leaves the default visible on Tue/Thu). (c) Same lane, any
    speed (widest: one custom run hides every default into that area). A per-client setting could
