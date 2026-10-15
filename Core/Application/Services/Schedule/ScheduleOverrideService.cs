@@ -297,16 +297,16 @@ public class ScheduleOverrideService(
         {
             return null;
         }
-        // Decision D2 of the occurrences-ahead spec: 1 to 14, enforced in
+        // 1 to 60, raised from decision D2's 14 on 2026-10-14. Enforced in
         // the app as well as by CK_tblBulkRunScheduleOverride_OccurrencesAhead.
         // Checked here rather than left to the constraint so a bad value
         // comes back naming the field instead of as a constraint violation.
-        if (scope.OccurrencesAhead is < 1 or > 14)
+        if (scope.OccurrencesAhead is < 1 or > 60)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(scope.OccurrencesAhead),
                 scope.OccurrencesAhead,
-                "Occurrences ahead must be between 1 and 14, or blank to inherit the schedule's value.");
+                "Occurrences ahead must be between 1 and 60, or blank to inherit the schedule's value.");
         }
         return new BulkRunScheduleOverride
         {

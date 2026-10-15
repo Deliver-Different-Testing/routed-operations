@@ -199,17 +199,17 @@ public class ScheduleServiceTests : IDisposable
 
     [Theory]
     [InlineData(0)]
-    [InlineData(15)]
-    public async Task UpsertAsync_rejects_occurrences_ahead_outside_one_to_fourteen(byte n)
+    [InlineData(61)]
+    public async Task UpsertAsync_rejects_occurrences_ahead_outside_one_to_sixty(byte n)
     {
-        // The CHECK on the column says 1 to 14. Rejected here so the caller
+        // The CHECK on the column says 1 to 60. Rejected here so the caller
         // is told which field is wrong instead of getting a constraint
         // violation from the database.
         var svc = NewSvc();
         var req = ValidRequest();
         req.OccurrencesAhead = n;
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(req));
-        Assert.Contains("1 and 14", ex.Message);
+        Assert.Contains("1 and 60", ex.Message);
     }
 
     [Fact]

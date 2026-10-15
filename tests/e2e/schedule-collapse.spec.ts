@@ -1,4 +1,4 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+﻿import { test, expect, type Page, type Route } from '@playwright/test';
 
 // E2E for the schedule collapse, UI side (collapse plan section 4 +
 // occurrences-ahead spec section 6).
@@ -299,17 +299,18 @@ test.describe('Schedule collapse - what the operator sees', () => {
       .toContainText('Available once this schedule runs on one row');
   });
 
-  test('a value outside 1 to 14 blocks the save and says why', async ({ page }) => {
-    // Matches the CHECK on the column. Caught here so the operator is not
-    // told by a constraint violation on round trip.
+  test('a value outside 1 to 60 blocks the save and says why', async ({ page }) => {
+    // Matches the CHECK on the column, raised from 14 on 2026-10-14.
+    // Caught here so the operator is not told by a constraint violation on
+    // round trip.
     await stubApis(page);
     await page.goto('/schedules-new');
     await page.getByText('Collapsed Weekday Run').first().click();
 
     const input = page.getByTestId('schedule-occurrences-ahead-input');
-    await input.fill('15');
+    await input.fill('61');
     await expect(page.getByTestId('schedule-occurrences-ahead-help'))
-      .toContainText('Enter a number from 1 to 14');
+      .toContainText('Enter a number from 1 to 60');
     await expect(page.getByTestId('schedule-modal-save')).toBeDisabled();
 
     // Back in range and the save is available again.
@@ -464,15 +465,15 @@ test.describe('Schedule collapse - what the operator sees', () => {
       .toContainText('schedule default');
   });
 
-  test('a per-client value outside 1 to 14 blocks the save', async ({ page }) => {
+  test('a per-client value outside 1 to 60 blocks the save', async ({ page }) => {
     await stubApis(page, { withOverride: true });
     await page.goto('/schedules-new');
     await page.getByText('ACME').first().click();
 
     const clientInput = page.getByTestId('override-occurrences-ahead');
-    await clientInput.fill('15');
+    await clientInput.fill('61');
     await expect(page.getByTestId('override-occurrences-ahead-help'))
-      .toContainText('Enter a number from 1 to 14');
+      .toContainText('Enter a number from 1 to 60');
     // Override mode renames the save button's testid, so this is
     // override-modal-save and not the schedule one.
     await expect(page.getByTestId('override-modal-save')).toBeDisabled();

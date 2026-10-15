@@ -568,7 +568,7 @@ export function ScheduleDetailModal({
     const t = debouncedOccurrences.trim();
     if (t === '') return null;
     const v = Number.parseInt(t, 10);
-    return Number.isNaN(v) || v < 1 || v > 14 ? null : v;
+    return Number.isNaN(v) || v < 1 || v > 60 ? null : v;
   })();
   // Both shapes, deliberately. Storing a per-schedule N needs the detail
   // row, so the FIELD is collapsed-only, but "which dates does this offer"
@@ -579,14 +579,14 @@ export function ScheduleDetailModal({
   // on the tenant, which is most of the value.
   const occurrencesQuery = useScheduleOccurrences(scheduleId, previewN);
 
-  // 1 to 14, matching the CHECK on the column. Blank is valid and means
+  // 1 to 60, matching the CHECK on the column. Blank is valid and means
   // leave it alone, so only a typed value is range-checked.
   const occurrencesAheadError = (() => {
     const t = formOccurrencesAhead.trim();
     if (t === '') return null;
     const n = Number.parseInt(t, 10);
-    return Number.isNaN(n) || n < 1 || n > 14
-      ? 'Enter a number from 1 to 14, or leave blank.'
+    return Number.isNaN(n) || n < 1 || n > 60
+      ? 'Enter a number from 1 to 60, or leave blank.'
       : null;
   })();
 
@@ -1062,15 +1062,15 @@ export function ScheduleDetailModal({
   //    (semantically equivalent to Delete). Operators expect Save to
   //    persist that intent even without a "change", so no dirty gate.
   const savePending = isOverride ? ovSaveMut.isPending : saveMut.isPending;
-  // Decision D2 of the occurrences-ahead spec: 1 to 14, the same range the
-  // CHECK on the column enforces. Blank is valid and means inherit, so only
-  // a typed value is checked.
+  // 1 to 60, the same range the CHECK on the column enforces. Was 1 to 14
+  // under decision D2 until Steve raised it on 2026-10-14. Blank is valid
+  // and means inherit, so only a typed value is checked.
   const ovOccurrencesError = (() => {
     const t = ovOccurrencesAhead.trim();
     if (t === '') return null;
     const v = Number.parseInt(t, 10);
-    return Number.isNaN(v) || v < 1 || v > 14
-      ? 'Enter a number from 1 to 14, or leave blank to inherit.'
+    return Number.isNaN(v) || v < 1 || v > 60
+      ? 'Enter a number from 1 to 60, or leave blank to inherit.'
       : null;
   })();
 
@@ -1318,7 +1318,7 @@ export function ScheduleDetailModal({
                   <input
                     type="number"
                     min={1}
-                    max={14}
+                    max={60}
                     value={formOccurrencesAhead}
                     onChange={(e) => setFormOccurrencesAhead(e.target.value)}
                     disabled={isOverride}
@@ -1418,7 +1418,7 @@ export function ScheduleDetailModal({
                 <input
                   type="number"
                   min={1}
-                  max={14}
+                  max={60}
                   value={ovOccurrencesAhead}
                   onChange={(e) => setOvOccurrencesAhead(e.target.value)}
                   placeholder="Inherit"
@@ -1946,6 +1946,8 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
           readOnly={readOnly}
           pickupBoxDiscount={advanced.pickupBoxDiscount}
           onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
+          dropOffLocationId={advanced.dropOffLocationId}
+          onDropOffLocationIdChange={advanced.onDropOffLocationIdChange}
         />
       </div>
 
@@ -2098,19 +2100,25 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                 {lookups.deliveryStates.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
               </select>
             </label>
-            <label className="block text-xs">
+            {/* F22. The select moved to the Collection card, where whoever
+                sets up a collection actually looks. A trace stays here
+                because this panel is where people have been finding it,
+                and a field that silently vanishes reads as a regression. */}
+            <div className="block text-xs" data-testid="advanced-drop-off-moved">
               Drop-off location (schedule)
-              <select
-                value={advanced.dropOffLocationId ?? ''}
-                onChange={(e) => advanced.onDropOffLocationIdChange(e.target.value ? Number(e.target.value) : null)}
-                className="mt-1 w-full px-2 py-1 border border-border rounded"
-              >
-                <option value="">- default -</option>
-                {lookups.dropOffLocations
-                  .filter((d) => !advanced.pickupDepotId || d.depotId === advanced.pickupDepotId)
-                  .map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
-              </select>
-            </label>
+              <p className="mt-1 text-text-muted">
+                Set on the Collection card.
+                {advanced.dropOffLocationId != null && (
+                  <>
+                    {' '}Currently{' '}
+                    <span className="text-text-primary">
+                      {lookups.dropOffLocations.find((d) => d.id === advanced.dropOffLocationId)?.name
+                        ?? `#${advanced.dropOffLocationId}`}
+                    </span>.
+                  </>
+                )}
+              </p>
+            </div>
             <label className="block text-xs">
               Collection zone group
               <select
