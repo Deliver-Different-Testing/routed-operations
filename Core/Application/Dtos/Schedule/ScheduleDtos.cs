@@ -326,6 +326,45 @@ public record ScheduleBundleDto(
     string[] ScheduleNames);
 
 /// <summary>
+/// One member schedule inside a bundle, for the bundle modal (Steve
+/// 2026-10-16, SCHEDULE-BUNDLES-UI-2026-10-16). Carries enough to render
+/// the member row without a second fetch.
+/// </summary>
+public record ScheduleBundleMemberDto(
+    int ScheduleId,
+    string Name,
+    bool IsDefault,
+    /// <summary>tblScheduleClient rows on this member. Always 0 on a default.</summary>
+    int ClientCount,
+    /// <summary>Delivery depot of the first day row (tblBulkRunSchedule.Region).</summary>
+    string RegionName,
+    /// <summary>Delivery speed of the first day row.</summary>
+    string SpeedName,
+    /// <summary>Active DayOfWeek values (1=Mon..7=Sun), ascending.</summary>
+    int[] ActiveDays);
+
+/// <summary>
+/// One client "on the bundle": linked to at least one non-default member.
+/// OnMembers / OfMembers show partial coverage (a client attached before a
+/// schedule joined the bundle) so the modal can offer "Complete".
+/// </summary>
+public record ScheduleBundleClientDto(
+    int ClientId,
+    string Code,
+    string Name,
+    int OnMembers,
+    int OfMembers);
+
+/// <summary>GET /api/v2/schedule-bundles/{id} payload for the bundle modal.</summary>
+public record ScheduleBundleDetailDto(
+    int BundleId,
+    string Name,
+    string Description,
+    bool IsActive,
+    List<ScheduleBundleMemberDto> Members,
+    List<ScheduleBundleClientDto> Clients);
+
+/// <summary>
 /// One row of "the schedules this client can actually book" per Steve's
 /// brief §5 resolution rule. Source tag lets the frontend tag each row
 /// in the View-as-client view: "override" = the client owns this

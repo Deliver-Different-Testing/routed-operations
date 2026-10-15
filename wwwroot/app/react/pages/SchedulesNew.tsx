@@ -26,6 +26,7 @@ import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
 import { NewScheduleModal } from '../components/schedules-new/NewScheduleModal';
 import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal';
+import { BundleModal } from '../components/schedules-new/BundleModal';
 
 // Schedules NEW - Steve's 2026-09-08 id-keyed multi-client schedules
 // view (KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08). Uses the
@@ -1170,102 +1171,24 @@ function SegmentPill({
 }
 
 // ─── Schedule Bundles tab ───────────────────────────────────────────
+//
+// Steve 2026-10-16 (SCHEDULE-BUNDLES-UI-2026-10-16): the overview stays a
+// list; everything else happens in BundleModal (schedules on the left,
+// clients on the right, searchable pickers, no ids typed). The previous
+// expand-in-place card + window.prompt flows are gone.
 
 function ScheduleBundlesTab({ onScheduleClick }: { onScheduleClick: (id: number) => void }) {
-  const user = useAuth();
-  const tenantId = user.currentTenantId ?? 0;
   const query = useSchedulesV2Bundles();
-  const qc = useQueryClient();
-  const toast = useToast();
-  const confirm = useConfirm();
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
-  const [attachBundleId, setAttachBundleId] = useState<number | null>(null);
-  const toggle = (id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const invalidateBundles = () =>
-    qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
-
-  const deleteMut = useMutation({
-    mutationFn: (bundleId: number) => schedulesV2Service.deleteBundle(bundleId),
-    onSuccess: () => { invalidateBundles(); toast.show('Bundle deleted.', 'success'); },
-    onError: (e: Error) => toast.show(`Delete failed: ${e.message}`, 'error'),
-  });
-  const renameMut = useMutation({
-    mutationFn: (args: { bundleId: number; name: string; description?: string }) =>
-      schedulesV2Service.updateBundle(args.bundleId, { name: args.name, description: args.description }),
-    onSuccess: () => { invalidateBundles(); toast.show('Bundle updated.', 'success'); },
-    onError: (e: Error) => toast.show(`Rename failed: ${e.message}`, 'error'),
-  });
-  const addMemberMut = useMutation({
-    mutationFn: (args: { bundleId: number; scheduleIds: number[] }) =>
-      schedulesV2Service.addBundleMembers(args.bundleId, args.scheduleIds),
-    onSuccess: () => { invalidateBundles(); toast.show('Member added.', 'success'); },
-    onError: (e: Error) => toast.show(`Add member failed: ${e.message}`, 'error'),
-  });
-  const removeMemberMut = useMutation({
-    mutationFn: (args: { bundleId: number; scheduleId: number }) =>
-      schedulesV2Service.removeBundleMember(args.bundleId, args.scheduleId),
-    onSuccess: () => { invalidateBundles(); toast.show('Member removed.', 'success'); },
-    onError: (e: Error) => toast.show(`Remove failed: ${e.message}`, 'error'),
-  });
-
-  const handleDelete = async (b: ScheduleBundle) => {
-    const ok = await confirm({
-      title: 'Delete bundle?',
-      message: `Delete "${b.name}" (${b.scheduleCount} schedule${b.scheduleCount === 1 ? '' : 's'})? The underlying schedules and their link rows are NOT touched - only the bundle metadata is removed.`,
-      confirmLabel: 'Delete',
-      danger: true,
-    });
-    if (!ok) return;
-    deleteMut.mutate(b.bundleId);
-  };
-
-  const handleRename = (b: ScheduleBundle) => {
-    const next = window.prompt(`Rename "${b.name}":`, b.name);
-    if (!next || next.trim() === b.name) return;
-    renameMut.mutate({ bundleId: b.bundleId, name: next.trim(), description: b.description ?? '' });
-  };
-
-  const handleAddMember = (b: ScheduleBundle) => {
-    const raw = window.prompt(
-      `Add a schedule to "${b.name}". Enter the schedule id (from #ScheduleId in the Schedules tab):`,
-      '',
-    );
-    if (!raw) return;
-    const id = parseInt(raw.trim(), 10);
-    if (!Number.isFinite(id) || id <= 0) {
-      toast.show('Invalid schedule id.', 'error');
-      return;
-    }
-    addMemberMut.mutate({ bundleId: b.bundleId, scheduleIds: [id] });
-  };
-
-  const handleRemoveMember = async (bundleId: number, scheduleId: number) => {
-    const ok = await confirm({
-      title: 'Remove member?',
-      message: `Remove schedule #${scheduleId} from the bundle?`,
-      confirmLabel: 'Remove',
-      danger: true,
-    });
-    if (!ok) return;
-    removeMemberMut.mutate({ bundleId, scheduleId });
-  };
+  const [openBundleId, setOpenBundleId] = useState<number | null>(null);
 
   return (
     <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
       <div className="flex items-center justify-between">
         <p className="text-xs text-text-muted italic max-w-3xl">
-          A bundle is a named collection of schedules. Attaching a client to a bundle
-          writes one link row per non-default member; the link table stays the
-          only record of who uses what.
+          A bundle is a named set of schedules, like a rate card in Settings. Open one to see
+          its schedules and clients; adding a client links it to every client-specific member
+          in one go. The link table stays the only record of who uses what.
         </p>
         <button
           type="button"
@@ -1290,107 +1213,73 @@ function ScheduleBundlesTab({ onScheduleClick }: { onScheduleClick: (id: number)
         </div>
       )}
       {query.data && query.data.length > 0 && (
-        <ul className="space-y-2">
-          {query.data.map((b) => (
-            <BundleCard
-              key={b.bundleId}
-              bundle={b}
-              expanded={expanded.has(b.bundleId)}
-              onToggle={() => toggle(b.bundleId)}
-              onScheduleClick={onScheduleClick}
-              onDelete={() => handleDelete(b)}
-              onRename={() => handleRename(b)}
-              onAttachClients={() => setAttachBundleId(b.bundleId)}
-              onAddMember={() => handleAddMember(b)}
-              onRemoveMember={(id) => handleRemoveMember(b.bundleId, id)}
-            />
-          ))}
-        </ul>
+        <table className="w-full text-sm">
+          <thead className="text-xs text-text-muted bg-surface-cream">
+            <tr>
+              <th className="text-left px-3 py-2 font-medium">Bundle</th>
+              <th className="text-left px-3 py-2 font-medium">Schedules</th>
+              <th className="text-left px-3 py-2 font-medium">Clients</th>
+              <th className="text-left px-3 py-2 font-medium">Status</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {query.data.map((b) => (
+              <tr
+                key={b.bundleId}
+                className="border-t border-border hover:bg-surface-light cursor-pointer"
+                onClick={() => setOpenBundleId(b.bundleId)}
+              >
+                <td className="px-3 py-2">
+                  <div className="font-medium text-text-primary">{b.name}</div>
+                  {b.description && <div className="text-[11px] text-text-muted">{b.description}</div>}
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  <div>{b.scheduleCount}</div>
+                  <div className="text-[11px] text-text-muted truncate max-w-md" title={b.scheduleNames.join(', ')}>
+                    {b.scheduleNames.join(' - ')}
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-xs">{b.clientCount}</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      b.isActive
+                        ? 'bg-success-bg text-success border border-success/30'
+                        : 'bg-surface-light text-text-muted border border-border'
+                    }`}
+                  >
+                    {b.isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setOpenBundleId(b.bundleId); }}
+                    className="px-3 py-1 text-xs rounded border border-border hover:bg-surface-light"
+                  >
+                    Open
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       <CreateBundleModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
-          qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
+        onCreated={(bundleId) => {
           setCreateOpen(false);
-          toast.show('Bundle created.', 'success');
+          setOpenBundleId(bundleId);
         }}
       />
-      <BundleAttachClientsModal
-        bundleId={attachBundleId}
-        onClose={() => setAttachBundleId(null)}
+      <BundleModal
+        bundleId={openBundleId}
+        onClose={() => setOpenBundleId(null)}
+        onScheduleClick={onScheduleClick}
       />
-    </div>
-  );
-}
-
-function BundleAttachClientsModal({
-  bundleId,
-  onClose,
-}: {
-  bundleId: number | null;
-  onClose: () => void;
-}) {
-  const qc = useQueryClient();
-  const auth = useAuth();
-  const tenantId = auth.currentTenantId ?? 0;
-  const toast = useToast();
-  const [selected, setSelected] = useState<number[]>([]);
-  const attachMut = useMutation({
-    mutationFn: (ids: number[]) =>
-      schedulesV2Service.attachClientsToBundle(bundleId!, ids),
-    onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
-      toast.show(`Attached to ${r.added} member link row${r.added === 1 ? '' : 's'}.`, 'success');
-      setSelected([]);
-      onClose();
-    },
-    onError: (e: Error) => toast.show(`Attach failed: ${e.message}`, 'error'),
-  });
-  if (bundleId == null) return null;
-  return (
-    <div className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40" onClick={onClose}>
-      <div className="bg-surface-white rounded-lg shadow-lg max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-border-light">
-          <h3 className="text-base font-semibold text-text-primary">Attach clients to bundle #{bundleId}</h3>
-          <p className="text-xs text-text-muted mt-1">
-            Each ticked client gets one link row per non-default member schedule.
-            Default members (all-clients schedules) are skipped.
-          </p>
-        </div>
-        <div className="px-4 py-4">
-          <ClientMultiPicker
-            selected={selected}
-            onChange={setSelected}
-            placeholder="Pick clients..."
-            triggerWidth="w-full"
-            panelTitle="Clients to attach"
-          />
-        </div>
-        <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex items-center justify-between">
-          <span className="text-xs text-text-muted">
-            {selected.length === 0 ? 'Nothing selected' : `${selected.length} to attach`}
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm rounded border border-border hover:bg-surface-light"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => attachMut.mutate(selected)}
-              disabled={selected.length === 0 || attachMut.isPending}
-              className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
-            >
-              {attachMut.isPending ? 'Attaching...' : 'Attach'}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1402,7 +1291,7 @@ function CreateBundleModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (bundleId: number) => void;
 }) {
   const toast = useToast();
   const [name, setName] = useState('');
@@ -1416,11 +1305,11 @@ function CreateBundleModal({
         description: description.trim() || undefined,
         scheduleIds: [],
       }),
-    onSuccess: () => {
+    onSuccess: (r) => {
       setName('');
       setDescription('');
       setError(null);
-      onCreated();
+      onCreated(r.bundleId);
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -1460,8 +1349,7 @@ function CreateBundleModal({
             />
           </label>
           <p className="text-xs text-text-muted italic">
-            Members can be added via a follow-up "Add schedule" step - or attach clients
-            in bulk from the bundle card once members are linked.
+            The bundle opens straight after it is created so you can add schedules and clients.
           </p>
         </div>
         <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex justify-end gap-2">
@@ -1486,124 +1374,6 @@ function CreateBundleModal({
   );
   // toast import kept for downstream extensions (attach clients etc)
   void toast;
-}
-
-function BundleCard({
-  bundle,
-  expanded,
-  onToggle,
-  onScheduleClick,
-  onDelete,
-  onRename,
-  onAttachClients,
-  onAddMember,
-  onRemoveMember,
-}: {
-  bundle: ScheduleBundle;
-  expanded: boolean;
-  onToggle: () => void;
-  onScheduleClick: (id: number) => void;
-  onDelete: () => void;
-  onRename: () => void;
-  onAttachClients: () => void;
-  onAddMember: () => void;
-  onRemoveMember: (scheduleId: number) => void;
-}) {
-  return (
-    <li className="border border-border rounded">
-      <div className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-light">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex-1 flex items-start text-left"
-        >
-          <div>
-            <div className="text-sm font-medium text-text-primary flex items-center gap-2">
-              <span className={`text-xs transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
-              {bundle.name}
-            </div>
-            {bundle.description && (
-              <div className="text-xs text-text-muted mt-0.5">{bundle.description}</div>
-            )}
-          </div>
-        </button>
-        <div className="flex items-center gap-6 text-xs text-text-muted">
-          <span>{bundle.scheduleCount} schedules</span>
-          <span>{bundle.clientCount} clients</span>
-          <span
-            className={`px-2 py-0.5 rounded ${
-              bundle.isActive
-                ? 'bg-success-bg text-success border border-success/30'
-                : 'bg-surface-light text-text-muted border border-border'
-            }`}
-          >
-            {bundle.isActive ? 'Active' : 'Inactive'}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onRename(); }}
-            title="Rename or redescribe"
-            className="text-text-secondary hover:text-text-primary hover:underline"
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onAttachClients(); }}
-            title="Attach clients to all non-default members"
-            className="text-brand-cyan hover:underline"
-          >
-            Attach clients
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            title="Delete bundle"
-            className="text-error hover:text-error-dark hover:underline"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-      {expanded && (
-        <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
-          <ul className="space-y-1">
-            {bundle.scheduleIds.map((id, i) => (
-              <li key={id} className="flex items-center justify-between text-xs">
-                <button
-                  type="button"
-                  onClick={() => onScheduleClick(id)}
-                  className="text-text-secondary hover:text-brand-cyan text-left"
-                >
-                  #{id} - {bundle.scheduleNames[i] ?? '(unknown)'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onRemoveMember(id)}
-                  title="Remove from bundle"
-                  className="text-error hover:text-error-dark hover:underline"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-            {bundle.scheduleIds.length === 0 && (
-              <li className="text-xs text-text-muted italic">
-                No members yet. Add one below.
-              </li>
-            )}
-          </ul>
-          <button
-            type="button"
-            onClick={onAddMember}
-            className="text-xs text-brand-cyan hover:underline"
-          >
-            + Add schedule
-          </button>
-        </div>
-      )}
-    </li>
-  );
 }
 
 // ─── Recurring Routes tab ───────────────────────────────────────────
