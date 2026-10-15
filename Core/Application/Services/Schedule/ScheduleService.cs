@@ -2863,7 +2863,11 @@ public class ScheduleService(
     }
 
     /// <summary>Add member schedules to a bundle. Idempotent.</summary>
-    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds)
+    /// <param name="linkExistingClients">When true, every client already on the
+    /// bundle (linked to at least one non-default member) is also linked to
+    /// each newly added non-default member, so the bundle stays whole
+    /// (SCHEDULE-BUNDLES-UI-2026-10-16 section 4). Idempotent.</param>
+    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds, bool linkExistingClients = false)
     {
         var ids = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (ids.Count == 0) return 0;
@@ -2889,10 +2893,171 @@ public class ScheduleService(
             .Select(id => new BulkRunScheduleBundleMember { BundleId = bundleId, ScheduleId = id })
             .ToList();
         if (toAdd.Count == 0) return 0;
+
+        // Clients on the bundle BEFORE the new members join: anyone linked to
+        // an existing non-default member. Read first so the new members do
+        // not count themselves.
+        var clientsOnBundle = new List<int>();
+        if (linkExistingClients)
+        {
+            var existingMemberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+                .Where(m => m.BundleId == bundleId)
+                .Select(m => m.ScheduleId)
+                .ToListAsync();
+            var existingNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => existingMemberIds.Contains(h.ScheduleId) && h.RetiredUtc == null && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            if (existingNonDefault.Count > 0)
+                clientsOnBundle = await Context.ScheduleClients.AsNoTracking()
+                    .Where(sc => existingNonDefault.Contains(sc.ScheduleId))
+                    .Select(sc => sc.ClientId)
+                    .Distinct()
+                    .ToListAsync();
+        }
+
         Context.BulkRunScheduleBundleMembers.AddRange(toAdd);
+
+        if (clientsOnBundle.Count > 0)
+        {
+            var newIds = toAdd.Select(m => m.ScheduleId).ToList();
+            var newNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => newIds.Contains(h.ScheduleId) && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            var alreadyLinked = await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => newNonDefault.Contains(sc.ScheduleId) && clientsOnBundle.Contains(sc.ClientId))
+                .Select(sc => new { sc.ScheduleId, sc.ClientId })
+                .ToListAsync();
+            var linkedSet = new HashSet<(int, int)>(alreadyLinked.Select(x => (x.ScheduleId, x.ClientId)));
+            var now = DateTime.UtcNow;
+            foreach (var sid in newNonDefault)
+                foreach (var cid in clientsOnBundle)
+                    if (!linkedSet.Contains((sid, cid)))
+                        Context.ScheduleClients.Add(new ScheduleClient
+                        {
+                            ScheduleId = sid,
+                            ClientId = cid,
+                            CreatedUtc = now,
+                            CreatedBy = $"RoutedOps:bundle-member-link:{bundleId}",
+                        });
+        }
+
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
         return toAdd.Count;
+    }
+
+    /// <summary>
+    /// One bundle with its live members and the clients linked to them,
+    /// for the bundle modal (SCHEDULE-BUNDLES-UI-2026-10-16 section 4).
+    /// A client is "on the bundle" when it has a link row on at least one
+    /// non-default live member; OnMembers / OfMembers carry the coverage.
+    /// </summary>
+    public async Task<ScheduleBundleDetailDto> GetBundleDetailAsync(int bundleId)
+    {
+        var bundle = await Context.BulkRunScheduleBundles.AsNoTracking()
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
+
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+
+        var headers = memberIds.Count == 0
+            ? new List<BulkRunScheduleHeader>()
+            : await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => memberIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
+                .OrderBy(h => h.Name)
+                .ToListAsync();
+
+        var nonDefaultIds = headers.Where(h => !h.IsDefault).Select(h => h.ScheduleId).ToList();
+        var links = nonDefaultIds.Count == 0
+            ? new List<ScheduleClient>()
+            : await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => nonDefaultIds.Contains(sc.ScheduleId))
+                .ToListAsync();
+
+        var linksBySchedule = links.GroupBy(l => l.ScheduleId).ToDictionary(g => g.Key, g => g.Count());
+
+        // Depot / speed / days come from the day rows (tblBulkRunSchedule view),
+        // the same source the Schedules tab summary uses.
+        var liveIds = headers.Select(h => h.ScheduleId).ToList();
+        var dayRows = liveIds.Count == 0
+            ? new List<TblBulkRunSchedule>()
+            : await Context.TblBulkRunSchedules.AsNoTracking()
+                .Where(r => liveIds.Contains(r.ScheduleId))
+                .ToListAsync();
+        var depotNames = await Context.TblBulkRegions.AsNoTracking()
+            .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
+        var speedNames = await Context.TucJobTypes.AsNoTracking()
+            .ToDictionaryAsync(t => t.UcjtId, t => t.UcjtName);
+        var rowsBySchedule = dayRows.GroupBy(r => r.ScheduleId).ToDictionary(g => g.Key, g => g.ToList());
+
+        var members = headers
+            .Select(h =>
+            {
+                rowsBySchedule.TryGetValue(h.ScheduleId, out var rows);
+                var first = rows?.OrderBy(r => r.DayOfWeek).FirstOrDefault();
+                string LookupDepot(int? id) => id.HasValue && depotNames.TryGetValue(id.Value, out var d) ? d : null;
+                string LookupSpeed(int? id) => id.HasValue && speedNames.TryGetValue(id.Value, out var sp) ? sp : null;
+                var days = rows == null
+                    ? Array.Empty<int>()
+                    : rows.Where(r => r.DayOfWeek.HasValue).Select(r => (int)r.DayOfWeek.Value).Distinct().OrderBy(d => d).ToArray();
+                return new ScheduleBundleMemberDto(
+                    h.ScheduleId, h.Name, h.IsDefault,
+                    linksBySchedule.TryGetValue(h.ScheduleId, out var n) ? n : 0,
+                    LookupDepot(first?.Region), LookupSpeed(first?.SpeedId), days);
+            })
+            .ToList();
+
+        var clientIds = links.Select(l => l.ClientId).Distinct().ToList();
+        var clientLookup = clientIds.Count == 0
+            ? new List<TucClientNameCode>()
+            : await Context.TucClients.AsNoTracking()
+                .Where(c => clientIds.Contains(c.UcclId))
+                .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
+                .ToListAsync();
+        var byId = clientLookup.ToDictionary(c => c.Id);
+        var clients = links
+            .GroupBy(l => l.ClientId)
+            .Select(g => new ScheduleBundleClientDto(
+                g.Key,
+                byId.TryGetValue(g.Key, out var c) && !string.IsNullOrWhiteSpace(c.Code) ? c.Code : $"#{g.Key}",
+                byId.TryGetValue(g.Key, out var c2) ? c2.Name : null,
+                g.Select(l => l.ScheduleId).Distinct().Count(),
+                nonDefaultIds.Count))
+            .OrderByDescending(c => c.OnMembers)
+            .ThenBy(c => c.Code)
+            .ToList();
+
+        return new ScheduleBundleDetailDto(
+            bundle.BundleId, bundle.Name, bundle.Description, bundle.IsActive, members, clients);
+    }
+
+    /// <summary>
+    /// Remove one client from every member of a bundle. Deletes the
+    /// tblScheduleClient rows only, the same as DetachClientAsync does for a
+    /// single schedule, so the two paths stay consistent. Returns rows removed.
+    /// </summary>
+    public async Task<int> DetachClientFromBundleAsync(int bundleId, int clientId)
+    {
+        if (clientId <= 0) return 0;
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+        if (memberIds.Count == 0) return 0;
+
+        var rows = await Context.ScheduleClients
+            .Where(sc => memberIds.Contains(sc.ScheduleId) && sc.ClientId == clientId)
+            .ToListAsync();
+        if (rows.Count == 0) return 0;
+        Context.ScheduleClients.RemoveRange(rows);
+        await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
+        return rows.Count;
     }
 
     /// <summary>Remove a schedule from a bundle.</summary>
