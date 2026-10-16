@@ -553,6 +553,21 @@ AND (NOT EXISTS (SELECT 1 FROM @ZoneLimitedSchedules zl WHERE zl.BulkRunSchedule
      OR EXISTS  (SELECT 1 FROM @ZoneActiveSchedules  za WHERE za.BulkRunScheduleId = s.BulkRunScheduleId))
 ```
 
+**Kevin's measurements and Steve's decisions, 16 Oct.** 286 schedules carry active zones on a
+non-zone-rated speed; they handled 266 jobs in 90 days and exactly one would have been refused, so
+6.3 ships as written. `tblSchedulePostcode` is keyed on `ScheduleName`, not `ScheduleId`, and is
+empty on Urgent prod: it is re-keyed to `ScheduleId` before the bound-postcode half is wired, per
+`KEVIN-SCHEDULE-IDENTITY-BY-ID-2026-10-16.md` row 1 (Steve: every place that matches on schedule
+name moves to the id). 6.3 stays out of `uspPrebookSet`, as above; 6.2 goes into all six sites.
+**Interaction with 6.2:** of the 2,440 bookings 6.2 redirects, 94 across 13 clients land outside the
+client's own zones and would be refused once both are live. Decision: Kevin sends the 13-client
+list; ops review those schedules before deploy, widen the zones where they are stale and leave them
+where the narrowing is deliberate (Hyper is the deliberate case); then 6.2 and 6.3 ship together. If
+ops cannot clear the 13 in time, 6.2 ships first and 6.3 follows a week later. **Ops notice:** 6.2
+moves about 27 bookings a day off unlinked defaults onto client schedules (63 clients, 69 defaults;
+Betscharts alone 804 in 90 days, verified safe). Anisah is told before it lands and the client
+schedules need their runs and rosters in place.
+
 `ZoneRated` keeps its rating meaning everywhere else (rate sheets, `BulkImportRatingService`, the
 rating procs); it simply stops deciding availability. Ships in the same re-emit as the 6.2
 suppression rule, since both land in the same two candidate blocks of the same function; baseline is
