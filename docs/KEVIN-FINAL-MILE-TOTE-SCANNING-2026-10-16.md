@@ -133,6 +133,19 @@ All procs `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRAN
 
 The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ignored by a sender that does not emit them, and the altered inwards procs keep their result shapes.
 
+## 5a. Milestones
+
+| # | Milestone | Done when |
+|---|---|---|
+| M0 | dbmigrationsv2: `tblLinehaulTote` FinalMile* columns, `tucJobBooking.FinalMileDeliveryMode`, inwards continuation, `MARSWS_stpFinalMile*` procs | migrations on GitLab master, applied to Medical staging |
+| M1 | marsapi: eight FinalMile* scan routes + EF result classes | routes answer on Medical staging |
+| M2 | `MARS_stpJobMessages` + marssenderservice emit `<FMM>` / `<FMD>` | master job arrives on a staging handset with both nodes |
+| M3 | Driver app: final-mile tote pickup + tote-level depart from the master | test plan 2 and 3 pass |
+| M4 | Driver app: `FinalMileDeliveryPage`, mode T and mode I | test plan 4 and 5 pass |
+| M5 | Routed Ops route editor: master booking picker + delivery scanning mode; Route Viewer master label | route 15 shows "Master: Pxxxx" on staging |
+| M6 | Medical staging: test plan 1-8 passed | Kenneth or Kevin signs off the run-through |
+| M7 | Medical prod: route 15 master + mode set, Kenneth scans totes on a live Burbank run | first live tote delivered through the new flow |
+
 ## 6. Test plan (Medical staging, NEOGE, route 15)
 
 1. **Sealed tote through**: pack 3 shipments into tote A at Sacramento, linehaul to Burbank, inwards (Mode A). Expect: legs done, `InwardedAt` set, linehaul master completes, tote A `IsClosed = 0`, `FinalMileRouteId = 15`.
