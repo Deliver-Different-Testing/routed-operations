@@ -82,18 +82,37 @@ and `.ScheduleName)` and classify the same way.
 
 ## 6. Decisions still open (Kevin, 16 Oct 16:05)
 
-**A. How prebook picks a schedule.** Of 822 live recurring bookings on Urgent prod, 4 carry a schedule id and 818 carry neither id nor name; the top twelve clients by recurring volume have none, and Zimmer's one live recurring booking (P5620T) carries no schedule. So the six-site keeper edit (6.2) is correct for the 4 and changes nothing for the 818: prebook is not choosing between schedules for them because none is bound. The 6.2 acceptance line about Zimmer's recurring jobs is therefore withdrawn. Options: (i) bind a schedule on the recurring template (data plus UI, and a decision on who sets it), or (ii) prebook resolves at run time by lane, speed and day through the same availability function the booking page uses, taking a schedule only when exactly one client-linked schedule matches and never auto-binding a default. **Recommendation: (ii) as its own item after this batch; (i) stays available as an override on the template.** Steve to confirm.
+**A. How prebook picks a schedule. Decided 17 Oct (Steve): bind it on the recurring job record.**
+Of 822 live recurring bookings on Urgent prod, 4 carry a schedule id and 818 carry neither id nor name; the top
+twelve clients by recurring volume have none, and Zimmer's one live recurring booking (P5620T) carries no
+schedule. So the six-site keeper edit (6.2) is correct for the 4 and changes nothing for the 818, and the 6.2
+acceptance line about Zimmer's recurring jobs is withdrawn. The schedule a recurring job books onto is an
+explicit choice stored on the recurring record, not something prebook infers at run time:
+
+- **Column.** The recurring record gets a header id, named for what it is (`ScheduleHeaderId int NULL`, FK
+  `tblBulkRunScheduleHeader(ScheduleId)`; table to confirm, the recurring template table behind
+  `RecurringJobRepository`). The existing `ScheduleID` column keeps its day-row meaning for the 4 bound rows and
+  is read through the header route until those 4 are re-bound, then retired with the row 7 fallbacks.
+- **Who sets it.** Ops, on the recurring job editor in DespatchWeb (the same screen row 5 fixes). The picker
+  lists the schedules the availability function offers for that client, lane and speed, linked schedules first,
+  with "none" as the default. No backfill: the 818 stay unbound until ops binds them, and prebook books them
+  exactly as it does today.
+- **Prebook.** The six sites read `ScheduleHeaderId` when present (else the header route from the day-row id,
+  else no schedule) and apply the 6.2 keeper rule to the day rows under that header. Run-time resolution by lane
+  is not built.
+- **Acceptance.** Bind Zimmer's P5620T to Medical Hamilton 8am on staging; the next prebook run books it onto
+  that schedule's day row for the day; rename the schedule and it still does; unbind and it books as today.
 
 **B. Where the DespatchWeb fix (row 5) lives.** One line in `RecurringJobRepository.cs`, outside the two repos this spec named, touching recurring bookings. **Recommendation: Kevin makes the change on a despatchweb branch since he has the context, Jacob reviews and owns the manual production deploy, and it ships with the row 3 and 4 follow-on, not before.** Steve to confirm.
 
-Decided 17 Oct: header route for rows 2 and 3 (yes); `tblScheduleClient.ScheduleName` dropped in the row 1 migration (yes); Hyper is a 6.3 case and is not in the 13-client ops review (agreed).
+Decided 17 Oct: header route for rows 2 and 3 (yes); `tblScheduleClient.ScheduleName` dropped in the row 1 migration (yes); Hyper is a 6.3 case and is not in the 13-client ops review (agreed); prebook binding per A above.
 
 ## Milestones
 
 | # | Milestone | Done when |
 |---|---|---|
 | M1 | Sweep classified on both tenants | Section 2 lists every resolver and every label from the sys.sql_modules and column sweeps (done 16 Oct, Kevin). |
-| M2 | Prebook on the header route | uspPrebookSet six sites resolve day-row id to header, no name predicate; ships in the 6.2 re-emit. |
+| M2 | Prebook on the header route | uspPrebookSet six sites read ScheduleHeaderId, else resolve the day-row id to its header; no name predicate; ships in the 6.2 re-emit. Recurring-job picker in DespatchWeb follows with M6. |
 | M3 | tblSchedulePostcode re-keyed, tblScheduleClient.ScheduleName dropped | Migration applied on staging; ScheduleService writes ScheduleId; drop-column migration follows the app. |
 | M4 | US booking path on the header route | UTL_stpJobBooking_InsertSchedule resolves from the stored day-row id; no name predicate. |
 | M5 | Bulk and single-job insert procs resolve by id | Rows 4, 4a, 4b take the id with a one-release name fallback logged to tblMigrationCheckLog. |
