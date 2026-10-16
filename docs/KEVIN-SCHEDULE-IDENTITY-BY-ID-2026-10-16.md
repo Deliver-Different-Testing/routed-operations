@@ -87,3 +87,15 @@ and `.ScheduleName)` and classify the same way.
 **B. Where the DespatchWeb fix (row 5) lives.** One line in `RecurringJobRepository.cs`, outside the two repos this spec named, touching recurring bookings. **Recommendation: Kevin makes the change on a despatchweb branch since he has the context, Jacob reviews and owns the manual production deploy, and it ships with the row 3 and 4 follow-on, not before.** Steve to confirm.
 
 Decided 17 Oct: header route for rows 2 and 3 (yes); `tblScheduleClient.ScheduleName` dropped in the row 1 migration (yes); Hyper is a 6.3 case and is not in the 13-client ops review (agreed).
+
+## Milestones
+
+| # | Milestone | Done when |
+|---|---|---|
+| M1 | Sweep classified on both tenants | Section 2 lists every resolver and every label from the sys.sql_modules and column sweeps (done 16 Oct, Kevin). |
+| M2 | Prebook on the header route | uspPrebookSet six sites resolve day-row id to header, no name predicate; ships in the 6.2 re-emit. |
+| M3 | tblSchedulePostcode re-keyed, tblScheduleClient.ScheduleName dropped | Migration applied on staging; ScheduleService writes ScheduleId; drop-column migration follows the app. |
+| M4 | US booking path on the header route | UTL_stpJobBooking_InsertSchedule resolves from the stored day-row id; no name predicate. |
+| M5 | Bulk and single-job insert procs resolve by id | Rows 4, 4a, 4b take the id with a one-release name fallback logged to tblMigrationCheckLog. |
+| M6 | DespatchWeb recurring-days lookup by id | RecurringJobRepository uses meta.ScheduleId; deployed through the manual production gate. |
+| M7 | Fallbacks removed, sweep clean | Final migration drops the name fallbacks; the section 4 sweep returns label uses only on Urgent and Medical staging; rename test in section 5 passes. |
