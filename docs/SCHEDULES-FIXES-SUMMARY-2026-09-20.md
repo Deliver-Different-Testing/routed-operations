@@ -3,13 +3,15 @@ title: Schedules (NEW) — fix list summary and order of work
 date: 2026-09-20
 audience: Steve, Marcus, Kevin
 status: Summary — the full brief is KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md
+updated: 2026-10-16 — F22 added 14 Oct; F23–F25 from Anisah's staging smoke test 14–16 Oct
 ---
 
 # Schedules (NEW) — what is wrong, and the order to fix it
 
-21 items from Steve's walkthrough of the deployed **Schedules NEW** view
-(`/schedules-new`), each grounded
-in the code with a file and line, a fix and acceptance criteria.
+25 items, each grounded in the code with a file and line, a fix and acceptance
+criteria. F1–F22 come from Steve's walkthrough of the deployed **Schedules NEW** view
+(`/schedules-new`). **F23–F25 come from Anisah's staging smoke test, 14–16 Oct** —
+real schedules, real saves, and they found a blocker.
 
 **Full brief:** [`KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md`](KEVIN-SCHEDULES-NEW-FIXES-2026-09-20.md)
 — carries the detail, the DDL, the diagnostic queries and 18 screenshots against the
@@ -17,7 +19,33 @@ items they evidence.
 
 ---
 
-## One thing is urgent
+## Two things are urgent, and one of them stops the release
+
+### F24 — saving a schedule can delete its lane. Do not ship without this fix.
+
+Open a cross-depot schedule that books no collection, change anything — Anisah added
+one character to the name — and save. `PickupDepotId` is written back as NULL on every
+day row. That column names the **from** region of the lane, so the schedule stops
+matching on the booking page and disappears. Client Manager then renders the empty
+depot as "Client Address", which is what it looks like from the outside.
+
+Confirmed on staging on two live schedules: **#950 Fresh Connection WRG > AKL
+Chilled** and **#1591 Napier Hastings Chilled**. #1591 vanished from the booking page
+entirely. Production is still correct — only a save through Schedules NEW does this.
+It also explains a separate puzzle: adding a Depot leg to a delivery-only schedule
+appeared to do nothing, because the depot id was dropped on the same path.
+
+The cause is one condition in `deriveFromLegs`: the pickup depot is carried only when
+the chain has a Collection leg, and a lane-origin schedule legitimately has none. The
+fix is to carry the depot whenever the origin is a depot and let the Collection leg
+decide only the booking flag — plus a server-side guard so clearing a pickup depot has
+to be deliberate, never a side effect of a rename.
+
+**Before that fix ships, count the exposure** (read-only, production): day rows with
+`PickupDepotId IS NOT NULL AND ISNULL(BookPickup, 0) = 0`. Every schedule in that set
+loses its lane the first time anyone saves it in the new view.
+
+### F21 — the Active toggle changes how a schedule dispatches
 
 **The Active toggle in the schedules list changes how a schedule dispatches.**
 
@@ -64,10 +92,11 @@ repo. The fixes are unaffected; Kevin will need to re-point the coordinates.
 
 ---
 
-## Five defects that cost money
+## Six defects that cost money
 
 | | What happens |
 | :- | :- |
+| **Pickup depot wiped** *(on save)* | **F24, the blocker.** A save on a cross-depot schedule with no collection clears `PickupDepotId`, the schedule stops being offered, and Client Manager shows its origin as "Client Address". Two staging schedules already broken this way. |
 | **Zone rows overwritten** *(on save)* | Delivery zones are read from one column and written from another, so opening a schedule and saving it destroys its zone rows. The read column is empty on 81 of 179 schedule sets. |
 | **`MaxJobs` overwritten** *(on save)* | Hardcoded to 10000 on every save. The real value is never read back. |
 | **Wrong temperature state** | A production integer is handed to a text dropdown with no mapping. The affected value covers 87 of 179 sets, including every medical schedule. |
@@ -99,6 +128,7 @@ writes no staging row at all.
 
 | | |
 | :- | :- |
+| **F24** | **Stop a save wiping `PickupDepotId`.** One condition, plus a server guard. Blocks the release; count the exposed schedules first. |
 | **F21** | Stop the Active toggle writing `AutoBook`. One line. |
 | **F7 write path** | Stop zone rows being overwritten on save. One line. |
 | **F8** | Stop writing 10000 over the real `MaxJobs`. |
@@ -113,7 +143,9 @@ writes no staging row at all.
 | 2 | Temperature state mapping | Half the estate is wrong |
 | 3 | Collection section on schedules with no collection job | One query decides the cause |
 | 4 | **The override model** | One deployable slice; three other items fall out of it |
-| 5 | Small view fixes — box discount, depot filter, sorting | One pass |
+| 5 | Small view fixes — box discount, depot filter, sorting, drop-off on the Collection card (F22) | One pass |
+| 5a | **F23** — the modal's "next runs" preview ignores the cut-off, so it offers dates the booking page has already dropped | Preview and booking page must share one cut-off expression |
+| 5b | **F25** — a per-client occurrences override is invisible, so changing the schedule value looks broken | Surface the override on the Clients tab and wire Remove back up |
 | 6 | **Linehaul out of the schedule** | Biggest structural win; unblocks pricing |
 | 7 | Schedule shape — display name, depot settings, collection zones | |
 | 8 | Cut-off rewrite + next-available-collection | The one real rewrite |
@@ -137,6 +169,8 @@ id** — never the day-row line, never the schedule name.
   each other, and schedules by book-immediately.
 - Ops to confirm the book-immediately count looks right — the only check on what the
   Active toggle may already have changed.
+- The F24 exposure count run on production, and the two broken staging schedules
+  (#950, #1591) restored or reset before Anisah retests.
 - Where the collection and linehaul legs sit when a job goes straight through.
 
 ---
