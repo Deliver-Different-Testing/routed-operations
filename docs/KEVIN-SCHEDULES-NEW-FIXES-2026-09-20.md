@@ -1957,3 +1957,76 @@ and E1's Bundles column is easier once overrides are out of the schedule rows.
 - Your read on the transfer source: a new pickup source, or a depot-to-depot leg
   rule (F10)?
 - A date for steps 1–4. They are small and they are all data integrity.
+
+
+---
+
+## F23 - "Next runs offered" preview ignores the cutoff time (Anisah smoke test, 14-16 Oct)
+
+**Seen on:** #6 CKCL, #68 UCLCF, #712 and #713 KSFRS, #1173 HARBT, #950 FRESH. Not on #639, #1118, #1365, #1591.
+
+**What happens.** The preview on the schedule modal lists today (or tomorrow, for a day-before cutoff) after that run's cutoff has passed. The booking page is right every time: it hides the passed date and appends the next one so the count still equals Occurrences ahead. Example: #713, cutoff 17:00 the day before, tested Thursday 18:15: preview starts Friday 16th, booking page starts Monday 19th and runs to Friday 23rd.
+
+**Cause.** The preview generates N dates from the WeekDays mask by date only. The function applies `CutoffDateTime > tenant now` (same-day cutoff from `CutoffTime`, day-before from `CutoffDay`/`CutoffTime`, else `StartTime - CutoffHours`) before keeping the first N occurrences.
+
+**Fix.** The preview endpoint applies the same cutoff test as `UTL_fncJob_GetClientAvailableBulkRunSchedule` using tenant-local now (`dbo.UTL_GetTenantLocalDateTime()`), drops passed dates and keeps the first N that remain. Simplest is for the preview to call the function for a representative client, or to share the cutoff expression as one inline TVF both can use so they cannot drift again. Label the preview "as the booking page will offer them at <time>".
+
+**Acceptance.** For each of the six schedules above, at any time of day the preview and the booking page list the same dates for the same client.
+
+---
+
+## F24 - Saving a cross-depot schedule with no Collection leg wipes PickupDepotId (BLOCKER before the app goes to production)
+
+**Seen on:** #950 Fresh Connection WRG > AKL Chilled (pickup Whangarei, deliver Auckland) and #1591 Napier Hastings Chilled (pickup Auckland, deliver Napier). Anisah added one character to the name and saved. Client Manager then showed Origin "Client Address" instead of Whangarei / Auckland. #1591 vanished from the booking page; #950 stayed but with duplicate rows per day and only three dates. Production still shows the depot and offers both schedules. The same cause explains why adding a Depot leg to #1365 and #1591 and saving appeared to do nothing.
+
+**Cause, in `deriveFromLegs` (ScheduleDetailModal.tsx, Origin resolution block):**
+
+```ts
+let bookPickup = false;
+if (originType === 'depot' && hasCollection) {
+  bookPickup = true;
+  pickupDepotId = firstDepot?.depotId ?? null;
+}
+```
+
+`pickupDepotId` is only carried when the chain has a Collection leg. A cross-depot schedule that does not book a collection has `PickupDepotId` set with `BookPickup = 0`: the pickup depot names the FROM region of the lane for availability, nothing more. `seedLegsFromDto` seeds its Depot leg correctly (from `pickupDepotName`) and no Collection leg (correctly, F6), so on save `derived.pickupDepotId` is null, `ApplyGroupTemplateToRow` writes `row.PickupDepotId = req.PickupDepotId` = NULL on every day row, and the lane is gone. Client Manager renders a NULL pickup depot as "Client Address", which is the label Anisah saw; the header `OriginType` stayed `depot`. In the availability function the standard block's first arm then needs From region = To region (Auckland is not Napier), the second arm needs `s.PickupDepotId`, and the cross-region block needs `PickupDepotId IS NOT NULL`, so #1591 matches nothing. The Depot-leg add fails for the same reason: the depot id is dropped before it reaches the request.
+
+**Fix.**
+
+1. `deriveFromLegs`: carry the depot whenever the origin is a depot, and let the Collection leg decide only the booking flag:
+   ```ts
+   const pickupDepotId = originType === 'depot' ? (firstDepot?.depotId ?? null) : null;
+   const bookPickup = originType === 'depot' && hasCollection;
+   ```
+   Same change in `NewScheduleModal` if it has its own copy.
+2. Server guard in `ScheduleService` upsert: when the stored day rows have `PickupDepotId` and the request carries `OriginType = 'depot'` with `PickupDepotId = null` and no Collection leg, keep the stored value rather than clearing it, and log it. Clearing a pickup depot is an explicit act (choose Direct, or choose a different depot), never a side effect of a rename.
+3. Depot card: for a depot-origin schedule with a pickup depot and no collection, the card reads "From <depot> (lane origin, no collection booked)" so the operator sees what the save preserves.
+
+**Count first (Kevin, production, read-only):** day rows with `PickupDepotId IS NOT NULL AND ISNULL(BookPickup, 0) = 0`, grouped by header. Every one of those schedules loses its lane the first time anyone saves it in Schedules NEW. The app does not go to production until this fix is on it. Staging copies of #950 and #1591 are already broken; the refresh resets them, or Kevin restores the two pickup depots by hand before Anisah retests.
+
+**Acceptance.** On staging, rename #950 and #1591 and save: Client Manager still shows Whangarei and Auckland, both still offered on the booking page with the same dates as before the save. Add a Depot leg to a delivery-only schedule, save, reopen: the leg is there. Choosing Direct still clears the depot, as designed.
+
+---
+
+## F25 - Per-client occurrences override is invisible, so the schedule-level value appears not to work
+
+**Seen on:** #1173 HARBT (booking page offers four dates, schedule shows Occurrences ahead 5; changing it to 6 changed the preview and not the booking page) and #950 FRESH (three dates, same behaviour). Anisah then edited "show days in the future" in Admin Manager, with no effect.
+
+**Cause.** By design. `20261009179000` seeded a per-client `OccurrencesAhead` override wherever the client-speed `DaysInFuture` was not 6: HARBT's regional-run speed was 4, so the client holds an override of 4 and the function resolves client override first, detail row second. The schedule-level field edits the detail row, which that client never reaches. Admin Manager's `DaysInFuture` is retired and no longer read. Related: Decision 3 on 14 Oct, the Remove-override button was lost with the dead ClientOverrideEditor and the `deleteOverride` endpoint has no caller.
+
+**Fix.**
+
+1. Clients tab: show each linked client's effective occurrences with its source ("override 4", "schedule 5"), editable inline, with Remove override wired to the existing `deleteOverride` endpoint.
+2. Occurrences field on the schedule: when any linked client holds an override, show "n clients override this" under the field so a changed value that does not reach the booking page is explained.
+3. Admin Manager "show days in the future": hide or mark read-only with "retired, set occurrences in Schedules NEW" (Admin Manager is retiring; one line of copy is enough).
+
+**Acceptance.** On #1173 the Clients tab shows HARBT with override 4; remove it; the booking page offers five dates. Set the schedule to 6; the booking page offers six.
+
+---
+
+## Also from the smoke test, not F-items
+
+- **#950 duplicate schedule rows per day on the booking page** after the F24 wipe. Kevin to check on staging before the refresh whether the duplicate is the same schedule from two arms of the function or a default twin (Decision 8); if the latter, 6.2 removes it.
+- **#1365 JR Whangarei Chilled** (client origin, API bookings) does not appear on the booking page on staging or production. Check `OriginRegionId` on its header: the client arm needs `fr.DepotId = h.OriginRegionId`, so a NULL region makes a client-origin schedule invisible. Pre-existing, not a regression.
+- **Cosmetic**: Operating days tab caption on a collapsed schedule still describes day rows (reported 14 Oct).
+- **Good**: #639 and #1118 correct end to end; the booking page's cutoff logic is right in every case; the old Schedules page reads the collapsed data with no change.
