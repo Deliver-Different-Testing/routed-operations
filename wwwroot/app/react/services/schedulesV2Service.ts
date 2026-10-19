@@ -252,8 +252,16 @@ export interface ScheduleOccurrence {
   dayOfWeek: number;
   /** "HH:mm". */
   startTime: string;
-  /** "yyyy-MM-dd HH:mm" - when ordering closes for this run. */
+  /** "yyyy-MM-dd HH:mm" - when ordering closes for this run. F23: this is
+   *  now the absolute cutoffDay/cutoffTime pair where the schedule has one
+   *  and startTime minus cutoffHours where it does not, matching the
+   *  availability function rather than only ever doing the second. */
   cutoffAt: string;
+  /** "yyyy-MM-dd HH:mm" - the TENANT-local moment the cutoff test was
+   *  applied. Repeated on every row, which keeps the field additive; the
+   *  label reads it off the first. Here because the operator's clock is not
+   *  necessarily the tenant's, which is the server-side mistake F23 fixed. */
+  asAt: string;
 }
 
 export interface ScheduleScopeOverride {

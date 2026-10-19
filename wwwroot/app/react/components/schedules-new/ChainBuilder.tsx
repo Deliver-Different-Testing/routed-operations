@@ -505,7 +505,8 @@ export function ChainBuilder({
                   <div className="flex-1 text-sm min-w-0">
                     <LegSummary leg={leg} lookups={lookups} originDepotName={originDepotName}
                       originIsClientAddress={originIsClientAddress}
-                      dispatchRegionName={dispatchRegionName} />
+                      dispatchRegionName={dispatchRegionName}
+                      chainHasCollection={hasCollection} />
                   </div>
                   {!readOnly && (
                     <>
@@ -617,12 +618,18 @@ export function ChainBuilder({
 
 // ─── One-line leg summary shown in the collapsed header ──────────────
 
-function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, dispatchRegionName }:
+function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, dispatchRegionName, chainHasCollection }:
   { leg: Leg; lookups: LookupCatalogue; originDepotName: string | null;
     originIsClientAddress: boolean;
     /** Delivery-leg region name, used as the dispatch region on a Direct
      *  Depot card. Null until a Delivery leg names a region. */
-    dispatchRegionName: string | null }) {
+    dispatchRegionName: string | null;
+    /** F24 item 3: a depot-origin chain with no Collection leg still keeps
+     *  its pickup depot, because the depot names the FROM region of the lane
+     *  for availability. The card says so, so the operator can see what the
+     *  save preserves rather than inferring it from a field that looks
+     *  unused. */
+    chainHasCollection: boolean }) {
   const depotName = (id: number | null | undefined) =>
     id ? (lookups.depots.find((d) => d.id === id)?.name ?? `#${id}`) : null;
   const speedName = (id: number | null | undefined) =>
@@ -667,7 +674,13 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
       ? `Direct: booking pickup address, dispatched from ${dispatchRegionName ?? 'the delivery region'}`
       : leg.clientAddress
         ? 'From client address'
-        : (depotName(leg.depotId) ?? 'Depot (not set)');
+        : depotName(leg.depotId)
+          // F24 item 3. The depot is the lane origin whether or not a
+          // collection is booked; saying it out loud is what stops the next
+          // person reading a populated depot with BookPickup 0 as a mistake
+          // and "tidying" it away, which is the bug this item fixed.
+          ? `From ${depotName(leg.depotId)}${chainHasCollection ? '' : ' (lane origin, no collection booked)'}`
+          : 'Depot (not set)';
     return (
       <>
         <div className="font-medium text-text-primary">
