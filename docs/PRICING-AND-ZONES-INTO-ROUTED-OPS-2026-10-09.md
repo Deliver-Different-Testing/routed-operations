@@ -609,50 +609,184 @@ no bound postcodes books exactly as before. Zone-rated speeds are unchanged in e
 
 ### 6.4 Collection zone ticks must gate the From postcode (Marcus and George, 19 Oct transcript)
 
+**Status:** written up 20 Oct against the shipped 6.2/6.3 migration and Kevin's production figures.
+Not built. Gate M2 needs this and the #2900 script.
+
 **Asked:** what happens to collection availability now the Collection card has per-zone ticks, where
 the pickup postcode group used to be the whole control.
 
-**Today, checked in `20261014160000`:** the availability function never reads `BulkPickupZoneSchedule`.
-The From postcode is gated by the pickup postcode group only: `s.PickupPostcodeGroupId IS NULL OR
-EXISTS (bulkzonepostcode pz WHERE pz.PostCode = @FromPostCode AND pz.PostcodeGroupId = s.PickupPostcodeGroupId)`.
-Schedules NEW saves the collection zone ticks (`ScheduleService` writes `BulkPickupZoneSchedule`) and
-paints them, but nothing enforces them. Like-for-like holds on go-live, and ops must not retire the
-separate pickup groups ("PU Regional Tauranga Z1", "PU Regional Tauranga Z2 & Z3 Outer Town") until
-this lands, because the group is what limits collection.
-
-**Rule, mirroring 6.3:** a schedule with any active collection zone is limited to postcodes in those
-zones on its pickup depot and pickup group; a schedule with none behaves as today (group only).
+**Today, checked in the shipped emitter** (`20261016170000_Availability_DefaultSuppressionAndZoneLimits.sql`,
+merged 19 Oct as part of 6.2/6.3): the availability function still never reads `BulkPickupZoneSchedule`.
+The delivery side now joins `BulkZoneSchedule` (lines 374 and 428); the pickup side gates on the group
+alone, at one site, line 498:
 
 ```sql
--- beside @ZoneActiveSchedules / @ZoneLimitedSchedules, same set-based style
+AND (s.PickupPostcodeGroupId IS NULL
+     OR EXISTS (SELECT 1 FROM bulkzonepostcode pz
+                 WHERE pz.PostCode = @FromPostCode
+                   AND ISNULL(pz.PostcodeGroupId, 0) = ISNULL(s.PickupPostcodeGroupId, 0)))
+```
+
+Schedules NEW saves the collection zone ticks (`ScheduleService` writes `BulkPickupZoneSchedule`) and
+paints them, but nothing enforces them. Marcus, 19 Oct: a tick that does nothing is worse than no tick.
+
+**Scope, confirmed by Kevin 20 Oct.** Smaller than first assumed on one side, and a design question on
+the other:
+
+- **NZ function: one predicate at one site.** There is a single pickup gate site, so one `NOT EXISTS`
+  mirrors the delivery shape. Not two blocks.
+- **`uspPrebookSet`: not needed**, on a stronger basis than 6.3. The procedure has no postcode in scope
+  in either direction, no zone tables and no `BookPickup`. Its cursor carries the schedule, client and
+  holiday option, and nothing about the job's endpoints. The six sites decide *which schedule is
+  selected*, not whether a postcode is covered. Verified: the shipped prebook migration
+  (`20261016171000`) references none of `PickupPostcodeGroupId`, `FromPostCode`, `BookPickup`,
+  `PickupDepotId` or `BulkZoneSchedule`.
+- **The `DD_` twin has no pickup arm to mirror**: see "US side" below. This is a decision, not a port.
+
+**Table shape, now confirmed** (from the repair migration's header,
+`20261009173000_Repair_ClientManagerScheduleLinksAndZoneRows.sql`, which documents both zone tables):
+
+| Table | Key column | Nullability |
+|---|---|---|
+| `BulkZoneSchedule` (delivery) | `ScheduleId` = **day-row** id (`tblBulkRunSchedule.BulkRunScheduleId`) | `ScheduleId INT NULL`, `Active BIT NULL` |
+| `BulkPickupZoneSchedule` (pickup) | `ScheduleId` = **day-row** id, despite the name | `ScheduleId INT NOT NULL`, `Active BIT NOT NULL` |
+
+Three different things in this area are called `ScheduleId` and two point at different tables. The
+pickup table is keyed on the day row, not the header. Test `Active = 1`, never `Active <> 0`.
+
+**What is actually riding on this, measured on production (Kevin, 20 Oct).** The earlier "zero rows"
+figure was from Kevin's local copy and is withdrawn. Real counts:
+
+| Environment | Active pickup zone rows |
+|---|---|
+| Urgent production | 20, across two live schedules |
+| AWS Urgent staging | 15 |
+| Medical staging | 0 |
+
+- `#2903 Waikato Outer > Auckland 8am-12pm`: 15 rows, zones 3, 4 and 6.
+- `#2906 Enovis Whanganui > Wellington`: 5 rows, zone 1.
+
+**`#2906` is the clearest case for 6.4, and it exposes a hole in the rule as first drafted.** Its
+`PickupPostcodeGroupId` is NULL, so under the current gate the `IS NULL` arm short-circuits and the
+schedule is open to *any* collection postcode. Ops ticked zone 1 expecting it to restrict collection;
+it has no effect at all. So 6.4 is not only "narrow a group to its ticks". It is also the only control
+that exists on a schedule with no pickup group.
+
+**Rule, mirroring 6.3:** a schedule with any active collection zone is limited to the postcodes in
+those zones; a schedule with none behaves exactly as today (group only, including the open `IS NULL`
+case).
+
+```sql
+-- beside @ZoneActiveSchedules / @ZoneUnlimitedSchedules, same set-based style.
+-- Table variables, not CTEs, for the same plan reason given for 6.3.
+
 DECLARE @PickupZoneLimited TABLE (BulkRunScheduleId int PRIMARY KEY)
-INSERT INTO @PickupZoneLimited
-SELECT DISTINCT s.BulkRunScheduleId FROM tblBulkRunSchedule s
+INSERT INTO @PickupZoneLimited (BulkRunScheduleId)
+SELECT s.BulkRunScheduleId
+FROM tblBulkRunSchedule s
 WHERE EXISTS (SELECT 1 FROM BulkPickupZoneSchedule pzs
-              WHERE pzs.ScheduleId = s.BulkRunScheduleId AND pzs.Active = 1)   -- columns to confirm
+               WHERE pzs.ScheduleId = s.BulkRunScheduleId AND pzs.Active = 1)
 
 DECLARE @PickupZoneActive TABLE (BulkRunScheduleId int PRIMARY KEY)
-INSERT INTO @PickupZoneActive
-SELECT DISTINCT s.BulkRunScheduleId FROM tblBulkRunSchedule s
-INNER JOIN BulkPickupZoneSchedule pzs ON pzs.ScheduleId = s.BulkRunScheduleId AND pzs.Active = 1
+INSERT INTO @PickupZoneActive (BulkRunScheduleId)
+SELECT DISTINCT s.BulkRunScheduleId
+FROM tblBulkRunSchedule s
+INNER JOIN BulkPickupZoneSchedule pzs ON pzs.ScheduleId = s.BulkRunScheduleId
+    AND pzs.Active = 1
 INNER JOIN BulkZonePostcode p ON p.Zone = pzs.Zone
-   AND p.DepotId = s.PickupDepotId
-   AND ISNULL(p.PostcodeGroupId, 0) = ISNULL(s.PickupPostcodeGroupId, 0)
-WHERE p.PostCode = @FromPostCode
+    AND p.PostCode = @FromPostCode
+    -- D14: group predicate only when the schedule HAS a pickup group
+    AND (s.PickupPostcodeGroupId IS NULL
+         OR ISNULL(p.PostcodeGroupId, 0) = ISNULL(s.PickupPostcodeGroupId, 0))
+    -- D15: depot predicate only when the origin IS a depot
+    AND (ISNULL(h.OriginType, 'depot') <> 'depot'
+         OR p.DepotId = s.PickupDepotId)
 
--- added to the collection-side predicate in both candidate blocks
+-- one predicate, at the single pickup gate site (line 498 in the shipped emitter)
 AND (NOT EXISTS (SELECT 1 FROM @PickupZoneLimited l WHERE l.BulkRunScheduleId = s.BulkRunScheduleId)
      OR EXISTS  (SELECT 1 FROM @PickupZoneActive  a WHERE a.BulkRunScheduleId = s.BulkRunScheduleId))
 ```
 
-Ships with 6.2 and 6.3 in the same re-emit if Kevin has not started; otherwise the next one. Count
-first, as for 6.3: schedules with active collection zones, and their last-90-day bookings whose From
-postcode falls outside those zones. Then ops can do what Nisa proposed: one standard group per depot
-for both legs, with the zone ticks doing the limiting. Coverage tab and Collection card wording follow.
+**Why D14 and D15 are in there.** The delivery arm pins both the group
+(`ISNULL(p.PostcodeGroupId,0) = ISNULL(s.PostcodeGroupId,0)`) and the depot (`p.DepotId = s.Region`),
+and copying that shape unchanged onto the pickup side breaks the two schedules that actually carry
+ticks:
 
-**Acceptance.** On staging, tick zone 3 only on the Collection card of Outer BOP > TGA (#1666) under
-"Std Regional Tauranga": booking from Whakatane 3120 is offered, booking from Brookfield 3110 is not;
-clear the ticks and both are offered again.
+- **D14, NULL pickup group.** `#2906` has `PickupPostcodeGroupId` NULL. A straight copy requires
+  `p.PostcodeGroupId` to be NULL too, which matches nothing, so the schedule lands in
+  `@PickupZoneLimited` with an empty `@PickupZoneActive` and **refuses every collection postcode**,
+  from open to shut in one migration. The clause above makes the zone's own group authoritative when
+  the schedule names none.
+- **D15, non-depot origin.** The pickup gate sits in an arm that also serves `OriginType` `'client'`
+  and `'direct'`, which carry no `PickupDepotId` (direct resolves its From through `s.Region`). A
+  straight `p.DepotId = s.PickupDepotId` would be NULL-compared on those and refuse everything. Only
+  depot-origin schedules get the depot predicate.
+
+`#2903` and `#2906` origin types and `PickupDepotId` values are **to confirm**. Kevin to state them,
+since D15's blast radius depends on whether either is non-depot.
+
+**Impact, measured (Kevin, 20 Oct).** Twelve jobs ran on those two schedules in the last 90 days; six
+would stop being offered them:
+
+- five collecting from `1062 Otahuhu` on the Waikato-origin schedule;
+- one collecting from `6011 Pipitea` on the Whanganui-origin schedule.
+
+Both sets collect at the **destination** end of the lane rather than the origin, which reads as a
+correctness fix rather than a regression. **Ops must confirm these six are not deliberate return legs
+before we classify them as mistakes**. If they are intended, the schedules need the reverse zone
+ticked, or 6.4 refuses work we currently take.
+
+**Do-not-retire list.** The ticks are not on the Tauranga groups at all: they are on group 90.
+Retiring any of these before 6.4 is live leaves a schedule with no collection gate:
+
+| Postcode group | Gates | Why protected |
+|---|---|---|
+| `Waikato Collection Zone` (group 90) | 358 day rows across 72 schedules | **Where the pickup ticks actually are.** Added by Kevin 20 Oct. |
+| `PU Regional Tauranga Z1` | 329 day rows across 61 live schedules | The group is the only collection limit today. |
+| `PU Regional Tauranga Z2 & Z3. Outer town` | 167 day rows across 30 live schedules | As above. |
+
+Once 6.4 is live, ops can do what Nisa proposed on 17 Oct and Marcus agreed: one standard group per
+depot for both legs, with the zone ticks doing the limiting. Coverage tab and Collection card wording
+follow.
+
+**US side (`DD_` twin): a decision, not a port.** The twin has no pickup arm to mirror. It resolves
+both ends through `ZoneZip` → `ZoneName.LocationID` → depot (`@FromDepots` / `@ToDepots`) and never
+uses `PickupPostcodeGroupId` as a gate at all. Applying 6.4 symmetrically would therefore **introduce
+a collection gate that has never existed on the US tenants**, the same shape of problem 6.3 hit.
+Kevin has offered the two function bodies side by side. Proposed: **NZ only in this migration**, US
+deferred to its own decision with its own count first. Needs Steve's tick (D16).
+
+**Migration.** Its own forward migration, baselined from the latest emitter of the availability
+function on master at build time (as of 20 Oct that is `20261016170000`), EXCEPT-gated against the
+previous emitter so delivery-side and non-depot rows are provably unchanged. Not a re-emit of the
+shared zone scalar, which 6.3 deliberately left alone.
+
+**Acceptance.**
+
+1. `#2906 Enovis Whanganui > Wellington` on staging, zone 1 ticked and `PickupPostcodeGroupId` NULL:
+   booking as the linked client collecting from a zone 1 postcode is offered; collecting from
+   `6011 Pipitea` is not. This is the D14 case and it fails on a naive port.
+2. `#2903 Waikato Outer > Auckland 8am-12pm`, zones 3, 4 and 6 ticked: a collection inside those zones
+   is offered, `1062 Otahuhu` is not.
+3. Tick zone 3 only on the Collection card of Outer BOP > TGA (`#1666`) under "Std Regional Tauranga":
+   booking from Whakatane 3120 is offered, booking from Brookfield 3110 is not; clear the ticks and
+   both are offered again.
+4. A schedule with no ticks books exactly as before, including one with `PickupPostcodeGroupId` NULL
+   (open to any collection postcode).
+5. Medical staging, which has zero pickup zone rows, shows no change on any schedule.
+6. EXCEPT gate: delivery-side availability identical to the previous emitter for a sample of five
+   From/To pairs.
+
+**Milestones**
+
+| # | Milestone | Done when |
+|---|---|---|
+| M1 | D14, D15, D16 answered; `#2903`/`#2906` origin types confirmed | Steve ticks; Kevin states the two rows. |
+| M2 | Ops confirm the six jobs are not deliberate return legs | Anisah/Marcus reply per job. |
+| M3 | Migration written and EXCEPT-gated | On `dbmigrationsv2` master. |
+| M4 | Applied to Urgent staging | Acceptance 1 to 6 green (Anisah, G5 collection half). |
+| M5 | Live on Urgent production | Part of the gated production click. |
+| M6 | Ops retire the three pickup groups | Only after M5. |
 
 ---
 
@@ -731,6 +865,18 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 
 9. to 12. **Team feedback items** (sheets, additional item % level, linehaul leg migration, courier % into pay): see 11.4.
 13. **Speeds sub-view under Pricing**: see 12.3.
+14. **NULL pickup group with ticks** (6.4). A schedule with collection zones ticked but no
+    `PickupPostcodeGroupId` (`#2906 Enovis Whanganui > Wellington` on production). Make the zone's own
+    group authoritative when the schedule names none (recommended; the ticks become the gate), or pin
+    the group as the delivery arm does, which turns that schedule from open to refusing every
+    collection postcode.
+15. **Depot predicate on non-depot origins** (6.4). The pickup gate also serves `OriginType` `'client'`
+    and `'direct'`, which carry no `PickupDepotId`. Apply `p.DepotId = s.PickupDepotId` to depot-origin
+    schedules only (recommended), or to all, which NULL-compares and refuses every non-depot origin.
+16. **6.4 on the US tenants** (6.4). The `DD_` twin has no pickup arm: it resolves both ends through
+    `ZoneZip` and never gates on `PickupPostcodeGroupId`. NZ only in this migration, US deferred to its
+    own decision with its own count first (recommended), or mirror now and introduce a collection gate
+    that has never existed on those tenants.
 
 ## 10. Acceptance
 
