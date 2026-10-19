@@ -607,6 +607,55 @@ no bound postcodes books exactly as before. Zone-rated speeds are unchanged in e
 
 ---
 
+### 6.4 Collection zone ticks must gate the From postcode (Marcus and George, 19 Oct transcript)
+
+**Asked:** what happens to collection availability now the Collection card has per-zone ticks, where
+the pickup postcode group used to be the whole control.
+
+**Today, checked in `20261014160000`:** the availability function never reads `BulkPickupZoneSchedule`.
+The From postcode is gated by the pickup postcode group only: `s.PickupPostcodeGroupId IS NULL OR
+EXISTS (bulkzonepostcode pz WHERE pz.PostCode = @FromPostCode AND pz.PostcodeGroupId = s.PickupPostcodeGroupId)`.
+Schedules NEW saves the collection zone ticks (`ScheduleService` writes `BulkPickupZoneSchedule`) and
+paints them, but nothing enforces them. Like-for-like holds on go-live, and ops must not retire the
+separate pickup groups ("PU Regional Tauranga Z1", "PU Regional Tauranga Z2 & Z3 Outer Town") until
+this lands, because the group is what limits collection.
+
+**Rule, mirroring 6.3:** a schedule with any active collection zone is limited to postcodes in those
+zones on its pickup depot and pickup group; a schedule with none behaves as today (group only).
+
+```sql
+-- beside @ZoneActiveSchedules / @ZoneLimitedSchedules, same set-based style
+DECLARE @PickupZoneLimited TABLE (BulkRunScheduleId int PRIMARY KEY)
+INSERT INTO @PickupZoneLimited
+SELECT DISTINCT s.BulkRunScheduleId FROM tblBulkRunSchedule s
+WHERE EXISTS (SELECT 1 FROM BulkPickupZoneSchedule pzs
+              WHERE pzs.ScheduleId = s.BulkRunScheduleId AND pzs.Active = 1)   -- columns to confirm
+
+DECLARE @PickupZoneActive TABLE (BulkRunScheduleId int PRIMARY KEY)
+INSERT INTO @PickupZoneActive
+SELECT DISTINCT s.BulkRunScheduleId FROM tblBulkRunSchedule s
+INNER JOIN BulkPickupZoneSchedule pzs ON pzs.ScheduleId = s.BulkRunScheduleId AND pzs.Active = 1
+INNER JOIN BulkZonePostcode p ON p.Zone = pzs.Zone
+   AND p.DepotId = s.PickupDepotId
+   AND ISNULL(p.PostcodeGroupId, 0) = ISNULL(s.PickupPostcodeGroupId, 0)
+WHERE p.PostCode = @FromPostCode
+
+-- added to the collection-side predicate in both candidate blocks
+AND (NOT EXISTS (SELECT 1 FROM @PickupZoneLimited l WHERE l.BulkRunScheduleId = s.BulkRunScheduleId)
+     OR EXISTS  (SELECT 1 FROM @PickupZoneActive  a WHERE a.BulkRunScheduleId = s.BulkRunScheduleId))
+```
+
+Ships with 6.2 and 6.3 in the same re-emit if Kevin has not started; otherwise the next one. Count
+first, as for 6.3: schedules with active collection zones, and their last-90-day bookings whose From
+postcode falls outside those zones. Then ops can do what Nisa proposed: one standard group per depot
+for both legs, with the zone ticks doing the limiting. Coverage tab and Collection card wording follow.
+
+**Acceptance.** On staging, tick zone 3 only on the Collection card of Outer BOP > TGA (#1666) under
+"Std Regional Tauranga": booking from Whakatane 3120 is offered, booking from Brookfield 3110 is not;
+clear the ticks and both are offered again.
+
+---
+
 ## 7. Queries to run before building (SELECT only, Urgent and Medical)
 
 ```sql
