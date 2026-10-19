@@ -141,6 +141,137 @@ public class ScheduleServiceTests : IDisposable
         Linehauls = new List<ScheduleLinehaulUpsertRequest>(),
     };
 
+    // ─── F23: the preview closes a run at the same moment the booking page does ───
+
+    [Theory]
+    // Absolute pair, same day: Monday run, cutoff Monday 15:00.
+    [InlineData("2026-10-19", 1, "08:00", 2, (byte)1, "15:00", "2026-10-19 15:00")]
+    // Absolute pair, the day before: #713 KSFRS, cutoff 17:00 the day before a
+    // Friday run. This is the case Anisah caught: tested Thursday 18:15, the
+    // preview offered Friday and the booking page did not.
+    [InlineData("2026-10-23", 5, "08:00", 2, (byte)4, "17:00", "2026-10-22 17:00")]
+    // Absolute pair reaching back across the weekend: a Monday run whose
+    // cutoff is the previous Friday. The offset has to be -3, not +4.
+    [InlineData("2026-10-19", 1, "08:00", 2, (byte)5, "16:00", "2026-10-16 16:00")]
+    // No pair, so the relative form, unchanged: start minus CutoffHours.
+    [InlineData("2026-10-19", 1, "08:00", 2, null, null, "2026-10-19 06:00")]
+    // A pair is only honoured when BOTH halves are present; a lone day falls
+    // back rather than inventing midnight.
+    [InlineData("2026-10-19", 1, "08:00", 3, (byte)1, null, "2026-10-19 05:00")]
+    public void CutoffFor_matches_the_availability_function(
+        string runDate, int isoDay, string startTime, int cutoffHours,
+        byte? cutoffDay, string? cutoffTime, string expected)
+    {
+        // F23. The preview and the booking page disagreed because the preview
+        // only ever computed "start minus CutoffHours" while the availability
+        // function uses the absolute CutoffDay / CutoffTime pair when the
+        // schedule has one. Six schedules showed it, including a run the
+        // preview offered after its cutoff had passed.
+        //
+        // These cases encode the rule rather than the arithmetic: the day
+        // offset must land on the most recent occurrence of the cutoff weekday
+        // at or BEFORE the run day. If someone writes the obvious
+        // (cutoffDay - isoDay) and loses the modulo, the Friday-before-Monday
+        // case goes four days forward instead of three days back, which would
+        // close ordering after the run had already started.
+        var actual = ScheduleService.CutoffFor(
+            DateTime.Parse(runDate),
+            isoDay,
+            TimeSpan.Parse(startTime),
+            cutoffHours,
+            cutoffDay,
+            cutoffTime is null ? null : TimeSpan.Parse(cutoffTime));
+
+        Assert.Equal(DateTime.Parse(expected), actual);
+    }
+
+    // ─── F24: a depot-origin schedule keeps its depot ───────────────────
+
+    [Fact]
+    public async Task UpsertAsync_keeps_PickupDepotId_when_a_depot_origin_save_omits_it()
+    {
+        // F24, the blocker from Anisah's 14 to 16 Oct smoke test. Both modals
+        // derived PickupDepotId only when the chain had a Collection leg, so a
+        // rename-and-save on a cross-depot schedule with BookPickup = 0 sent
+        // null and nulled the column on every day row. Client Manager then
+        // read it as "Client Address" and the schedule left the booking page.
+        //
+        // The derivation is fixed in the modals, but this asserts the SERVER
+        // half, because that is the only place the column is written and a
+        // stale bundle or a direct API call would otherwise do the same thing
+        // just as quietly. On Urgent production 5,211 day rows across 1,531
+        // schedules were one save away from it.
+        //
+        // The test sends a second save with no depot and BookPickup false,
+        // which is exactly the payload the broken frontend produced.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.OriginType = "depot";
+            create.PickupDepotId = 7;
+            create.BookPickup = false;
+            var created = await svc.UpsertAsync(create);
+
+            var resave = ValidRequest();
+            resave.ScheduleId = created.ScheduleId;
+            resave.Name = "Test Group renamed";
+            resave.OriginType = "depot";
+            resave.PickupDepotId = null;
+            resave.BookPickup = false;
+            await svc.UpsertAsync(resave);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays
+                .Where(r => r.ScheduleId == created.ScheduleId)
+                .ToList();
+            Assert.NotEmpty(rows);
+            Assert.All(rows, r => Assert.Equal(7, r.PickupDepotId));
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_still_clears_PickupDepotId_for_a_non_depot_origin()
+    {
+        // The other half of the same rule, and the reason the guard is scoped
+        // to a depot origin rather than refusing every null. A Direct origin
+        // takes its pickup address from the booking and stores no depot, so
+        // switching a schedule to it MUST clear the column. A guard that
+        // blocked this would quietly pin the old depot on a schedule that no
+        // longer starts at one: the same class of silent wrong data as F24,
+        // in the other direction.
+        //
+        // Direct rather than Client deliberately. A client origin is rejected
+        // on a default schedule, and nothing in Routed Operations ever sets
+        // IsDefault to 0, so that path is unreachable through this service
+        // today. Direct is explicitly exempt from that rule and is reachable,
+        // so it is the honest way to test the property.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.OriginType = "depot";
+            create.PickupDepotId = 7;
+            create.BookPickup = false;
+            var created = await svc.UpsertAsync(create);
+
+            var switchToDirect = ValidRequest();
+            switchToDirect.ScheduleId = created.ScheduleId;
+            switchToDirect.OriginType = "direct";
+            switchToDirect.OriginRegionId = null;
+            switchToDirect.PickupDepotId = null;
+            switchToDirect.BookPickup = false;
+            await svc.UpsertAsync(switchToDirect);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays
+                .Where(r => r.ScheduleId == created.ScheduleId)
+                .ToList();
+            Assert.NotEmpty(rows);
+            Assert.All(rows, r => Assert.Null(r.PickupDepotId));
+        }
+    }
+
     // ─── convert-on-save ────────────────────────────────────────────────
 
     [Fact]
@@ -387,6 +518,40 @@ public class ScheduleServiceTests : IDisposable
         var created = await svc.UpsertAsync(req);
         Assert.Equal(new[] { 1010, 6011 }, created.PostcodeIds.ToArray());
         Assert.Empty(created.PolygonIds);
+    }
+
+    [Fact]
+    public async Task Postcode_binding_is_written_with_BOTH_the_id_and_the_name()
+    {
+        // The re-key of tblSchedulePostcode onto ScheduleId is in its
+        // transition: dbmigrationsv2 20261016165000 adds the id nullable, and
+        // ScheduleName stays NOT NULL as half of the database primary key
+        // until a later migration moves it. So a row has to carry both, and
+        // the reason is not symmetry:
+        //
+        //   * drop the NAME and the real INSERT fails on a NOT NULL primary
+        //     key column, on every tenant, while the round-trip tests above
+        //     stay green because they read back through the same id.
+        //   * drop the ID and the row becomes invisible to the bound-postcode
+        //     half of availability spec 6.3, so the Coverage tab silently
+        //     goes back to being a picture rather than a gate.
+        //
+        // This test exists to fail when either half is removed, which is
+        // exactly what a round-trip assertion cannot see. Delete it only when
+        // the step-3 migration has dropped ScheduleName on both tenants.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var req = ValidRequest();
+            req.PostcodeIds = new List<int> { 1010 };
+            var created = await svc.UpsertAsync(req);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var row = Assert.Single(read.SchedulePostcodes.ToList());
+            Assert.Equal(1010, row.PostCode);
+            Assert.Equal(created.ScheduleId, row.ScheduleId);
+            Assert.Equal(created.Name, row.ScheduleName);
+        }
     }
 
     [Fact]

@@ -324,11 +324,18 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
                   .HasForeignKey(e => e.ScheduleId)
                   .HasPrincipalKey(h => h.ScheduleId);
         });
-        // Postcode junction still keyed on ScheduleName (out of scope
-        // for this MR).
+        // Postcode junction, mid-re-key from ScheduleName onto ScheduleId.
+        // The database primary key is still (ScheduleName, PostCode) until
+        // the step-3 migration moves it, so that stays the EF key here; the
+        // relationship is declared optional because 20261016165000 adds
+        // ScheduleId nullable and an older row may not carry one yet.
         modelBuilder.Entity<SchedulePostcode>(entity =>
         {
             entity.HasKey(e => new { e.ScheduleName, e.PostCode });
+            entity.HasOne(e => e.Header)
+                  .WithMany()
+                  .HasForeignKey(e => e.ScheduleId)
+                  .IsRequired(false);
         });
         // Schedule Bundles (Dane's bundle-of-schedules concept, added
         // 2026-09-14 by AddBaseScheduleIdAndScheduleGroupTables and

@@ -138,14 +138,28 @@ public record ScheduleOccurrenceDto(
     /// <summary>Run start, "HH:mm". The window the day opens.</summary>
     string StartTime,
     /// <summary>
-    /// When ordering closes for this run, "yyyy-MM-dd HH:mm". Derived as
-    /// the run start minus the schedule's CutoffHours, which the database
-    /// already resolved: for a collapsed schedule the compatibility view
-    /// computes it from the relative rule through fnCutoffHoursFor, and for
-    /// an old-shape one it is the stored offset. Nothing about the working
-    /// day / calendar day rule is re-derived here.
+    /// When ordering closes for this run, "yyyy-MM-dd HH:mm".
+    ///
+    /// F23 (Anisah's 14 to 16 Oct smoke test): this now uses the SAME
+    /// expression as UTL_fncJob_GetClientAvailableBulkRunSchedule, which is
+    /// the absolute CutoffDay / CutoffTime pair where the schedule has one
+    /// and StartTime minus CutoffHours where it does not. It previously only
+    /// ever did the second, so a schedule with a day-before absolute cutoff
+    /// previewed a date the booking page had already closed. #713 KSFRS was
+    /// the clearest case: cutoff 17:00 the day before, tested at 18:15 on a
+    /// Thursday, preview started Friday and the booking page started Monday.
     /// </summary>
-    string CutoffAt);
+    string CutoffAt,
+    /// <summary>
+    /// The tenant-local moment the cutoff test was applied, "yyyy-MM-dd HH:mm".
+    ///
+    /// Same on every row of one response, which is redundant but keeps this
+    /// additive: a wrapper object would have broken the service, the hook and
+    /// the component for what is a label. It is here because the list is only
+    /// true as at a moment, and the operator's own clock is not necessarily
+    /// the tenant's, which is the mistake this item fixed on the server side.
+    /// </summary>
+    string AsAt);
 
 /// <summary>
 /// A single day-window entry within a schedule group. One tblBulkRunSchedule
