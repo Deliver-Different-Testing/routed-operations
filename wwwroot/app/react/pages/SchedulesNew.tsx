@@ -26,6 +26,17 @@ import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
 import { NewScheduleModal } from '../components/schedules-new/NewScheduleModal';
 import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal';
+import { depotLabel, postcodeGroupLabel } from '../lib/tenantLabels';
+// Territory maintenance, reused verbatim from the legacy /schedules page.
+// Those three tabs are the ONLY surface that maintains the zone / zip /
+// zone-group / depot rows themselves (BulkZonePostcode, ZoneZip, ZoneName,
+// ZoneGroup, tblBulkRegion), and they lived on a page scheduled for
+// retirement once ops sign off on this one. Picking a schedule's active
+// zones is a different thing and already lives in the detail modal's
+// Coverage tab; this is the data those ticks choose from.
+import { ZonesTab } from './schedules/ZonesTab';
+import { ZoneGroupsTab } from './schedules/ZoneGroupsTab';
+import { DepotsTab } from './schedules/DepotsTab';
 
 // Schedules NEW - Steve's 2026-09-08 id-keyed multi-client schedules
 // view (KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08). Uses the
@@ -44,7 +55,30 @@ import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal
 //    the error immediately instead of blocking the spinner for the
 //    full retry backoff.
 
-type Tab = 'schedules' | 'bundles' | 'routes';
+// Pricing spec 3.1. 'pricing' and 'linehaul' join these later; the tab bar
+// is built so adding them is two more TabButtons.
+type Tab = 'schedules' | 'bundles' | 'routes' | 'zonegroups';
+
+const TABS: Tab[] = ['schedules', 'bundles', 'routes', 'zonegroups'];
+
+function isTab(v: string | null): v is Tab {
+  return v != null && (TABS as string[]).includes(v);
+}
+
+/** Sub-views inside the Zone groups tab (pricing spec 3.2: ZoneGroupsTab,
+ *  ZonesTab and DepotsTab are re-homed as sub-views, not as sibling tabs). */
+type ZoneGroupsView = 'groups' | 'zones' | 'depots';
+
+const ZONE_GROUP_VIEWS: ZoneGroupsView[] = ['groups', 'zones', 'depots'];
+
+/** Sub-view labels. Groups and Depots are the same DB entities on both
+ *  tenants under different operator words, so they read from tenantLabels;
+ *  "Zones" is the same word on both. */
+function zoneGroupsViewLabel(v: ZoneGroupsView, isUs: boolean): string {
+  if (v === 'groups') return postcodeGroupLabel(isUs, true);
+  if (v === 'depots') return depotLabel(isUs, true);
+  return 'Zones';
+}
 
 const DAY_LABELS: Array<{ n: number; label: string }> = [
   { n: 1, label: 'M' },
@@ -59,8 +93,39 @@ const DAY_LABELS: Array<{ n: number; label: string }> = [
 const PAGE_SIZE = 50;
 
 export default function SchedulesNew() {
-  const [tab, setTab] = useState<Tab>('schedules');
+  const user = useAuth();
+  const isUs = user.isUsTenant;
   const [searchParams, setSearchParams] = useSearchParams();
+  // Pricing spec 3.1: "Tabs are local state, not routes; keep that, but add
+  // ?tab= so a pricing link can be shared." So the tab stays out of the route
+  // table and is read from / written to the query string instead. An unknown
+  // or absent ?tab= falls back to Schedules rather than rendering nothing.
+  const tab: Tab = isTab(searchParams.get('tab')) ? (searchParams.get('tab') as Tab) : 'schedules';
+  const setTab = (next: Tab) => {
+    setSearchParams(
+      (prev) => {
+        const nextParams = new URLSearchParams(prev);
+        if (next === 'schedules') nextParams.delete('tab');
+        else nextParams.set('tab', next);
+        return nextParams;
+      },
+      { replace: true },
+    );
+  };
+  // Sub-view inside the Zone groups tab. Local state only: the spec asks for
+  // ?tab= on the tab, not on the sub-view.
+  const [zoneGroupsView, setZoneGroupsView] = useState<ZoneGroupsView>('groups');
+  // Keep-alive for the territory sub-views. ZoneGroupsTab and ZonesTab each
+  // bootstrap the whole territory payload on mount, which on a NZ tenant is
+  // every BulkZonePostcode row; unmounting on every sub-view switch would
+  // refetch it each time. The schedule tabs stay conditionally rendered -
+  // they are React Query backed, so their cache already survives a switch.
+  const [mountedViews, setMountedViews] = useState<Set<ZoneGroupsView>>(() => new Set(['groups']));
+  const selectZoneGroupsView = (next: ZoneGroupsView) => {
+    setZoneGroupsView(next);
+    setMountedViews((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+  };
+  const viewHidden = (v: ZoneGroupsView) => (zoneGroupsView === v ? '' : 'hidden');
   // Sync openScheduleId with the ?edit=<id> query param so schedule
   // detail modals get sharable URLs and survive page reload.
   const openScheduleId = useMemo(() => {
@@ -136,16 +201,23 @@ export default function SchedulesNew() {
             One schedule, many clients. Each schedule has its own id; clients
             are attached to it, overrides stay linked to their base, and the
             recurring routes and linehaul runs that deliver it sit alongside
-            instead of on a separate page.
+            instead of on a separate page. Zone groups maintains the{' '}
+            {postcodeGroupLabel(isUs, true).toLowerCase()}, zones and{' '}
+            {depotLabel(isUs, true).toLowerCase()} that schedules point at.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setNewScheduleOpen(true)}
-          className="shrink-0 px-4 py-2 text-sm font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
-        >
-          + New Schedule
-        </button>
+        {/* New Schedule belongs to the schedule tabs only. Under Zone groups
+            the primary action is "+ Add group / postcode", which each
+            sub-view renders itself. */}
+        {tab !== 'zonegroups' && (
+          <button
+            type="button"
+            onClick={() => setNewScheduleOpen(true)}
+            className="shrink-0 px-4 py-2 text-sm font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
+          >
+            + New Schedule
+          </button>
+        )}
       </header>
 
       <div className="border-b border-border">
@@ -159,6 +231,14 @@ export default function SchedulesNew() {
           <TabButton active={tab === 'routes'} onClick={() => setTab('routes')} count={routesCount}>
             Recurring Routes
           </TabButton>
+          {/* Territory maintenance (pricing spec 3.1). No count pill: the
+              sub-views own their own fetch rather than a React Query cache
+              this component can read, and prefetching the territory payload
+              on mount just to render a number is exactly the fan-out the
+              note at the top of this file warns about. */}
+          <TabButton active={tab === 'zonegroups'} onClick={() => setTab('zonegroups')}>
+            Zone groups
+          </TabButton>
         </nav>
       </div>
 
@@ -171,6 +251,40 @@ export default function SchedulesNew() {
       )}
       {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={openBase} />}
       {tab === 'routes' && <RecurringRoutesTab />}
+
+      {tab === 'zonegroups' && (
+        <div className="space-y-3">
+          {/* Sub-view switcher. Deliberately a different control from the
+              tab bar above (pills, not underlined tabs) so the nesting is
+              visible: these three sit INSIDE Zone groups. */}
+          <div className="flex gap-0.5 rounded-xl border border-border bg-white p-0.5 shadow-sm w-fit">
+            {ZONE_GROUP_VIEWS.map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => selectZoneGroupsView(v)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  zoneGroupsView === v
+                    ? 'bg-[#0d0c2c] text-white shadow-sm'
+                    : 'text-text-secondary hover:bg-slate-50'
+                }`}
+              >
+                {zoneGroupsViewLabel(v, isUs)}
+              </button>
+            ))}
+          </div>
+
+          {mountedViews.has('groups') && (
+            <div className={viewHidden('groups')}><ZoneGroupsTab /></div>
+          )}
+          {mountedViews.has('zones') && (
+            <div className={viewHidden('zones')}><ZonesTab /></div>
+          )}
+          {mountedViews.has('depots') && (
+            <div className={viewHidden('depots')}><DepotsTab /></div>
+          )}
+        </div>
+      )}
 
       <ScheduleDetailModal
         scheduleId={openScheduleId}
