@@ -290,9 +290,24 @@ export function NewScheduleModal({ open, onClose }: Props) {
     const hasCollection = legs.some((l) => l.type === 'collection');
     const { originType, originRegionId } = deriveOriginFromLegs(legs);
     let bookPickup = false;
-    if (originType === 'depot' && hasCollection) {
-      bookPickup = true;
+    if (originType === 'depot') {
+      // F24 (BLOCKER, Anisah's 14 to 16 Oct staging smoke test). The depot has
+      // to be carried whenever the origin IS a depot, not only when the chain
+      // also happens to have a Collection leg. Gating it on hasCollection meant
+      // a plain rename-and-save on a cross-depot schedule with BookPickup = 0
+      // nulled PickupDepotId on every day row: Client Manager then showed
+      // "Client Address" and #1591 ROSED dropped off the booking page
+      // altogether. The same gate is why "add Depot leg" did not persist.
+      //
+      // Measured on Urgent production 2026-10-19: 5,211 day rows across 1,531
+      // schedules sit in exactly the state this destroys (PickupDepotId set,
+      // BookPickup 0), 5,127 of them on live headers. Any one save on any of
+      // them would have done it.
       pickupDepotId = firstDepot?.depotId ?? null;
+      // BookPickup answers "does this schedule book a collection job", which is
+      // exactly whether the chain has a Collection leg. It is not a statement
+      // about where the chain starts, and conflating the two is what caused F24.
+      bookPickup = hasCollection;
     }
     zones.sort((a, b) => a - b);
     return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };

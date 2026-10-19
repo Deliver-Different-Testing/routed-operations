@@ -201,8 +201,10 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   //
   //   client origin -> BookPickup = 0, PickupDepotId = NULL,
   //                    OriginRegionId = the Depot card's picker
-  //   depot  origin -> PickupDepotId from the Depot leg, BookPickup = 1
-  //                    only when the chain actually has a Collection leg
+  //   depot  origin -> PickupDepotId from the Depot leg ALWAYS, and
+  //                    BookPickup = whether the chain has a Collection leg
+  //                    (corrected for F24; it used to gate both on the
+  //                    Collection leg, which wiped the depot on save)
   //
   // Region is NOT touched here. It keeps coming from the Delivery leg and
   // names the delivery branch; OriginRegionId names the branch that owns the
@@ -227,9 +229,24 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   const hasCollection = legs.some((l) => l.type === 'collection');
   const { originType, originRegionId } = deriveOriginFromLegs(legs);
   let bookPickup = false;
-  if (originType === 'depot' && hasCollection) {
-    bookPickup = true;
+  if (originType === 'depot') {
+    // F24 (BLOCKER, Anisah's 14 to 16 Oct staging smoke test). The depot has
+    // to be carried whenever the origin IS a depot, not only when the chain
+    // also happens to have a Collection leg. Gating it on hasCollection meant
+    // a plain rename-and-save on a cross-depot schedule with BookPickup = 0
+    // nulled PickupDepotId on every day row: Client Manager then showed
+    // "Client Address" and #1591 ROSED dropped off the booking page
+    // altogether. The same gate is why "add Depot leg" did not persist.
+    //
+    // Measured on Urgent production 2026-10-19: 5,211 day rows across 1,531
+    // schedules sit in exactly the state this destroys (PickupDepotId set,
+    // BookPickup 0), 5,127 of them on live headers. Any one save on any of
+    // them would have done it.
     pickupDepotId = firstDepot?.depotId ?? null;
+    // BookPickup answers "does this schedule book a collection job", which is
+    // exactly whether the chain has a Collection leg. It is not a statement
+    // about where the chain starts, and conflating the two is what caused F24.
+    bookPickup = hasCollection;
   }
   zones.sort((a, b) => a - b);
   return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
@@ -721,12 +738,27 @@ export function ScheduleDetailModal({
   // the one for our client, if any. No single-client GET endpoint
   // exists yet, so we filter the list response. Cheap because the
   // Clients tab already fetches this under the same query key.
+  //
+  // F25: enabled in BASE mode too, not just override mode. The occurrences
+  // field needs to know whether any linked client holds an override, because
+  // a schedule-level change does not reach those clients and without the
+  // hint that reads as the field being broken. Same query key as the Clients
+  // tab, so in practice this is a cache hit rather than a second fetch.
   const ovListQuery = useQuery({
     queryKey: schedulesV2Keys.overrides(tenantId, scheduleId ?? 0),
     queryFn: () => schedulesV2Service.listOverrides(scheduleId!),
-    enabled: isOverride && scheduleId != null,
+    enabled: scheduleId != null,
     staleTime: 30_000,
   });
+
+  // F25: how many linked clients hold their OWN occurrences number. Only the
+  // schedule scope carries it, so a client with a delivery-speed override and
+  // no occurrences override is not counted: the question being answered is
+  // "will my edit to this field reach everyone", not "who has any override".
+  const clientsOverridingOccurrences = useMemo(
+    () => (ovListQuery.data ?? []).filter(
+      (o) => o.schedule?.occurrencesAhead != null).length,
+    [ovListQuery.data]);
   const ovExisting = useMemo<ScheduleOverride | null>(() => {
     if (!isOverride || !overrideMode || !ovListQuery.data) return null;
     return ovListQuery.data.find((o) => o.clientId === overrideMode.clientId) ?? null;
@@ -1346,6 +1378,23 @@ export function ScheduleDetailModal({
                         ? "This is the schedule's own number. Set this client's below."
                         : 'Blank uses one week of runs, which is the number of days ticked.')}
                   </span>
+                  {/* F25: a schedule-level change does not reach a client that
+                      holds its own number, and the function resolves the
+                      client first. On #1173 HARBT that made a correct edit
+                      look like a broken field: the booking page kept offering
+                      four dates because the client had a seeded override of
+                      four. Say so here rather than let it be discovered. */}
+                  {!isOverride && clientsOverridingOccurrences > 0 && (
+                    <span
+                      className="mt-1 block text-xs text-warning"
+                      data-testid="schedule-occurrences-override-count"
+                    >
+                      {clientsOverridingOccurrences === 1
+                        ? '1 client overrides this, so a change here will not reach them.'
+                        : `${clientsOverridingOccurrences} clients override this, so a change here will not reach them.`}
+                      {' '}Their numbers are on the Clients tab.
+                    </span>
+                  )}
                 </>
               ) : (
                 <span
@@ -1383,7 +1432,16 @@ export function ScheduleDetailModal({
                             in override mode these are the schedule's dates, not
                             this client's. Whether it should follow the override
                             is open with Steve; until then it says which it is. */}
-                        {isOverride ? 'Next runs offered (schedule default):' : 'Next runs offered:'}
+                        {/* F23: the list is only true as at a moment, and the
+                            moment is the TENANT's, not the browser's. Saying
+                            which is the point: the defect was the server
+                            testing the cutoff against its own clock, and an
+                            operator in another timezone cannot tell the
+                            difference without this. */}
+                        {isOverride ? 'Next runs offered (schedule default)' : 'Next runs offered'}
+                        {occurrencesQuery.data![0]?.asAt
+                          ? `, as the booking page will offer them at ${occurrencesQuery.data![0].asAt}:`
+                          : ':'}
                       </span>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {occurrencesQuery.data!.map((o) => (
@@ -1578,6 +1636,30 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
     onError: (e: Error) => {
       // Audit finding: this mutation previously swallowed errors silently.
       toast.show(`Detach failed: ${e.message}`, 'error');
+    },
+  });
+
+  // F25: the Remove-override button was lost with the dead
+  // ClientOverrideEditor on 2026-09-25 and schedulesV2Service.deleteOverride
+  // has had no caller since, so a per-client override could be created and
+  // seen but never removed from this screen. That is half of why #1173 HARBT
+  // looked like the schedule-level field did not work: the client held a
+  // seeded override of 4, the field edits the detail row, and there was no
+  // way to clear the override that was winning.
+  const removeOverrideMut = useMutation({
+    mutationFn: (clientId: number) =>
+      schedulesV2Service.deleteOverride(data.scheduleId, clientId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.overrides(tenantId, data.scheduleId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+      // The booking page's dates change the moment the override goes, and
+      // the preview is the thing the operator is looking at while they do
+      // this, so it has to be refetched rather than left stale.
+      qc.invalidateQueries({ queryKey: ['schedules-v2-occurrences', tenantId, data.scheduleId] });
+      toast.show('Override removed. This client now follows the schedule.', 'success');
+    },
+    onError: (e: Error) => {
+      toast.show(`Could not remove the override: ${e.message}`, 'error');
     },
   });
 
@@ -1794,6 +1876,38 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
                       override
                     </span>
                   )}
+                  {/* F25: the effective occurrences for THIS client and where
+                      the number comes from. Invisible until now, which made a
+                      correct schedule-level value look broken: on #1173 HARBT
+                      the booking page offered four dates while the schedule
+                      said five, because the client held a seeded override of
+                      four and the function resolves the client first. */}
+                  {(() => {
+                    const ovN = existingOverride?.schedule?.occurrencesAhead ?? null;
+                    const schedN = data.occurrencesAhead;
+                    if (ovN != null) {
+                      return (
+                        <span
+                          className="text-xs text-warning"
+                          title="This client's own number. It wins over the schedule's."
+                          data-testid={`client-occurrences-${clientId}`}
+                        >
+                          · occurrences: override {ovN}
+                        </span>
+                      );
+                    }
+                    return (
+                      <span
+                        className="text-xs text-text-muted"
+                        title="This client follows the schedule's number."
+                        data-testid={`client-occurrences-${clientId}`}
+                      >
+                        · occurrences: schedule{' '}
+                        {schedN ?? (data.dayWindows.length || 1)}
+                        {schedN == null && ' (one week)'}
+                      </span>
+                    );
+                  })()}
                 </span>
                 {sinceLabel && (
                   <span className="text-xs text-text-muted mr-3">since {sinceLabel}</span>
@@ -1816,6 +1930,20 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
                 >
                   {existingOverride ? 'Edit override' : 'Configure override'}
                 </button>
+                {existingOverride && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (clientId) removeOverrideMut.mutate(clientId);
+                    }}
+                    disabled={removeOverrideMut.isPending}
+                    className="text-xs text-warning hover:underline mr-3 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Delete this client's override so it follows the schedule again. The client stays attached."
+                    data-testid={`remove-override-${clientId}`}
+                  >
+                    {removeOverrideMut.isPending ? 'Removing...' : 'Remove override'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -2202,10 +2330,22 @@ function CoverageTab({
         <h3 className="text-xs uppercase tracking-wider font-semibold text-text-muted mb-2">
           Postcodes
         </h3>
+        {/* Ticket 296 / pricing spec 6.3, M2. This copy said the postcodes
+            "render on the map", which was true and was the whole problem: for
+            a speed that is not zone-rated the availability function never
+            consulted the zones at all, so the Coverage tab was a picture
+            rather than a gate and Hyper's two-hour service could be booked to
+            Silverdale, Pukekohe and Piha. It is a gate for every speed now,
+            so the tab has to say so. */}
         <p className="text-xs text-text-muted mb-3">
           Individual postcodes bound to this schedule (on top of the postcode group
           dropdown above). Resolver union: schedule covers a postcode if it's in the
           bound group OR in this list.
+        </p>
+        <p className="text-xs text-text-muted mb-3">
+          <strong>Active zones and bound postcodes limit where this schedule can be
+          booked, for every speed</strong>, not only zone-rated ones. A schedule with
+          no active zones and no bound postcodes stays open to its whole depot area.
         </p>
         <PostcodeLookupInput
           selected={postcodeIds}

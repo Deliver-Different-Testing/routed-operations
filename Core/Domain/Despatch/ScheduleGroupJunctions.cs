@@ -1,4 +1,4 @@
-#nullable disable
+﻿#nullable disable
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -36,6 +36,19 @@ public partial class ScheduleClient
 /// tblBulkRunSchedule.PostcodeGroupId (bulk default). Resolver union:
 /// a schedule covers a postcode if it's in the bound group OR in this
 /// junction.
+///
+/// Being re-keyed from ScheduleName onto ScheduleId, the same move
+/// tblScheduleClient made on 2026-09-08, because a header rename
+/// silently detached every binding and a name does not say which of
+/// several definitions it meant. Steve's rule of 2026-10-16: a schedule
+/// is identified by its id and never by its name.
+///
+/// ScheduleId is NULLABLE here only for the transition.
+/// dbmigrationsv2 20261016165000 adds it nullable and backfills; this
+/// build writes BOTH columns because ScheduleName is still half of the
+/// database primary key; a later migration makes the column NOT NULL,
+/// moves the key to (ScheduleId, PostCode) and drops the name. Once that
+/// lands, ScheduleId becomes int and ScheduleName goes.
 /// </summary>
 [Table("tblSchedulePostcode")]
 public partial class SchedulePostcode
@@ -46,4 +59,14 @@ public partial class SchedulePostcode
     public DateTime CreatedUtc { get; set; }
     [MaxLength(100)]
     public string CreatedBy { get; set; }
+
+    /// <summary>Header PK. Nullable for the transition only.</summary>
+    public int? ScheduleId { get; set; }
+
+    /// <summary>
+    /// Nav prop to the header, same trick as ScheduleClient.Header: it
+    /// lets the service bind a header that has not been saved yet and EF
+    /// fills ScheduleId when SaveChanges commits both together.
+    /// </summary>
+    public virtual BulkRunScheduleHeader Header { get; set; }
 }
