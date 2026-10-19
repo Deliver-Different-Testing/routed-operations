@@ -113,3 +113,23 @@ existing idempotency makes it fill only the gaps.
 3. Remove a client from the bundle: its link rows on every member are gone, other clients
    untouched, the schedule rows themselves untouched.
 4. No `window.prompt` left on the tab.
+
+## 7. Milestones
+
+| # | Milestone | Done when |
+|---|---|---|
+| M0 | Branch into GitLab | `feat/schedule-bundles-modal` (GitHub mirror, commits c91fed9 + 3c6de7d) is an MR on gitlab.com/deliver-different/routed-operations with a green pipeline. |
+| M1 | Detach rule decided | Section 3's open question answered: a client detach (single schedule and bundle) either removes the client's `tblBulkRunScheduleOverride` rows or leaves them, and both paths do the same thing. |
+| M2 | Staging click-through | Acceptance 1 to 4 in section 6 pass on a seeded bundle on Urgent staging; no `window.prompt` left on the tab. |
+| M3 | Playwright | One E2E in `tests/e2e/` covers open bundle, add schedule by name, add client, remove client. |
+| M4 | Released | Merged to master and deployed to production; release note in DFRNT RN. |
+
+## 8. Status, 20 Oct 2026
+
+Code is written and pushed (Steve 16 Oct: "write the react code"): branch
+[`feat/schedule-bundles-modal`](https://github.com/Deliver-Different-Testing/routed-operations/tree/feat/schedule-bundles-modal)
+on the GitHub mirror, one feature commit plus the feature-switch governance map entry. Verified
+locally: TypeScript clean, vitest 1654 pass (Node 22), xUnit 1434 pass including five new
+`ScheduleBundleTests`. Not done: M1 to M4 above. Kevin's handover
+(`docs/handovers` branch, KEVIN-SCHEDULES-ZONES-ZONE-GROUPS-HANDOVER-2026-08-21.md) carries the
+same summary as a dated addendum.
