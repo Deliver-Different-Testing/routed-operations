@@ -427,6 +427,47 @@ override for its own quirks; the schedule remains bookable by everyone else.
 6. No migration: the column exists; legacy headers with `IsDefault = 0` and `LegacyClientId` set are
    untouched.
 
+**Hit in production, 20 Oct (Anisah).** This stopped being a UI-tidiness item. Anisah created a
+schedule in Routed Operations for ENOVI only, ticked "Specific clients" in the modal, and attached the
+client. The header was still written `IsDefault = 1`:
+
+- Client Manager, which reads the real flag, listed it under **default**.
+- She was offered it on her own unrelated account.
+- Deleting the default in Client Manager to hide it from everyone else also removed it from ENOVI,
+  because there is one header and one row. She had to recreate it, so the stray default is live again.
+
+**Verified against the 19/20 Oct rollout** (`gl/master` `74a5df1`, merged 05:55 NZDT 20 Oct, which is
+before her report): create still hardcodes `IsDefault = true` at `ScheduleService.cs:1280` and
+`:1957`; `grep "IsDefault ="` across `API/` and `Core/` returns those two lines and nothing else, so
+no code path sets it to 0; `ScheduleDetailModal.tsx:1628` still derives the radios from
+`clientIds.length`. The rollout shipped F23, F24, F25 and ticket 296 M2 and touched none of this.
+
+**6.2 does not contain it.** In the live emitter
+(`20261016170000_Availability_DefaultSuppressionAndZoneLimits.sql`) eligibility is still
+`EXISTS (link for @ClientID) OR h.IsDefault = 1`, with no exclusion for a default that has link rows.
+The 6.2 pass then drops an unlinked default only for a client that already has its own schedule of the
+same speed on that lane. Every other client is still offered it, which is exactly why Anisah saw it on
+her own account. The rollout shrank the blast radius without closing it, so whether this reproduces
+depends on which account you test from.
+
+**Also in the wild:** Kevin's 20 Oct audit has `#2903 Waikato Outer > Auckland` and
+`#2908 Enovis Whanganui > Wellington` both at `IsDefault = 1`, the second named for a single client.
+
+**Interim guidance for ops, until this ships:** the "Who can book this schedule" radios do nothing.
+Treat every schedule created in Routed Operations as bookable by all clients, and do not delete a
+header in Client Manager to hide it, because that deletes it for the configured client too. Client
+Manager is retiring, so the fix belongs here rather than there.
+
+**Milestones**
+
+| # | Milestone | Done when |
+|---|---|---|
+| M1 | `IsDefault` on the upsert contract | `ScheduleGroupUpsertRequest` carries it; create honours it instead of hardcoding 1; `ScheduleService` validates that `IsDefault = 0` has at least one link row. |
+| M2 | Modal radios become real controls | "Who can book this schedule" reads and writes `header.IsDefault`, no longer derived from `clientIds.length`; hints rewritten per rule 5. |
+| M3 | List filter and chip read the flag | Defaults pill is `IsDefault = 1` including defaults with configured clients; chip shows "All clients" plus "+N configured". |
+| M4 | Clients tab reworded | Action reads "Configure for client", not "Attach". |
+| M5 | Stray production defaults cleaned up | Anisah's ENOVI schedule and any other single-client header set `IsDefault = 0` with links verified first. |
+
 The ranking in (2) is weaker than it looks; section 6.2 explains why defaults still leak through.
 
 ### 6.2 A configured client must stop seeing the defaults for that lane (Steve, 9 Oct)
@@ -664,13 +705,17 @@ figure was from Kevin's local copy and is withdrawn. Real counts:
 | Medical staging | 0 |
 
 - `#2903 Waikato Outer > Auckland 8am-12pm`: 15 rows, zones 3, 4 and 6.
-- `#2906 Enovis Whanganui > Wellington`: 5 rows, zone 1.
+- `#2908 Enovis Whanganui > Wellington`: 5 rows, zone 1.
 
-**`#2906` is the clearest case for 6.4, and it exposes a hole in the rule as first drafted.** Its
-`PickupPostcodeGroupId` is NULL, so under the current gate the `IS NULL` arm short-circuits and the
-schedule is open to *any* collection postcode. Ops ticked zone 1 expecting it to restrict collection;
-it has no effect at all. So 6.4 is not only "narrow a group to its ticks". It is also the only control
-that exists on a schedule with no pickup group.
+Two live headers share the name `Enovis Whanganui > Wellington` (Kevin, 20 Oct). `#2906` has zero day
+rows and carries no pickup ticks; `#2908` has five day rows, all five ticked. The ticked one is
+`#2908`. The impact figures below are unchanged, because they were counted per day row.
+
+**`#2908` is the clearest case for 6.4.** Its `PickupPostcodeGroupId` is NULL, so under the current
+gate the `IS NULL` arm short-circuits and the schedule is open to *any* collection postcode. Ops
+ticked zone 1 expecting it to restrict collection; it has no effect at all. So 6.4 is not only
+"narrow a group to its ticks". It is also the only control that exists on a schedule with no pickup
+group.
 
 **Rule, mirroring 6.3:** a schedule with any active collection zone is limited to the postcodes in
 those zones; a schedule with none behaves exactly as today (group only, including the open `IS NULL`
@@ -712,18 +757,49 @@ AND (NOT EXISTS (SELECT 1 FROM @PickupZoneLimited l WHERE l.BulkRunScheduleId = 
 and copying that shape unchanged onto the pickup side breaks the two schedules that actually carry
 ticks:
 
-- **D14, NULL pickup group.** `#2906` has `PickupPostcodeGroupId` NULL. A straight copy requires
-  `p.PostcodeGroupId` to be NULL too, which matches nothing, so the schedule lands in
-  `@PickupZoneLimited` with an empty `@PickupZoneActive` and **refuses every collection postcode**,
-  from open to shut in one migration. The clause above makes the zone's own group authoritative when
-  the schedule names none.
-- **D15, non-depot origin.** The pickup gate sits in an arm that also serves `OriginType` `'client'`
-  and `'direct'`, which carry no `PickupDepotId` (direct resolves its From through `s.Region`). A
-  straight `p.DepotId = s.PickupDepotId` would be NULL-compared on those and refuse everything. Only
-  depot-origin schedules get the depot predicate.
+- **D14, NULL pickup group.** `#2908` has `PickupPostcodeGroupId` NULL. The existing gate already
+  treats a NULL pickup group as "no group restriction", through
+  `s.PickupPostcodeGroupId IS NULL OR EXISTS (...)`. The clause above makes the zone predicate agree
+  with that, so both halves of one gate read NULL the same way, and a zone ticked on a schedule with
+  no pickup group means what Ops intended when they ticked it.
 
-`#2903` and `#2906` origin types and `PickupDepotId` values are **to confirm**. Kevin to state them,
-since D15's blast radius depends on whether either is non-depot.
+  **This is a consistency rule, not a bug fix (Kevin, 20 Oct).** An earlier draft of this section
+  claimed that a straight copy pins `p.PostcodeGroupId` to NULL, "which matches nothing", and so
+  turns the schedule from open to refusing every collection postcode. That is wrong. Depot 43 has
+  exactly two `BulkZonePostcode` rows, postcodes `4500` and `4501`, both in zone 1 and both with
+  `PostcodeGroupId` NULL, so `ISNULL(p.PostcodeGroupId,0) = ISNULL(s.PickupPostcodeGroupId,0)`
+  evaluates `0 = 0` and matches both. The strict form and D14 admit the same two postcodes, and
+  `6011 Pipitea` is refused under either. Nobody should go looking for a failure that does not
+  exist.
+- **D15, non-depot origin. Keep it, but as a guard rather than a fix (Kevin, 20 Oct).** It cannot
+  currently fire: the pickup gate sits behind `AND s.BookPickup = 1`, and client and direct origins
+  prohibit a collection leg, so `BookPickup = 0` on those and the arm is unreachable. It costs one
+  `OR` term and no extra join, since `h` is already joined there, so it is worth carrying against the
+  day a non-depot origin does book a pickup. The shape is as it is because `'client'` and `'direct'`
+  carry no `PickupDepotId` (direct resolves its From through `s.Region`), so a straight
+  `p.DepotId = s.PickupDepotId` would be NULL-compared on those and refuse everything.
+
+**Origin types and depots, confirmed (Kevin, 20 Oct).** Both ticked schedules are depot origin, so
+D15's blast radius is zero.
+
+| | `#2903 Waikato Outer > Auckland` | `#2908 Enovis Whanganui > Wellington` |
+|---|---|---|
+| `OriginType` | `depot` | `depot` |
+| `OriginRegionId` | NULL | NULL |
+| `IsDefault` | 1 | 1 |
+| Region | 8 Auckland | 39 Mainfreight Wellington |
+| `PickupDepotId`, all five rows | 4 Hamilton | 43 Mainfreight Whanganui |
+| `PickupPostcodeGroupId`, all five rows | 90 | NULL |
+| `BookPickup`, all five rows | 1 | 1 |
+
+Across the whole Urgent production tenant every live header is depot origin: no `client` and no
+`direct` origins exist yet, and no day row books a pickup with a NULL `PickupDepotId`. D14 has
+exactly one instance, `#2908`. D15 has none.
+
+**Separate ticket, not 6.4 (Kevin, 20 Oct).** The client-origin restriction on a collection leg is
+enforced only in the UI, where ChainBuilder disables the button. `ScheduleService` throws for a
+direct origin but carries no equivalent server-side check for a client origin, so an API caller could
+still create that shape. Track it on its own; it is not part of this migration.
 
 **Impact, measured (Kevin, 20 Oct).** Twelve jobs ran on those two schedules in the last 90 days; six
 would stop being offered them:
@@ -763,7 +839,7 @@ shared zone scalar, which 6.3 deliberately left alone.
 
 **Acceptance.**
 
-1. `#2906 Enovis Whanganui > Wellington` on staging, zone 1 ticked and `PickupPostcodeGroupId` NULL:
+1. `#2908 Enovis Whanganui > Wellington` on staging, zone 1 ticked and `PickupPostcodeGroupId` NULL:
    booking as the linked client collecting from a zone 1 postcode is offered; collecting from
    `6011 Pipitea` is not. This is the D14 case and it fails on a naive port.
 2. `#2903 Waikato Outer > Auckland 8am-12pm`, zones 3, 4 and 6 ticked: a collection inside those zones
@@ -781,7 +857,7 @@ shared zone scalar, which 6.3 deliberately left alone.
 
 | # | Milestone | Done when |
 |---|---|---|
-| M1 | D14, D15, D16 answered; `#2903`/`#2906` origin types confirmed | Steve ticks; Kevin states the two rows. |
+| M1 | D14, D15, D16 answered; `#2903`/`#2908` origin types confirmed | **DONE 20 Oct.** D14, D15, D16 decided in section 9; Kevin stated both rows. |
 | M2 | Ops confirm the six jobs are not deliberate return legs | Anisah/Marcus reply per job. |
 | M3 | Migration written and EXCEPT-gated | On `dbmigrationsv2` master. |
 | M4 | Applied to Urgent staging | Acceptance 1 to 6 green (Anisah, G5 collection half). |
@@ -865,14 +941,15 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 
 9. to 12. **Team feedback items** (sheets, additional item % level, linehaul leg migration, courier % into pay): see 11.4.
 13. **Speeds sub-view under Pricing**: see 12.3.
-14. **NULL pickup group with ticks** (6.4). A schedule with collection zones ticked but no
-    `PickupPostcodeGroupId` (`#2906 Enovis Whanganui > Wellington` on production). Make the zone's own
-    group authoritative when the schedule names none (recommended; the ticks become the gate), or pin
-    the group as the delivery arm does, which turns that schedule from open to refusing every
-    collection postcode.
-15. **Depot predicate on non-depot origins** (6.4). The pickup gate also serves `OriginType` `'client'`
-    and `'direct'`, which carry no `PickupDepotId`. Apply `p.DepotId = s.PickupDepotId` to depot-origin
-    schedules only (recommended), or to all, which NULL-compares and refuses every non-depot origin.
+14. **NULL pickup group with ticks** (6.4). **DECIDED 20 Oct (Steve, Kevin agreeing).** A schedule
+    with collection zones ticked but no `PickupPostcodeGroupId` (`#2908 Enovis Whanganui > Wellington`
+    on production, the only instance). The zone's own group is authoritative when the schedule names
+    none, so both halves of the gate read NULL the same way. Kept for that consistency, not because
+    the strict form breaks: on the live data both forms admit the same two postcodes. See 6.4.
+15. **Depot predicate on non-depot origins** (6.4). **DECIDED 20 Oct (Steve, Kevin agreeing).** Apply
+    `p.DepotId = s.PickupDepotId` to depot-origin schedules only. Carried as a guard, not a fix: the
+    gate sits behind `BookPickup = 1` and no non-depot origin books a collection, so it cannot fire
+    today, and every live header on the tenant is depot origin. See 6.4.
 16. **6.4 on the US tenants** (6.4). The `DD_` twin has no pickup arm: it resolves both ends through
     `ZoneZip` and never gates on `PickupPostcodeGroupId`. NZ only in this migration, US deferred to its
     own decision with its own count first (recommended), or mirror now and introduce a collection gate
