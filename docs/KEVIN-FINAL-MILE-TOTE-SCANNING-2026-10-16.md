@@ -1,7 +1,7 @@
 # Final Mile Tote Scanning - Spec
 
 _Author: Steve Bonnici (with EasyEA) - 2026-10-16_
-_Owner: Kevin. Status: design agreed with Steve 16 Oct 2026 (decisions D1-D4 in section 3). Baselines are "latest emitter on master at build time"; anything marked **to confirm** was not measured on a tenant DB._
+_Owner: Kevin (M0, M5) + Garry (M1-M4, decided 21 Oct). Status: design agreed with Steve 16 Oct 2026 (decisions D1-D4 in section 3). Baselines are "latest emitter on master at build time"; anything marked **to confirm** was not measured on a tenant DB._
 _Extends: `FINAL-MILE-RECURRING-ROUTES-SPEC-2026-09-25.md` (same folder) and the Phase 5 linehaul tote flow (dbmigrationsv2 `2026062910..20261014172000`)._
 
 ## 1. Problem
@@ -26,7 +26,7 @@ So the `DEL` leg is correct; what is missing is a tote lifecycle that continues 
 | **D1** | The design case is a **sealed tote that travels through**: packed and sealed at origin, off the flight, through the depot, onto the final-mile vehicle, to the lab. Same physical tote, same barcode, same membership. A repack at the depot is allowed but is the exception (section 4.7). |
 | **D2** | The **final-mile run has a master job**, like a linehaul run. Steve: it already exists on the recurring route. Code check 16 Oct: master linking exists only for linehaul runs (`tucJobBooking.IsLinehaulMaster` + `LinehaulRunId`, `RecurringLinehaulService.ApplyMasterBookingAsync`); `Routes` has no master binding, and `RecurringRouteService` / `RecurringRoutesController` have no master endpoint. Section 4.1 defines the final-mile master on the same mechanism keyed on `RouteId`. **Resolved 16 Oct (Steve):** the "Burbank to Lab" recurring booking on route 15 is the final-mile master. Promote that booking (`IsLinehaulMaster = 1`, `RouteId = 15`, `LinehaulRunId NULL`); do not create a second one. Its daily realised job is the master Kenneth opens. |
 | **D3** | **Delivery mode is per final-mile master**: *Accept sealed totes* (scan the tote, every shipment inside is delivered) or *Scan each item out* (scan the tote, then every item). Stored on the master booking (section 4.4), sent to the handset with the master. |
-| **D4** | **Kevin builds all of it**: DB (dbmigrationsv2), marsapi, driver app (JupiterMaui), Routed Operations UI. |
+| **D4** | ~~Kevin builds all of it~~ **Revised 21 Oct (Steve):** Kevin builds the DB (dbmigrationsv2, M0) and Routed Operations UI (M5); **Garry builds marsapi, marssenderservice and the driver app (JupiterMaui), M1-M4** - see `GARRY-FINAL-MILE-TOTE-SCANNING-API-SENDER-APP-2026-10-21.md` (same folder) for the exact work and the route/column contract. Kevin 21 Oct: the "Burbank to Lab" master booking does not exist on Medical staging yet (only `P5372BIO`, the linehaul master for run 14), so it is created and promoted, not picked; and route 15 is the only `Direction = 2` route on the tenant, so test 6 needs a second one created on staging. |
 
 ## 4. Design
 
@@ -53,7 +53,7 @@ Today a tote has one binding, `LinehaulRunId`, and `MARSWS_stpLinehaulToteScanIt
 
 ```
 continues = every active root of the tote has exactly one live DEL leg
-            (ucjbJobNumber LIKE '%DEL', ucjbVoid = 0, ucjbJobDone = 0)
+            (ucjbNumber LIKE '%DEL', ucjbVoid = 0, ucjbJobDone = 0)
             whose RouteId R satisfies Routes.Direction = 2
             AND Routes.DepotId = the run's ToDepotId (the depot just scanned)
             AND R is the same for every root
@@ -77,7 +77,7 @@ New proc `MARSWS_stpFinalMileTotePickup (@ToteBarcode, @CourierId, @MasterJobId 
 | `TOTE_CLOSED` | `IsClosed = 1` |
 | `WRONG_ROUTE` | master's `RouteId` (via `tucJobBooking`) <> `FinalMileRouteId` |
 | `NOT_ASSIGNED` | same rule as `20261014171000`: opened from a master -> that master's `ucjbCourierID = @CourierId`; Menu path (`@MasterJobId NULL`) -> adopt the single live final-mile master for `FinalMileRouteId` assigned to this courier, else refuse. Never guess between several. |
-| `PICKED_UP` | fan `ucjbStatus = 5` over `tucJob WHERE RouteId = FinalMileRouteId AND ucjbJobNumber LIKE '%DEL' AND RootParentId IN (tote roots) AND ISNULL(ucjbStatus,0) < 5`; stamp `FinalMilePickedUpAt/By`, `MasterJobId`; device push `<ST>5</ST>` for every advanced leg on a device (same block as today); audit `tblBulkScan` ScanType 27 with payload `TOTE:..|FMR:<routeId>|PU:n` |
+| `PICKED_UP` | fan `ucjbStatus = 5` over `tucJob WHERE RouteId = FinalMileRouteId AND ucjbNumber LIKE '%DEL' AND RootParentId IN (tote roots) AND ISNULL(ucjbStatus,0) < 5`; stamp `FinalMilePickedUpAt/By`, `MasterJobId`; device push `<ST>5</ST>` for every advanced leg on a device (same block as today); audit `tblBulkScan` ScanType 27 with payload `TOTE:..|FMR:<routeId>|PU:n` |
 
 Counts returned: `PickedUpToteCount` / `RunToteCount` = totes with `FinalMileRouteId = R`, `InwardedAt` on the master's run date, `DeliveredAt IS NULL` (display aid, "Picking Up (X of Y totes)" as today).
 
@@ -162,4 +162,4 @@ The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ig
 - **Q1.** Resolved 16 Oct: the "Burbank to Lab" booking on route 15 is the final-mile master (section 3, D2).
 - **Q2.** Does the lab ever need a location barcode check (the `WRONG_LOCATION` equivalent)? Assumed no: the lab is the `DEL` leg's delivery address, GPS on the delivery is the evidence.
 - **Q3.** Undo: `LinehaulInwardsUndoReceipt` has no final-mile twin. Assumed a wrongly delivered tote is corrected in DespatchWeb for now.
-- **Q4.** Resolved 16 Oct (Steve): `DEL` legs carry their own `tucJobItems` rows, so the loose-item Pickup Scan and the Mode I item scan-out resolve against the `DEL` leg's items. Note for Kevin: migration `20260630140000` documents items as living on the shipment root (`tucJobItems.JobID` = root `ucjbID`); confirm with one count on Medical before relying on it (`SELECT COUNT(*) FROM tucJobItems i JOIN tucJob j ON j.ucjbID = i.JobID WHERE j.ucjbJobNumber LIKE '%DEL' AND j.RouteId = 15`). If the count is zero, resolve item -> root via `RootParentId` as the linehaul procs do; the design does not change.
+- **Q4.** Resolved 16 Oct (Steve): `DEL` legs carry their own `tucJobItems` rows, so the loose-item Pickup Scan and the Mode I item scan-out resolve against the `DEL` leg's items. Note for Kevin: migration `20260630140000` documents items as living on the shipment root (`tucJobItems.JobID` = root `ucjbID`); confirm with one count on Medical before relying on it (`SELECT COUNT(*) FROM tucJobItems i JOIN tucJob j ON j.ucjbID = i.JobID WHERE j.ucjbNumber LIKE '%DEL' AND j.RouteId = 15`). If the count is zero, resolve item -> root via `RootParentId` as the linehaul procs do; the design does not change.
