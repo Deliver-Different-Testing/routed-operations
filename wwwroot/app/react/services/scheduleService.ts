@@ -154,6 +154,13 @@ export interface ScheduleGroupSummary {
    *  BOTH client and direct origin, so the column cannot tell them apart
    *  without it. Optional for legacy payloads that pre-date the field. */
   originType?: string | null;
+  /** True when every client can book this schedule, straight off the
+   *  header flag. Do NOT re-derive it from `clientCount === 0`: a default
+   *  schedule may have clients configured on it, and inferring the flag
+   *  from the count is what made the list chip and the modal radios lie
+   *  (spec 6.1). Optional for legacy payloads that pre-date the field;
+   *  treat an absent value as true, which is what the backend defaults. */
+  isDefault?: boolean;
 }
 
 export interface ScheduleGroup {
@@ -247,6 +254,11 @@ export interface ScheduleGroup {
    *  ShopWindowReferenced:<shop>). null when it collapsed, or on a plain
    *  read, where nothing was attempted. */
   convertRefusalReasons: string | null;
+  /** True when every client can book this schedule. The header's own flag,
+   *  not a derivation from `clientIds.length`: the Clients tab can attach a
+   *  client to a default schedule, so the two are independent (spec 6.1).
+   *  Optional for legacy payloads; absent reads as true. */
+  isDefault?: boolean;
 }
 
 export interface LookupItem {
@@ -372,6 +384,11 @@ export interface ScheduleGroupUpsertBody {
    *  `autoBook`. Omit to keep the existing value on update paths;
    *  defaults to true on create when unset. Steve F21 (2026-09-22). */
   isActive?: boolean;
+  /** Whether every client can book this schedule (spec 6.1). Omit to leave
+   *  it alone on update; unset defaults to true on create. A `false` needs
+   *  at least one client configured, or the save is refused: a schedule
+   *  neither default nor configured for anybody is bookable by nobody. */
+  isDefault?: boolean;
   /** How many upcoming runs the booking page should offer, 1 to 60. Omit
    *  to leave it alone: a schedule that has just collapsed already has
    *  one week's worth (the number of days in its mask), and an old-shape

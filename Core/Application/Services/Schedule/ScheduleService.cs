@@ -159,8 +159,9 @@ public class ScheduleService(
     /// page load stays sub-500ms even on tenants with 2k+ schedules.
     ///
     /// `includeClientSpecific`:
-    ///   - false (default): only "default" headers (IsDefault=1 with no
-    ///     link rows scoped to a specific client). Fastest.
+    ///   - false (default): only headers with IsDefault = 1. The flag
+    ///     alone, NOT "has no link rows": since spec 6.1 a default may
+    ///     have clients configured on it and is still a default. Fastest.
     ///   - true: every live header, regardless of link state. Used by the
     ///     Schedules tab search box so operators can find a per-client
     ///     schedule by name without knowing the client code up front.
@@ -743,7 +744,8 @@ public class ScheduleService(
                     overridesForSchedule,
                     detailsByScheduleId.TryGetValue(header.ScheduleId, out var det),
                     det?.OccurrencesAhead,
-                    header.OriginType ?? "depot");
+                    header.OriginType ?? "depot",
+                    header.IsDefault);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -826,11 +828,14 @@ public class ScheduleService(
         var headersById = headers.ToDictionary(h => h.ScheduleId);
 
         // Client count = union of link rows across every non-default
-        // member. Default headers do not carry link rows so they add
-        // zero to the client count, matching Steve's brief section 2
-        // Schedule Bundles tab semantics ("Attach clients to bundle -
-        // one link row per client per member; members that are
-        // defaults are skipped").
+        // member, per Steve's brief section 2 Schedule Bundles tab semantics
+        // ("Attach clients to bundle - one link row per client per member;
+        // members that are defaults are skipped").
+        //
+        // The skip is deliberate, not an optimisation on an empty set: since
+        // spec 6.1 a default CAN carry link rows, and those clients are
+        // configured on it rather than restricted to it, so counting them
+        // would overstate how many clients the bundle restricts to.
         var nonDefaultMemberIds = headers
             .Where(h => !h.IsDefault)
             .Select(h => h.ScheduleId)
@@ -1312,6 +1317,13 @@ public class ScheduleService(
             header.DisplayName = displayName;
             header.DisplayDescription = displayDescription;
             header.IsActive = isActive;
+            // Spec 6.1 rule 1: IsDefault is an explicit header setting, so an
+            // update writes it. Assigned BEFORE the client-origin guard below
+            // on purpose: the guard reads header.IsDefault, and an operator
+            // turning a schedule client-specific AND client-origin in one save
+            // would otherwise be refused on the value the schedule had before
+            // the save. Null leaves it alone, so a pre-6.1 caller is unchanged.
+            if (req.IsDefault.HasValue) header.IsDefault = req.IsDefault.Value;
             // Spec 2.1: a default schedule cannot start at a client address,
             // because "the client" is not defined for a schedule every client
             // can book. Enforced here rather than in the UI so the API cannot
@@ -1353,23 +1365,34 @@ public class ScheduleService(
             header = new BulkRunScheduleHeader
             {
                 Name = name,
-                IsDefault = true,
+                // Spec 6.1 rule 1. Was hardcoded true, which is why a new
+                // schedule could not be created client-specific at all: the
+                // operator had to create it as a default, save, then attach.
+                // Unset still means true, so the legacy POST /api/schedules
+                // contract ("create always makes a default") is preserved for
+                // callers that do not send the field.
+                IsDefault = req.IsDefault ?? true,
                 LegacyClientId = null,
                 CreatedUtc = DateTime.UtcNow,
                 CreatedBy = "RoutedOps",
                 DisplayName = displayName,
                 DisplayDescription = displayDescription,
                 IsActive = isActive,
-                // Create always makes a default header, so the same rule
-                // applies: client origin is only reachable by editing a
-                // schedule that is already client-specific. See the note to
-                // Steve about section 3.1 offering the option in both modals.
-                // 'direct' passes straight through - a brand-new default
-                // schedule is allowed to be Direct.
-                OriginType = originType == "client"
+                // Spec 2.1 again, now conditional. Create used to be
+                // unconditionally default, so a client origin was refused
+                // outright here; since 6.1 a create can be client-specific, and
+                // the rule that actually matters is the 2.1 one: a DEFAULT
+                // schedule cannot start at a client address, because "the
+                // client" is undefined for a schedule every client can book.
+                // A create that declares itself non-default is allowed the
+                // client origin straight away.
+                // 'direct' passes straight through either way - its pickup
+                // address comes from the booking, so a default Direct schedule
+                // is a legitimate shape.
+                OriginType = originType == "client" && (req.IsDefault ?? true)
                     ? throw new InvalidOperationException(
-                        "A new schedule is created as a default schedule, which "
-                        + "cannot start at a client address. Create it, link a "
+                        "A default schedule cannot start at a client address. "
+                        + "Set it to specific clients, or create it, link a "
                         + "client, then set the origin.")
                     : originType,
                 OriginRegionId = originRegionId,
@@ -1521,6 +1544,28 @@ public class ScheduleService(
         {
             resolvedClientIds = new List<int>(req.ClientIds ?? new());
         }
+
+        // Spec 6.1 rule 3: a schedule that is neither default nor configured
+        // for anybody is bookable by nobody, so refuse that state rather than
+        // persist it. Enforced here, next to the client-origin guard and for
+        // the same reason: the UI can hide the combination but the API has to
+        // be the thing that cannot be talked into it.
+        //
+        // The test is on the DESIRED set, not the rows on disk, because this
+        // runs before SaveChanges and resolvedClientIds is authoritative: an
+        // operator removing the last chip from a non-default schedule is the
+        // case to catch, and its link row is still present at this point.
+        //
+        // LegacyClientId counts as configured. A pre-junction per-client
+        // schedule carries its one client in that column and has no link row
+        // at all, so counting only link rows would make every legacy
+        // client-specific schedule unsaveable.
+        if (!header.IsDefault
+            && resolvedClientIds.Count == 0
+            && !header.LegacyClientId.HasValue)
+            throw new InvalidOperationException(
+                "A schedule for specific clients needs at least one client. "
+                + "Configure a client, or set it to all clients.");
 
         await SyncClientsAsync(header, resolvedClientIds);
         await SyncPostcodesAsync(header, req.PostcodeIds);
@@ -2639,7 +2684,8 @@ public class ScheduleService(
             header.DisplayName, header.DisplayDescription, header.IsActive,
             detail != null,
             detail?.OccurrencesAhead,
-            convertRefusalReasons);
+            convertRefusalReasons,
+            header.IsDefault);
     }
 
     private static string FormatTime(TimeSpan? t) =>
@@ -2848,6 +2894,14 @@ public class ScheduleService(
                     $"Client id(s) {string.Join(", ", missing)} do not exist. Refresh and try again.");
         }
 
+        // Spec 6.1 rule 3, same test as the upsert path. This endpoint can
+        // empty the link set outright, which on a non-default schedule leaves
+        // it bookable by nobody.
+        if (!header.IsDefault && desired.Count == 0 && !header.LegacyClientId.HasValue)
+            throw new InvalidOperationException(
+                "A schedule for specific clients needs at least one client. "
+                + "Keep a client, or set the schedule to all clients first.");
+
         var current = await Context.ScheduleClients
             .Where(sc => sc.ScheduleId == scheduleId)
             .ToListAsync();
@@ -2886,6 +2940,24 @@ public class ScheduleService(
         var row = await Context.ScheduleClients
             .FirstOrDefaultAsync(sc => sc.ScheduleId == scheduleId && sc.ClientId == clientId);
         if (row == null) return 0;
+
+        // Spec 6.1 rule 3. Removing the LAST client from a schedule that is
+        // not a default leaves it bookable by nobody, and this endpoint is the
+        // easiest way to reach that state: the Clients tab's Remove button
+        // goes straight here without passing through the upsert guard.
+        var header = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId);
+        if (header != null && !header.IsDefault && !header.LegacyClientId.HasValue)
+        {
+            var remaining = await Context.ScheduleClients.AsNoTracking()
+                .CountAsync(sc => sc.ScheduleId == scheduleId && sc.ClientId != clientId);
+            if (remaining == 0)
+                throw new InvalidOperationException(
+                    "This is the only client on a schedule for specific clients. "
+                    + "Set the schedule to all clients first, or configure another "
+                    + "client before removing this one.");
+        }
+
         Context.ScheduleClients.Remove(row);
         await Context.SaveChangesAsync();
         await RefreshListSummaryEntryAsync(scheduleId);

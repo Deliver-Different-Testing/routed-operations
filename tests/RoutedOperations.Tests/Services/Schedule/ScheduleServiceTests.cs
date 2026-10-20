@@ -946,4 +946,234 @@ public class ScheduleServiceTests : IDisposable
             Assert.NotNull(cleared.CutoffHours);
         }
     }
+
+    // ─── 6.1: who can book a schedule is a setting, not a derivation ───
+    //
+    // These four pin the rule rather than the field, which is the point: the
+    // bug was never that IsDefault stored the wrong value, it was that nobody
+    // could set it and three readers inferred it from "how many clients are
+    // linked". So a schedule every client can book, with one client
+    // configured on it, read as client-specific everywhere while the booking
+    // functions still offered it to everybody. Anisah's 20 Oct schedule was
+    // exactly that shape, and operations could see it but not change it.
+    //
+    // A test that only asserted "IsDefault round-trips" would stay green if
+    // someone put the derivation back on the read side, which is the half
+    // that was actually visible.
+
+    [Fact]
+    public async Task UpsertAsync_create_honours_an_explicit_IsDefault_false()
+    {
+        // Create hardcoded IsDefault = true, so the New Schedule modal's
+        // "Specific clients" option produced a header every client could book
+        // that ALSO carried link rows. That is the stray-default shape.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var header = read.BulkRunScheduleHeaders.Single(h => h.ScheduleId == created.ScheduleId);
+            Assert.False(header.IsDefault);
+            Assert.False(created.IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_unset_IsDefault_still_creates_a_default_and_does_not_flip_one()
+    {
+        // The back-compat half. A caller that has never heard of the field -
+        // the legacy POST /api/schedules contract, and every integration on
+        // it - must keep getting a default on create, and must not flip the
+        // flag on a schedule it edits for some unrelated reason.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var created = await svc.UpsertAsync(ValidRequest());   // IsDefault unset
+            Assert.True(created.IsDefault);
+
+            var turnSpecific = ValidRequest();
+            turnSpecific.ScheduleId = created.ScheduleId;
+            turnSpecific.IsDefault = false;
+            turnSpecific.ClientCodes = new List<string> { "AAA" };
+            await svc.UpsertAsync(turnSpecific);
+
+            // Now an edit that says nothing about it. Renaming must not put
+            // the schedule back in front of every client.
+            var rename = ValidRequest();
+            rename.ScheduleId = created.ScheduleId;
+            rename.Name = "Renamed Group";
+            rename.ClientCodes = new List<string> { "AAA" };
+            var renamed = await svc.UpsertAsync(rename);
+
+            Assert.False(renamed.IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_refuses_a_non_default_schedule_with_no_client()
+    {
+        // Rule 3. A schedule that is neither default nor configured for
+        // anybody is bookable by nobody: it does not appear for any client and
+        // nothing says why. The guard is on the DESIRED client set, so the
+        // case it has to catch is an operator REMOVING the last client from a
+        // client-specific schedule, whose link row is still on disk when the
+        // check runs.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            var strip = ValidRequest();
+            strip.ScheduleId = created.ScheduleId;
+            strip.IsDefault = false;
+            strip.ClientCodes = new List<string>();     // last chip removed
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.UpsertAsync(strip));
+            Assert.Contains("needs at least one client", ex.Message);
+
+            // And the refusal left the schedule alone rather than half-saving.
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Single(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+        }
+    }
+
+    [Fact]
+    public async Task ListSummary_reports_IsDefault_from_the_header_not_from_the_client_count()
+    {
+        // The read half, and the one that was visible to operations. A default
+        // schedule with a client configured on it must still read as default:
+        // the old inference ("no legacy client and no links") put it in the
+        // client-specific bucket, so the list row dropped its "All clients"
+        // chip, the type= filter moved it to "shared", and the modal's radio
+        // pair selected "Specific clients" on a header that says otherwise.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.ClientCodes = new List<string> { "AAA" };   // default WITH a client
+            var created = await svc.UpsertAsync(create);
+
+            // And a genuinely client-specific one, so the assertions cannot
+            // pass on the DTO's own `IsDefault = true` default. Without the
+            // projection carrying the flag, this row reads true and the test
+            // fails, which is what makes the pair worth having.
+            var specific = ValidRequest();
+            specific.Name = "Specific Group";
+            specific.IsDefault = false;
+            specific.ClientCodes = new List<string> { "AAA" };
+            var specificCreated = await svc.UpsertAsync(specific);
+
+            var summaries = await svc.ListSummaryAsync(
+                clientId: null, includeClientSpecific: false, includeAllLive: true);
+
+            var row = Assert.Single(summaries.Where(s => s.ScheduleId == created.ScheduleId));
+            Assert.True(row.IsDefault);
+            Assert.Equal(1, row.ClientCount);          // both facts, independently
+
+            var specificRow = Assert.Single(
+                summaries.Where(s => s.ScheduleId == specificCreated.ScheduleId));
+            Assert.False(specificRow.IsDefault);
+            Assert.Equal(1, specificRow.ClientCount);  // same count, opposite flag
+
+            Assert.True((await svc.GetDetailAsync(created.ScheduleId)).IsDefault);
+            Assert.False((await svc.GetDetailAsync(specificCreated.ScheduleId)).IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task DetachClientAsync_refuses_to_remove_the_last_client_from_a_non_default_schedule()
+    {
+        // The Clients tab's Remove button calls this endpoint directly rather
+        // than going through the upsert, so guarding only the upsert would
+        // leave the unbookable state one click away. The same hole exists on
+        // the full-replace endpoint, covered below.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            seed.TucClients.Add(new TucClient { UcclId = 42, UcclCode = "BBB", UcclName = "Client B" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA", "BBB" };
+            var created = await svc.UpsertAsync(create);
+
+            // Two configured, so removing one is fine.
+            Assert.Equal(1, await svc.DetachClientAsync(created.ScheduleId, 42));
+
+            // One left, so removing it is not.
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.DetachClientAsync(created.ScheduleId, 41));
+            Assert.Contains("only client", ex.Message);
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Single(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+        }
+    }
+
+    [Fact]
+    public async Task DetachClientAsync_allows_removing_the_last_client_from_a_default_schedule()
+    {
+        // The other half of the same rule, and the one that must NOT be
+        // refused: a client configured on a default schedule is an extra, not
+        // the thing that makes it bookable, so removing it is ordinary. A
+        // guard written as "never remove the last client" would break this.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.ClientCodes = new List<string> { "AAA" };   // default WITH a client
+            var created = await svc.UpsertAsync(create);
+
+            Assert.Equal(1, await svc.DetachClientAsync(created.ScheduleId, 41));
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Empty(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+            Assert.True(read.BulkRunScheduleHeaders.Single(h => h.ScheduleId == created.ScheduleId).IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceClientsAsync_refuses_to_empty_a_non_default_schedule()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.ReplaceClientsAsync(created.ScheduleId, new List<int>()));
+            Assert.Contains("needs at least one client", ex.Message);
+        }
+    }
 }

@@ -123,7 +123,20 @@ public record ScheduleGroupDto(
     /// because the question "why did it not convert" is only meaningful
     /// about an attempt that just happened.
     /// </summary>
-    string ConvertRefusalReasons);
+    string ConvertRefusalReasons,
+    /// <summary>
+    /// True when every client can book this schedule, straight off
+    /// tblBulkRunScheduleHeader.IsDefault. It is an explicit setting on the
+    /// header, NOT a derived "has no link rows": the two came apart as soon
+    /// as the Clients tab could attach a client to a default, and the modal
+    /// used to infer it from ClientIds.Count, which is why its radio pair
+    /// read the wrong way round on a default that had a client configured
+    /// (spec 6.1, Steve 2026-10-16).
+    ///
+    /// Optional with a true default so a positional caller written before
+    /// 6.1 still compiles and keeps the pre-6.1 reading.
+    /// </summary>
+    bool IsDefault = true);
 
 /// <summary>
 /// One run the booking page would offer, for the preview under the
@@ -301,7 +314,14 @@ public record ScheduleGroupSummaryDto(
     /// 'direct', so the column cannot tell them apart without this.
     /// Last because it is the only optional parameter; IsCollapsed and
     /// OccurrencesAhead landed in the same release and sit ahead of it.</summary>
-    string OriginType = "depot");
+    string OriginType = "depot",
+    /// <summary>
+    /// Header IsDefault. The list row's client chip and the type= filter both
+    /// read this rather than inferring a default from ClientCount == 0, which
+    /// mislabelled every default that had a client configured on it (spec
+    /// 6.1). Optional so positional callers keep compiling.
+    /// </summary>
+    bool IsDefault = true);
 
 /// <summary>
 /// One nested override-row entry under a base schedule in the Schedules
@@ -348,7 +368,10 @@ public record ScheduleBundleMemberDto(
     int ScheduleId,
     string Name,
     bool IsDefault,
-    /// <summary>tblScheduleClient rows on this member. Always 0 on a default.</summary>
+    /// <summary>tblScheduleClient rows on this member. Not necessarily 0 on a
+    /// default: since spec 6.1 a client can be configured on a schedule every
+    /// client can book. The bundle's own client count still skips defaults;
+    /// see ListBundleDetailAsync for why.</summary>
     int ClientCount,
     /// <summary>Delivery depot of the first day row (tblBulkRunSchedule.Region).</summary>
     string RegionName,
