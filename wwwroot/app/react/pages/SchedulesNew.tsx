@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -888,7 +888,7 @@ function ScheduleRow({
       <td className="py-1.5 pr-2">
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <ActionIcon
-            label="Attach clients"
+            label="Configure for client"
             icon="user"
             onClick={() => onAttachClients(s.scheduleId)}
           />
@@ -1014,7 +1014,7 @@ function OverrideNestedRow({
       <td className="py-1.5 pr-2">
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <ActionIcon
-            label="Attach clients to base schedule"
+            label="Configure base schedule for client"
             icon="user"
             onClick={() => onAttachClients(baseScheduleId)}
           />
@@ -1079,11 +1079,35 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
 }
 
 function ClientChips({ row }: { row: ScheduleGroupSummary }) {
-  if (row.clientCount === 0 && row.legacyClientId == null) {
+  // Spec 6.1 rule 4. This used to read "clientCount === 0 && legacyClientId
+  // == null", which is the same inference the modal made and is wrong for a
+  // default that has clients configured on it: the row dropped the "All
+  // clients" chip and showed the client codes instead, so the list said the
+  // schedule was client-specific when the header says every client can book
+  // it. The flag is the answer; the count is a separate fact about the same
+  // schedule and now renders alongside it.
+  //
+  // `isDefault` is optional on the DTO for legacy payloads, where absent
+  // means true, so the fallback keeps the old reading for a cached response
+  // that pre-dates the field.
+  const isDefault = row.isDefault ?? (row.clientCount === 0 && row.legacyClientId == null);
+  if (isDefault) {
     return (
-      <span className="text-[10px] bg-success-bg text-success border border-success/30 px-1.5 py-px rounded font-medium">
-        All clients
-      </span>
+      <div className="flex gap-1 flex-wrap items-center">
+        <span className="text-[10px] bg-success-bg text-success border border-success/30 px-1.5 py-px rounded font-medium">
+          All clients
+        </span>
+        {row.clientCount > 0 && (
+          <span
+            className="text-[10px] text-text-muted"
+            title={`Every client can book this schedule. ${row.clientCount} `
+              + `${row.clientCount === 1 ? 'client has' : 'clients have'} it `
+              + `configured, which does not restrict who else can book it.`}
+          >
+            +{row.clientCount} configured
+          </span>
+        )}
+      </div>
     );
   }
   const codes = row.linkedClientCodes.length > 0
