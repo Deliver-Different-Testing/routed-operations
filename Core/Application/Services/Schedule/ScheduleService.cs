@@ -1627,14 +1627,44 @@ public class ScheduleService(
     /// when the operator un-ticks its weekday. The row survives because
     /// other tables hold its id; see the comment at the call site.
     /// </summary>
+    /// <summary>
+    /// Blank a day row the request no longer describes. The row is kept, not
+    /// deleted, because other tables hold its id (see the caller).
+    ///
+    /// MaxJobs and CutoffHours are set to 0 rather than NULL, and that is not
+    /// cosmetic. `dbo.tblBulkRunSchedule` is a compatibility VIEW over this
+    /// table and EF maps BOTH of those columns as non-nullable `int`
+    /// (TblBulkRunSchedule.Schedules.cs and BulkImportEntityExtensions.cs), so
+    /// a NULL makes every read of that schedule throw SqlNullValueException
+    /// out of the materialiser. It is not contained either: the list query
+    /// reads the same view, so one cleared row takes the whole Schedules NEW
+    /// list down with a 500 until the row is repaired by hand.
+    ///
+    /// The mask on the detail row normally hides a cleared row, which is why
+    /// this went unnoticed: the convert runs straight after this and the view
+    /// stops emitting the day. But the convert REFUSES whenever the days
+    /// genuinely differ, and the caller treats a refusal as a normal answer
+    /// ("the schedule stays in the old shape, still correct, still bookable").
+    /// On a refusal there is no detail row, the view's `x.ScheduleId IS NULL`
+    /// arm emits every day row regardless, and the cleared row surfaces with
+    /// its NULLs. Found 2026-10-20 on a schedule that could not convert.
+    ///
+    /// 0 is the value the old table actually held for this case, not a default
+    /// invented here. 20261009178200_CompatView_CutoffHoursNeverNullAfterCollapse
+    /// makes exactly this argument for the collapsed arm of the same column,
+    /// and DeriveLegacyCutoffHours returns 0 the moment the absolute pair is
+    /// unset. The row still stops being bookable the way the caller intends,
+    /// through StartTime and EndTime going NULL: MaxJobs is carried by the
+    /// availability functions but never gates anything in them.
+    /// </summary>
     private static void ClearDayRowPayload(TblBulkRunScheduleDay row)
     {
         row.StartTime = null;
         row.EndTime = null;
-        row.MaxJobs = null;
+        row.MaxJobs = 0;
         row.Region = null;
         row.SpeedId = null;
-        row.CutoffHours = null;
+        row.CutoffHours = 0;
         row.CutoffDay = null;
         row.CutoffTime = null;
         row.Description = null;
