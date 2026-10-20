@@ -50,7 +50,54 @@ export interface ScheduleBundle {
   scheduleNames: string[];
 }
 
+/** One member row of GET /api/v2/schedule-bundles/{id}. */
+export interface ScheduleBundleMember {
+  scheduleId: number;
+  name: string;
+  isDefault: boolean;
+  /** tblScheduleClient rows on this member; 0 on a default. */
+  clientCount: number;
+  regionName: string | null;
+  speedName: string | null;
+  /** 1=Mon..7=Sun, ascending. */
+  activeDays: number[];
+}
+
+/** One client on a bundle: linked to at least one non-default member.
+ *  onMembers < ofMembers means the client joined before some member did. */
+export interface ScheduleBundleClient {
+  clientId: number;
+  code: string;
+  name: string | null;
+  onMembers: number;
+  ofMembers: number;
+}
+
+/** GET /api/v2/schedule-bundles/{id} - bundle modal payload. */
+export interface ScheduleBundleDetail {
+  bundleId: number;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  members: ScheduleBundleMember[];
+  clients: ScheduleBundleClient[];
+}
+
 export const schedulesV2Service = {
+  /** GET /api/v2/schedule-bundles/{id} - one bundle with members + clients
+   *  (SCHEDULE-BUNDLES-UI-2026-10-16). */
+  getBundle: (bundleId: number) =>
+    request<{ response: ScheduleBundleDetail }>(`/v2/schedule-bundles/${bundleId}`)
+      .then((r) => r.response),
+
+  /** DELETE /api/v2/schedule-bundles/{id}/clients/{clientId} - take one
+   *  client off every member of the bundle. */
+  detachClientFromBundle: (bundleId: number, clientId: number) =>
+    request<{ response: { removed: number } }>(
+      `/v2/schedule-bundles/${bundleId}/clients/${clientId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
+
   /** GET /api/v2/schedules?type=&q= - the Schedules tab list. */
   list: (filters?: SchedulesV2Filters) =>
     request<{ response: SchedulesV2Page }>(
@@ -224,11 +271,13 @@ export const schedulesV2Service = {
       `/v2/clients/${clientId}/schedules`,
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedule-bundles/{id}/members - add schedules. */
-  addBundleMembers: (bundleId: number, scheduleIds: number[]) =>
+  /** POST /api/v2/schedule-bundles/{id}/members - add schedules.
+   *  `linkExistingClients` also links every client already on the bundle
+   *  to the new non-default members. */
+  addBundleMembers: (bundleId: number, scheduleIds: number[], linkExistingClients = false) =>
     request<{ response: { added: number } }>(
       `/v2/schedule-bundles/${bundleId}/members`,
-      { method: 'POST', body: JSON.stringify({ scheduleIds }) },
+      { method: 'POST', body: JSON.stringify({ scheduleIds, linkExistingClients }) },
     ).then((r) => r.response),
 
   /** DELETE /api/v2/schedule-bundles/{id}/members/{scheduleId}. */

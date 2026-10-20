@@ -51,6 +51,7 @@ export const schedulesV2Keys = {
     pageSize: number,
   ) => ['schedules-v2-list', tenantId, type, q, clientId, clientIds, page, pageSize] as const,
   bundles: (tenantId: string | number) => ['schedules-v2-bundles', tenantId] as const,
+  bundle: (tenantId: string | number, bundleId: number) => ['schedules-v2-bundle', tenantId, bundleId] as const,
   detail: (tenantId: string | number, scheduleId: number) =>
     ['schedules-v2-detail', tenantId, scheduleId] as const,
   overrides: (tenantId: string | number, baseScheduleId: number) =>
@@ -101,6 +102,20 @@ export function useSchedulesV2Bundles() {
     queryKey: schedulesV2Keys.bundles(user.currentTenantId ?? 0),
     queryFn: () => schedulesV2Service.listBundles(),
     staleTime: 60_000,
+  });
+}
+
+/** One bundle with members + clients, for the bundle modal. Disabled
+ *  while no bundle is open. No retry: a failing endpoint should surface
+ *  in the modal, not sit behind a spinner. */
+export function useSchedulesV2Bundle(bundleId: number | null) {
+  const user = useAuth();
+  return useQuery({
+    queryKey: schedulesV2Keys.bundle(user.currentTenantId ?? 0, bundleId ?? 0),
+    queryFn: () => schedulesV2Service.getBundle(bundleId!),
+    enabled: bundleId != null && bundleId > 0,
+    staleTime: 15_000,
+    retry: false,
   });
 }
 

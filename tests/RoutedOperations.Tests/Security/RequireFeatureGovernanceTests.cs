@@ -181,6 +181,7 @@ public class RequireFeatureGovernanceTests
         (typeof(SchedulesV2Controller), nameof(SchedulesV2Controller.RemoveBundleMember), ["ro-schedules-new"]),
         (typeof(SchedulesV2Controller), nameof(SchedulesV2Controller.DeleteBundle), ["ro-schedules-new"]),
         (typeof(SchedulesV2Controller), nameof(SchedulesV2Controller.AttachClientsToBundle), ["ro-schedules-new"]),
+        (typeof(SchedulesV2Controller), nameof(SchedulesV2Controller.DetachClientFromBundle), ["ro-schedules-new"]),   // bundle modal, SCHEDULE-BUNDLES-UI-2026-10-16
         (typeof(TerritoryController), "", ["ro-schedules"]),
         (typeof(TerritoryController), nameof(TerritoryController.GetPostcodesForSchedule), ["ro-schedules", "ro-schedules-new", "ro-client-overrides"]),
         (typeof(TerritoryController), nameof(TerritoryController.GetNzPostcodes), ["ro-schedules-new", "ro-client-overrides"]),
