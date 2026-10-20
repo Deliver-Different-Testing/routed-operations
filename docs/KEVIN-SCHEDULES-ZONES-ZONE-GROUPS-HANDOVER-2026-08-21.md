@@ -517,3 +517,21 @@ moves Client Manager's zones and pricing into Schedules NEW (Zone groups, Pricin
 Marcus named Kevin as owner on 15 Oct (section 12.1); Steve has not confirmed the assignment yet, so
 read it for context, do not start it. Sections 6.1 to 6.3 (default-schedule chip, default suppression,
 active zones on every speed) are the near-term fixes in that doc.
+
+---
+
+## Milestones (added 20 Oct 2026)
+
+Status is as of 20 Oct 2026, taken from Kevin's notes on the Project Dash card
+(`routed-operations-schedules-zones-zone-groups-handover`, updated by Kevin 20 Oct) and the mirror's
+git history. The same list is seeded on that card; Kevin ticks there, this table is the reference copy.
+
+| # | Milestone | Done when | Status 20 Oct |
+|---|---|---|---|
+| M0 | Schedules + territory surface on master (phases 1 to 4) | `/schedules` in Routed Operations with Schedules, Zones, Postcode/Zip Groups and Depots/Locations tabs; reads and writes wired through adapters; NZ `BulkZonePostcode` and US `ZoneGroup` / `ZoneName` / `ZoneZip` kept as separate paths; migrations applied on both prod tenants. | Done. `feat/schedules-territory-phase1` merged to master as `dd5ffb0`, 25 Aug (mirror commit `119fbd0`). Migrations `20260824170000` to `20260825130000` applied; prod tenants current. |
+| M1 | NZ proof of fit (phase 5 items 1 to 3) | Legacy schedules round-trip, postcode-group-linked schedules behave, active schedule-zone rows are preserved, all on Urgent staging. | Done on NZ Urgent staging (Kevin). One cleanup left there: `AKL to WRG Regional Run (copy)` has 5 day rows and an empty client junction. |
+| M2 | US proof of fit (phase 5 item 4) | The same walkthrough on a US tenant staging: the `DFRNT_SEED_CR` schedules, zip-zone maintenance through `ZoneGroup` / `ZoneName` / `ZoneZip`, and a schedule saved and booked against a zip group. | Not done. Deferred since August; the only open item inside the original brief. |
+| M3 | Zone / depot decoupling decided | Steve picks one of Kevin's three options parked 25 Aug (rendering-only, schedule-model, effective-coverage), or confirms that the pricing spec's section 2.1 (a zone group is a named, reusable thing, not a depot's property; Decision 1 answered 15 Oct) is that answer. Options 2 and 3 pull in `uspPrebookSet`, the pricing SPs and the ClientManager Angular UI. | Waiting on Steve. |
+| M4 | Multi-window-per-day confirmed or closed | Ops confirm they need more than one pickup window per day on one schedule and it is built, or Steve closes it. The collapse work (Sep/Oct) left multi-window schedules editable in the old shape on purpose. | Parked pending ops. |
+| M5 | Schedule bundles modal released | The 16 Oct addendum above: `feat/schedule-bundles-modal` merged and in production. Detail milestones live on card `schedule-bundles-modal` (its M0 to M4). | Code pushed 16 Oct; Kevin owes the GitLab MR. |
+| M6 | Legacy cutover (phase 5 item 5 closed out) | ClientManager / AngularJS schedule and zone screens are no longer used for maintenance on Urgent or Medical and their links are removed (AdminManager + ClientManager are retiring). Pricing and zone groups follow under the 9 Oct pricing spec on their own cards. | Not started. Needs M2 and M3 first. |
