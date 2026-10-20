@@ -91,6 +91,66 @@ public class ScheduleService(
         cache.Invalidate(AllLiveListCacheKey);
     }
 
+    /// <summary>
+    /// Patch ONE schedule's row into the cached all-live list instead of
+    /// dropping the whole entry, and fall back to dropping it if there is
+    /// nothing to patch.
+    ///
+    /// Why, measured on the office-local copy 2026-10-20. Invalidating makes
+    /// the next reader rebuild from scratch, and a save is the worst possible
+    /// moment to ask for that: the writer's own locks are still settling, so
+    /// all four wave-2 queries block on them. One save produced a 19.9s list
+    /// load (link=19722 rows=18923 ovrScope=19168 ovrFull=16625) against a
+    /// 0.3 to 3.2s steady state, and every concurrent reader waited on the
+    /// same single-flight gate. Recomputing one schedule touches the same
+    /// code path but with liveHeaderIds narrowed to a single id, so wave 2
+    /// reads a handful of rows rather than 7,748.
+    ///
+    /// This keeps the property the invalidation was there for: the operator
+    /// still sees their own write on the very next read, because the row is
+    /// recomputed rather than left stale. Ordering is preserved because the
+    /// list's contract is Name ascending, OrdinalIgnoreCase.
+    ///
+    /// An empty result means the header is no longer in the all-live set, so
+    /// the row is dropped rather than re-added. Any failure falls through to
+    /// the old behaviour, which is correct but slow, never wrong.
+    /// </summary>
+    private async Task RefreshListSummaryEntryAsync(int scheduleId)
+    {
+        try
+        {
+            var patched = await cache.TryPatchAsync<List<ScheduleGroupSummaryDto>>(
+                AllLiveListCacheKey,
+                ListSummaryCacheTtl,
+                async current =>
+                {
+                    var fresh = await ListSummaryUncachedAsync(
+                        clientId: null,
+                        includeClientSpecific: false,
+                        includeAllLive: true,
+                        onlyScheduleIds: new[] { scheduleId });
+
+                    var next = current.Where(s => s.ScheduleId != scheduleId).ToList();
+                    next.AddRange(fresh);
+                    return next
+                        .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                },
+                sliding: false);
+
+            if (!patched) InvalidateListSummaryCache();
+        }
+        catch (Exception ex)
+        {
+            // Never let a cache optimisation fail a save that already
+            // committed. Dropping the key is always safe.
+            _logger.LogWarning(ex,
+                "List summary patch failed for schedule {ScheduleId}; invalidating instead.",
+                scheduleId);
+            InvalidateListSummaryCache();
+        }
+    }
+
     // ─── READS ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -129,7 +189,19 @@ public class ScheduleService(
             ListSummaryUncachedAsync(clientId, includeClientSpecific, includeAllLive);
     }
 
-    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(int? clientId, bool includeClientSpecific, bool includeAllLive)
+    /// <param name="onlyScheduleIds">
+    /// Restricts the computation to these headers. Null means every live
+    /// header, which is the browse path. Passing a single id is what the
+    /// post-save cache patch uses (see RefreshListSummaryEntryAsync): every
+    /// wave-2 query already filters on liveHeaderIds, which is derived from
+    /// the header set, so narrowing the headers narrows the whole second wave
+    /// without touching any of those queries. Wave 1 is left unscoped on
+    /// purpose; it is nine small lookups totalling well under 100ms and
+    /// several of them have no schedule to filter by.
+    /// </param>
+    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(
+        int? clientId, bool includeClientSpecific, bool includeAllLive,
+        IReadOnlyCollection<int> onlyScheduleIds = null)
     {
         // Perf 2026-09-17 v2: v1 parallelization dropped 11 sequential
         // round-trips to 3 waves (~5s -> ~3s). v2 pushes the three
@@ -172,9 +244,13 @@ public class ScheduleService(
         var headersTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => h.RetiredUtc == null)
-                .ToListAsync();
+            var q = ctx.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => h.RetiredUtc == null);
+            // The one narrowing that matters: everything in wave 2 keys off
+            // the header set, so scoping here scopes the expensive half.
+            if (onlyScheduleIds != null)
+                q = q.Where(h => onlyScheduleIds.Contains(h.ScheduleId));
+            return await q.ToListAsync();
         });
         var postcodeCountsTask = Timed(async () =>
         {
@@ -1598,7 +1674,12 @@ public class ScheduleService(
             if (tx != null) await tx.DisposeAsync();
         }
 
-        InvalidateListSummaryCache();
+        // Patch this one schedule into the cached list rather than dropping
+        // the list. Only the save does this: it is the heavy write, it is the
+        // one operators repeat, and it is the one whose settling locks made
+        // the next reader's rebuild take 19.9s. The lighter writes below
+        // still invalidate, which costs a rebuild but not a blocked one.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
 
         return await GetDetailByHeaderAsync(header);
     }
@@ -1861,7 +1942,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>Legacy (Name, LegacyClientId) overload. Resolves via header
@@ -1875,7 +1958,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>
@@ -2122,7 +2207,9 @@ public class ScheduleService(
             if (copyTx != null) await copyTx.DisposeAsync();
         }
 
-        InvalidateListSummaryCache();
+        // A copy ADDS a row; the patch computes the new schedule and splices
+        // it in, so the list does not rebuild to show one extra entry.
+        await RefreshListSummaryEntryAsync(newHeader.ScheduleId);
 
         return await GetDetailByHeaderAsync(newHeader);
     }
@@ -2148,7 +2235,7 @@ public class ScheduleService(
             detail.UpdatedUtc = DateTime.UtcNow;
             detail.UpdatedBy = "RoutedOps";
             await Context.SaveChangesAsync();
-            InvalidateListSummaryCache();
+            await RefreshListSummaryEntryAsync(scheduleId);
             return toggled;
         }
 
@@ -2159,7 +2246,7 @@ public class ScheduleService(
         var newValue = !(rows[0].AutoBook ?? false);
         foreach (var r in rows) r.AutoBook = newValue;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return newValue;
     }
 
@@ -2185,7 +2272,7 @@ public class ScheduleService(
         var previous = header.IsActive;
         header.IsActive = isActive;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
         _logger.LogInformation(
             "ToggleIsActive: scheduleId={ScheduleId} {Previous} -> {Next}",
             scheduleId, previous, isActive);
@@ -2731,7 +2818,7 @@ public class ScheduleService(
 
         Context.ScheduleClients.AddRange(toAdd);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return toAdd.Count;
     }
 
@@ -2785,7 +2872,7 @@ public class ScheduleService(
 
         if (toAdd.Count > 0 || toRemove.Count > 0)
             await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
 
         return (toAdd.Count, toRemove.Count);
     }
@@ -2801,7 +2888,7 @@ public class ScheduleService(
         if (row == null) return 0;
         Context.ScheduleClients.Remove(row);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return 1;
     }
 
