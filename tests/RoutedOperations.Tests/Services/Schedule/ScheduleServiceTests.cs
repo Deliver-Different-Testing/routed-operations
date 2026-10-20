@@ -893,4 +893,57 @@ public class ScheduleServiceTests : IDisposable
         Assert.Equal(77, copy.Linehauls[0].SpeedId);
         Assert.Null(copy.Linehauls[1].SpeedId);
     }
+
+    // ─── A cleared day row must stay readable through the compat view ───
+
+    [Fact]
+    public async Task UpsertAsync_clearing_a_day_row_leaves_the_view_mapped_columns_non_null()
+    {
+        // Dropping a weekday from a schedule blanks that day row rather than
+        // deleting it, because other tables hold its id. The blanking is
+        // correct; what was not, until 2026-10-20, is that it wrote NULL into
+        // MaxJobs and CutoffHours. `dbo.tblBulkRunSchedule` is a compatibility
+        // VIEW over this table and EF maps BOTH of those as non-nullable int,
+        // so a NULL made every read of the schedule throw
+        // SqlNullValueException out of the materialiser, and because the list
+        // query reads the same view, one cleared row returned HTTP 500 for the
+        // whole Schedules NEW list until it was repaired by hand.
+        //
+        // The detail row's weekday mask normally hides a cleared row, which is
+        // why this hid for so long. But the convert refuses whenever the days
+        // genuinely differ, the caller treats a refusal as a normal outcome,
+        // and with no detail row the view emits every day row regardless.
+        // The converter here reports "not attempted", which is that same
+        // shape.
+        //
+        // 74 live schedules on Urgent production could not convert, so this
+        // was reachable on all of them.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();            // Monday and Tuesday
+            var created = await svc.UpsertAsync(create);
+
+            var drop = ValidRequest();              // Monday only
+            drop.ScheduleId = created.ScheduleId;
+            drop.DayWindows = new List<DayWindowUpsertRequest>
+            {
+                new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            };
+            await svc.UpsertAsync(drop);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var cleared = read.TblBulkRunScheduleDays
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 2);
+
+            // Still cleared: the window is what makes it unbookable.
+            Assert.Null(cleared.StartTime);
+            Assert.Null(cleared.EndTime);
+            Assert.Null(cleared.Region);
+
+            // But readable. These two are the ones the view maps non-nullable.
+            Assert.NotNull(cleared.MaxJobs);
+            Assert.NotNull(cleared.CutoffHours);
+        }
+    }
 }

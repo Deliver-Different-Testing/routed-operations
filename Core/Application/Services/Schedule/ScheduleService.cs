@@ -91,6 +91,66 @@ public class ScheduleService(
         cache.Invalidate(AllLiveListCacheKey);
     }
 
+    /// <summary>
+    /// Patch ONE schedule's row into the cached all-live list instead of
+    /// dropping the whole entry, and fall back to dropping it if there is
+    /// nothing to patch.
+    ///
+    /// Why, measured on the office-local copy 2026-10-20. Invalidating makes
+    /// the next reader rebuild from scratch, and a save is the worst possible
+    /// moment to ask for that: the writer's own locks are still settling, so
+    /// all four wave-2 queries block on them. One save produced a 19.9s list
+    /// load (link=19722 rows=18923 ovrScope=19168 ovrFull=16625) against a
+    /// 0.3 to 3.2s steady state, and every concurrent reader waited on the
+    /// same single-flight gate. Recomputing one schedule touches the same
+    /// code path but with liveHeaderIds narrowed to a single id, so wave 2
+    /// reads a handful of rows rather than 7,748.
+    ///
+    /// This keeps the property the invalidation was there for: the operator
+    /// still sees their own write on the very next read, because the row is
+    /// recomputed rather than left stale. Ordering is preserved because the
+    /// list's contract is Name ascending, OrdinalIgnoreCase.
+    ///
+    /// An empty result means the header is no longer in the all-live set, so
+    /// the row is dropped rather than re-added. Any failure falls through to
+    /// the old behaviour, which is correct but slow, never wrong.
+    /// </summary>
+    private async Task RefreshListSummaryEntryAsync(int scheduleId)
+    {
+        try
+        {
+            var patched = await cache.TryPatchAsync<List<ScheduleGroupSummaryDto>>(
+                AllLiveListCacheKey,
+                ListSummaryCacheTtl,
+                async current =>
+                {
+                    var fresh = await ListSummaryUncachedAsync(
+                        clientId: null,
+                        includeClientSpecific: false,
+                        includeAllLive: true,
+                        onlyScheduleIds: new[] { scheduleId });
+
+                    var next = current.Where(s => s.ScheduleId != scheduleId).ToList();
+                    next.AddRange(fresh);
+                    return next
+                        .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                },
+                sliding: false);
+
+            if (!patched) InvalidateListSummaryCache();
+        }
+        catch (Exception ex)
+        {
+            // Never let a cache optimisation fail a save that already
+            // committed. Dropping the key is always safe.
+            _logger.LogWarning(ex,
+                "List summary patch failed for schedule {ScheduleId}; invalidating instead.",
+                scheduleId);
+            InvalidateListSummaryCache();
+        }
+    }
+
     // ─── READS ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -129,7 +189,19 @@ public class ScheduleService(
             ListSummaryUncachedAsync(clientId, includeClientSpecific, includeAllLive);
     }
 
-    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(int? clientId, bool includeClientSpecific, bool includeAllLive)
+    /// <param name="onlyScheduleIds">
+    /// Restricts the computation to these headers. Null means every live
+    /// header, which is the browse path. Passing a single id is what the
+    /// post-save cache patch uses (see RefreshListSummaryEntryAsync): every
+    /// wave-2 query already filters on liveHeaderIds, which is derived from
+    /// the header set, so narrowing the headers narrows the whole second wave
+    /// without touching any of those queries. Wave 1 is left unscoped on
+    /// purpose; it is nine small lookups totalling well under 100ms and
+    /// several of them have no schedule to filter by.
+    /// </param>
+    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(
+        int? clientId, bool includeClientSpecific, bool includeAllLive,
+        IReadOnlyCollection<int> onlyScheduleIds = null)
     {
         // Perf 2026-09-17 v2: v1 parallelization dropped 11 sequential
         // round-trips to 3 waves (~5s -> ~3s). v2 pushes the three
@@ -172,9 +244,13 @@ public class ScheduleService(
         var headersTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => h.RetiredUtc == null)
-                .ToListAsync();
+            var q = ctx.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => h.RetiredUtc == null);
+            // The one narrowing that matters: everything in wave 2 keys off
+            // the header set, so scoping here scopes the expensive half.
+            if (onlyScheduleIds != null)
+                q = q.Where(h => onlyScheduleIds.Contains(h.ScheduleId));
+            return await q.ToListAsync();
         });
         var postcodeCountsTask = Timed(async () =>
         {
@@ -1598,7 +1674,12 @@ public class ScheduleService(
             if (tx != null) await tx.DisposeAsync();
         }
 
-        InvalidateListSummaryCache();
+        // Patch this one schedule into the cached list rather than dropping
+        // the list. Only the save does this: it is the heavy write, it is the
+        // one operators repeat, and it is the one whose settling locks made
+        // the next reader's rebuild take 19.9s. The lighter writes below
+        // still invalidate, which costs a rebuild but not a blocked one.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
 
         return await GetDetailByHeaderAsync(header);
     }
@@ -1627,14 +1708,44 @@ public class ScheduleService(
     /// when the operator un-ticks its weekday. The row survives because
     /// other tables hold its id; see the comment at the call site.
     /// </summary>
+    /// <summary>
+    /// Blank a day row the request no longer describes. The row is kept, not
+    /// deleted, because other tables hold its id (see the caller).
+    ///
+    /// MaxJobs and CutoffHours are set to 0 rather than NULL, and that is not
+    /// cosmetic. `dbo.tblBulkRunSchedule` is a compatibility VIEW over this
+    /// table and EF maps BOTH of those columns as non-nullable `int`
+    /// (TblBulkRunSchedule.Schedules.cs and BulkImportEntityExtensions.cs), so
+    /// a NULL makes every read of that schedule throw SqlNullValueException
+    /// out of the materialiser. It is not contained either: the list query
+    /// reads the same view, so one cleared row takes the whole Schedules NEW
+    /// list down with a 500 until the row is repaired by hand.
+    ///
+    /// The mask on the detail row normally hides a cleared row, which is why
+    /// this went unnoticed: the convert runs straight after this and the view
+    /// stops emitting the day. But the convert REFUSES whenever the days
+    /// genuinely differ, and the caller treats a refusal as a normal answer
+    /// ("the schedule stays in the old shape, still correct, still bookable").
+    /// On a refusal there is no detail row, the view's `x.ScheduleId IS NULL`
+    /// arm emits every day row regardless, and the cleared row surfaces with
+    /// its NULLs. Found 2026-10-20 on a schedule that could not convert.
+    ///
+    /// 0 is the value the old table actually held for this case, not a default
+    /// invented here. 20261009178200_CompatView_CutoffHoursNeverNullAfterCollapse
+    /// makes exactly this argument for the collapsed arm of the same column,
+    /// and DeriveLegacyCutoffHours returns 0 the moment the absolute pair is
+    /// unset. The row still stops being bookable the way the caller intends,
+    /// through StartTime and EndTime going NULL: MaxJobs is carried by the
+    /// availability functions but never gates anything in them.
+    /// </summary>
     private static void ClearDayRowPayload(TblBulkRunScheduleDay row)
     {
         row.StartTime = null;
         row.EndTime = null;
-        row.MaxJobs = null;
+        row.MaxJobs = 0;
         row.Region = null;
         row.SpeedId = null;
-        row.CutoffHours = null;
+        row.CutoffHours = 0;
         row.CutoffDay = null;
         row.CutoffTime = null;
         row.Description = null;
@@ -1831,7 +1942,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>Legacy (Name, LegacyClientId) overload. Resolves via header
@@ -1845,7 +1958,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>
@@ -2092,7 +2207,9 @@ public class ScheduleService(
             if (copyTx != null) await copyTx.DisposeAsync();
         }
 
-        InvalidateListSummaryCache();
+        // A copy ADDS a row; the patch computes the new schedule and splices
+        // it in, so the list does not rebuild to show one extra entry.
+        await RefreshListSummaryEntryAsync(newHeader.ScheduleId);
 
         return await GetDetailByHeaderAsync(newHeader);
     }
@@ -2118,7 +2235,7 @@ public class ScheduleService(
             detail.UpdatedUtc = DateTime.UtcNow;
             detail.UpdatedBy = "RoutedOps";
             await Context.SaveChangesAsync();
-            InvalidateListSummaryCache();
+            await RefreshListSummaryEntryAsync(scheduleId);
             return toggled;
         }
 
@@ -2129,7 +2246,7 @@ public class ScheduleService(
         var newValue = !(rows[0].AutoBook ?? false);
         foreach (var r in rows) r.AutoBook = newValue;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return newValue;
     }
 
@@ -2155,7 +2272,7 @@ public class ScheduleService(
         var previous = header.IsActive;
         header.IsActive = isActive;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
         _logger.LogInformation(
             "ToggleIsActive: scheduleId={ScheduleId} {Previous} -> {Next}",
             scheduleId, previous, isActive);
@@ -2701,7 +2818,7 @@ public class ScheduleService(
 
         Context.ScheduleClients.AddRange(toAdd);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return toAdd.Count;
     }
 
@@ -2755,7 +2872,7 @@ public class ScheduleService(
 
         if (toAdd.Count > 0 || toRemove.Count > 0)
             await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
 
         return (toAdd.Count, toRemove.Count);
     }
@@ -2771,7 +2888,7 @@ public class ScheduleService(
         if (row == null) return 0;
         Context.ScheduleClients.Remove(row);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return 1;
     }
 
@@ -2863,7 +2980,11 @@ public class ScheduleService(
     }
 
     /// <summary>Add member schedules to a bundle. Idempotent.</summary>
-    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds)
+    /// <param name="linkExistingClients">When true, every client already on the
+    /// bundle (linked to at least one non-default member) is also linked to
+    /// each newly added non-default member, so the bundle stays whole
+    /// (SCHEDULE-BUNDLES-UI-2026-10-16 section 4). Idempotent.</param>
+    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds, bool linkExistingClients = false)
     {
         var ids = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (ids.Count == 0) return 0;
@@ -2889,10 +3010,171 @@ public class ScheduleService(
             .Select(id => new BulkRunScheduleBundleMember { BundleId = bundleId, ScheduleId = id })
             .ToList();
         if (toAdd.Count == 0) return 0;
+
+        // Clients on the bundle BEFORE the new members join: anyone linked to
+        // an existing non-default member. Read first so the new members do
+        // not count themselves.
+        var clientsOnBundle = new List<int>();
+        if (linkExistingClients)
+        {
+            var existingMemberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+                .Where(m => m.BundleId == bundleId)
+                .Select(m => m.ScheduleId)
+                .ToListAsync();
+            var existingNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => existingMemberIds.Contains(h.ScheduleId) && h.RetiredUtc == null && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            if (existingNonDefault.Count > 0)
+                clientsOnBundle = await Context.ScheduleClients.AsNoTracking()
+                    .Where(sc => existingNonDefault.Contains(sc.ScheduleId))
+                    .Select(sc => sc.ClientId)
+                    .Distinct()
+                    .ToListAsync();
+        }
+
         Context.BulkRunScheduleBundleMembers.AddRange(toAdd);
+
+        if (clientsOnBundle.Count > 0)
+        {
+            var newIds = toAdd.Select(m => m.ScheduleId).ToList();
+            var newNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => newIds.Contains(h.ScheduleId) && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            var alreadyLinked = await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => newNonDefault.Contains(sc.ScheduleId) && clientsOnBundle.Contains(sc.ClientId))
+                .Select(sc => new { sc.ScheduleId, sc.ClientId })
+                .ToListAsync();
+            var linkedSet = new HashSet<(int, int)>(alreadyLinked.Select(x => (x.ScheduleId, x.ClientId)));
+            var now = DateTime.UtcNow;
+            foreach (var sid in newNonDefault)
+                foreach (var cid in clientsOnBundle)
+                    if (!linkedSet.Contains((sid, cid)))
+                        Context.ScheduleClients.Add(new ScheduleClient
+                        {
+                            ScheduleId = sid,
+                            ClientId = cid,
+                            CreatedUtc = now,
+                            CreatedBy = $"RoutedOps:bundle-member-link:{bundleId}",
+                        });
+        }
+
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
         return toAdd.Count;
+    }
+
+    /// <summary>
+    /// One bundle with its live members and the clients linked to them,
+    /// for the bundle modal (SCHEDULE-BUNDLES-UI-2026-10-16 section 4).
+    /// A client is "on the bundle" when it has a link row on at least one
+    /// non-default live member; OnMembers / OfMembers carry the coverage.
+    /// </summary>
+    public async Task<ScheduleBundleDetailDto> GetBundleDetailAsync(int bundleId)
+    {
+        var bundle = await Context.BulkRunScheduleBundles.AsNoTracking()
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
+
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+
+        var headers = memberIds.Count == 0
+            ? new List<BulkRunScheduleHeader>()
+            : await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => memberIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
+                .OrderBy(h => h.Name)
+                .ToListAsync();
+
+        var nonDefaultIds = headers.Where(h => !h.IsDefault).Select(h => h.ScheduleId).ToList();
+        var links = nonDefaultIds.Count == 0
+            ? new List<ScheduleClient>()
+            : await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => nonDefaultIds.Contains(sc.ScheduleId))
+                .ToListAsync();
+
+        var linksBySchedule = links.GroupBy(l => l.ScheduleId).ToDictionary(g => g.Key, g => g.Count());
+
+        // Depot / speed / days come from the day rows (tblBulkRunSchedule view),
+        // the same source the Schedules tab summary uses.
+        var liveIds = headers.Select(h => h.ScheduleId).ToList();
+        var dayRows = liveIds.Count == 0
+            ? new List<TblBulkRunSchedule>()
+            : await Context.TblBulkRunSchedules.AsNoTracking()
+                .Where(r => liveIds.Contains(r.ScheduleId))
+                .ToListAsync();
+        var depotNames = await Context.TblBulkRegions.AsNoTracking()
+            .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
+        var speedNames = await Context.TucJobTypes.AsNoTracking()
+            .ToDictionaryAsync(t => t.UcjtId, t => t.UcjtName);
+        var rowsBySchedule = dayRows.GroupBy(r => r.ScheduleId).ToDictionary(g => g.Key, g => g.ToList());
+
+        var members = headers
+            .Select(h =>
+            {
+                rowsBySchedule.TryGetValue(h.ScheduleId, out var rows);
+                var first = rows?.OrderBy(r => r.DayOfWeek).FirstOrDefault();
+                string LookupDepot(int? id) => id.HasValue && depotNames.TryGetValue(id.Value, out var d) ? d : null;
+                string LookupSpeed(int? id) => id.HasValue && speedNames.TryGetValue(id.Value, out var sp) ? sp : null;
+                var days = rows == null
+                    ? Array.Empty<int>()
+                    : rows.Where(r => r.DayOfWeek.HasValue).Select(r => (int)r.DayOfWeek.Value).Distinct().OrderBy(d => d).ToArray();
+                return new ScheduleBundleMemberDto(
+                    h.ScheduleId, h.Name, h.IsDefault,
+                    linksBySchedule.TryGetValue(h.ScheduleId, out var n) ? n : 0,
+                    LookupDepot(first?.Region), LookupSpeed(first?.SpeedId), days);
+            })
+            .ToList();
+
+        var clientIds = links.Select(l => l.ClientId).Distinct().ToList();
+        var clientLookup = clientIds.Count == 0
+            ? new List<TucClientNameCode>()
+            : await Context.TucClients.AsNoTracking()
+                .Where(c => clientIds.Contains(c.UcclId))
+                .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
+                .ToListAsync();
+        var byId = clientLookup.ToDictionary(c => c.Id);
+        var clients = links
+            .GroupBy(l => l.ClientId)
+            .Select(g => new ScheduleBundleClientDto(
+                g.Key,
+                byId.TryGetValue(g.Key, out var c) && !string.IsNullOrWhiteSpace(c.Code) ? c.Code : $"#{g.Key}",
+                byId.TryGetValue(g.Key, out var c2) ? c2.Name : null,
+                g.Select(l => l.ScheduleId).Distinct().Count(),
+                nonDefaultIds.Count))
+            .OrderByDescending(c => c.OnMembers)
+            .ThenBy(c => c.Code)
+            .ToList();
+
+        return new ScheduleBundleDetailDto(
+            bundle.BundleId, bundle.Name, bundle.Description, bundle.IsActive, members, clients);
+    }
+
+    /// <summary>
+    /// Remove one client from every member of a bundle. Deletes the
+    /// tblScheduleClient rows only, the same as DetachClientAsync does for a
+    /// single schedule, so the two paths stay consistent. Returns rows removed.
+    /// </summary>
+    public async Task<int> DetachClientFromBundleAsync(int bundleId, int clientId)
+    {
+        if (clientId <= 0) return 0;
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+        if (memberIds.Count == 0) return 0;
+
+        var rows = await Context.ScheduleClients
+            .Where(sc => memberIds.Contains(sc.ScheduleId) && sc.ClientId == clientId)
+            .ToListAsync();
+        if (rows.Count == 0) return 0;
+        Context.ScheduleClients.RemoveRange(rows);
+        await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
+        return rows.Count;
     }
 
     /// <summary>Remove a schedule from a bundle.</summary>

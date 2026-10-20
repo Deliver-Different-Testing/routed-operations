@@ -515,6 +515,47 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     }
 
     /// <summary>
+    /// GET /api/v2/schedule-bundles/{bundleId} - one bundle with its live
+    /// members and the clients linked to them (bundle modal,
+    /// SCHEDULE-BUNDLES-UI-2026-10-16).
+    /// </summary>
+    [HttpGet("/api/v2/schedule-bundles/{bundleId:int}")]
+    public async Task<IActionResult> GetBundle(int bundleId)
+    {
+        try
+        {
+            var dto = await svc.GetBundleDetailAsync(bundleId);
+            return Ok(new { response = dto });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/v2/schedule-bundles/{bundleId}/clients/{clientId} - take
+    /// one client off every member of the bundle (link rows only, same as a
+    /// single-schedule detach). Returns rows removed.
+    /// </summary>
+    [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}/clients/{clientId:int}")]
+    [RequireFeature("ro-schedules-new")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DetachClientFromBundle(int bundleId, int clientId)
+    {
+        try
+        {
+            var removed = await svc.DetachClientFromBundleAsync(bundleId, clientId);
+            return Ok(new { response = new { removed } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
     /// POST /api/v2/schedule-bundles - create a Schedule Bundle with an
     /// initial member list. Body `{ name, description, scheduleIds[] }`.
     /// Returns the new bundleId.
@@ -589,7 +630,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     {
         try
         {
-            var added = await svc.AddBundleMembersAsync(bundleId, req?.ScheduleIds ?? Array.Empty<int>());
+            var added = await svc.AddBundleMembersAsync(bundleId, req?.ScheduleIds ?? Array.Empty<int>(), req?.LinkExistingClients ?? false);
             return Ok(new { response = new { added } });
         }
         catch (InvalidOperationException ex)
@@ -674,6 +715,9 @@ public class CreateBundleRequest
 public class AddBundleMembersRequest
 {
     public int[] ScheduleIds { get; set; } = Array.Empty<int>();
+    /// <summary>Also link every client already on the bundle to the new
+    /// non-default members (bundle modal "link the N clients too?").</summary>
+    public bool LinkExistingClients { get; set; }
 }
 
 public class CopyScheduleRequest
