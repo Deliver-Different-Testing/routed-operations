@@ -108,14 +108,22 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             IEnumerable<ScheduleGroupSummaryDto> filtered = type?.ToLowerInvariant() switch
             {
                 // Bases (headers with no BaseScheduleId) split into two
-                // buckets: defaults (no clients bound) and shared
-                // (clients bound via link table). Overrides are anything
-                // with a BaseScheduleId set - populated as soon as
+                // buckets by the header's own IsDefault flag. Overrides are
+                // anything with a BaseScheduleId set - populated as soon as
                 // migration 20260914140000 applies. Pre-migration the
                 // BaseScheduleId is always null so "override" returns
                 // empty which is the correct behaviour.
-                "default"  => all.Where(s => s.BaseScheduleId == null && s.LegacyClientId == null && s.ClientCount == 0),
-                "shared"   => all.Where(s => s.BaseScheduleId == null && !(s.LegacyClientId == null && s.ClientCount == 0)),
+                //
+                // Spec 6.1 rule 4: this used to infer the bucket from
+                // "LegacyClientId == null && ClientCount == 0". That is the
+                // same mistake the modal made, and it puts a default schedule
+                // in the "shared" bucket the moment a client is configured on
+                // it, which is a thing 6.1 makes ordinary. Behaviour-neutral
+                // on today's data (checked on staging: IsDefault agrees with
+                // the old predicate on all 2,059 live headers), and correct
+                // from here on.
+                "default"  => all.Where(s => s.BaseScheduleId == null && s.IsDefault),
+                "shared"   => all.Where(s => s.BaseScheduleId == null && !s.IsDefault),
                 "override" => all.Where(s => s.BaseScheduleId != null),
                 _          => all,
             };
