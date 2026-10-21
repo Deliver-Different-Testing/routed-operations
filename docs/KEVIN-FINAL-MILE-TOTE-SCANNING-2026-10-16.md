@@ -60,7 +60,7 @@ continues = every active root of the tote has exactly one live DEL leg
 ```
 
 - `continues` -> `FinalMileRouteId = R`, `IsClosed` stays 0, `ClosedAt` stays NULL. `InwardedAt` is still set, so the **linehaul master completion rule is unchanged** (`20260706120000` anchors on `InwardedAt`, not `IsClosed`).
-- otherwise -> close as today. A mixed tote (roots going to two final-mile routes, or some with no final-mile leg) is closed and its items are handled individually. This is the only safe answer without a repack; it is reported in the result as today's `LEG_COMPLETE` (shape unchanged) and the app shows "Tote closed - items continue individually".
+- otherwise -> close as today. A mixed tote (roots going to two final-mile routes, or some with no final-mile leg) is closed and its items are handled individually. This is the only safe answer without a repack; it is reported in the result as today's `LEG_COMPLETE`. **Added 21 Oct:** the four altered inwards procs return one trailing column `FinalMileRouteId INT NULL` (= R when the tote continued, NULL when it closed); it is the same value the continuation block already computes. marsapi appends it as `<FMR>` and the inwards page shows "Tote continues to final mile (route R)" or "Tote closed - items continue individually"; without the column the two outcomes look identical to the app.
 
 `MARSWS_stpLinehaulToteMarkInwardedAndDeriveMaster` is unchanged.
 
@@ -77,7 +77,7 @@ New proc `MARSWS_stpFinalMileTotePickup (@ToteBarcode, @CourierId, @MasterJobId 
 | `TOTE_CLOSED` | `IsClosed = 1` |
 | `WRONG_ROUTE` | master's `RouteId` (via `tucJobBooking`) <> `FinalMileRouteId` |
 | `NOT_ASSIGNED` | same rule as `20261014171000`: opened from a master -> that master's `ucjbCourierID = @CourierId`; Menu path (`@MasterJobId NULL`) -> adopt the single live final-mile master for `FinalMileRouteId` assigned to this courier, else refuse. Never guess between several. |
-| `PICKED_UP` | fan `ucjbStatus = 5` over `tucJob WHERE RouteId = FinalMileRouteId AND ucjbNumber LIKE '%DEL' AND RootParentId IN (tote roots) AND ISNULL(ucjbStatus,0) < 5`; stamp `FinalMilePickedUpAt/By`, `MasterJobId`; device push `<ST>5</ST>` for every advanced leg on a device (same block as today); audit `tblBulkScan` ScanType 27 with payload `TOTE:..|FMR:<routeId>|PU:n` |
+| `PICKED_UP` | fan `ucjbStatus = 5` over `tucJob WHERE RouteId = FinalMileRouteId AND ucjbNumber LIKE '%DEL' AND RootParentId IN (tote roots) AND ISNULL(ucjbStatus,0) < 5`; stamp `FinalMilePickedUpAt/By`, `MasterJobId`; device push `<ST>5</ST>` for every advanced leg on a device (same block as today); audit `tblBulkScan` ScanType **29** (`FinalMileTotePickup`, section 4.6) with payload `TOTE:..|FMR:<routeId>|PU:n` |
 
 Counts returned: `PickedUpToteCount` / `RunToteCount` = totes with `FinalMileRouteId = R`, `InwardedAt` on the master's run date, `DeliveredAt IS NULL` (display aid, "Picking Up (X of Y totes)" as today).
 
@@ -85,15 +85,15 @@ Add the mirror guard to `MARSWS_stpLinehaulTotePickup`: a tote with `FinalMileRo
 
 **Depart.** The linehaul depart gate reconciles items (`20260715120000`). For a sealed tote the items were reconciled at origin pack, so the final-mile gate is **tote-level**: `MARSWS_stpFinalMileMasterDepart (@MasterJobId, @CourierId)` advances the master to PickedUp(5) when every tote in the required set (bound to R, inwarded at the master's depot on the run date, `DeliveredAt NULL`) has `FinalMilePickedUpAt`; otherwise `SHORT` with the missing tote barcodes. `...DepartOverride (@Reason)` as the existing pattern, raising one `tucEvent` 'Linehaul Depart Short' linked to the master (`ucevDueTime = GETDATE()`, the `20261014170000` lesson).
 
-**Loose items** (shipments with a `DEL` leg on R but no open tote membership, e.g. one-to-many work that never went in a tote): the existing per-item Pickup Scan on the `DEL` job is unchanged. Rule for the driver: tote if it is in a tote, items if not. A loose-item scan for a shipment that *is* an open member of a continuing tote is accepted and ignored for status (the tote scan owns the status), audit only. Steve 16 Oct: `DEL` legs carry their own `tucJobItems` rows (Q4; Kevin to confirm with the count query there).
+**Loose items** (shipments with a `DEL` leg on R but no open tote membership, e.g. one-to-many work that never went in a tote): the existing per-item Pickup Scan on the `DEL` job is unchanged. Rule for the driver: tote if it is in a tote, items if not. A loose-item scan for a shipment that *is* an open member of a continuing tote is accepted and ignored for status (the tote scan owns the status), audit only. Kevin 21 Oct (Q4): `DEL` legs carry no `tucJobItems` rows; items live on the shipment root and `tblLinehaulToteItem.SourceJobId` already points at the root, so the loose-item scan resolves item -> root -> `DEL` leg via `ParentID` (= `RootParentID` on both tenants, no deeper nesting).
 
 ### 4.4 Delivery at the lab
 
 Mode is read from the master (`FinalMileDeliveryMode`, section 4.5):
 
-**Mode T, accept sealed totes.** Driver opens the master, taps Deliver, scans each tote. `MARSWS_stpFinalMileToteDeliver (@ToteBarcode, @CourierId, @MasterJobId, @PODName NVARCHAR(100), @Latitude, @Longitude)`: guards `NO_TOTE` / `NOT_FINAL_MILE` / `TOTE_CLOSED` / `WRONG_ROUTE` / `NOT_PICKED_UP` (`FinalMilePickedUpAt IS NULL`); then in one transaction: complete the `DEL` legs (`ucjbStatus = 6`, `ucjbJobDone = 1`, `ucjbPODName = @PODName`, completed time, the same column set `MARSWS_stpLinehaulToteInwards` writes plus POD), close the tote (`IsClosed = 1`, `ClosedAt`, `DeliveredAt/By`), audit. Result `DELIVERED` + `CompletedJobCount`. One signature per stop: the master's `CompleteDeliveryPage` runs once after the tote scans and its POD name is passed to each tote scan (the page collects the name first, then the scans, then photo/signature as today; the signature image stays on the master job as it does for any delivery).
+**Mode T, accept sealed totes.** Driver opens the master, taps Deliver, scans each tote. `MARSWS_stpFinalMileToteDeliver (@ToteBarcode, @CourierId, @MasterJobId, @PODName NVARCHAR(100), @Latitude, @Longitude)`: guards `NO_TOTE` / `NOT_FINAL_MILE` / `TOTE_CLOSED` / `WRONG_ROUTE` / `NOT_PICKED_UP` (`FinalMilePickedUpAt IS NULL`); then in one transaction: complete the `DEL` legs (`ucjbStatus = 6`, `ucjbJobDone = 1`, `ucjbPODName = @PODName`, completed time, the same column set `MARSWS_stpLinehaulToteInwards` writes plus POD), close the tote (`IsClosed = 1`, `ClosedAt`, `DeliveredAt/By`), audit. Result `DELIVERED` + `CompletedJobCount` + `DeliveredToteCount` / `RunToteCount` + **`MasterComplete BIT`** (added 21 Oct: 1 when this scan completed the master, so the page can say "Run complete" without a round trip; the master still reaches the handset as Done through `tucJob_Update_SendToDevices`). One signature per stop: the master's `CompleteDeliveryPage` runs once after the tote scans and its POD name is passed to each tote scan (the page collects the name first, then the scans, then photo/signature as today; the signature image stays on the master job as it does for any delivery).
 
-**Mode I, scan each item out.** Scan the tote, then every item: `MARSWS_stpFinalMileToteDeliverItem (@ToteBarcode, @ItemBarcode, ...)` mirrors `MARSWS_stpLinehaulToteInwardsItem`: marks the item received for its root, completes the root's `DEL` leg when all its active members in this tote are scanned. Done/close: `MARSWS_stpFinalMileToteDeliverClose (@ToteBarcode, @CourierId, @Reason)` mirrors `...ToteInwardsClose`: `COMPLETE`, or `SHORT` with the missing list, closing the tote and raising per-item 'Linehaul Missing Item' `tucEvent` follow-ups (so a short tote at the lab is an ops task, not a stalled job). The per-item delivery confirmation rows (`JobItemConfirmation` stage D, `20260928170000`) are written by the same path so the item confirmation reports stay true.
+**Mode I, scan each item out.** Scan the tote, then every item: `MARSWS_stpFinalMileToteDeliverItem (@ToteBarcode, @ItemBarcode, ...)` mirrors `MARSWS_stpLinehaulToteInwardsItem`: marks the item received for its root, completes the root's `DEL` leg when all its active members in this tote are scanned. Done/close: `MARSWS_stpFinalMileToteDeliverClose (@ToteBarcode, @CourierId, @Reason)` mirrors `...ToteInwardsClose`: `COMPLETE`, or `SHORT` with the missing list (both with `CompletedJobCount`, `MissingCount` and the same `MasterComplete BIT`), closing the tote and raising per-item 'Linehaul Missing Item' `tucEvent` follow-ups (so a short tote at the lab is an ops task, not a stalled job). The per-item delivery confirmation rows (`JobItemConfirmation` stage D, `20260928170000`) are written by the same path so the item confirmation reports stay true.
 
 **Master completion** (mirror of `20260706120000`): the master goes to Done (6 + JobDone) when every tote in its required set has `DeliveredAt`. Anchored on `FinalMilePickedUpAt` (totes that actually left the depot on this master), so a never-picked-up tote cannot block it. `ucjbJobDone = 1` reaches the handset through `tucJob_Update_SendToDevices`; no manual push.
 
@@ -110,11 +110,13 @@ All procs `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRAN
 
 ### 4.6 marsapi and driver app
 
-- marsapi `ScanController`: eight new routes, same anonymous-GET shape as the linehaul ones (`FinalMileTotePickup`, `FinalMileMasterDepart`, `FinalMileMasterDepartOverride`, `FinalMileDepartMissing`, `FinalMileToteDeliver`, `FinalMileToteDeliverItem`, `FinalMileToteDeliverClose`, `FinalMileToteDeliverMissing`). EF result classes scaffolded for the new procs; **no re-scaffold** of the existing ones (shapes unchanged). `AppendXmlElement` for every column; emit `ExpectedLocationName`-style text through the text-safe helper.
+- marsapi `ScanController`: eight new routes, same anonymous-GET shape as the linehaul ones (`FinalMileTotePickup`, `FinalMileMasterDepart`, `FinalMileMasterDepartOverride`, `FinalMileDepartMissing`, `FinalMileToteDeliver`, `FinalMileToteDeliverItem`, `FinalMileToteDeliverClose`, `FinalMileToteDeliverMissing`). Result classes and `DespatchContextProcedures` wrappers are **hand-written** like the linehaul ones (the efpt configs list no procs, so nothing is scaffolded); the existing inwards result classes gain one `FinalMileRouteId` property and the four inwards routes append `<FMR>` (section 4.2). `AppendXmlElement` for every column; emit `ExpectedLocationName`-style text through the text-safe helper.
 - `DataFromHost.cs`: parse `<FMM>` into `Job.FinalMileRouteId` and `<FMD>` into `Job.FinalMileDeliveryMode`, next to the `LHM` case.
 - `JobDetailPage.cs`: when `SelectedJob.FinalMileRouteId` is set, Pickup -> `LinehaulTotePickupPage` in final-mile mode (view model calls `FinalMileTotePickupAsync`; Done calls `FinalMileMasterDepartAsync`; result strings above), Deliver -> new `FinalMileDeliveryPage` (mode T: tote scans then `CompleteDeliveryPage`; mode I: tote, items, Done/close with the missing list). The master is excluded from the generic delivery path the same way the linehaul master is.
 - More menu: "Final Mile Tote Pickup" (Menu path adopts the single assigned master, section 4.3).
-- Offline: queue the scan as today's `LinehaulTotePickup` queue does, new `ScanType` values **to confirm** with the despatchweb `ScanType` table (the app sends the raw int; 29+ are free after `LinehaulToteOverride = 28`).
+- `ScanType` (confirmed 21 Oct): **29 `FinalMileTotePickup`**, **30 `FinalMileToteDeliver`**, added in `JupterEnums.cs`, the despatchweb `ScanType` enum (one line, Jacob) and the proc audits. 29+ are free after `LinehaulToteOverride = 28`.
+- Offline (code-checked 21 Oct): today's queued `LinehaulTotePickup` scan is **audit-only** - the data sync sends it to marsreceiverservice, which writes `tblScan` via `MARS_stpScan_Insert`, and nothing replays it against the tote procs. Final-mile pickup degrades the same way (audit row, no status change, driver re-scans online). Final-mile **delivery blocks offline** rather than queueing, because a delivery that never lands would leave the lab with no POD.
+- Exact edits per file, the route/column contract and Garry's sizing: `GARRY-FINAL-MILE-TOTE-SCANNING-API-SENDER-APP-2026-10-21.md` (same folder).
 
 ### 4.7 Routed Operations UI
 
@@ -131,18 +133,18 @@ All procs `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRAN
 4. Driver app.
 5. Routed Operations (master picker + mode). Medical first: set route 15's master and mode, then Kenneth's next Burbank run is the live test.
 
-The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ignored by a sender that does not emit them, and the altered inwards procs keep their result shapes.
+The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ignored by a sender that does not emit them, and the altered inwards procs only append a trailing `FinalMileRouteId` column, which the current marsapi (mapping by column name) ignores.
 
 ## 5a. Milestones
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | dbmigrationsv2: `tblLinehaulTote` FinalMile* columns, `tucJobBooking.FinalMileDeliveryMode`, inwards continuation, `MARSWS_stpFinalMile*` procs | migrations on GitLab master, applied to Medical staging |
-| M1 | marsapi: eight FinalMile* scan routes + EF result classes | routes answer on Medical staging |
-| M2 | `MARS_stpJobMessages` + marssenderservice emit `<FMM>` / `<FMD>` | master job arrives on a staging handset with both nodes |
-| M3 | Driver app: final-mile tote pickup + tote-level depart from the master | test plan 2 and 3 pass |
-| M4 | Driver app: `FinalMileDeliveryPage`, mode T and mode I | test plan 4 and 5 pass |
-| M5 | Routed Ops route editor: master booking picker + delivery scanning mode; Route Viewer master label | route 15 shows "Master: Pxxxx" on staging |
+| M0 (Kevin) | dbmigrationsv2: `tblLinehaulTote` FinalMile* columns, `tucJobBooking.FinalMileDeliveryMode`, inwards continuation, `MARSWS_stpFinalMile*` procs | migrations on GitLab master, applied to Medical staging |
+| M1 (Garry) | marsapi: eight FinalMile* scan routes + result classes + wrappers; `<FMR>` on the four inwards routes | routes answer on Medical staging |
+| M2 (Garry) | `MARS_stpJobMessages` + marssenderservice emit `<FMM>` / `<FMD>` | master job arrives on a staging handset with both nodes |
+| M3 (Garry) | Driver app: final-mile tote pickup + tote-level depart from the master | test plan 2 and 3 pass |
+| M4 (Garry) | Driver app: `FinalMileDeliveryPage`, mode T and mode I | test plan 4 and 5 pass |
+| M5 (Kevin) | Routed Ops route editor: master booking picker + delivery scanning mode; Route Viewer master label | route 15 shows "Master: Pxxxx" on staging |
 | M6 | Medical staging: test plan 1-8 passed | Kenneth or Kevin signs off the run-through |
 | M7 | Medical prod: route 15 master + mode set, Kenneth scans totes on a live Burbank run | first live tote delivered through the new flow |
 
@@ -153,13 +155,13 @@ The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ig
 3. **Depart**: two totes bound, one picked up -> `SHORT` naming the other; override with reason -> master at 5, `tucEvent` raised.
 4. **Mode T delivery**: scan tote A with POD name -> 3 `DEL` legs done with that POD name, tote closed, master done when the last tote is scanned.
 5. **Mode I delivery**: scan tote B, scan 2 of 3 items, Done -> `SHORT`, missing item listed, `tucEvent` 'Linehaul Missing Item' raised, tote closed, the two scanned roots' `DEL` legs done.
-6. **Mixed tote**: roots on route 15 and on a second final-mile route from depot 38 -> inwards closes the tote as today; items continue individually.
+6. **Mixed tote**: roots on route 15 and on a second final-mile route from depot 38 -> inwards closes the tote as today; items continue individually. (Kevin 21 Oct: route 15 is the only `Direction = 2` route on the tenant, so create a second one on staging first.)
 7. **Loose item**: a `DEL` leg on route 15 with no tote -> existing Pickup Scan and Deliver unchanged.
 8. **Regression**: a tote whose roots have no final-mile leg closes at inwards exactly as before (`IsClosed = 1`); linehaul master completion timing unchanged; Urgent (no final-mile routes) sees no behaviour change.
 
 ## 7. Open questions
 
-- **Q1.** Resolved 16 Oct: the "Burbank to Lab" booking on route 15 is the final-mile master (section 3, D2).
+- **Q1.** Resolved 16 Oct: the "Burbank to Lab" booking on route 15 is the final-mile master (section 3, D2). **Kevin 21 Oct:** no such booking exists on Medical staging (the only Burbank/Lab booking is `P5372BIO`, the linehaul master for run 14, and no booking carries `RouteId = 15`), so M5 creates and promotes the master rather than picking it from route 15's 186 customer bookings. What a final-mile master booking looks like (name, addresses, schedule) is settled with Steve before M5.
 - **Q2.** Does the lab ever need a location barcode check (the `WRONG_LOCATION` equivalent)? Assumed no: the lab is the `DEL` leg's delivery address, GPS on the delivery is the evidence.
 - **Q3.** Undo: `LinehaulInwardsUndoReceipt` has no final-mile twin. Assumed a wrongly delivered tote is corrected in DespatchWeb for now.
-- **Q4.** Resolved 16 Oct (Steve): `DEL` legs carry their own `tucJobItems` rows, so the loose-item Pickup Scan and the Mode I item scan-out resolve against the `DEL` leg's items. Note for Kevin: migration `20260630140000` documents items as living on the shipment root (`tucJobItems.JobID` = root `ucjbID`); confirm with one count on Medical before relying on it (`SELECT COUNT(*) FROM tucJobItems i JOIN tucJob j ON j.ucjbID = i.JobID WHERE j.ucjbNumber LIKE '%DEL' AND j.RouteId = 15`). If the count is zero, resolve item -> root via `RootParentId` as the linehaul procs do; the design does not change.
+- **Q4.** Resolved 21 Oct (Kevin, measured on Medical): `DEL` legs carry **no** `tucJobItems` rows (0 on 718 route-15 legs, 0 on all 2,567); items hang off the shipment root (2,683 of 2,921; the rest on `CRT` legs). `tblLinehaulToteItem.SourceJobId` already points at the root, so "the tote's roots" is the distinct `SourceJobId` set with no parent-chasing, and the Mode I item scan-out completes the root's `DEL` leg via `ParentID`. No job on either tenant is nested deeper than one level (`ParentID = RootParentID` for every child row), so the `RootParentId IN (...)` form copied from `MARSWS_stpLinehaulTotePickup` is correct here. The design does not change.
