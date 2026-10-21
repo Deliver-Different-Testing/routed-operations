@@ -122,6 +122,27 @@ public class ScheduleGroupUpsertRequest
     public bool? IsActive { get; set; }
 
     /// <summary>
+    /// Whether every client can book this schedule (spec 6.1, Steve
+    /// 2026-10-16). Writes tblBulkRunScheduleHeader.IsDefault, which until
+    /// now no caller could set: create hardcoded true and update never
+    /// touched it, so the modal's "Who can book this schedule" radio pair
+    /// was decoration.
+    ///
+    /// Null means leave it alone on update, and true on create. That keeps
+    /// every pre-6.1 caller on today's behaviour: the legacy POST
+    /// /api/schedules contract still makes a default schedule, and a PUT
+    /// that does not mention the field does not flip it.
+    ///
+    /// IsDefault is deliberately NOT the same thing as "has no client link
+    /// rows". A default schedule may have clients configured on it; that is
+    /// what section 6.1 rule 2 means by "configured for this client". The
+    /// one tie between them is rule 3, enforced in ScheduleService: a
+    /// non-default schedule needs at least one client, because a schedule
+    /// neither default nor configured for anybody is bookable by nobody.
+    /// </summary>
+    public bool? IsDefault { get; set; }
+
+    /// <summary>
     /// How many upcoming runs the booking page should offer for this
     /// schedule, 1 to 60. Null leaves it alone: on a schedule that has just
     /// collapsed the converter has already written one week's worth, which

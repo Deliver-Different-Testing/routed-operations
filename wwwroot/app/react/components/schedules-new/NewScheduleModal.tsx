@@ -335,6 +335,13 @@ export function NewScheduleModal({ open, onClose }: Props) {
       displayDescription: displayDescription.trim() || null,
       // F21: header-level bookable flag.
       isActive: isActive,
+      // Spec 6.1 rule 1. The Clients radio pair below already asked this
+      // question and already sent the link rows, but the header was created
+      // IsDefault = 1 regardless, so "Specific clients" produced a schedule
+      // every client could book that also had link rows on it. That is the
+      // stray-default shape Anisah hit on 20 Oct, and the create path was
+      // making it on purpose.
+      isDefault: clientMode === 'all',
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
@@ -843,7 +850,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 onChange={() => setClientMode('all')}
                 className="accent-brand-cyan"
               />
-              All clients (default)
+              All clients
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input

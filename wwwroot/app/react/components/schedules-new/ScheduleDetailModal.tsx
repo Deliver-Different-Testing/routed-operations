@@ -461,6 +461,12 @@ export function ScheduleDetailModal({
   // AutoBook gates book-immediately vs stage. Default true so freshly
   // seeded schedules with no explicit value stay bookable.
   const [formIsActive, setFormIsActive] = useState(true);
+  // Spec 6.1 rule 5: "Who can book this schedule" is a real control now. It
+  // was a disabled radio pair whose checked state was derived from
+  // clientIds.length, so it both lied on a default that had a client
+  // configured and could not be changed. State lives here rather than in
+  // ClientsTab because it ships in the Save body with everything else.
+  const [formIsDefault, setFormIsDefault] = useState(true);
   // F13 (Steve 2026-09-20): client-facing display copy. Empty string is
   // saved as NULL so the backend can distinguish "cleared" from "unset".
   const [formDisplayName, setFormDisplayName] = useState('');
@@ -556,6 +562,7 @@ export function ScheduleDetailModal({
     () => JSON.stringify({
       name: formName, description: formDescription, autoBook: formAutoBook,
       isActive: formIsActive,
+      isDefault: formIsDefault,
       displayName: formDisplayName, displayDescription: formDisplayDescription,
       occurrencesAhead: formOccurrencesAhead,
       legs: formLegs, days: formDays,
@@ -569,7 +576,7 @@ export function ScheduleDetailModal({
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
-    [formName, formDescription, formAutoBook, formIsActive,
+    [formName, formDescription, formAutoBook, formIsActive, formIsDefault,
      formDisplayName, formDisplayDescription, formOccurrencesAhead,
      formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
@@ -619,6 +626,11 @@ export function ScheduleDetailModal({
     const seedDescription = data.description ?? '';
     const seedAutoBook = data.autoBook ?? true;
     const seedIsActive = data.isActive ?? true;
+    // Spec 6.1: the header's own flag. The fallback is the pre-6.1
+    // derivation, kept only for a cached payload that pre-dates the field;
+    // once the API ships it, data.isDefault is always present.
+    const seedIsDefault = data.isDefault
+      ?? (data.legacyClientId == null && data.clientIds.length === 0);
     const seedDisplayName = data.displayName ?? '';
     const seedDisplayDescription = data.displayDescription ?? '';
     const seedLegs = seedLegsFromDto(data);
@@ -645,6 +657,7 @@ export function ScheduleDetailModal({
     setFormDescription(seedDescription);
     setFormAutoBook(seedAutoBook);
     setFormIsActive(seedIsActive);
+    setFormIsDefault(seedIsDefault);
     setFormDisplayName(seedDisplayName);
     setFormDisplayDescription(seedDisplayDescription);
     setFormOccurrencesAhead(seedOccurrencesAhead);
@@ -668,6 +681,7 @@ export function ScheduleDetailModal({
     setInitialSnapshot(JSON.stringify({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
       isActive: seedIsActive,
+      isDefault: seedIsDefault,
       displayName: seedDisplayName, displayDescription: seedDisplayDescription,
       occurrencesAhead: seedOccurrencesAhead,
       legs: seedLegs, days: seedDays,
@@ -995,6 +1009,17 @@ export function ScheduleDetailModal({
     }
     const enabledDays = formDays.filter((d) => d.enabled);
     if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
+    // Spec 6.1 rule 3, operator-facing half. The backend refuses this too;
+    // catching it here names the fix in the operator's own terms instead of
+    // surfacing a server error after a round trip. legacyClientId counts as
+    // configured, same as the server-side test, so a pre-junction per-client
+    // schedule stays saveable.
+    if (!formIsDefault && data.clientIds.length === 0 && data.legacyClientId == null) {
+      setSaveError(
+        'Configure at least one client on the Clients tab, or choose "All clients".',
+      );
+      return;
+    }
     setSaveError(null);
 
     const body: ScheduleGroupUpsertBody = {
@@ -1008,6 +1033,10 @@ export function ScheduleDetailModal({
       displayDescription: formDisplayDescription.trim() || null,
       // F21: header-level bookable flag.
       isActive: formIsActive,
+      // Spec 6.1: the "Who can book this schedule" radio pair. An explicit
+      // boolean every save, not omit-to-leave-alone: the operator can see
+      // which one is selected, so the save should mean it.
+      isDefault: formIsDefault,
       // Blank means leave it alone. Only applies once the schedule has
       // collapsed, because the value lives on the detail row; the backend
       // ignores it on an old-shape schedule rather than failing, and the
@@ -1522,6 +1551,8 @@ export function ScheduleDetailModal({
               onOpenSchedule={onOpenSchedule}
               onOpenOverride={onOpenOverride}
               overrideMode={overrideMode}
+              isDefault={formIsDefault}
+              onIsDefaultChange={setFormIsDefault}
             />
           )}
           {tab === 'route' && (
@@ -1618,14 +1649,27 @@ interface ClientsTabProps {
    *  session. Renders a stripped view: only the override client, no
    *  radios, no attach button, no client-overrides list. */
   overrideMode: OverrideEditContext | null;
+  /** Spec 6.1 rule 5. The "Who can book this schedule" radio pair now
+   *  edits the parent's form state and ships on Save, instead of showing a
+   *  disabled reading derived from how many clients were configured. */
+  isDefault: boolean;
+  onIsDefaultChange: (next: boolean) => void;
 }
 
-function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode }: ClientsTabProps) {
+function ClientsTab({
+  data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode,
+  isDefault, onIsDefaultChange,
+}: ClientsTabProps) {
   const qc = useQueryClient();
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
   const toast = useToast();
-  const isDefault = data.legacyClientId == null && data.clientIds.length === 0;
+  // 6.1: isDefault arrives as a prop from the parent's form state. It used
+  // to be derived here as "legacyClientId == null && clientIds.length === 0",
+  // which is the bug: configuring a client on a default schedule flipped the
+  // radio pair to "Specific clients" although the header still said every
+  // client could book it, and nothing the operator clicked could change the
+  // header either way.
   const detachMut = useMutation({
     mutationFn: (clientId: number) =>
       schedulesV2Service.detachClient(data.scheduleId, clientId),
@@ -1751,15 +1795,26 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
         <div className="space-y-2">
           <RadioRow
             checked={isDefault}
-            label="All clients (default)"
-            hint="Available to every client with no schedule of its own for this run. No link rows."
+            onSelect={() => onIsDefaultChange(true)}
+            label="All clients"
+            hint={'Every client can book this schedule. Clients configured '
+              + 'below get their own settings and are ranked first for them, '
+              + 'which changes what they see rather than who is allowed.'}
+            testId="who-can-book-all-clients"
           />
           <RadioRow
             checked={!isDefault}
+            onSelect={() => onIsDefaultChange(false)}
             label="Specific clients"
-            hint="Only the clients attached below. Each is a row in the schedule/client link table."
+            hint={'Only the clients configured below can book it. At least one '
+              + 'is required: a schedule that is neither for all clients nor '
+              + 'configured for anybody cannot be booked at all.'}
+            testId="who-can-book-specific-clients"
           />
         </div>
+        <p className="mt-2 text-xs text-text-muted">
+          Takes effect on Save, with the rest of the schedule.
+        </p>
 
         {/* Client overrides section per Steve F1 (2026-09-20). Deltas
             live in tblBulkRunScheduleOverride; the base schedule is
@@ -1824,7 +1879,7 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
           )}
           <p className="mt-3 text-xs text-text-muted">
             An override records only the fields this client differs on. The base schedule
-            stays untouched and the client stays attached to it.
+            stays untouched and the client keeps booking it.
           </p>
           {/* "Create override" is per-client. Rendered inline on each
               attached client row below (see Attached clients column).
@@ -1834,14 +1889,22 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
 
       <section>
         <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
-          Attached clients
+          Configured clients
           <span className="text-xs text-text-muted font-normal">
-            {data.clientCodes.length} linked
+            {data.clientCodes.length} configured
           </span>
         </h3>
+        {/* Spec 6.1 rule 2: a link row means "this schedule is configured for
+            this client", which is not the same as "only this client may book
+            it". The old copy read "No clients attached. This is a default
+            schedule.", which stated the consequence backwards: whether the
+            schedule is a default is the setting above, and an empty list says
+            nothing about it. */}
         {data.clientCodes.length === 0 && data.legacyClientCode == null && (
           <p className="text-xs text-text-muted italic">
-            No clients attached. This is a default schedule.
+            {isDefault
+              ? 'No client is configured on this schedule. Every client books it as it stands.'
+              : 'No client is configured yet. This schedule cannot be booked until one is, or until you choose "All clients" above.'}
           </p>
         )}
         {data.legacyClientCode && (
@@ -1963,14 +2026,14 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
           type="button"
           onClick={() => onAttachClients(data.scheduleId)}
           className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded border border-border hover:bg-surface-light text-text-primary"
-          title="Open the Attach Clients modal"
+          title="Configure this schedule for one or more clients"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="8" r="4" />
             <path d="M4 21c0-4 4-7 8-7s8 3 8 7" />
             <path d="M18 4v6M15 7h6" />
           </svg>
-          Attach clients
+          Configure for client
         </button>
       </section>
     </div>
@@ -3066,23 +3129,39 @@ function TabButton({
   );
 }
 
+/** Spec 6.1 rule 5. `onSelect` omitted keeps the old read-only rendering,
+ *  which override mode still wants: an override cannot change who can book
+ *  the base schedule. */
 function RadioRow({
   checked,
   label,
   hint,
+  onSelect,
+  testId,
 }: {
   checked: boolean;
   label: string;
   hint: string;
+  onSelect?: () => void;
+  testId?: string;
 }) {
+  const editable = onSelect != null;
   return (
     <label
-      className={`block px-4 py-3 border rounded cursor-not-allowed ${
-        checked ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border'
-      }`}
+      className={`block px-4 py-3 border rounded ${
+        editable ? 'cursor-pointer hover:bg-surface-light' : 'cursor-not-allowed'
+      } ${checked ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border'}`}
     >
       <div className="flex items-center gap-2">
-        <input type="radio" checked={checked} readOnly disabled className="accent-brand-cyan" />
+        <input
+          type="radio"
+          checked={checked}
+          onChange={editable ? () => onSelect!() : undefined}
+          readOnly={!editable}
+          disabled={!editable}
+          className="accent-brand-cyan"
+          data-testid={testId}
+        />
         <span className="text-sm font-medium text-text-primary">{label}</span>
       </div>
       <div className="text-xs text-text-muted ml-6 mt-0.5">{hint}</div>
