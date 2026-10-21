@@ -188,7 +188,11 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
         </div>
       )}
       {d && (
-        <div className="space-y-4">
+        /* min-h: the shared Modal body is overflow-auto, so it clips the
+           absolute picker dropdowns, and the panel is only as tall as its
+           content. Reserving height keeps a 16rem list inside the scroll box;
+           the panel is centred, so it grows up and down equally. */
+        <div className="space-y-4 min-h-[32rem]">
           {/* Header strip: description + actions, or the inline editor. */}
           <div className="flex items-start gap-3">
             {editing ? (
