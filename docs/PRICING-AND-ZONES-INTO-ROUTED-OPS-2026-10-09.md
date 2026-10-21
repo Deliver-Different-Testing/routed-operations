@@ -267,6 +267,26 @@ screen.
 
 ---
 
+### 3.6 Milestones for the UI half (added 21 Oct 2026)
+
+Seeded on Kevin's card `zone-groups-pricing-linehaul-tabs`. Kevin ticks there; this is the reference
+copy. M0 is what shipped on 20 Oct; everything from M2 on is the reconfiguration the mock shows
+(https://deliver-different-testing.github.io/routed-ops-pricing-mock/?tab=zonegroups) and is not done.
+
+| # | Milestone | Done when |
+|---|---|---|
+| M0 | Territory under one Zone groups tab (3.1) | Postcode Groups, Zones and Depots re-homed as sub-views of one tab in Schedules NEW with the `?tab=` link. **Done 20 Oct**, branch `feat/schedules-new-zone-groups-tab-and-bundle-modal`, MR open against develop. |
+| M1 | M0 on Urgent staging | MR merged, build on Urgent staging, ops can reach every territory grid from the new tab. |
+| M2 | Group list and group detail per 3.2 and the mock | List shows Name, Type, home depot hint, zones used, postcode and polygon counts, schedules attached (click to list). Group detail shows each zone's postcodes then its polygons. |
+| M3 | Duplicate group | Copies zone membership (postcodes and polygons). The "copy the default rate sheet" checkbox lands with M8. |
+| M4 | Bulk postcode paste and suburb names (11.8) | "+ postcodes" paste box with added / skipped / ignored result; suburb on every postcode chip with a toggle. |
+| M5 | Map panel (11.8) | Google map beside the group, postcodes shaded by zone from `ZipPolygon` (NZ postcode boundaries confirmed there by Steve, 21 Oct), home depot pinned, hover highlights the zone. Drag-to-rezone is a later stretch. |
+| M6 | Per-client depot limits | `tblBulkRegionClientLimit` migration plus the limit editor on the Depots sub-view. |
+| M7 | Phase 0 snapshot and Phase 1 pricing schema | Section 5 Phase 0 and Phase 1 on `dbmigrationsv2` master and on Urgent staging. Prerequisite for M8 and M9; owner to confirm (Kevin has flagged nobody has started Phase 0). |
+| M8 | Pricing tab (3.3) | Zone rates grid with per-cell courier %, client overrides in grey/black, Dimensions, Surcharges and Speeds sub-views, on Urgent staging. |
+| M9 | Linehaul tab (12.2) | Linehaul runs with rates per speed and client, from/to depot filters, on Urgent staging. |
+| M10 | Legacy /schedules page removed | After ops sign off M2 to M6 on the new tab (Kevin's 20 Oct call keeps it until then). |
+
 ## 4. Data and SQL work
 
 ### 4.1 Snapshot first
@@ -1129,9 +1149,10 @@ column. Query: `EXISTS (SELECT 1 FROM BulkZonePostcodeSurcharge s JOIN BulkZoneP
   already in another zone of the same group is never moved silently.
 - **Suburb**: every postcode chip shows its suburb (`tucPostCode` -> `tblSuburb`, column names to
   confirm) with a "show suburb names" toggle; the Territory lookups return it alongside the postcode.
-- **Map** (nice-to-have, Phase 3): a HERE panel beside the group showing its postcodes shaded by zone
-  and the home depot pinned; hovering a zone row highlights it. Whether NZ postcode boundary geometry
-  exists in the database is to confirm (US has `ZipPolygon`; NZ may need centroids from `FromLatLng`).
+- **Map** (nice-to-have, Phase 3): a map panel beside the group showing its postcodes shaded by zone
+  and the home depot pinned; hovering a zone row highlights it. Build it on Google, not HERE: HERE is
+  backend geocoding and routing only (Kevin, 20 Oct). NZ postcode boundary geometry exists: `ZipPolygon`
+  holds NZ postcode boundaries as well as US zips (Steve, 21 Oct), so the shaded design works on both.
   Editing on the map (drag a postcode to another zone) is the stretch after that.
 
 ### 11.9 Additional item % (item 11)
