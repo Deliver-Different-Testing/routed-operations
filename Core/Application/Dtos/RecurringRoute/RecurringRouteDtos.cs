@@ -1,4 +1,4 @@
-namespace RoutedOperations.Core.Application.Dtos.RecurringRoute;
+﻿namespace RoutedOperations.Core.Application.Dtos.RecurringRoute;
 
 /// <summary>Feature 5.1 Routes.Direction values. A byte rather than an enum
 /// because the column is tinyint and CK_Routes_Direction is the authority on
@@ -80,7 +80,22 @@ public record RouteDto(
     byte Direction,
     int? DepotId,
     string DepotName,
-    RouteOriginDto? Origin);
+    RouteOriginDto? Origin,
+    // Final-mile tote scanning (spec 4.1 and 4.7). Appended for the same
+    // reason Feature 5.1's three were: a positional reader keeps reading the
+    // same field at the same index.
+    //
+    // Only meaningful on a final-mile route (Direction = 2). The master is the
+    // booking whose realised job the driver opens to scan totes on and off;
+    // without one the handset has nothing to route the tote screens from, so
+    // the editor shows the picker only for Direction = 2.
+    int? MasterBookingId = null,
+    // "P5372BIO - Burbank to Lab" style label for the picker's selected state,
+    // so the editor does not have to fetch the booking again to render it.
+    string MasterBookingLabel = null,
+    // 1 = the lab accepts sealed totes, 2 = every item is scanned out. Lives
+    // on the master booking; defaults to 1 when the route has no master yet.
+    byte FinalMileDeliveryMode = 1);
 
 /// <summary>One live recurring booking bound to a route. Populated by the
 /// read-only "Bookings on this route" list in the Route editor modal.</summary>
@@ -90,6 +105,32 @@ public record RouteBookingDto(
     string PickupWindow,
     string Days,
     DateTime? NextDue);
+
+/// <summary>One booking the Route editor's master picker can offer. Mirrors
+/// RecurringLinehaulBookingLookupDto, which does the same job for a linehaul
+/// run; the only difference is that "linked" here means linked to a ROUTE.
+///
+/// Deliberately NOT sourced from RouteBookingDto / GetBookingsAsync: that
+/// lists bookings already carrying this RouteId, and a final-mile master has
+/// to be found and promoted before it carries one. Checked on Medical 21 Oct -
+/// no booking anywhere carries RouteId = 15, so a picker fed from that list
+/// would be empty on the one route this feature exists for.</summary>
+public class RouteLinkableBookingDto
+{
+    public int BookingId { get; set; }
+    public string JobNumber { get; set; } = string.Empty;
+    public string? JobName { get; set; }
+    public string? ClientName { get; set; }
+    public string? PickupSummary { get; set; }
+    public string? DeliverySummary { get; set; }
+    /// <summary>The route this booking is already the master of, if any.</summary>
+    public int? LinkedRouteId { get; set; }
+    public bool IsMaster { get; set; }
+    public bool LinkedToThisRoute { get; set; }
+    /// <summary>True when this booking is a LINEHAUL master. Promoting it to a
+    /// final-mile master would take it off its run, so the picker warns.</summary>
+    public bool IsLinehaulMasterElsewhere { get; set; }
+}
 
 /// <summary>Create or replace-in-full payload. Empty BulkPolygonIds clears
 /// all attached bulk polygons; omit the field entirely to keep them untouched.
@@ -109,7 +150,14 @@ public record UpsertRouteRequest(
     // have always created.
     byte Direction = RouteDirections.FirstMile,
     int? DepotId = null,
-    RouteOriginDto? Origin = null);
+    RouteOriginDto? Origin = null,
+    // Final-mile tote scanning. Null means "leave the master alone", which is
+    // what every caller that predates this sends, so an unrelated save cannot
+    // demote a route's master by omission. Passing 0 clears it.
+    int? MasterBookingId = null,
+    // Null means "leave the mode alone". Only written when the route has a
+    // master to write it to, since the column lives on the booking.
+    byte? FinalMileDeliveryMode = null);
 
 /// <summary>Copy an existing route's geometry + defaults into a new route.
 /// Null ScheduleIds means "keep the source's schedules"; empty list means

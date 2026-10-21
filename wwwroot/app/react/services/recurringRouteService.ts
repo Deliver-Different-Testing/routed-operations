@@ -1,4 +1,4 @@
-import { request } from './api';
+﻿import { request } from './api';
 
 /** Feature 5.1 `Routes.Direction`. Numbers, not a string union, because the
  *  column is tinyint and `CK_Routes_Direction` is the authority on what is
@@ -96,6 +96,47 @@ export interface RecurringRoute {
   depotName: string;
   /** Null when the route carries no address origin at all. */
   origin: RouteOrigin | null;
+  /** Final-mile tote scanning. The booking whose realised job the driver opens
+   *  to scan totes on and off. Null until a master is set, and only ever set
+   *  on a final-mile route. */
+  masterBookingId?: number | null;
+  /** "P5372BIO - Burbank to Lab" style label for the picker's selected state,
+   *  so the editor does not refetch the booking to render it. */
+  masterBookingLabel?: string | null;
+  /** 1 = the lab accepts sealed totes, 2 = every item is scanned out. Lives on
+   *  the master booking; reads 1 when the route has no master yet. */
+  finalMileDeliveryMode?: FinalMileDeliveryModeValue;
+}
+
+export const FinalMileDeliveryMode = {
+  /** Scan the tote, every shipment inside it is delivered. */
+  SealedTotes: 1,
+  /** Scan the tote, then every item out of it. */
+  ScanEachItem: 2,
+} as const;
+export type FinalMileDeliveryModeValue =
+  (typeof FinalMileDeliveryMode)[keyof typeof FinalMileDeliveryMode];
+
+/** One booking the final-mile master picker can offer.
+ *
+ *  Deliberately NOT the same list as `getBookings`, which returns bookings
+ *  already bound to the route. A master has to be found and promoted before it
+ *  carries a routeId, and on Medical no booking carries route 15 at all, so a
+ *  picker fed from that list would be empty on the one route this exists for. */
+export interface RouteLinkableBooking {
+  bookingId: number;
+  jobNumber: string;
+  jobName: string | null;
+  clientName: string | null;
+  pickupSummary: string | null;
+  deliverySummary: string | null;
+  /** The route this booking is already the final-mile master of, if any. */
+  linkedRouteId: number | null;
+  isMaster: boolean;
+  linkedToThisRoute: boolean;
+  /** True when it is a LINEHAUL master. Promoting it would take it off its
+   *  run, so the server refuses and the picker says so first. */
+  isLinehaulMasterElsewhere: boolean;
 }
 
 /** One live recurring booking bound to a route. Populated by
@@ -129,6 +170,12 @@ export interface UpsertRouteBody {
    *  origin field when direction is FirstMile, so a route flipped back to
    *  first mile cannot silently inherit an old address later. */
   origin?: RouteOrigin | null;
+  /** Final-mile master. Omit or send null to LEAVE IT ALONE, so an unrelated
+   *  route save cannot demote a master by omission; send 0 to clear it. */
+  masterBookingId?: number | null;
+  /** Omit or send null to leave it alone. Only written when the route has a
+   *  master to write it to, because the column lives on the booking. */
+  finalMileDeliveryMode?: FinalMileDeliveryModeValue | null;
 }
 
 export interface RouteBulkPolygonRef {
@@ -238,6 +285,13 @@ export const recurringRouteService = {
 
   getBookings: (routeId: number) =>
     request<{ response: RouteBooking[] }>(`/recurring-routes/${routeId}/bookings`),
+
+  /** Text search for a booking to promote to final-mile master. Two characters
+   *  minimum, matching the linehaul picker; the server returns [] below that
+   *  rather than the whole table. */
+  getLinkableBookings: (routeId: number, q: string) =>
+    request<{ response: RouteLinkableBooking[] }>(
+      `/recurring-routes/${routeId}/linkable-bookings?q=${encodeURIComponent(q)}`),
 
   getRoster: (routeId: number) =>
     request<{ response: RouteRosterEntry[] }>(`/recurring-routes/${routeId}/roster`),
