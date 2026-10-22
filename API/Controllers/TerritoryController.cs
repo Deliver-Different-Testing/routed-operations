@@ -126,6 +126,15 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
         }
     }
 
+    /// <summary>
+    /// One postcode group plus everything that references it: its zones,
+    /// the schedules using it for delivery and for pickup, and the
+    /// polygons bound to it. Backs the group detail view.
+    /// </summary>
+    [HttpGet("postcode-groups/{id:int}/detail")]
+    public async Task<IActionResult> GetPostcodeGroupDetail(int id) =>
+        await Wrap(() => svc.GetPostcodeGroupDetailAsync(id));
+
     [HttpGet("nz/postcodes")]
     // LOAD-BEARING: on the Schedules (NEW) create/edit path. Narrowing this breaks
     // schedule creation (an error, not a hidden page).

@@ -87,19 +87,182 @@ public class TerritoryService(
 
         var query = Context.BulkZonePostcodeGroups.AsNoTracking()
             .Include(g => g.Depot)
-            .Include(g => g.BulkZonePostcodes)
             .AsQueryable();
         if (clientId.HasValue)
             query = query.Where(g => g.ClientId == clientId.Value || g.ClientId == null);
         var rows = await query.OrderBy(g => g.Name).ToListAsync();
-        return rows.Select(g => new PostcodeGroupDto(
-            g.Id,
-            g.Name,
-            g.DepotId,
-            g.Depot?.Name,
-            g.ClientId,
+
+        var counts = await LoadGroupCountsAsync(rows.Select(g => g.Id).ToList());
+        return rows.Select(g => ToDto(
+            g,
             g.ClientId.HasValue && clientCodes.TryGetValue(g.ClientId.Value, out var code) ? code : null,
-            g.BulkZonePostcodes.Count)).ToList();
+            counts)).ToList();
+    }
+
+    /// <summary>Group detail: the group plus every reference to it. Nothing
+    /// on the group row itself gives it force (no stored procedure reads
+    /// its ClientId or DepotId), so the references ARE the detail.</summary>
+    public async Task<PostcodeGroupDetailDto> GetPostcodeGroupDetailAsync(int id)
+    {
+        var g = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .Include(x => x.Depot)
+            .FirstOrDefaultAsync(x => x.Id == id)
+            ?? throw new InvalidOperationException("Postcode group not found.");
+
+        string clientCode = null;
+        if (g.ClientId.HasValue)
+            clientCode = await Context.TucClients.AsNoTracking()
+                .Where(c => c.UcclId == g.ClientId.Value)
+                .Select(c => c.UcclCode)
+                .FirstOrDefaultAsync();
+
+        var ids = new List<int> { id };
+        var counts = await LoadGroupCountsAsync(ids);
+
+        // Zones, with the label from wherever this tenant keeps it.
+        var isUs = IsUsTenant();
+        List<PostcodeGroupZoneDto> zones;
+        if (isUs)
+        {
+            var zips = await Context.ZoneZips.AsNoTracking()
+                .Include(z => z.ZoneName)
+                .Where(z => z.ZoneZipGroupId == id)
+                .Select(z => new { Zone = z.ZoneNumber ?? 0, Label = z.ZoneName != null ? z.ZoneName.ZoneName1 : null })
+                .ToListAsync();
+            zones = zips.GroupBy(z => z.Zone)
+                .Select(grp => new PostcodeGroupZoneDto(
+                    grp.Key,
+                    grp.Select(x => x.Label).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)),
+                    grp.Count()))
+                .OrderBy(z => z.Zone).ToList();
+        }
+        else
+        {
+            var pcs = await Context.BulkZonePostcodes.AsNoTracking()
+                .Where(p => p.PostcodeGroupId == id)
+                .Select(p => new { p.Zone, p.Name })
+                .ToListAsync();
+            zones = pcs.GroupBy(p => p.Zone)
+                .Select(grp => new PostcodeGroupZoneDto(
+                    grp.Key,
+                    grp.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)),
+                    grp.Count()))
+                .OrderBy(z => z.Zone).ToList();
+        }
+
+        // Schedules on either side. Counted by distinct header, because an
+        // operator thinks in schedules and a schedule carries up to seven
+        // day rows; the day count is kept as the secondary figure.
+        var dayRows = await Context.TblBulkRunScheduleDays.AsNoTracking()
+            .Where(d => d.PostcodeGroupId == id || d.PickupPostcodeGroupId == id)
+            .Select(d => new { d.ScheduleId, d.Name, d.PostcodeGroupId, d.PickupPostcodeGroupId })
+            .ToListAsync();
+        var headerNames = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => dayRows.Select(d => d.ScheduleId).Contains(h.ScheduleId))
+            .Select(h => new { h.ScheduleId, h.Name })
+            .ToDictionaryAsync(h => h.ScheduleId, h => h.Name);
+        var schedules = dayRows.GroupBy(d => d.ScheduleId)
+            .Select(grp => new PostcodeGroupScheduleDto(
+                grp.Key,
+                headerNames.TryGetValue(grp.Key, out var hn) && !string.IsNullOrWhiteSpace(hn)
+                    ? hn
+                    : grp.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? $"#{grp.Key}",
+                grp.Any(x => x.PostcodeGroupId == id),
+                grp.Any(x => x.PickupPostcodeGroupId == id),
+                grp.Count()))
+            .OrderBy(s => s.Name)
+            .ToList();
+
+        var polygons = await Context.BulkRunPolygons.AsNoTracking()
+            .Where(p => p.Active && p.PostcodeGroupId == id)
+            .OrderBy(p => p.Name)
+            .Select(p => new BoundPolygonDto(
+                p.PolygonId, p.Name, p.ZoneNameId, p.PostcodeGroupId,
+                p.CentroidLatitude, p.CentroidLongitude))
+            .ToListAsync();
+
+        return new PostcodeGroupDetailDto(ToDto(g, clientCode, counts), zones, schedules, polygons);
+    }
+
+    /// <summary>Per-group member / zone / polygon / schedule counts.</summary>
+    private sealed record GroupCounts(
+        int Members, int Zones, int Polygons, int DeliverySchedules, int PickupSchedules);
+
+    private static readonly GroupCounts EmptyCounts = new(0, 0, 0, 0, 0);
+
+    private PostcodeGroupDto ToDto(
+        Domain.Despatch.BulkZonePostcodeGroup g,
+        string clientCode,
+        IReadOnlyDictionary<int, GroupCounts> counts)
+    {
+        var c = counts.TryGetValue(g.Id, out var hit) ? hit : EmptyCounts;
+        return new PostcodeGroupDto(
+            g.Id, g.Name, g.DepotId, g.Depot?.Name, g.ClientId, clientCode,
+            c.Members, c.Zones, c.Polygons, c.DeliverySchedules, c.PickupSchedules);
+    }
+
+    /// <summary>
+    /// Counts for a set of groups, in four queries rather than per row.
+    /// Grouping happens in memory on purpose: the row counts are small
+    /// (4,127 member rows on the largest tenant) and EF's InMemory
+    /// provider, which the tests run on, does not translate a nested
+    /// Select().Distinct().Count() inside a GroupBy.
+    ///
+    /// The member source is tenant-dependent. BulkZonePostcode on NZ,
+    /// ZoneZip on US via FK_ZoneZip_BulkZonePostcodeGroup. Counting only
+    /// BulkZonePostcode reads 0 for every group on a US tenant.
+    /// </summary>
+    private async Task<Dictionary<int, GroupCounts>> LoadGroupCountsAsync(List<int> ids)
+    {
+        if (ids.Count == 0) return new Dictionary<int, GroupCounts>();
+
+        var members = IsUsTenant()
+            ? await Context.ZoneZips.AsNoTracking()
+                .Where(z => z.ZoneZipGroupId != null && ids.Contains(z.ZoneZipGroupId.Value))
+                .Select(z => new { GroupId = z.ZoneZipGroupId.Value, Zone = z.ZoneNumber ?? 0 })
+                .ToListAsync()
+            : await Context.BulkZonePostcodes.AsNoTracking()
+                .Where(p => p.PostcodeGroupId != null && ids.Contains(p.PostcodeGroupId.Value))
+                .Select(p => new { GroupId = p.PostcodeGroupId.Value, Zone = p.Zone })
+                .ToListAsync();
+
+        var polygons = await Context.BulkRunPolygons.AsNoTracking()
+            .Where(p => p.Active && p.PostcodeGroupId != null && ids.Contains(p.PostcodeGroupId.Value))
+            .Select(p => new { GroupId = p.PostcodeGroupId.Value })
+            .ToListAsync();
+
+        // Both sides in one pass. A day row can reference the same group on
+        // both sides, which is why they are read together rather than as two
+        // filtered queries that would double-count nothing but cost twice.
+        var dayRows = await Context.TblBulkRunScheduleDays.AsNoTracking()
+            .Where(d => (d.PostcodeGroupId != null && ids.Contains(d.PostcodeGroupId.Value))
+                     || (d.PickupPostcodeGroupId != null && ids.Contains(d.PickupPostcodeGroupId.Value)))
+            .Select(d => new { d.ScheduleId, d.PostcodeGroupId, d.PickupPostcodeGroupId })
+            .ToListAsync();
+
+        var memberByGroup = members.GroupBy(m => m.GroupId)
+            .ToDictionary(g => g.Key, g => (Count: g.Count(), Zones: g.Select(x => x.Zone).Distinct().Count()));
+        var polyByGroup = polygons.GroupBy(p => p.GroupId).ToDictionary(g => g.Key, g => g.Count());
+        var idSet = new HashSet<int>(ids);
+        var delByGroup = dayRows
+            .Where(d => d.PostcodeGroupId.HasValue && idSet.Contains(d.PostcodeGroupId.Value))
+            .GroupBy(d => d.PostcodeGroupId!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.ScheduleId).Distinct().Count());
+        var pickByGroup = dayRows
+            .Where(d => d.PickupPostcodeGroupId.HasValue && idSet.Contains(d.PickupPostcodeGroupId.Value))
+            .GroupBy(d => d.PickupPostcodeGroupId!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.ScheduleId).Distinct().Count());
+
+        return ids.Distinct().ToDictionary(id => id, id =>
+        {
+            var hasMembers = memberByGroup.TryGetValue(id, out var m);
+            return new GroupCounts(
+                hasMembers ? m.Count : 0,
+                hasMembers ? m.Zones : 0,
+                polyByGroup.TryGetValue(id, out var p) ? p : 0,
+                delByGroup.TryGetValue(id, out var d) ? d : 0,
+                pickByGroup.TryGetValue(id, out var k) ? k : 0);
+        });
     }
 
     /// <summary>Resolve client code -> id server-side (operator-facing
@@ -252,7 +415,6 @@ public class TerritoryService(
     {
         var g = await Context.BulkZonePostcodeGroups.AsNoTracking()
             .Include(x => x.Depot)
-            .Include(x => x.BulkZonePostcodes)
             .FirstAsync(x => x.Id == id);
         // Post-write hydration - resolve the single client's code if present.
         string clientCode = null;
@@ -263,7 +425,9 @@ public class TerritoryService(
                 .Select(c => c.UcclCode)
                 .FirstOrDefaultAsync();
         }
-        return new PostcodeGroupDto(g.Id, g.Name, g.DepotId, g.Depot?.Name, g.ClientId, clientCode, g.BulkZonePostcodes.Count);
+        // Same counts as the list, so a row does not change shape the
+        // moment it is edited.
+        return ToDto(g, clientCode, await LoadGroupCountsAsync(new List<int> { id }));
     }
 
     // ─── NZ POSTCODE WRITES ────────────────────────────────────────────────
