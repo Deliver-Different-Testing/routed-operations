@@ -290,7 +290,7 @@ copy. M0 is what shipped on 20 Oct; everything from M2 on is the reconfiguration
 | M4 | Bulk postcode paste and suburb names (11.8) | "+ postcodes" paste box with added / skipped / ignored result; suburb on every postcode chip with a toggle. |
 | M5 | Map panel (11.8) | Google map beside the group, postcodes shaded by zone from `ZipPolygon` (NZ postcode boundaries confirmed there by Steve, 21 Oct), home depot pinned, hover highlights the zone. Drag-to-rezone is a later stretch. |
 | M6 | Per-client depot limits | `tblBulkRegionClientLimit` migration plus the limit editor on the Depots sub-view. |
-| M7 | Phase 0 snapshot and Phase 1 pricing schema | Section 5 Phase 0 and Phase 1 on `dbmigrationsv2` master and on Urgent staging. Prerequisite for M8 and M9; owner to confirm (Kevin has flagged nobody has started Phase 0). |
+| M7 | Phase 0 snapshot and Phase 1 pricing schema | **Owner: Kerran (Steve, 23 Oct).** Specced for him as `KERRAN-PRICING-DB-PHASE-0-1-2026-10-23.md` in `dbmigrationsv2` (branch `docs/pricing-db-phase-0-1`), card `pricing-db-phase-0-1` on his tab. Kevin ticks this when Kerran's M4 (1A zero-diff gate passed, functions on staging) and M5 (1B tables on staging) are done. Prerequisite for M8 and M9. |
 | M8 | Pricing tab (3.3) | Zone rates grid with per-cell courier %, client overrides in grey/black, Dimensions, Surcharges and Speeds sub-views, on Urgent staging. |
 | M9 | Linehaul tab (12.2) | Linehaul runs with rates per speed and client, from/to depot filters, on Urgent staging. |
 | M10 | Legacy /schedules page removed | After ops sign off M2 to M6 on the new tab (Kevin's 20 Oct call keeps it until then). |
@@ -932,6 +932,8 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 
 ## 8. Out of scope
 
+- **Zip Groups section hidden on US tenants (Steve, 23 Oct, on Kevin's 22 Oct question).** US schedules resolve zip -> `ZoneName` -> `LocationId` and never read `BulkZonePostcodeGroup`; the grid is permanently empty there and its Add button created a group nothing consumes. Hide the section by tenant territory (US), not by "table is empty", so a fresh NZ tenant with no groups yet still sees it. Loses no function.
+
 - US territory (`ZoneGroup` / `ZoneName` / `ZoneZip`, `ZoneCombo` flight rates). The Zone groups tab
   re-homes the existing US sub-views unchanged; US rating is a different engine.
 - On-demand rating (`UTL_fncJob_Rate`, `tucClient` rate-code columns, `tblClientDefault`). Only the
@@ -957,9 +959,10 @@ The last query decides how much of the Phase 2 rewrite is automatic.
 4. **Client Manager cut-off for bulk pricing.** **Marcus 15 Oct: read-only (12.1).** Make Pricing > Zones / Rates / Dimensions read-only
    in Client Manager at Phase 1 (recommended; prevents two writers), or leave it writable and rely on
    ops discipline.
-5. **Owner.** **Marcus 15 Oct: Kevin (12.1).** Kevin (owns Schedules NEW and the rating function changes are next to his schedule
-   work) or Kerran (on pricing fixes now). Recommendation: Kevin for Phases 0 to 2, with Kerran on the
-   Configurator side of Decision 3.
+5. **Owner.** **Marcus 15 Oct: Kevin (12.1). Steve 23 Oct: split.** Kevin owns the screens (this card); **Kerran owns the
+   underlying pricing database changes** (Phase 0 snapshot, Phase 1 schema, backfills, rating-function re-emits and the
+   zero-diff gate), specced in `dbmigrationsv2` as `KERRAN-PRICING-DB-PHASE-0-1-2026-10-23.md`. Phase 2 ownership is decided
+   when Phase 1 has run a release.
 6. **Grid axes.** **Marcus 15 Oct: as recommended (12.1).** Zone down, speed across, client as a selector (recommended), with stock size as an
    expander. Alternative: speed as the selector and client across, which matches Client Manager's
    Rates tab but hides client differences.
