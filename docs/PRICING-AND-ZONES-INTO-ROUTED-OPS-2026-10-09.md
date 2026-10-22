@@ -799,6 +799,14 @@ ticks:
   carry no `PickupDepotId` (direct resolves its From through `s.Region`), so a straight
   `p.DepotId = s.PickupDepotId` would be NULL-compared on those and refuse everything.
 
+**The depot half of both predicates is provisional (Kevin, 20 Oct; recorded 22 Oct).** 6.3 shipped
+with `AND p.DepotId = s.Region` in `@ZoneActiveSchedules`, and D15 adds `p.DepotId = s.PickupDepotId`.
+Section 4.3 (Phase 2, decoupling zone groups from depots) deletes exactly those depot tests and joins on
+`PostcodeGroupId` alone. So: 6.4 ships as drafted (sequencing unchanged), but nobody should treat its
+depot shape as settled; whoever writes Phase 2 revisits 6.3's `@ZoneActiveSchedules` as well as D15
+rather than assuming 6.3 was untouched; and the 6.4 impact numbers above were measured with the depot
+test applied, so they move once it goes.
+
 **Origin types and depots, confirmed (Kevin, 20 Oct).** Both ticked schedules are depot origin, so
 D15's blast radius is zero.
 
