@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { DropdownPortal } from '../common/DropdownPortal';
 
 // Multi-select depot picker for the Schedules NEW list filter.
 // Same pattern as ClientMultiPicker (trigger button + dropdown panel
@@ -32,22 +33,10 @@ export function DepotMultiPicker({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  // The panel is portaled to body, so click-outside and Escape are owned
+  // by DropdownPortal: a contains() check against this wrapper would
+  // close the panel the moment it was clicked.
   const wrapperRef = useRef<HTMLDivElement>(null);
-
-  // Close on click-outside + Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggle = (name: string) => {
@@ -82,17 +71,20 @@ export function DepotMultiPicker({
         <span className="text-text-muted text-xs">▼</span>
       </button>
 
-      {open && (
-        <div
-          className="absolute left-0 top-full mt-1 z-30 w-64 bg-surface-white border border-border rounded shadow-lg"
-          data-testid="depot-multi-picker-panel"
-        >
+      <DropdownPortal
+        anchorRef={wrapperRef}
+        open={open}
+        onDismiss={() => setOpen(false)}
+        width={256}
+        data-testid="depot-multi-picker-panel"
+      >
+        <>
           {panelTitle && (
-            <div className="px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-text-muted">
+            <div className="shrink-0 px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-text-muted">
               {panelTitle}
             </div>
           )}
-          <div className="p-2 border-b border-border-light">
+          <div className="shrink-0 p-2 border-b border-border-light">
             <input
               type="search"
               autoFocus
@@ -103,7 +95,10 @@ export function DepotMultiPicker({
             />
           </div>
 
-          <div className="max-h-72 overflow-y-auto">
+          {/* flex-1 min-h-0 rather than a fixed max-h: the portal caps the
+              panel's height to the available space, so the list has to be
+              the part that shrinks. */}
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {filtered.length === 0 && (
               <div className="p-3 text-xs text-text-muted text-center">
                 {options.length === 0 ? 'No depots defined.' : 'No depots match.'}
@@ -128,7 +123,7 @@ export function DepotMultiPicker({
             })}
           </div>
 
-          <div className="flex items-center justify-between px-3 py-2 border-t border-border-light bg-surface-cream text-xs">
+          <div className="shrink-0 flex items-center justify-between px-3 py-2 border-t border-border-light bg-surface-cream text-xs">
             <span className="text-text-muted">
               {selected.length === 0 ? 'Nothing selected' : `${selected.length} selected`}
             </span>
@@ -151,8 +146,8 @@ export function DepotMultiPicker({
               </button>
             </div>
           </div>
-        </div>
-      )}
+        </>
+      </DropdownPortal>
     </div>
   );
 }

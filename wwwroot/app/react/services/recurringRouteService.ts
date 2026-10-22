@@ -265,6 +265,34 @@ export interface ScheduleLookup {
   days: number[];
 }
 
+/**
+ * Whether to OFFER a permanent delete on this route.
+ *
+ * Read entirely from the row the list already returned - no extra query,
+ * and in particular no probe of tucJob / tucJobBooking / tblBulkJob,
+ * which are the big operational tables and would be scanned once per
+ * route on every page load. tblBulkJob has no index on RouteId at all.
+ *
+ * This is a HINT, deliberately not the authority:
+ *   * Two of the six counts are filtered server-side - BookingCount is
+ *     active-and-not-done, MappedStopsCount is non-void - so a route
+ *     whose only references are cancelled rows reads as clear here.
+ *   * It cannot see tucJob or tblLinehaulTote at all.
+ *
+ * Both gaps fail in the safe direction: the button may be offered on a
+ * route that then refuses. The server re-counts all eight inside the
+ * delete transaction and returns 409 naming what it found, which is what
+ * actually protects the data.
+ */
+export function mayOfferHardDelete(r: RecurringRoute): boolean {
+  return (r.zipcodes?.length ?? 0) === 0
+    && (r.bulkPolygons?.length ?? 0) === 0
+    && (r.schedules?.length ?? 0) === 0
+    && (r.rosterEntryCount ?? 0) === 0
+    && (r.bookingCount ?? 0) === 0
+    && (r.mappedStopsCount ?? 0) === 0;
+}
+
 export const recurringRouteService = {
   list: () => request<{ response: RecurringRoute[] }>('/recurring-routes'),
   get: (id: number) => request<{ response: RecurringRoute }>(`/recurring-routes/${id}`),
@@ -280,8 +308,14 @@ export const recurringRouteService = {
     request<{ response: RecurringRoute }>(`/recurring-routes/${sourceId}/copy`, {
       method: 'POST', body: JSON.stringify(body),
     }),
+  /** Deactivate. The route stays in the table and stops driving prebook. */
   remove: (id: number) =>
     request<{ response: string }>(`/recurring-routes/${id}`, { method: 'DELETE' }),
+
+  /** Remove permanently. Rejects with the server's reason (409) when the
+   *  route picked up a reference since the list was loaded. */
+  hardRemove: (id: number) =>
+    request<{ response: string }>(`/recurring-routes/${id}/hard`, { method: 'DELETE' }),
 
   getBookings: (routeId: number) =>
     request<{ response: RouteBooking[] }>(`/recurring-routes/${routeId}/bookings`),

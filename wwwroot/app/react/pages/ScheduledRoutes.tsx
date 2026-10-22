@@ -34,6 +34,7 @@ import {
   FinalMileDeliveryMode,
   type FinalMileDeliveryModeValue,
   type RouteLinkableBooking,
+  mayOfferHardDelete,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
@@ -119,6 +120,32 @@ export default function ScheduledRoutes() {
       toast.show('Route deactivated', 'success');
       await load();
     } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
+  // Permanent delete, offered only on a route nothing references (Steve,
+  // 22 Oct). The confirmation spells out that it cannot be undone and
+  // that deactivation is the alternative, because the two sit next to
+  // each other in the same menu.
+  const doHardDelete = async (r: RecurringRoute) => {
+    if (!(await askConfirm({
+      title: 'Delete route permanently?',
+      message: `Permanently delete "${r.name}" (#${r.routeId})? This cannot be undone. `
+        + 'The route is removed only if nothing references it; the server checks again '
+        + 'as it deletes and refuses if anything does. To keep it on record, deactivate it instead.',
+      confirmLabel: 'Delete permanently',
+      danger: true,
+    }))) return;
+    try {
+      await recurringRouteService.hardRemove(r.routeId);
+      toast.show('Route deleted', 'success');
+      await load();
+    } catch (e) {
+      // 409 carries the server's re-check, which is the authority. It
+      // fires when something claimed the route between the page loading
+      // and this click.
+      toast.show((e as Error).message, 'error');
+      await load();
+    }
   };
 
   // Deep-copy the route (name auto-suffixed with "(copy)") + copy zip
@@ -298,7 +325,10 @@ export default function ScheduledRoutes() {
                           { label: 'Edit', onClick: () => setEditing(r) },
                           { label: 'Copy', onClick: () => doCopy(r) },
                           { label: r.active ? 'Pause' : 'Resume', onClick: () => doToggleActive(r) },
-                          { label: 'Delete', onClick: () => doDelete(r), danger: true },
+                          { label: 'Deactivate', onClick: () => doDelete(r), danger: true },
+                          ...(mayOfferHardDelete(r)
+                            ? [{ label: 'Delete permanently', onClick: () => doHardDelete(r), danger: true }]
+                            : []),
                         ]}
                       />
                     </td>

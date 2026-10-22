@@ -254,3 +254,69 @@ public record ZipPolygonShapeDto(
     decimal? Latitude,
     decimal? Longitude,
     string Wkt);
+
+/// <summary>
+/// What points at a route, used to refuse a permanent delete with a
+/// reason instead of letting it fail as a raw constraint error.
+///
+/// SEVEN counts for EIGHT references, and the asymmetry is deliberate:
+///
+///   * Five come from foreign keys on dbo.Routes (tucJob,
+///     Dispatch_RouteRoster, RouteZipcodes, tblRouteSchedule,
+///     tblBulkRunPolygonRoute). Counting them is only to produce a
+///     readable message - the FK is what actually prevents the orphan.
+///   * Two have NO foreign key at all: tucJobBooking.RouteId and
+///     tblBulkJob.RouteId. Nothing in the database stops a delete from
+///     stranding those, so counting them IS the protection. Steve's rule
+///     was "no jobs, no bookings", and bookings are in this unprotected
+///     pair.
+///   * The eighth, tblLinehaulTote.FinalMileRouteId, is NOT counted. The
+///     application has no SELECT grant on tblLinehaulTote - that table
+///     and tblLinehaulToteItem carry no permissions at all, and the MARS
+///     procedures reach them through ownership chaining - so a direct
+///     read fails with "SELECT permission was denied". Its foreign key
+///     still blocks the delete, and the 547 handler in HardDeleteAsync
+///     turns that into the same refusal.
+/// </summary>
+public record RouteUsageDto(
+    int Jobs,
+    int Bookings,
+    int BulkJobs,
+    int RosterEntries,
+    int Zipcodes,
+    int Schedules,
+    int Polygons)
+{
+    /// <summary>True when nothing we can see references the route. Totes
+    /// are not included; see the type remarks.</summary>
+    public bool IsUnused =>
+        Jobs == 0 && Bookings == 0 && BulkJobs == 0 && RosterEntries == 0
+        && Zipcodes == 0 && Schedules == 0 && Polygons == 0;
+
+    /// <summary>
+    /// Why the route cannot be removed, naming EVERY blocker rather than
+    /// the first one found. An operator who clears one reference and is
+    /// then refused for a second is being made to discover the list one
+    /// round trip at a time.
+    /// </summary>
+    public string BlockReason()
+    {
+        if (IsUnused) return null;
+        var parts = new List<string>();
+        void Add(int n, string one, string many)
+        {
+            if (n > 0) parts.Add($"{n} {(n == 1 ? one : many)}");
+        }
+        Add(Jobs, "job", "jobs");
+        Add(Bookings, "recurring booking", "recurring bookings");
+        Add(BulkJobs, "bulk job", "bulk jobs");
+        Add(RosterEntries, "roster entry", "roster entries");
+        Add(Zipcodes, "bound postcode", "bound postcodes");
+        Add(Schedules, "bound schedule", "bound schedules");
+        Add(Polygons, "bound polygon", "bound polygons");
+        var total = Jobs + Bookings + BulkJobs + RosterEntries + Zipcodes + Schedules + Polygons;
+        return $"This route still has {string.Join(", ", parts)}. "
+            + (total == 1 ? "Remove it first, " : "Remove them first, ")
+            + "or deactivate the route instead.";
+    }
+}
