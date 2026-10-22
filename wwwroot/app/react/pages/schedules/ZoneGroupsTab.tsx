@@ -89,7 +89,20 @@ export function ZoneGroupsTab() {
 
   return (
     <div className="space-y-4">
-      {/* ── Postcode / Zip Groups (main content, tenant-labelled) ─────── */}
+      {/* ── Postcode groups (NZ only) ───────────────────────────────────
+             Hidden on US, per Steve 23 Oct. A US schedule resolves
+             zip -> ZoneName -> LocationId and never reads
+             BulkZonePostcodeGroup, so the section manages nothing there
+             and its Add button invites a group that would do nothing.
+
+             Gated on the TENANT, not on the row count, which is the part
+             that matters: a fresh NZ tenant with no groups yet has to
+             keep the section so it can create its first one. Reading
+             `tenantIsUs` (the CountryCode claim, delivered with the page)
+             rather than the bootstrap's countryCode so the section never
+             renders and then vanishes once territory loads. Both derive
+             from the same claim; see HomeController and TerritoryService. */}
+      {!tenantIsUs && (
       <section>
         <div className="flex items-center justify-between mb-2 gap-2">
           <div>
@@ -182,6 +195,7 @@ export function ZoneGroupsTab() {
           defaultSort={{ key: 'name', dir: 'asc' }}
         />
       </section>
+      )}
 
       {/* ── Zone Groups (US only) - the ZoneGroup entity, different from
              postcode groups above. Groups multiple Zone Names into a
