@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useConfirm } from '../context/ConfirmContext';
 import { useAuth } from '../context/AuthContext';
@@ -31,6 +31,9 @@ import {
   type RouteRosterEntry,
   type UpsertRosterBody,
   type RouteBooking,
+  FinalMileDeliveryMode,
+  type FinalMileDeliveryModeValue,
+  type RouteLinkableBooking,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
@@ -389,6 +392,16 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   // 5000 m matches the default the resolver applies when the column is null,
   // so what the operator sees pre-filled is what they would get anyway.
   const [originRadiusM, setOriginRadiusM] = useState<number>(initial?.origin?.radiusM ?? 5000);
+  // Final-mile tote scanning. The master is the booking whose realised job the
+  // driver opens to scan totes on and off; without one the handset has nothing
+  // to route the tote screens from.
+  const [masterBookingId, setMasterBookingId] = useState<number | null>(initial?.masterBookingId ?? null);
+  const [masterLabel, setMasterLabel] = useState<string | null>(initial?.masterBookingLabel ?? null);
+  const [deliveryMode, setDeliveryMode] = useState<FinalMileDeliveryModeValue>(
+    initial?.finalMileDeliveryMode ?? FinalMileDeliveryMode.SealedTotes);
+  const [bookingQuery, setBookingQuery] = useState('');
+  const [bookingResults, setBookingResults] = useState<RouteLinkableBooking[]>([]);
+  const [searchingBookings, setSearchingBookings] = useState(false);
   const [depots, setDepots] = useState<RegionDto[]>([]);
   const [geocoding, setGeocoding] = useState(false);
   // K6: recent pickup addresses for the origin box. Fetched once when the
@@ -626,6 +639,26 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   }, [targets, targetType]);
 
   // K6: load the suggestion list the first time the address tab is shown.
+  // Booking search for the master picker. Two characters minimum and
+  // debounced, the same shape the linehaul picker uses, because this searches
+  // every active parent booking rather than a route-scoped list.
+  useEffect(() => {
+    const term = bookingQuery.trim();
+    if (direction !== RouteDirection.FinalMile || term.length < 2) {
+      setBookingResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearchingBookings(true);
+    const t = window.setTimeout(() => {
+      recurringRouteService.getLinkableBookings(initial?.routeId ?? 0, term)
+        .then((r) => { if (!cancelled) setBookingResults(r.response ?? []); })
+        .catch(() => { if (!cancelled) setBookingResults([]); })
+        .finally(() => { if (!cancelled) setSearchingBookings(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [bookingQuery, direction, initial?.routeId]);
+
   useEffect(() => {
     if (direction !== RouteDirection.FinalMile || originKind !== 'address') return;
     if (addressSuggestions !== null) return;
@@ -720,6 +753,16 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               radiusM: originRadiusM,
             } satisfies RouteOrigin
           : null,
+        // Final-mile only, and 0 rather than null to CLEAR: null means "leave
+        // it alone" on the server, so a first-mile route's save must not send
+        // a value at all or it would be read as a clear it never asked for.
+        ...(direction === RouteDirection.FinalMile
+          ? {
+              masterBookingId: masterBookingId ?? 0,
+              // Only meaningful once a master exists to carry it.
+              finalMileDeliveryMode: masterBookingId != null ? deliveryMode : null,
+            }
+          : {}),
       };
       if (isNew) {
         await recurringRouteService.create(body);
@@ -970,6 +1013,117 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                     </p>
                   </>
                 )}
+              </div>
+            </FieldGroup>
+          )}
+
+          {/* Final-mile tote scanning (spec 4.1 and 4.7). Only a final-mile
+              route has a master: a first-mile route's driver never scans a
+              tote onto a vehicle at the depot. */}
+          {direction === RouteDirection.FinalMile && (
+            <FieldGroup label="Tote scanning">
+              <div className="border border-border rounded-lg p-2 bg-surface-white space-y-3">
+                <div>
+                  <span className="block text-[11px] font-medium text-text-secondary mb-1">
+                    Master job
+                  </span>
+                  {masterBookingId ? (
+                    <div className="flex items-center justify-between gap-2 border border-border rounded px-2 py-1.5 text-xs">
+                      <span className="truncate font-medium text-text-primary">
+                        {masterLabel ?? `Booking #${masterBookingId}`}
+                      </span>
+                      <button type="button" data-testid="clear-final-mile-master"
+                        onClick={() => { setMasterBookingId(null); setMasterLabel(null); }}
+                        className="text-[11px] text-danger hover:underline shrink-0">Clear</button>
+                    </div>
+                  ) : (
+                    <>
+                      <input value={bookingQuery} onChange={(e) => setBookingQuery(e.target.value)}
+                        data-testid="final-mile-master-search"
+                        placeholder="Search by job number, name, client or address..."
+                        className={INPUT_CLASS} />
+                      {bookingQuery.trim().length >= 2 && (
+                        <div className="mt-1 border border-border rounded divide-y divide-border max-h-40 overflow-y-auto">
+                          {searchingBookings && (
+                            <div className="px-2 py-1.5 text-[11px] text-text-muted">Searching...</div>
+                          )}
+                          {!searchingBookings && bookingResults.length === 0 && (
+                            <div className="px-2 py-1.5 text-[11px] text-text-muted">No matching bookings.</div>
+                          )}
+                          {!searchingBookings && bookingResults.map((b) => (
+                            <button key={b.bookingId} type="button"
+                              disabled={b.isLinehaulMasterElsewhere}
+                              title={b.isLinehaulMasterElsewhere
+                                ? 'This booking is the master job of a linehaul run. Clear it there first.'
+                                : undefined}
+                              onClick={() => {
+                                setMasterBookingId(b.bookingId);
+                                setMasterLabel(b.jobName || b.clientName
+                                  ? `${b.jobNumber} - ${b.jobName ?? b.clientName}`
+                                  : b.jobNumber);
+                                setBookingQuery('');
+                                setBookingResults([]);
+                              }}
+                              className="w-full text-left px-2 py-1.5 text-xs hover:bg-surface-light
+                                         disabled:opacity-50 disabled:cursor-not-allowed
+                                         flex items-center justify-between gap-2">
+                              <span className="truncate">
+                                <span className="font-medium text-text-primary">{b.jobNumber}</span>
+                                {(b.jobName || b.clientName) && (
+                                  <span className="text-text-muted"> - {b.jobName ?? b.clientName}</span>
+                                )}
+                              </span>
+                              {b.isLinehaulMasterElsewhere && (
+                                <span className="text-[10px] text-warning shrink-0 rounded-full bg-warning-bg px-1.5 py-0.5">
+                                  linehaul master
+                                </span>
+                              )}
+                              {!b.isLinehaulMasterElsewhere && b.linkedRouteId != null && !b.linkedToThisRoute && (
+                                <span className="text-[10px] text-text-muted shrink-0">on another route</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <p className="mt-1 text-[10px] text-text-muted">
+                    The booking whose daily job the driver opens to scan totes on at the
+                    depot and off at the destination. Without one there is nothing for the
+                    handset to open.
+                    {masterBookingId != null && ' Clearing it also unbinds the booking from this route.'}
+                  </p>
+                </div>
+
+                <div>
+                  <span className="block text-[11px] font-medium text-text-secondary mb-1">
+                    Delivery scanning
+                  </span>
+                  <div className="flex gap-2">
+                    {([
+                      [FinalMileDeliveryMode.SealedTotes, 'Accept sealed totes', 'Scan the tote; everything inside is delivered.'],
+                      [FinalMileDeliveryMode.ScanEachItem, 'Scan each item out', 'Scan the tote, then every item out of it.'],
+                    ] as const).map(([value, label, hint]) => (
+                      <button key={value} type="button" title={hint}
+                        data-testid={`delivery-mode-${value}`}
+                        disabled={masterBookingId == null}
+                        onClick={() => setDeliveryMode(value)}
+                        className={`flex-1 px-2 py-1 rounded text-[11px] border transition
+                          disabled:opacity-50 disabled:cursor-not-allowed ${
+                          deliveryMode === value
+                            ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
+                            : 'border-border text-text-muted hover:border-brand-cyan/50'
+                        }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-text-muted">
+                    {masterBookingId == null
+                      ? 'Set a master job first: the mode is stored on it.'
+                      : 'What the destination expects. The lab decides, not the driver.'}
+                  </p>
+                </div>
               </div>
             </FieldGroup>
           )}

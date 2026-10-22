@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
@@ -105,6 +105,17 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     public async Task<IActionResult> GetBookings(int routeId)
     {
         var list = await routes.GetBookingsAsync(routeId);
+        return Ok(new { response = list });
+    }
+
+    // Bookings the final-mile master picker can offer, searched by text.
+    // Mirrors /api/recurring-linehaul-runs/{id}/linkable-bookings; the route
+    // twin exists because a master has to be FOUND before it carries a RouteId,
+    // so the read-only /bookings list above cannot feed the picker.
+    [HttpGet("{routeId:int}/linkable-bookings")]
+    public async Task<IActionResult> GetLinkableBookings(int routeId, [FromQuery] string? q)
+    {
+        var list = await routes.SearchLinkableBookingsAsync(routeId, q);
         return Ok(new { response = list });
     }
 
