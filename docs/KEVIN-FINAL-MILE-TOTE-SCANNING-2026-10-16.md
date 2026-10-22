@@ -122,7 +122,7 @@ All procs `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRAN
 
 - Route editor (`ScheduledRoutes`, final-mile routes only): a **Master booking** picker, the same control as the Edit Linehaul Run modal (`STEVE-LINEHAUL-RUN-MODAL-MASTER-JOB`), backed by `GET/PUT /api/recurring-routes/{id}` gaining `MasterBookingId` and the candidate list from the existing `GET /api/recurring-routes/{routeId}/bookings`. Save runs the demote-then-promote invariant.
 - Next to it, **Delivery scanning**: "Accept sealed totes" (default) | "Scan each item out" -> `FinalMileDeliveryMode` on the master booking.
-- Route Viewer: the final-mile run label shows "Master: Pxxxx" the way `LinehaulRunDto.MasterJobNumber` does for linehaul runs (Steve AC7, 2026-07-01).
+- "Master: Pxxxx" label (**revised 22 Oct**). The 16 Oct draft put it on the final-mile run in Route Viewer, but no Route Viewer page lists recurring routes (Kevin, 22 Oct; the Linehaul tab lists linehaul runs, which are a different thing). Steve, 22 Oct: show it on the **final-mile route's row in the Recurring routes tab of Schedules NEW**, the way the Linehaul tab shows `Master: {masterJobNumber}` on a linehaul run (`Linehaul.tsx`). A final-mile section in Route Viewer is a later, separate piece and is not part of M5.
 - Repack at the depot (D1 exception): Tote Packing against the final-mile master. `MARSWS_stpLinehaulToteScanItem` currently binds a tote to the item's current linehaul leg; add a branch: when `@MasterJobId` is a final-mile master (or the item's shipment has no further linehaul leg and has a live `DEL` leg on a final-mile route from this depot), bind the new tote with `FinalMileRouteId = R`, `LinehaulRunId NULL`. The membership-move invariant (`20260708100000`) empties the old tote by construction. **Scope to confirm with Kevin**: ship in the same change or as a follow-up once the sealed-tote path is proven on Medical.
 
 ## 5. Deploy order
@@ -144,7 +144,7 @@ The DB can land ahead of the app: the extra `MARS_stpJobMessages` columns are ig
 | M2 (Garry) | `MARS_stpJobMessages` + marssenderservice emit `<FMM>` / `<FMD>` | master job arrives on a staging handset with both nodes |
 | M3 (Garry) | Driver app: final-mile tote pickup + tote-level depart from the master | test plan 2 and 3 pass |
 | M4 (Garry) | Driver app: `FinalMileDeliveryPage`, mode T and mode I | test plan 4 and 5 pass |
-| M5 (Kevin) | Routed Ops route editor: master booking picker + delivery scanning mode; Route Viewer master label | route 15 shows "Master: Pxxxx" on staging |
+| M5 (Kevin) | Routed Ops route editor: master booking picker + delivery scanning mode (built 22 Oct, in review); "Master: Pxxxx" on the final-mile route row in the Recurring routes tab (22 Oct, replaces the Route Viewer label) | route 15's row shows "Master: Pxxxx" on staging and the editor reads the master and mode back |
 | M6 | Medical staging: test plan 1-8 passed | Kenneth or Kevin signs off the run-through |
 | M7 | Medical prod: route 15 master + mode set, Kenneth scans totes on a live Burbank run | first live tote delivered through the new flow |
 
