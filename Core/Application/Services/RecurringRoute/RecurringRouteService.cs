@@ -1,6 +1,9 @@
 ﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
+using Dapper;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -606,6 +609,87 @@ public class RecurringRouteService(
         route.UpdatedBy = CurrentUser();
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} soft-deleted", id);
+        return true;
+    }
+
+    private static async Task<RouteUsageDto> CountUsageAsync(
+        int id, System.Data.Common.DbConnection conn, System.Data.Common.DbTransaction tx)
+    {
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+        return await conn.QuerySingleAsync<RouteUsageDto>(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM dbo.tucJob               WHERE RouteId = @id)          AS Jobs,
+              (SELECT COUNT(*) FROM dbo.tucJobBooking        WHERE RouteId = @id)          AS Bookings,
+              (SELECT COUNT(*) FROM dbo.tblBulkJob           WHERE RouteId = @id)          AS BulkJobs,
+              (SELECT COUNT(*) FROM dbo.Dispatch_RouteRoster WHERE RouteId = @id)          AS RosterEntries,
+              -- tblLinehaulTote is deliberately absent: the app has no SELECT
+              -- grant on it (see RouteUsageDto). Its FK still blocks, and the
+              -- 547 handler below turns that into the same refusal.
+              (SELECT COUNT(*) FROM dbo.RouteZipcodes        WHERE RouteId = @id)          AS Zipcodes,
+              (SELECT COUNT(*) FROM dbo.tblRouteSchedule     WHERE RouteId = @id)          AS Schedules,
+              (SELECT COUNT(*) FROM dbo.tblBulkRunPolygonRoute WHERE RouteId = @id)        AS Polygons
+            """,
+            new { id }, tx);
+    }
+
+    /// <summary>
+    /// Remove a route permanently. Only for one that was never used -
+    /// a mistake or a test - which is the case Steve approved on 22 Oct.
+    /// Everything else deactivates (<see cref="SoftDeleteAsync"/>).
+    ///
+    /// The counts are taken AGAIN inside the transaction that does the
+    /// delete, not trusted from whatever the UI saw when it decided to
+    /// show the button. Between the page loading and the operator
+    /// clicking, a prebook run can stamp this route onto a job; without
+    /// the re-check under the same transaction that row is orphaned,
+    /// and two of the eight tables have no foreign key to stop it.
+    ///
+    /// Nothing cascades. A route with any reference is refused, with the
+    /// reference named, so the operator clears it deliberately.
+    /// </summary>
+    /// <returns>false when the route does not exist.</returns>
+    /// <exception cref="InvalidOperationException">The route is in use.</exception>
+    public async Task<bool> HardDeleteAsync(int id)
+    {
+        var route = await Context.Routes.FirstOrDefaultAsync(r => r.RouteId == id);
+        if (route is null) return false;
+
+        await using var tx = await Context.Database.BeginTransactionAsync();
+        var usage = await CountUsageAsync(
+            id,
+            Context.Database.GetDbConnection(),
+            tx.GetDbTransaction());
+
+        if (!usage.IsUnused)
+        {
+            Log.Warning("Route {Id} hard delete refused: {Reason}", id, usage.BlockReason());
+            throw new InvalidOperationException(usage.BlockReason());
+        }
+
+        Context.Routes.Remove(route);
+        try
+        {
+            await Context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 547 } sql)
+        {
+            // A foreign key caught something the count above could not see -
+            // either a tote (no SELECT grant, so it is never counted) or a row
+            // that appeared between the count and the delete. Either way the
+            // database refused and nothing is orphaned; translate it into the
+            // same refusal the counted cases give rather than a raw 500.
+            await tx.RollbackAsync();
+            Log.Warning("Route {Id} hard delete blocked by {Constraint}", id, sql.Message);
+            throw new InvalidOperationException(
+                "This route is still referenced by another record "
+                + (sql.Message.Contains("tblLinehaulTote", StringComparison.OrdinalIgnoreCase)
+                    ? "(a linehaul tote). "
+                    : "that appeared while the delete was running. ")
+                + "Remove it first, or deactivate the route instead.");
+        }
+        await tx.CommitAsync();
+        Log.Information("Route {Id} ({Name}) hard-deleted by {User}", id, route.Name, CurrentUser());
         return true;
     }
 
