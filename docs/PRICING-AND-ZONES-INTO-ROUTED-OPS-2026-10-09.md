@@ -158,6 +158,11 @@ relative to `DepotId` during the transition.
 
 **Pickup and delivery price separately without a second sheet.** The schedule's delivery speed and
 `PickupRatingSpeed` each select a column of the same grid, exactly as the function already does.
+Confirmed by Steve, 22 Oct: collection and delivery normally run on different speeds, so the speed
+on the zone is the price; the Pricing tab does not need a separate collection block and a delivery
+block. When both ends share one speed it is usually a point-to-point speed such as a three-hour,
+which is not `ZoneRated` and never reaches the zone sheet (the P2P rules price it). Separate
+collection and delivery blocks would do no harm, but they are not required.
 
 ### 2.3 Defaults and sparse client sheets
 
@@ -208,7 +213,10 @@ page then has nothing left and is removed (its Schedules tab is already supersed
 Re-home `ZoneGroupsTab.tsx`, `ZonesTab.tsx`, `DepotsTab.tsx` as sub-views. Changes while moving:
 
 - Group list shows Name, Type (Default / Client: code), home depot (hint only), zones used, postcode
-  and polygon counts, schedules attached (count, click to list).
+  and polygon counts, and schedules attached as **two counts, Delivery and Pickup**, each click-to-list
+  for that side only (Kevin 22 Oct, Steve agreed 22 Oct). One combined total would show pickup-only
+  groups such as `PU Regional Tauranga Z1` (0 delivery, 329 pickup) and `Waikato Collection Zone`
+  (0 and 358) as unused.
 - Create / rename / duplicate group. Duplicate copies zone membership (postcodes and polygons) and,
   with a checkbox, the group's default rate sheet.
 - A zone row lists its postcodes then its polygons (same shape as Polygon Builder's drawer).
@@ -277,7 +285,7 @@ copy. M0 is what shipped on 20 Oct; everything from M2 on is the reconfiguration
 |---|---|---|
 | M0 | Territory under one Zone groups tab (3.1) | Postcode Groups, Zones and Depots re-homed as sub-views of one tab in Schedules NEW with the `?tab=` link. **Done 20 Oct**, branch `feat/schedules-new-zone-groups-tab-and-bundle-modal`, MR open against develop. |
 | M1 | M0 on Urgent staging | MR merged, build on Urgent staging, ops can reach every territory grid from the new tab. |
-| M2 | Group list and group detail per 3.2 and the mock | List shows Name, Type, home depot hint, zones used, postcode and polygon counts, schedules attached (click to list). Group detail shows each zone's postcodes then its polygons. |
+| M2 | Group list and group detail per 3.2 and the mock | List shows Name, Type, home depot hint, zones used, postcode and polygon counts, and schedules attached as Delivery and Pickup counts (each click to list, decided 22 Oct). Group detail shows each zone's postcodes then its polygons. |
 | M3 | Duplicate group | Copies zone membership (postcodes and polygons). The "copy the default rate sheet" checkbox lands with M8. |
 | M4 | Bulk postcode paste and suburb names (11.8) | "+ postcodes" paste box with added / skipped / ignored result; suburb on every postcode chip with a toggle. |
 | M5 | Map panel (11.8) | Google map beside the group, postcodes shaded by zone from `ZipPolygon` (NZ postcode boundaries confirmed there by Steve, 21 Oct), home depot pinned, hover highlights the zone. Drag-to-rezone is a later stretch. |
