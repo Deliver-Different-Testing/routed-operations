@@ -139,8 +139,10 @@ export function ZonesTab() {
               render: (z) => <span className="text-text-secondary">{z.zoneName ?? '-'}</span> },
             { key: 'zoneGroup', label: 'Zone Group', sortable: true, sortValue: (z) => z.zoneGroupName ?? '',
               render: (z) => <span className="text-text-secondary">{z.zoneGroupName ?? '-'}</span> },
-            { key: 'postcodeGroup', label: groupSingular, sortable: true, sortValue: (z) => z.postcodeGroupName ?? '',
-              render: (z) => <span className="text-text-secondary">{z.postcodeGroupName ?? '-'}</span> },
+            // No zip-group column on US. ZoneZip.ZoneZipGroupId stays null
+            // there by design (Steve 23 Oct), so the column was always "-",
+            // and the groups it names are no longer shown anywhere on this
+            // tenant. The NZ grid below keeps its equivalent.
             { key: 'congestion', label: 'Congestion', sortable: true,
               sortValue: (z) => z.applyCongestion ? 1 : 0,
               render: (z) => (
@@ -321,8 +323,6 @@ function UsZipZoneEditModal({
   onSaved: () => void;
 }) {
   const toast = useToast();
-  const user = useAuth();
-  const groupSingular = postcodeGroupLabel(user.isUsTenant, false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<UsZipZoneUpsertBody>(() => ({
     zip: row?.zip ?? '',
@@ -375,13 +375,13 @@ function UsZipZoneEditModal({
             {(bootstrap?.zoneNames ?? []).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
           </select>
         </Fld>
-        <Fld label={groupSingular}>
-          <select className={INPUT_CLASS} value={form.zoneZipGroupId ?? ''}
-            onChange={(e) => setForm({ ...form, zoneZipGroupId: e.target.value ? Number(e.target.value) : null })}>
-            <option value="">-</option>
-            {(bootstrap?.postcodeGroups ?? []).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </select>
-        </Fld>
+        {/* No zip-group picker on US. A US schedule resolves
+            zip -> ZoneName -> LocationId and never reads the group, so
+            offering one here let an operator do the one thing Steve ruled
+            out on 23 Oct. The form still carries whatever the row had and
+            sends it back unchanged, so editing a zip that somehow holds a
+            group does not silently clear it; only the way to SET one is
+            gone. */}
         <Fld label="Apply Congestion">
           <label className="inline-flex items-center gap-2 text-sm py-1.5">
             <input type="checkbox" checked={form.applyCongestion ?? false}

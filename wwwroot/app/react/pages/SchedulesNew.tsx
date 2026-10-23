@@ -72,11 +72,18 @@ type ZoneGroupsView = 'groups' | 'zones' | 'depots';
 
 const ZONE_GROUP_VIEWS: ZoneGroupsView[] = ['groups', 'zones', 'depots'];
 
-/** Sub-view labels. Groups and Depots are the same DB entities on both
- *  tenants under different operator words, so they read from tenantLabels;
- *  "Zones" is the same word on both. */
+/** Sub-view labels. Depots are the same DB entity on both tenants under
+ *  different operator words, so that one reads from tenantLabels;
+ *  "Zones" is the same word on both.
+ *
+ *  The first view is NOT symmetric. On NZ it holds postcode groups. On US
+ *  the postcode-group section is hidden (Steve 23 Oct: US resolves
+ *  zip -> ZoneName -> LocationId and never reads BulkZonePostcodeGroup),
+ *  so what remains there is the US ZoneGroup and ZoneName grids. Labelling
+ *  that pill "Zip Groups" would point at the one thing the view no longer
+ *  shows, so it reads "Zone Groups" on US. */
 function zoneGroupsViewLabel(v: ZoneGroupsView, isUs: boolean): string {
-  if (v === 'groups') return postcodeGroupLabel(isUs, true);
+  if (v === 'groups') return isUs ? 'Zone Groups' : postcodeGroupLabel(false, true);
   if (v === 'depots') return depotLabel(isUs, true);
   return 'Zones';
 }
