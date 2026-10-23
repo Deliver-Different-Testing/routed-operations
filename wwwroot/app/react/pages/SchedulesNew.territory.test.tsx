@@ -43,7 +43,13 @@ const BOOTSTRAP_NZ = {
       name: 'Auckland Central', fromLatLng: null,
     },
   ],
-  usZipZones: [],
+  usZipZones: [
+    {
+      id: 1, zip: '90001', zoneNumber: 1, zoneNameId: 40, zoneName: 'ABQ Test Zone',
+      zoneGroupId: 7, zoneGroupName: 'California', postcodeGroupId: null,
+      postcodeGroupName: null, applyCongestion: false,
+    },
+  ],
   zoneNames: [],
   zoneGroups: [],
 };
@@ -214,8 +220,77 @@ describe('Schedules NEW - Zone groups tab', () => {
 
     // Same DB entities, different operator-facing words. A US operator who
     // sees "Postcode Groups" and "Depots" does not recognise their own data.
-    expect(await screen.findByRole('button', { name: /^Zip Groups$/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Locations$/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Postcode Groups$/ })).not.toBeInTheDocument();
+
+    // NOT "Zip Groups". The postcode-group section is hidden on US (see
+    // the next test), so a pill named after it would point at the one
+    // thing the view no longer shows. What is left there is the US
+    // ZoneGroup and ZoneName grids.
+    expect(await screen.findByRole('button', { name: /^Zone Groups$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Zip Groups$/ })).not.toBeInTheDocument();
+  });
+
+  it('hides the postcode-group section on US but keeps it on NZ', async () => {
+    // Steve 23 Oct: a US schedule resolves zip -> ZoneName -> LocationId
+    // and never reads BulkZonePostcodeGroup, so the section manages
+    // nothing there and its Add button invites a group that does nothing.
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isUsTenant: true, countryCode: 'US' };
+    installHandlers('US');
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+    await screen.findByRole('button', { name: /^Zone Groups$/ });
+
+    expect(screen.queryByRole('button', { name: /Add Zip Group/i })).not.toBeInTheDocument();
+    // The US-only grids it shares the view with are still there.
+    expect(await screen.findByRole('button', { name: /Add Zone Group/i })).toBeInTheDocument();
+  });
+
+  it('keeps the postcode-group section on an NZ tenant with no groups yet', async () => {
+    // The gate is the TENANT, not the row count. BOOTSTRAP_NZ carries an
+    // empty postcodeGroups array on purpose: a fresh NZ tenant has to keep
+    // the section so it can create its first group. Hiding on emptiness
+    // would lock it out permanently.
+    installHandlers('NZ');
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+
+    expect(await screen.findByRole('button', { name: /Add Postcode Group/i })).toBeInTheDocument();
+  });
+
+  it('drops the zip-group column from the US zones grid', async () => {
+    // Follows from hiding the section: ZoneZip.ZoneZipGroupId stays null on
+    // US, so the column was always "-", and after the hide it named groups
+    // the operator can no longer see. "Zone Group" is a DIFFERENT column
+    // (ZoneName.ZoneGroupID) and must survive.
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isUsTenant: true, countryCode: 'US' };
+    installHandlers('US');
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+    await user.click(await screen.findByRole('button', { name: /^Zones$/ }));
+
+    // Congestion is unique to the zips grid, so it proves that grid is the
+    // one on screen. Zone Name and Zone Group headers appear on the Zone
+    // Names grid too, which stays mounted, so they cannot be asserted
+    // singly here; the one that matters is the absence below.
+    expect(await screen.findByRole('columnheader', { name: /Congestion/i })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: /^Zip Group/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the postcode-group column on the NZ zones grid', async () => {
+    installHandlers('NZ');
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+    await user.click(await screen.findByRole('button', { name: /^Zones$/ }));
+
+    expect(await screen.findByRole('columnheader', { name: /^Postcode Group/i })).toBeInTheDocument();
   });
 });

@@ -9,6 +9,10 @@ export interface Depot {
   active: boolean;
 }
 
+/** A postcode / zip group. ONE table (BulkZonePostcodeGroup) serves both
+ *  tenants; only the member table differs, so `postcodeCount` is already
+ *  tenant-aware server-side. Not the same thing as `ZoneGroupRow`, which
+ *  is US-only and gates nothing. */
 export interface PostcodeGroup {
   id: number;
   name: string | null;
@@ -17,7 +21,49 @@ export interface PostcodeGroup {
   clientId: number | null;
   /** Resolved client code (e.g. "ACME"). Null for client-agnostic groups. */
   clientCode: string | null;
+  /** Members: BulkZonePostcode rows on NZ, ZoneZip rows on US. */
   postcodeCount: number;
+  /** Distinct zone numbers across the members. */
+  zoneCount: number;
+  /** Active polygons bound to the group. */
+  polygonCount: number;
+  /** Schedules (distinct, not day rows) using the group for delivery. */
+  deliveryScheduleCount: number;
+  /** Schedules using it for pickup. Separate from delivery because
+   *  pickup-only groups are common and a combined figure shows them as
+   *  unused. */
+  pickupScheduleCount: number;
+}
+
+/** One zone inside a group. Label comes from BulkZonePostcode.Name on NZ
+ *  and ZoneName.ZoneName1 on US. */
+export interface PostcodeGroupZone {
+  zone: number;
+  label: string | null;
+  memberCount: number;
+}
+
+/** A schedule referencing the group. The two flags are not exclusive: a
+ *  schedule can use the same group on both sides. */
+export interface PostcodeGroupSchedule {
+  scheduleId: number;
+  name: string;
+  usedForDelivery: boolean;
+  usedForPickup: boolean;
+  dayCount: number;
+}
+
+export interface PostcodeGroupDetail {
+  group: PostcodeGroup;
+  zones: PostcodeGroupZone[];
+  schedules: PostcodeGroupSchedule[];
+  polygons: BoundPolygon[];
+}
+
+/** Default vs client-specific. Enforced in the service layer, never in
+ *  SQL: a NULL ClientId means every client may use the group. */
+export function postcodeGroupScope(g: PostcodeGroup | null | undefined): 'default' | 'client' {
+  return g?.clientId ? 'client' : 'default';
 }
 
 export interface NzPostcode {
@@ -154,6 +200,9 @@ export const territoryService = {
   /** Optional clientId filters to groups owned by that client or by no client. */
   postcodeGroups: (clientId?: number) =>
     request<{ response: PostcodeGroup[] }>(`/territory/postcode-groups${buildQuery({ clientId })}`),
+  /** Group detail: the group plus its zones, attached schedules and bound polygons. */
+  postcodeGroupDetail: (id: number) =>
+    request<{ response: PostcodeGroupDetail }>(`/territory/postcode-groups/${id}/detail`),
   nzPostcodes: () => request<{ response: NzPostcode[] }>('/territory/nz/postcodes'),
   usZipZones: () => request<{ response: UsZipZone[] }>('/territory/us/zip-zones'),
   usZoneNames: () => request<{ response: ZoneNameRow[] }>('/territory/us/zone-names'),

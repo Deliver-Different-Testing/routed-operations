@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { DropdownPortal } from '../common/DropdownPortal';
 import { scheduleService } from '../../services/scheduleService';
 
 // Async-loaded multi-select client picker for the Schedules NEW page.
@@ -94,21 +95,6 @@ export function ClientMultiPicker({
     });
   }, [q.data]);
 
-  // Close on click-outside + Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const toggle = (id: number) => {
     if (selectedSet.has(id)) onChange(selected.filter((v) => v !== id));
@@ -145,17 +131,20 @@ export function ClientMultiPicker({
         <span className="text-text-muted text-xs">▼</span>
       </button>
 
-      {open && (
-        <div
-          className="absolute left-0 top-full mt-1 z-30 w-80 bg-surface-white border border-border rounded shadow-lg"
-          data-testid="client-multi-picker-panel"
-        >
+      <DropdownPortal
+        anchorRef={wrapperRef}
+        open={open}
+        onDismiss={() => setOpen(false)}
+        width={320}
+        data-testid="client-multi-picker-panel"
+      >
+        <>
           {panelTitle && (
-            <div className="px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-text-muted">
+            <div className="shrink-0 px-3 pt-3 pb-2 text-xs uppercase tracking-wide text-text-muted">
               {panelTitle}
             </div>
           )}
-          <div className="p-2 border-b border-border-light">
+          <div className="shrink-0 p-2 border-b border-border-light">
             <input
               type="search"
               autoFocus
@@ -166,7 +155,9 @@ export function ClientMultiPicker({
             />
           </div>
 
-          <div className="max-h-72 overflow-y-auto">
+          {/* flex-1 min-h-0 rather than a fixed max-h: the portal caps
+              the panel to the space actually available. */}
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {q.isLoading && (
               <div className="p-3 text-xs text-text-muted text-center">Loading...</div>
             )}
@@ -200,7 +191,7 @@ export function ClientMultiPicker({
             })}
           </div>
 
-          <div className="flex items-center justify-between px-3 py-2 border-t border-border-light bg-surface-cream text-xs">
+          <div className="shrink-0 flex items-center justify-between px-3 py-2 border-t border-border-light bg-surface-cream text-xs">
             <span className="text-text-muted">
               {selected.length === 0 ? 'Nothing selected' : `${selected.length} selected`}
             </span>
@@ -223,8 +214,8 @@ export function ClientMultiPicker({
               </button>
             </div>
           </div>
-        </div>
-      )}
+        </>
+      </DropdownPortal>
     </div>
   );
 }
