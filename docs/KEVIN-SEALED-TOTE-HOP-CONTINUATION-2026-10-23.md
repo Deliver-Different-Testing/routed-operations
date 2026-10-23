@@ -2,6 +2,7 @@
 
 _Author: Steve Bonnici (with EasyEA) - 2026-10-23. Owner: Kevin (dbmigrationsv2). Size: about a day._
 _Extends: `KEVIN-FINAL-MILE-TOTE-SCANNING-2026-10-16.md` (same folder). Baselines are "latest emitter on master at build time"; at the time of writing that is `20261021142000` for all four procs below._
+_Revised 23 Oct 15:45 after Kevin's review: insertion point (2.1), `RunName` (2.4), the Urgent claim (2.5), the self-loop case (5), and the tenant / run switches Steve decided (2.7, 3)._
 
 ## 1. Problem
 
@@ -21,7 +22,7 @@ Every tote inwards today closes the tote (`IsClosed = 1`) and the next run expec
 
 ### 2.1 Where
 
-The four tote-closing paths, same files as `20261021142000`: `MARSWS_stpLinehaulToteInwards`, `MARSWS_stpLinehaulToteInwardsItem` (Done path), `MARSWS_stpLinehaulToteInwardsClose` (COMPLETE path only), `MARSWS_stpLinehaulLocationReceipt` (tote path). The new block sits **after** `MARSWS_stpLinehaulToteMarkInwardedAndDeriveMaster` and the leg completion, **before** the existing final-mile route check, inside the same transaction. Order matters: the arriving run's master completion is evaluated inside the derive-master call on this tote's `InwardedAt`, so it must run before the re-bind clears that stamp.
+The four tote-closing paths, same files as `20261021142000`: `MARSWS_stpLinehaulToteInwards`, `MARSWS_stpLinehaulToteInwardsItem` (Done path), `MARSWS_stpLinehaulToteInwardsClose` (COMPLETE path only), `MARSWS_stpLinehaulLocationReceipt` (tote path). In the shipped procs the final-mile check and the tote close both sit **before** `MARSWS_stpLinehaulToteMarkInwardedAndDeriveMaster`, so the block cannot literally sit between them (Kevin, 23 Oct). The constraint that matters: the arriving run's master completion is evaluated inside the derive-master call on this tote's `InwardedAt`, so the **re-bind must run after that call**. Kevin's arrangement, same outcome and same transaction: resolve the next run early (2.2), use it to hold off both the close and the final-mile branch, then re-bind after the derive-master call. The leg completion must also run before the next-run resolution, which the self-loop case in section 5 depends on.
 
 ### 2.2 Rule
 
@@ -53,7 +54,7 @@ Audit one `tblBulkScan` row the way the inwards procs already do, payload `TOTE:
 
 ### 2.4 Result shape
 
-Two trailing columns on **every** return path of the four procs, after `FinalMileRouteId`: `NextLinehaulRunId INT NULL`, `NextRunName NVARCHAR(50) NULL` (`tblbulkLinehaulRun.Name`). Non-null only when the tote continued on a linehaul hop. marsapi maps by name and ignores extras until Garry adds the two properties; the handset then shows "Tote continues on {NextRunName}" instead of "Leg complete" (Garry, folded into M4 wording).
+Two trailing columns on **every** return path of the four procs, after `FinalMileRouteId`: `NextLinehaulRunId INT NULL`, `NextRunName NVARCHAR(100) NULL` (`tblbulkLinehaulRun.RunName`, which is `NVARCHAR(100)`). Non-null only when the tote continued on a linehaul hop. marsapi maps by name and ignores extras until Garry adds the two properties; the handset then shows "Tote continues on {NextRunName}" instead of "Leg complete" (Garry, folded into M4 wording).
 
 ### 2.5 Why nothing else changes (checked in the shipped procs)
 
@@ -63,15 +64,30 @@ Two trailing columns on **every** return path of the four procs, after `FinalMil
 - **Next inwards**: the idempotent `InwardedAt IS NULL` stamp works again because the re-bind cleared it, and R's master completion counts the tote correctly.
 - **Pickup counts** (`RunToteCount`, "X of Y totes"): keyed on `LinehaulRunId = R` and `InwardedAt NULL`, so the continued tote is counted for R.
 - **Final-mile continuation at Burbank** (`20261021142000`): no run departs depot 38, so the new block finds nothing and the existing route-15 check runs exactly as now.
-- **Urgent / single-hop tenants**: no run departs the destination depot of any run, so the block never matches and behaviour is byte-for-byte today's. The regression test is explicit below.
+- **Urgent**: the first draft claimed no Urgent run departs another run's destination. Wrong: 66 of 74 runs on Urgent production and 48 of 52 on staging arrive at a depot that has a departing run (Kevin, 23 Oct). What keeps Urgent unchanged today is that it has no totes at all. The protection is therefore the switches in 2.7, default off, not the data.
 
 ### 2.6 Guards
 
 Unchanged: `NO_TOTE`, `TOTE_CLOSED`, `WRONG_LOCATION` and the location QR / drop-off rules from `20261014170000`.
 
+### 2.7 Switches (Steve, 23 Oct): optional by tenant and by run
+
+The block runs only when the effective switch is 1; otherwise the four procs behave exactly as today.
+
+| Switch | Where | Meaning |
+|---|---|---|
+| `SealedToteContinuationEnabled BIT NOT NULL DEFAULT 0` | `tblSetting` (single-row per-tenant settings table, pattern `20261007200000`) | tenant default |
+| `SealedToteContinues BIT NULL` | `tblbulkLinehaulRun`, read on the **arriving** run | NULL = follow the tenant setting; 1 = totes arriving on this run continue; 0 = never |
+
+`effective = COALESCE(arrivingRun.SealedToteContinues, tblSetting.SealedToteContinuationEnabled)`. Default 0 everywhere, so no tenant changes behaviour by applying the migration. Medical switches it on for the test with one UPDATE on the tenant row, or on runs 13 and 11 only. No UI in this spec; the Linehaul run editor can grow the flag later.
+
+### 2.8 Open with Steve: the short path on the existing final-mile check
+
+Kevin, 23 Oct: the route-15 check shipped in `20261021142000` runs even when a tote is closed short, so a tote with items missing at Burbank can already be bound to `FinalMileRouteId`. This spec's hop never continues on the short path. Whether to align the existing final-mile check (close short, go per item, as the parent spec says) is Steve's call; Kevin leaves it as shipped until told.
+
 ## 3. Schema
 
-None. Procs only. `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRANT EXECUTE TO [Web]`, tenant-neutral.
+Two guarded column adds (2.7): `tblSetting.SealedToteContinuationEnabled` and `tblbulkLinehaulRun.SealedToteContinues`. Otherwise procs only. `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER`, `GRANT EXECUTE TO [Web]`, tenant-neutral.
 
 ## 4. Medical setup (data, with Kenneth)
 
@@ -86,7 +102,8 @@ None. Procs only. `SET QUOTED_IDENTIFIER ON` + `ANSI_NULLS ON`, `CREATE OR ALTER
 3. Inwards at 43 -> continues on 14; pickup on 14; inwards at 38 -> `FinalMileRouteId = 15`, `NextLinehaulRunId NULL` (existing behaviour).
 4. Mixed box (one root with no run-11 leg) inwarded at 42 -> closes as today, `NextLinehaulRunId NULL`.
 5. Item inwards at 42 with one item missing, Close -> `SHORT`, tote closed, no continuation.
-6. Regression: a run-9 tote inwarded at Oakland whose roots' next legs are on run 13 -> continues (first hop of the chain, wanted); a tote on Urgent -> closes as today.
+6. Regression: a run-9 tote inwarded at Oakland whose roots' next legs are on run 13 -> continues (first hop of the chain, wanted); with the tenant switch 0 and no run override, the same tote -> closes as today; run override 0 on run 13 with tenant switch 1 -> closes.
+7. Self-loop (Kevin): run 12 "CS Logistics" departs and arrives at depot 39, so "runs departing this run's destination" includes the arriving run itself. Safe only because leg completion runs first and clears that run's legs; the test pins that ordering.
 
 ## 6. Deploy
 
@@ -96,7 +113,7 @@ dbmigrationsv2 only, ahead of marsapi; the two extra columns are ignored until G
 
 | # | Milestone | Done when |
 |---|---|---|
-| H0 | Migration on GitLab master, applied to Medical staging | the four procs return `NextLinehaulRunId` / `NextRunName` |
+| H0 | Migration on GitLab master, applied to Medical staging | the four procs return `NextLinehaulRunId` / `NextRunName`; both switch columns present, default 0 |
 | H1 | Staging run-through, test plan 1-6 | one box Oakland -> lab on staging with no repack |
-| H2 | Medical prod: migration applied, airport location QRs posted, masters 13 / 11 / 14 assigned | Kenneth's first live box reaches Burbank still open |
+| H2 | Medical prod: migration applied, switch on (tenant or runs 13 + 11), airport location QRs posted, masters 13 / 11 / 14 assigned | Kenneth's first live box reaches Burbank still open |
 | H3 | Garry: two properties in marsapi, "Tote continues on {run}" on the inwards page (part of 4.0) | handset shows the run name at the airport |
