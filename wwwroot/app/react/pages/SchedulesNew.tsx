@@ -72,11 +72,18 @@ type ZoneGroupsView = 'groups' | 'zones' | 'depots';
 
 const ZONE_GROUP_VIEWS: ZoneGroupsView[] = ['groups', 'zones', 'depots'];
 
-/** Sub-view labels. Groups and Depots are the same DB entities on both
- *  tenants under different operator words, so they read from tenantLabels;
- *  "Zones" is the same word on both. */
+/** Sub-view labels. Depots are the same DB entity on both tenants under
+ *  different operator words, so that one reads from tenantLabels;
+ *  "Zones" is the same word on both.
+ *
+ *  The first view is NOT symmetric. On NZ it holds postcode groups. On US
+ *  the postcode-group section is hidden (Steve 23 Oct: US resolves
+ *  zip -> ZoneName -> LocationId and never reads BulkZonePostcodeGroup),
+ *  so what remains there is the US ZoneGroup and ZoneName grids. Labelling
+ *  that pill "Zip Groups" would point at the one thing the view no longer
+ *  shows, so it reads "Zone Groups" on US. */
 function zoneGroupsViewLabel(v: ZoneGroupsView, isUs: boolean): string {
-  if (v === 'groups') return postcodeGroupLabel(isUs, true);
+  if (v === 'groups') return isUs ? 'Zone Groups' : postcodeGroupLabel(false, true);
   if (v === 'depots') return depotLabel(isUs, true);
   return 'Zones';
 }
@@ -1613,7 +1620,11 @@ function RecurringRoutesTab() {
         schedules: r.schedules.map((s) => ({ scheduleId: s.scheduleId ?? null, name: s.name })),
         zipCount: r.zipcodes.length,
         active: r.active,
-        masterBookingLabel: null,
+        // Final-mile routes carry a master booking the same way a linehaul
+        // run does, so the Master job column reads for both (Steve, 22 Oct:
+        // Route Viewer has nowhere to put it, this row does). First-mile
+        // routes have no master and render "-" in the column.
+        masterBookingLabel: r.masterBookingLabel ?? null,
         mode: null,
         clientCodes,
       });
@@ -1804,15 +1815,28 @@ function RecurringRoutesTable({ rows }: { rows: RecurringRow[] }) {
                   </div>
                 )}
               </td>
+              {/* Master job. Linehaul runs and FINAL-MILE routes both have
+                  one; first-mile routes do not, so they stay "-" rather
+                  than being flagged as missing something they never need. */}
               <td className="py-2 pr-3">
-                {r.kind !== 'middle' ? (
+                {r.kind === 'first' ? (
                   <span className="text-text-muted">-</span>
                 ) : r.masterBookingLabel ? (
-                  <span className="text-xs font-mono text-brand-cyan" title="Run's master booking (IsLinehaulMaster=1)">
-                    {r.masterBookingLabel}
+                  <span
+                    className="text-xs font-mono text-brand-cyan"
+                    title={r.kind === 'middle'
+                      ? "Run's master booking (IsLinehaulMaster=1)"
+                      : "Route's final-mile master booking (IsLinehaulMaster=1, LinehaulRunId NULL)"}
+                  >
+                    Master: {r.masterBookingLabel}
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-xs text-error" title="Without a master job the driver sees every item as its own job.">
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-error"
+                    title={r.kind === 'middle'
+                      ? 'Without a master job the driver sees every item as its own job.'
+                      : 'Without a master job the driver has nothing to scan totes against at the depot.'}
+                  >
                     <span className="w-1.5 h-1.5 rounded-full bg-error inline-block" />
                     <span className="font-medium">Missing</span>
                   </span>

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
@@ -99,12 +99,43 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
         return ok ? Ok(new { response = "Deactivated" }) : NotFound();
     }
 
+    /// <summary>
+    /// Remove a route permanently. Only for one that was never used.
+    /// Returns 409 naming every reference when it is in use, rather than
+    /// cascading (Steve, 22 Oct). Deactivation stays on DELETE /{id}.
+    /// </summary>
+    [HttpDelete("{id:int}/hard")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> HardDelete(int id)
+    {
+        try
+        {
+            var ok = await routes.HardDeleteAsync(id);
+            return ok ? Ok(new { response = "Deleted" }) : NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+    }
+
     // Live recurring bookings bound to this route. Read-only drill-down for
     // the "Bookings on this route (N)" collapsible section in the edit modal.
     [HttpGet("{routeId:int}/bookings")]
     public async Task<IActionResult> GetBookings(int routeId)
     {
         var list = await routes.GetBookingsAsync(routeId);
+        return Ok(new { response = list });
+    }
+
+    // Bookings the final-mile master picker can offer, searched by text.
+    // Mirrors /api/recurring-linehaul-runs/{id}/linkable-bookings; the route
+    // twin exists because a master has to be FOUND before it carries a RouteId,
+    // so the read-only /bookings list above cannot feed the picker.
+    [HttpGet("{routeId:int}/linkable-bookings")]
+    public async Task<IActionResult> GetLinkableBookings(int routeId, [FromQuery] string? q)
+    {
+        var list = await routes.SearchLinkableBookingsAsync(routeId, q);
         return Ok(new { response = list });
     }
 

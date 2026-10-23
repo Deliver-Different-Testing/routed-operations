@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { StatusBadge } from '../common/StatusBadge';
 import { ClientMultiPicker, type ClientHint } from './ClientMultiPicker';
+import { DropdownPortal } from '../common/DropdownPortal';
 import { schedulesV2Service, type ScheduleBundleMember } from '../../services/schedulesV2Service';
 import { schedulesV2Keys, useSchedulesV2Bundle } from '../../hooks/queries/useSchedulesV2';
 import { useAuth } from '../../context/AuthContext';
@@ -447,8 +448,12 @@ export function SchedulePicker({ excludeIds, onPick, onCancel }: {
     staleTime: 30_000,
   });
   const rows = (q.data?.rows ?? []).filter((r) => !excludeIds.has(r.scheduleId));
+  // Anchor for the portaled results list. Rendering it as an absolute
+  // sibling put it inside Modal's `overflow-auto` body, which clipped
+  // everything past the modal edge - the original report.
+  const anchorRef = useRef<HTMLDivElement>(null);
   return (
-    <div className="relative w-80">
+    <div ref={anchorRef} className="relative w-80">
       <input
         type="text"
         autoFocus
@@ -458,7 +463,14 @@ export function SchedulePicker({ excludeIds, onPick, onCancel }: {
         placeholder="Search schedules by name..."
         className="w-full px-2 py-1 text-xs border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
       />
-      <ul className="absolute z-50 mt-1 w-full max-h-64 overflow-auto bg-surface-white border border-border rounded shadow-lg text-xs">
+      <DropdownPortal
+        anchorRef={anchorRef}
+        open={true}
+        onDismiss={onCancel}
+        width="anchor"
+        data-testid="bundle-schedule-picker-panel"
+      >
+      <ul className="flex-1 min-h-0 overflow-auto text-xs">
         {q.isLoading && <li className="px-2 py-2 text-text-muted">Searching...</li>}
         {rows.map((r) => (
           <li key={r.scheduleId}>
@@ -480,6 +492,7 @@ export function SchedulePicker({ excludeIds, onPick, onCancel }: {
           <button type="button" onClick={onCancel} className="w-full text-left px-2 py-1.5 text-text-muted hover:bg-surface-light">Cancel</button>
         </li>
       </ul>
+      </DropdownPortal>
     </div>
   );
 }

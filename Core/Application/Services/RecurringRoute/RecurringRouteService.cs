@@ -1,6 +1,9 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
+using Dapper;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -105,13 +108,49 @@ public class RecurringRouteService(
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
         });
 
-        await Task.WhenAll(couriersTask, agentsTask, depotsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask);
+        // Final-mile masters, one query for the whole page. A final-mile master
+        // is the route-keyed twin of a linehaul one: IsLinehaulMaster with a
+        // RouteId and NO LinehaulRunId. The flag is reused rather than renamed
+        // (spec 4.1), and that NULL run id is the only thing separating the two
+        // kinds, so it is in every predicate that touches them.
+        var mastersTask = Task.Run(async () =>
+        {
+            if (routeIds.Count == 0) return new Dictionary<int, (int Id, string Label, byte Mode)>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            var rows = await ctx.TucJobBookings.AsNoTracking()
+                .Where(b => b.RouteId != null && routeIds.Contains(b.RouteId.Value)
+                            && b.IsLinehaulMaster && b.LinehaulRunId == null)
+                .Select(b => new
+                {
+                    RouteId = b.RouteId!.Value,
+                    b.UcbkId,
+                    b.UcbkJobNumber,
+                    b.CustomJobName,
+                    ClientName = b.UcbkClient != null ? b.UcbkClient.UcclName : null,
+                    b.FinalMileDeliveryMode,
+                })
+                .ToListAsync();
+            return rows
+                .GroupBy(x => x.RouteId)
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var m = g.OrderBy(x => x.UcbkId).First();
+                    var name = m.CustomJobName ?? m.ClientName;
+                    var label = string.IsNullOrWhiteSpace(name)
+                        ? (m.UcbkJobNumber ?? $"Booking #{m.UcbkId}")
+                        : $"{m.UcbkJobNumber} - {name}";
+                    return (Id: m.UcbkId, Label: label, Mode: m.FinalMileDeliveryMode);
+                });
+        });
+
+        await Task.WhenAll(couriersTask, agentsTask, depotsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask, mastersTask);
         var couriers = couriersTask.Result;
         var agents = agentsTask.Result;
         var depots = depotsTask.Result;
         var scheduleMap = scheduleMapTask.Result;
         var bookingCounts = bookingCountsTask.Result;
         var mappedStopsCounts = mappedStopsTask.Result;
+        var masters = mastersTask.Result;
 
         return rows.Select(r =>
         {
@@ -157,7 +196,13 @@ public class RecurringRouteService(
                 r.DepotId.HasValue
                     ? depots.GetValueOrDefault(r.DepotId.Value, string.Empty)
                     : string.Empty,
-                BuildOrigin(r));
+                BuildOrigin(r),
+                masters.TryGetValue(r.RouteId, out var fm) ? fm.Id : null,
+                masters.TryGetValue(r.RouteId, out var fml) ? fml.Label : null,
+                // 1 when the route has no master yet, which is what the column
+                // defaults to anyway, so the editor opens on "accept sealed
+                // totes" rather than on an empty radio pair.
+                masters.TryGetValue(r.RouteId, out var fmm) ? fmm.Mode : (byte)1);
         }).ToList();
     }
 
@@ -281,6 +326,130 @@ public class RecurringRouteService(
         return result;
     }
 
+    // ── Final-mile master job (spec 4.1 / 4.7) ──────────────────────────
+    //
+    // The route-keyed twin of RecurringLinehaulService.ApplyMasterBookingAsync,
+    // and deliberately the same shape so the two read as one idea: demote any
+    // current master for this route, then promote the chosen booking.
+    //
+    // Three things differ from the linehaul version, each because a route is
+    // not a run:
+    //   * The key is RouteId with LinehaulRunId left NULL. That NULL is what
+    //     stops a final-mile master ever being picked up by a linehaul query
+    //     and vice versa.
+    //   * Promoting a booking that is currently a LINEHAUL master would quietly
+    //     take it off its run, so that is refused here rather than silently
+    //     done. The picker warns, but the API is what has to be unfoolable.
+    //   * The courier is NOT inherited. A linehaul master takes the run's
+    //     courier; a final-mile master gets its driver from the route's roster
+    //     through uspPrebookSet like any other route booking, so writing one
+    //     here would fight the roster.
+    private async Task ApplyMasterBookingAsync(int routeId, int? masterBookingId, byte? deliveryMode)
+    {
+        // Null means "leave it alone", so a save that never mentions the master
+        // cannot demote one. 0 is the explicit clear.
+        if (masterBookingId is null && deliveryMode is null) return;
+
+        var current = await Context.TucJobBookings
+            .Where(b => b.RouteId == routeId && b.IsLinehaulMaster && b.LinehaulRunId == null)
+            .ToListAsync();
+
+        if (masterBookingId is null)
+        {
+            // Mode only. Nothing to write it to without a master.
+            if (current.Count == 0) return;
+            foreach (var b in current) b.FinalMileDeliveryMode = deliveryMode!.Value;
+            return;
+        }
+
+        // Demoting clears RouteId as well as the flag, which is what makes the
+        // operation reversible from the UI. Promoting SETS RouteId (spec 4.1),
+        // and the Route editor's only booking list is read-only, so a demote
+        // that left the binding behind would be a field this app can set and
+        // never unset - which is exactly how the 21 Oct browser test left a
+        // test booking stuck on a route with no way back.
+        //
+        // The cost, stated rather than hidden: a booking that was ALREADY
+        // bound to this route before it was promoted loses that binding when
+        // it is demoted. Rare, and the symmetric behaviour is worth more than
+        // preserving it, but it is a real trade and not an oversight. The
+        // linehaul twin makes the same one with LinehaulRunId.
+        void Demote(TucJobBooking b)
+        {
+            b.IsLinehaulMaster = false;
+            b.RouteId = null;
+        }
+
+        var wanted = masterBookingId.Value;
+
+        if (wanted == 0)
+        {
+            foreach (var b in current) Demote(b);
+            return;
+        }
+
+        var booking = current.FirstOrDefault(b => b.UcbkId == wanted)
+                      ?? await Context.TucJobBookings.FirstOrDefaultAsync(b => b.UcbkId == wanted);
+        if (booking is null)
+            throw new InvalidOperationException($"Booking {wanted} not found.");
+
+        if (booking.IsLinehaulMaster && booking.LinehaulRunId != null)
+            throw new InvalidOperationException(
+                $"Booking {wanted} is the master job of a linehaul run. "
+                + "Clear it there first, or choose a different booking.");
+
+        foreach (var b in current.Where(b => b.UcbkId != wanted))
+            Demote(b);
+
+        booking.RouteId = routeId;
+        booking.IsLinehaulMaster = true;
+        booking.LinehaulRunId = null;
+        if (deliveryMode is not null) booking.FinalMileDeliveryMode = deliveryMode.Value;
+    }
+
+    /// <summary>Bookings the Route editor's master picker can offer, searched
+    /// by text the way the linehaul picker searches.
+    ///
+    /// NOT the same thing as GetBookingsAsync, which lists bookings already
+    /// carrying this RouteId. A final-mile master has to be found and promoted
+    /// before it carries one, and on Medical no booking carries route 15 at
+    /// all, so a picker fed from that list would be empty on the one route
+    /// this feature exists for.</summary>
+    public async Task<List<RouteLinkableBookingDto>> SearchLinkableBookingsAsync(int routeId, string? q)
+    {
+        var term = (q ?? string.Empty).Trim();
+        if (term.Length < 2) return [];
+
+        return await Context.TucJobBookings.AsNoTracking()
+            .Where(b => b.UcbkActive == true && b.ParentId == null)
+            .Where(b =>
+                b.UcbkJobNumber.Contains(term) ||
+                (b.CustomJobName != null && b.CustomJobName.Contains(term)) ||
+                (b.UcbkClient != null && b.UcbkClient.UcclName != null && b.UcbkClient.UcclName.Contains(term)) ||
+                (b.FromAddressStreetName != null && b.FromAddressStreetName.Contains(term)) ||
+                (b.ToAddressStreetName != null && b.ToAddressStreetName.Contains(term)) ||
+                (b.PickupAddressLine1 != null && b.PickupAddressLine1.Contains(term)) ||
+                (b.DeliveryAddressLine1 != null && b.DeliveryAddressLine1.Contains(term)))
+            .OrderByDescending(b => b.UcbkJobNumber == term)
+            .ThenByDescending(b => b.UcbkJobNumber.StartsWith(term))
+            .ThenByDescending(b => b.UcbkTime)
+            .Take(50)
+            .Select(b => new RouteLinkableBookingDto
+            {
+                BookingId = b.UcbkId,
+                JobNumber = b.UcbkJobNumber ?? string.Empty,
+                JobName = b.CustomJobName,
+                ClientName = b.UcbkClient != null ? b.UcbkClient.UcclName : null,
+                PickupSummary = b.PickupAddressLine1,
+                DeliverySummary = b.DeliveryAddressLine1,
+                LinkedRouteId = b.IsLinehaulMaster && b.LinehaulRunId == null ? b.RouteId : null,
+                IsMaster = b.IsLinehaulMaster,
+                LinkedToThisRoute = b.IsLinehaulMaster && b.LinehaulRunId == null && b.RouteId == routeId,
+                IsLinehaulMasterElsewhere = b.IsLinehaulMaster && b.LinehaulRunId != null,
+            })
+            .ToListAsync();
+    }
+
     public async Task<RouteDto?> GetByIdAsync(int id)
     {
         var route = await Context.Routes
@@ -317,6 +486,10 @@ public class RecurringRouteService(
         await AttachBulkPolygonsAsync(route, req.BulkPolygonIds ?? new List<int>());
         await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
         Context.Routes.Add(route);
+        await Context.SaveChangesAsync();
+        // After the save, because the route needs an id before a booking can
+        // point at it.
+        await ApplyMasterBookingAsync(route.RouteId, req.MasterBookingId, req.FinalMileDeliveryMode);
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} ({Name}) created with {Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s)",
             route.RouteId, route.Name, route.ZipPolygons.Count, route.BulkRunPolygons.Count, route.Schedules.Count);
@@ -359,6 +532,11 @@ public class RecurringRouteService(
         // every bound schedule.
         route.Schedules.Clear();
         await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
+
+        // Throws on a booking that is already a linehaul master, so this sits
+        // before the save: the route edit and the master move land together or
+        // not at all.
+        await ApplyMasterBookingAsync(id, req.MasterBookingId, req.FinalMileDeliveryMode);
 
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} updated ({Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s))",
@@ -431,6 +609,87 @@ public class RecurringRouteService(
         route.UpdatedBy = CurrentUser();
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} soft-deleted", id);
+        return true;
+    }
+
+    private static async Task<RouteUsageDto> CountUsageAsync(
+        int id, System.Data.Common.DbConnection conn, System.Data.Common.DbTransaction tx)
+    {
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+        return await conn.QuerySingleAsync<RouteUsageDto>(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM dbo.tucJob               WHERE RouteId = @id)          AS Jobs,
+              (SELECT COUNT(*) FROM dbo.tucJobBooking        WHERE RouteId = @id)          AS Bookings,
+              (SELECT COUNT(*) FROM dbo.tblBulkJob           WHERE RouteId = @id)          AS BulkJobs,
+              (SELECT COUNT(*) FROM dbo.Dispatch_RouteRoster WHERE RouteId = @id)          AS RosterEntries,
+              -- tblLinehaulTote is deliberately absent: the app has no SELECT
+              -- grant on it (see RouteUsageDto). Its FK still blocks, and the
+              -- 547 handler below turns that into the same refusal.
+              (SELECT COUNT(*) FROM dbo.RouteZipcodes        WHERE RouteId = @id)          AS Zipcodes,
+              (SELECT COUNT(*) FROM dbo.tblRouteSchedule     WHERE RouteId = @id)          AS Schedules,
+              (SELECT COUNT(*) FROM dbo.tblBulkRunPolygonRoute WHERE RouteId = @id)        AS Polygons
+            """,
+            new { id }, tx);
+    }
+
+    /// <summary>
+    /// Remove a route permanently. Only for one that was never used -
+    /// a mistake or a test - which is the case Steve approved on 22 Oct.
+    /// Everything else deactivates (<see cref="SoftDeleteAsync"/>).
+    ///
+    /// The counts are taken AGAIN inside the transaction that does the
+    /// delete, not trusted from whatever the UI saw when it decided to
+    /// show the button. Between the page loading and the operator
+    /// clicking, a prebook run can stamp this route onto a job; without
+    /// the re-check under the same transaction that row is orphaned,
+    /// and two of the eight tables have no foreign key to stop it.
+    ///
+    /// Nothing cascades. A route with any reference is refused, with the
+    /// reference named, so the operator clears it deliberately.
+    /// </summary>
+    /// <returns>false when the route does not exist.</returns>
+    /// <exception cref="InvalidOperationException">The route is in use.</exception>
+    public async Task<bool> HardDeleteAsync(int id)
+    {
+        var route = await Context.Routes.FirstOrDefaultAsync(r => r.RouteId == id);
+        if (route is null) return false;
+
+        await using var tx = await Context.Database.BeginTransactionAsync();
+        var usage = await CountUsageAsync(
+            id,
+            Context.Database.GetDbConnection(),
+            tx.GetDbTransaction());
+
+        if (!usage.IsUnused)
+        {
+            Log.Warning("Route {Id} hard delete refused: {Reason}", id, usage.BlockReason());
+            throw new InvalidOperationException(usage.BlockReason());
+        }
+
+        Context.Routes.Remove(route);
+        try
+        {
+            await Context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 547 } sql)
+        {
+            // A foreign key caught something the count above could not see -
+            // either a tote (no SELECT grant, so it is never counted) or a row
+            // that appeared between the count and the delete. Either way the
+            // database refused and nothing is orphaned; translate it into the
+            // same refusal the counted cases give rather than a raw 500.
+            await tx.RollbackAsync();
+            Log.Warning("Route {Id} hard delete blocked by {Constraint}", id, sql.Message);
+            throw new InvalidOperationException(
+                "This route is still referenced by another record "
+                + (sql.Message.Contains("tblLinehaulTote", StringComparison.OrdinalIgnoreCase)
+                    ? "(a linehaul tote). "
+                    : "that appeared while the delete was running. ")
+                + "Remove it first, or deactivate the route instead.");
+        }
+        await tx.CommitAsync();
+        Log.Information("Route {Id} ({Name}) hard-deleted by {User}", id, route.Name, CurrentUser());
         return true;
     }
 
