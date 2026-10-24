@@ -592,7 +592,7 @@ the whole depot area qualifies. Schedules NEW saves the zones (`ScheduleService`
 schedule" (`tblSchedulePostcode`), but no SQL object on master reads `tblSchedulePostcode`: only the
 create (`20260825120000`) and grant (`20260825130000`) scripts mention it. For a P2P speed the
 Coverage tab is a picture, not a gate. `uspPrebookSet` does not check zones at all. The `DD_` twin has
-no zone gate (US zones hang off `ZoneName` / `ZoneZip`); no US change.
+no zone gate (US zones hang off `ZoneName` / `ZoneZip`); no US change at the time. **24 Oct:** the US twin is specced as `KEVIN-US-SCHEDULE-COVERAGE-ZONES-AND-ZIPS-2026-10-24.md` (branch `docs/us-schedule-coverage-2026-10-24`, from Dane's Cheetah report).
 
 **Rule.** A schedule that has any active zone or any bound postcode is limited to them, whatever its
 speed. A schedule with neither is open, as today. The zone-group predicate on `@ToRegions` is
