@@ -25,7 +25,11 @@ Refs checked for this spec: dbmigrationsv2 master `02860b7` (23 Oct), routed-ope
   candidate blocks of `DD_fncJob_GetClientAvailableBulkRunSchedule`.
 - `ZoneZip` is reused as the membership table. A ZIP may sit in several zones; the Excelerator rate
   function already matches lanes against the list of all zones a ZIP is in, so adding a ZIP to a
-  coverage zone never moves a price unless someone defines a lane on that zone. `[V]`
+  coverage zone never moves a price unless someone defines a lane on that zone. `[V]` Pricing zones
+  (lane geography, area to area) and coverage zones (any shape: rings out from a depot, weekday
+  patterns, one client's run) are both `ZoneName` rows, kept apart by `ZoneGroup`. The rater reads
+  three things off `ZoneZip` that ignore which zone a row is in (congestion flag, "only in zips"
+  distance rates, the depot lookup); section 2.1 sets the rules for coverage rows so none of them moves.
 - Zone groups are not involved. Nothing on master reads `ZoneZip.ZoneZipGroupID` `[V]`; Zip Groups stay
   hidden on US (Steve, 23 Oct). The zone-rated gate in `DD_stpJob_Scheduler_Rates` is not the lever
   either: turning `ZoneRated` on for a US speed switches schedule pricing to the NZ bulk zone rate
@@ -34,8 +38,9 @@ Refs checked for this spec: dbmigrationsv2 master `02860b7` (23 Oct), routed-ope
   with today's code but is permanent bloat. Rejected by Steve, 24 Oct.
 - Routed Ops side: the leg zone picker is empty on US because its list comes from the NZ postcode
   table; it needs to list US zones under the schedule's depot. The schedule postcode picker needs a
-  paste box. US zones need an editor for the depot and a ZIP paste, since no endpoint writes
-  `ZoneName.LocationID` today and ZIPs are added one per request. `[V]`
+  paste box. Kevin's 22 Oct Zone groups tab already edits a US zone's name, group and depot
+  (`ZoneGroupsTab.tsx`, `POST/PUT us/zone-names`), so the only zone-editor gap is a ZIP paste: the
+  Zones tab adds one ZIP per request. `[V]`
 - Dane's Part 2 (an undated on-demand price next to the dated lines, bookable any day) is a separate
   change and is out of scope here. Section 8.
 
@@ -110,7 +115,8 @@ Consequences:
   for OTG or any other US tenant until an operator ticks a zone or binds a ZIP.
 - A zone is "the ZIPs in `ZoneZip` whose `ZoneNameID` is the ticked zone". A ZIP may be in several
   zones; the rate function builds `@ToZoneIDs` as the list of all of them (`20261019150000`, lines
-  143 to 144) and matches lanes with `IN`, so a coverage zone with no lane never prices.
+  226 to 227, commented "supports duplicate zip entries") and matches `ZoneCombo` lanes with `IN`
+  (lines 261, 268, 281, 292), so a coverage zone with no lane never prices. Section 2.1.
 - The ticked zone must belong to the schedule's region (`ZoneName.LocationID = s.Region`), mirroring
   the NZ `p.DepotId = s.Region` test. A zone with no depot never matches. The picker only offers zones
   under the leg's depot (section 5.1), so this is a safety net, not a user-facing rule.
@@ -125,6 +131,47 @@ depot test needs `ZoneName` anyway. Kevin's zone-groups tab groups US members by
 zone name as label (`TerritoryService.cs:130`); that is a display grouping and is not changed here. If
 `ZoneNumber` turns out to be populated one-to-one with `ZoneNameID` on OTG `[C]`, this decision costs
 nothing; if it is not, it is the only key that works.
+
+### 2.1 Pricing zones and coverage zones share one table `[V]`
+
+Scheduling is a rating procedure: `DD_stpJob_Scheduler_Rates` takes its candidates from the
+availability function and the Excelerator rater prices them (section 1). So the question is whether
+the zones OTG prices by, and the zones a schedule is limited by, can both live in `ZoneName` /
+`ZoneZip` without one disturbing the other. They can, and the two do not have to be the same shape.
+
+- **Pricing zones** are lane geography: area to area. `ZoneCombo.FromZoneNameID` and `ToZoneNameID`
+  name them, and that is the only place a zone has a price.
+- **Coverage zones** are whatever shape a schedule needs: rings out from a depot, weekday patterns
+  (Cheetah), one client's run. They have no `ZoneCombo` rows. They are ordinary `ZoneName` rows
+  with ordinary `ZoneZip` members.
+- **One ZIP, one row per zone.** `ZoneZip` has no unique key on `Zip` (EF model and the migration
+  trail; the rater's own comment says duplicates are expected). A ZIP sits in exactly one pricing
+  zone per lane geography and in as many coverage zones as it needs. Nothing is moved; coverage
+  rows are added next to the pricing row.
+- **`ZoneGroup` keeps the families apart.** `ZoneName.ZoneGroupId` already exists, `TerritoryService`
+  already lists groups on US (`GetZoneGroupsAsync`) and returns the group name on every zone and
+  every ZIP row (`ZoneNameDto.ZoneGroupName`, `UsZipZoneDto.ZoneGroupName`). Coverage zones go in
+  their own group (for example "KC coverage"), pricing zones stay in the rate-card groups. The leg
+  zone picker shows the group heading (5.1), so an operator ticking "Zone 2" sees whether it is the
+  pricing ring or a coverage shape.
+- **Both ways of ticking are legitimate.** If the pricing zones already cut the map the way a
+  schedule needs, tick the pricing zone itself; no coverage zone is required. If they do not, build
+  coverage zones. The SQL in section 4 does not care which family a ticked zone belongs to.
+
+Three things the rater reads off `ZoneZip` without looking at which zone the row is in. Each has a
+rule for coverage rows so prices do not move.
+
+| Read | Where | Rule for coverage rows |
+|---|---|---|
+| Congestion flag: a ZIP is congested if **any** of its rows has `ApplyCongestion = 1` | `20261019150000` lines 230 to 231 | Coverage rows are written with `ApplyCongestion = 0`. The paste endpoint in 5.3 hard-codes it; the single-row `us/zip-zones` form defaults it off |
+| "Only in zips" distance rates: a distance rate with `OnlyInZips = 1` applies when both ZIPs have **any** `ZoneZip` row | lines 253, 305, 324, 340 | A ZIP whose first-ever row is a coverage row becomes eligible for those rates. 3e counts them per tenant; on a tenant that has any, paste only ZIPs that already sit in a pricing zone, which is the normal case (a schedule serves ZIPs the tenant already prices) |
+| Depot lookup in availability: `@ToDepots` is every `LocationID` over every zone the ZIP is in | `20261016170000` lines 863 to 880 | A coverage zone carries the depot of the schedules that tick it. If that depot differs from the ZIP's pricing-zone depot, the ZIP also becomes visible to that depot's depot-wide schedules. That is the intended meaning of a depot on a zone, not a side effect, but the zone editor (5.3) shows the depot so it is a conscious choice |
+
+`ClientID` on coverage rows: NULL unless the zone exists for one client's schedules; both the rater
+and the section 4 predicate honour it the same way (`ClientID IS NULL OR ClientID = @ClientID`).
+`ZoneNumber` and `ZoneZipGroupID` on coverage rows: NULL (D1 does not use `ZoneNumber`; nothing reads
+`ZoneZipGroupID`). If 3b shows OTG keeps `ZoneNumber` filled one-to-one with the zone, copy the
+convention so the Zip Groups view (hidden on US today) does not show a zero bucket later.
 
 ---
 
@@ -160,6 +207,20 @@ ORDER BY zn.LocationID, zn.ZoneName;
 
 -- 3d. Cheetah speeds 418 / 419: ZoneRated must be 0 (section 4.4). Any US speed with it set is a finding.
 SELECT ucjtID, ucjtName, ZoneRated FROM dbo.tucJobType WHERE ISNULL(ZoneRated, 0) > 0;
+
+-- 3e. Side channels the rater reads off ZoneZip regardless of zone (section 2.1).
+--     Distance rates that apply only when both ZIPs are in some zone: expect 0 on Cheetah; on OTG
+--     list them. Congestion rows: how many ZIPs carry the flag today (coverage rows never add one).
+SELECT DistanceRateID, DistanceRateName, SpeedID FROM dbo.DistanceRates WHERE OnlyInZips = 1;
+SELECT CongestionZips = COUNT(DISTINCT Zip) FROM dbo.ZoneZip WHERE ApplyCongestion = 1;
+-- Zone families as they stand: every group with its zone count and lane count.
+SELECT zg.ZoneGroupID, zg.Name,
+       Zones = COUNT(DISTINCT zn.ZoneNameID),
+       Lanes = (SELECT COUNT(*) FROM dbo.ZoneCombo zc
+                INNER JOIN dbo.ZoneName z2 ON z2.ZoneNameID IN (zc.FromZoneNameID, zc.ToZoneNameID)
+                WHERE z2.ZoneGroupID = zg.ZoneGroupID)
+FROM dbo.ZoneGroup zg LEFT JOIN dbo.ZoneName zn ON zn.ZoneGroupID = zg.ZoneGroupID
+GROUP BY zg.ZoneGroupID, zg.Name ORDER BY zg.Name;
 ```
 
 ---
@@ -262,7 +323,9 @@ the `_pre` copy after.
   the zone name, `DepotId` the `LocationID`.
 - `ChainBuilder.tsx` (`:834`, `:1236`): render the picker from `Zones` when non-empty. Filter to the
   leg's depot (`DepotId = the leg's region`); show zones with no depot greyed with "no depot set"
-  rather than hiding them, so the operator learns why. Chip label = zone name, with the ZIP count.
+  rather than hiding them, so the operator learns why. Chip label = zone name, with the ZIP count,
+  listed under the zone's `ZoneGroup` name as a heading (2.1), so pricing zones and coverage zones
+  read as two families. `ZoneOptionDto` gains `string GroupLabel` (null on NZ).
 - Save path unchanged: `req.Zones[{ zone: ZoneNameID, active }]` to `BulkZoneSchedule`. Null still
   means leave alone (F7).
 - `ScheduleDetailModal` Coverage tab: on US paint the ticked zones' ZIPs from `ZoneZip` plus the bound
@@ -278,20 +341,30 @@ not in any zone (warn, not added by default, with "add anyway"). A ZIP in no zon
 because the depot rule runs first; the warning says so. Display zero-padded everywhere the picker and
 the Coverage tab show a US ZIP.
 
-### 5.3 US zone editor: depot and ZIP paste
+### 5.3 US zone editor: ZIP paste (the depot editor already exists)
 
-Under Schedules NEW > Zone groups on US (the rating zones view, `ZonesController` / `api/zones`):
+Already on master from Kevin's 22 Oct work `[V]`: Schedules NEW > Zone groups on US edits a zone's
+name, `ZoneGroup` and depot (`ZoneGroupsTab.tsx` zone-name modal: Name / Zone Group / Location
+(Depot), over `POST/PUT us/zone-names` with `ZoneNameUpsertRequest { Name, ZoneGroupId, LocationId }`),
+and creates, renames and deletes zone groups (`POST/PUT/DELETE us/zone-groups`). Nothing to build
+there. `zoneGroupId` is the family switch of 2.1: a coverage zone is created in a coverage group,
+never in a rate-card group; the modal's Zone Group select already offers both.
 
-- Wire `POST us/zone-names` and `PUT us/zone-names/{id}` in `TerritoryController` to the existing
-  `CreateZoneNameAsync` / `UpdateZoneNameAsync`. Request: name, `zoneGroupId`, `locationId`. Same
-  write permission as the `us/zip-zones` writes.
-- Zone row gets an identity editor (name, rate-card group, depot), the same small form the postcode
-  group has in `PostcodeGroupDetailModal` ("name / depot / client code").
+The gap is volume. The Zones tab adds one ZIP per request (`POST us/zip-zones`, `ZonesTab.tsx:340`),
+so 602 ZIPs across eight coverage zones is 602 form submissions.
+
 - `POST us/zone-names/{id}/zips` takes a pasted list and adds `ZoneZip` rows in one call (the US
   twin of 11.8's `postcode-groups/{id}/zones/{zone}/postcodes`). Returns added / already in this zone /
   ignored. A ZIP already in another zone is **added here as well**, not moved: on US a ZIP in several
-  zones is normal (pricing zone plus coverage zone). Store the ZIP exactly as the tenant's existing
-  rows are stored (3b decides padded or not); never mix spellings within a tenant.
+  zones is normal (pricing zone plus coverage zone, 2.1). Store the ZIP exactly as the tenant's
+  existing rows are stored (3b decides padded or not); never mix spellings within a tenant.
+- Rows written by the paste: `ZoneNameID` = the zone, `Zip` as above, `ApplyCongestion = 0`,
+  `ClientID` from an optional request field (default NULL), `ZoneNumber` NULL unless 3b says OTG
+  keeps it one-to-one with the zone, `ZoneZipGroupID` NULL. These are the 2.1 rules; the paste never
+  writes a congestion flag.
+- UI: a "+ paste ZIPs" box on the zone row in the Zone groups tab, same contract as 5.2
+  (separators, 5-digit padding with a warning, de-duplicate), result list added / already here /
+  ignored.
 - Zip Groups stay hidden on US. Nothing in this spec touches `ZoneZipGroupID` or `PostcodeGroupId`.
 
 ---
@@ -300,11 +373,14 @@ Under Schedules NEW > Zone groups on US (the rating zones view, `ZonesController
 
 Replaces the rollout in Dane's report. Ruth's file: 602 ZIPs, eight distinct weekday patterns.
 
-1. Set the depot on zones 39 GRANDVIEW and 40 KC OUTER to Kansas City (bulk region 29). Zone 40 keeps
-   the 602 ZIPs and the $120 / $150 lanes; it is the pricing zone and is never ticked on a schedule.
-2. Create eight coverage zones under Kansas City, one per weekday pattern ("KC Mon+Thu", "KC Fri", ...),
-   and paste each pattern's ZIPs. 602 rows once. Hold back the 118 ZIPs Dane listed (116 "DOS NOT ON
-   FILE", 64429 / 64430 with no territory, 65333 with no day) until Hub Group answers.
+1. Set the depot on zones 39 GRANDVIEW and 40 KC OUTER to Kansas City (bulk region 29) in Schedules
+   NEW > Zone groups (the zone-name modal's Location (Depot) select; it exists today, open point 5 is
+   only whether Cheetah has the deploy). Zone 40 keeps the 602 ZIPs and the $120 / $150 lanes; it is
+   the pricing zone and is never ticked on a schedule.
+2. Create a zone group "KC coverage" (2.1), then eight coverage zones in it under Kansas City, one per
+   weekday pattern ("KC Mon+Thu", "KC Fri", ...), and paste each pattern's ZIPs (5.3). 602 rows once,
+   all with the congestion flag off. Hold back the 118 ZIPs Dane listed (116 "DOS NOT ON FILE",
+   64429 / 64430 with no territory, 65333 with no day) until Hub Group answers.
 3. Five schedules, Monday to Friday, 07:00 to 20:00, region Kansas City, origin Depot, linked to
    Hub Group (client-specific; the 6.1 fix is on master). Speed left as "any" so one schedule serves
    both 418 and 419 (`t1.SpeedID = s.SpeedId OR s.SpeedId IS NULL`), or ten schedules if ops prefer
@@ -362,7 +438,7 @@ Part 2 spec, not this one.
 
 | # | Point | Owner |
 |---|---|---|
-| 1 | 3a to 3d on OTG and Cheetah production, pasted on the card | Kerran (prod write access, SELECT only here) or Kevin |
+| 1 | 3a to 3e on OTG and Cheetah production, pasted on the card | Kerran (prod write access, SELECT only here) or Kevin |
 | 2 | Whether `ZoneNumber` is one-to-one with `ZoneNameID` on OTG (D1 holds either way) | from 3b |
 | 3 | NJ leading-zero ZIPs: if 3b shows padded rows, raise the existing depot-lookup miss as its own item | Kevin |
 | 4 | Hub Group's booking channel, which decides whether Part 2 blocks go-live | Dane |
@@ -374,10 +450,10 @@ Part 2 spec, not this one.
 
 | | Title | Done when |
 |---|---|---|
-| M0 | Count-first queries and decisions | 3a to 3d results on the card; D1 and the leading-zero handling confirmed against them |
+| M0 | Count-first queries and decisions | 3a to 3e results on the card; D1, the leading-zero handling and the 2.1 coverage-row rules confirmed against them |
 | M1 | Migration: coverage predicate in both US candidate blocks | Migration on an MR; 4.5 regression gate zero rows on OTG and Cheetah staging; tests 1 to 4, 9, 11 pass on staging via the function directly |
 | M2 | Leg zone picker lists US zones under the leg's depot; Coverage tab paints the union | A US schedule can tick a zone in Schedules NEW and the tick lands in `BulkZoneSchedule` as `ZoneNameID`; test 8 greyed state shown |
 | M3 | Paste on the schedule postcode picker; zero-padded display | 100 pasted ZIPs bind in one save; unknown ZIPs warned |
-| M4 | US zone editor: depot on the zone, ZIP paste into a zone | `POST/PUT us/zone-names` and `POST us/zone-names/{id}/zips` live; Cheetah zones 39 / 40 given a depot through the UI |
+| M4 | ZIP paste into a US zone (depot editor already exists) | `POST us/zone-names/{id}/zips` live with the 2.1 row rules; "+ paste ZIPs" on the Zone groups tab; a coverage group with eight zones built on Cheetah staging from Ruth's file in one sitting |
 | M5 | Staging acceptance | Section 7 table green on Cheetah staging, quotes only |
 | M6 | Production: OTG and Cheetah | Deployed; 3a re-run shows only the intended Cheetah schedules limited; Dane runs section 6 and the live quote checks |
