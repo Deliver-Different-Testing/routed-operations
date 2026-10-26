@@ -1,6 +1,9 @@
 # US schedules: selected zones and bound ZIPs limit what a schedule serves
 
 **Owner:** Kevin. **Written:** 24 Oct 2026 (Steve, via Claude). **Status:** spec, not started.
+**Revised 27 Oct 2026** after Kevin's count-first report (Slack, 27 Oct 09:59): D1 reversed, a third
+live US tenant (Medical Couriers) added, the rule put behind a tenant setting. Changes are marked
+**[27 Oct]**.
 **Trigger:** Dane's Cheetah report, 23 Oct 2026:
 `https://github.com/Deliver-Different-Testing/dfrnt-ops/blob/main/docs/2026-10-23-us-schedule-service-days-bug-report.md`
 and the companion issue `https://github.com/Deliver-Different-Testing/dfrnt-ops/issues/2`.
@@ -23,6 +26,15 @@ Refs checked for this spec: dbmigrationsv2 master `02860b7` (23 Oct), routed-ope
   (via `ZoneZip`) plus the schedule's bound ZIPs (`tblSchedulePostcode`). A schedule with neither stays
   depot-wide, as today.** The depot rule is unchanged and still applies first. One migration, both
   candidate blocks of `DD_fncJob_GetClientAvailableBulkRunSchedule`.
+- **[27 Oct]** A leg tick on US is a **zone number under the schedule's depot**, the same reading as
+  NZ, not a `ZoneName` id. Kevin measured it: Medical Couriers production, a third live US tenant,
+  has 47 live schedules carrying 77 active ticks, every one resolves as a number under its depot and
+  none as a `ZoneName` id. The 24 Oct D1 would have dropped every Medical schedule. D1 is reversed
+  (section 2) and nothing is converted.
+- **[27 Oct]** Those ticks have never been enforced on US, so enforcing them is a behaviour change on
+  a tenant nobody has talked to. The rule goes behind a tenant setting
+  (`tblSetting.ScheduleCoverageEnabled`, default off): on for Cheetah first, then OTG and Medical
+  Couriers after the 4.5 diff on their staging has been reviewed with their ops. Section 4.
 - `ZoneZip` is reused as the membership table. A ZIP may sit in several zones; the Excelerator rate
   function already matches lanes against the list of all zones a ZIP is in, so adding a ZIP to a
   coverage zone never moves a price unless someone defines a lane on that zone. `[V]` Pricing zones
@@ -36,9 +48,11 @@ Refs checked for this spec: dbmigrationsv2 master `02860b7` (23 Oct), routed-ope
   tables and marks every line Unavailable. `[V]` Dane's Fix 1c is therefore not needed.
 - The per-weekday fake depot workaround (five depots, one per day, 1,152 duplicated ZIP rows) works
   with today's code but is permanent bloat. Rejected by Steve, 24 Oct.
-- Routed Ops side: the leg zone picker is empty on US because its list comes from the NZ postcode
-  table; it needs to list US zones under the schedule's depot. The schedule postcode picker needs a
-  paste box. Kevin's 22 Oct Zone groups tab already edits a US zone's name, group and depot
+- Routed Ops side **[27 Oct, corrected]**: the leg zone picker is not empty on US. Its lookup unions
+  the tick table into the list, so on any tenant that has ever ticked (Medical Couriers) it renders
+  bare zone numbers with no labels and no depot filter, and that is how the 77 ticks were made. It
+  needs to list the zone numbers under the leg's depot with their zone names. The schedule postcode
+  picker needs a paste box. Kevin's 22 Oct Zone groups tab already edits a US zone's name, group and depot
   (`ZoneGroupsTab.tsx`, `POST/PUT us/zone-names`), so the only zone-editor gap is a ZIP paste: the
   Zones tab adds one ZIP per request. `[V]`
 - Dane's Part 2 (an undated on-demand price next to the dated lines, bookable any day) is a separate
@@ -79,9 +93,12 @@ What the schedule editor already saves on US (routed-operations master `bf51541`
 
 - Leg zone ticks: `ScheduleService.cs:1636` writes `BulkZoneSchedule { ScheduleId = day row
   BulkRunScheduleId, Zone, Active }` from `req.Zones` (`{ zone: number, active }`, null = leave
-  alone). Today the picker is hidden on US because `GetLookupsAsync` (`ScheduleService.cs:1198`)
-  builds `ZoneNumbers` from `BulkZonePostcode` union `BulkZoneSchedule`, which is empty on a US
-  tenant; `ChainBuilder.tsx:834` and `:1236` render the picker only when that list is non-empty.
+  alone). `GetLookupsAsync` (`ScheduleService.cs:1198`) builds `ZoneNumbers` from `BulkZonePostcode`
+  union `BulkZoneSchedule`; `ChainBuilder.tsx:834` and `:1236` render the picker only when that list is
+  non-empty. **[27 Oct]** On a US tenant `BulkZonePostcode` is empty but the union brings in every
+  number ever ticked, so on Medical Couriers the picker shows bare numbers with no label and no depot
+  filter; on a fresh tenant (Cheetah) it is hidden until the first tick, which can only come from
+  elsewhere. Either way the numbers are `ZoneZip.ZoneNumber` values.
 - Bound ZIPs: `ScheduleService.SyncPostcodesAsync` (`:2455`) writes `tblSchedulePostcode` from
   `req.PostcodeIds`; `PostcodeLookupInput.tsx` is already US-aware (5 digits, `/api/territory/us/zip-zones`).
   `tblSchedulePostcode.ScheduleId` is the header id (added nullable by `20261016165000`; the
@@ -94,10 +111,13 @@ US zone tables (`Core/Domain/Despatch/ZoneZip.cs`, `ZoneName.cs`):
 | `ZoneName` | `ZoneNameID`, `ZoneName`, `ZoneGroupId` (rate card grouping), `LocationID` (depot, nullable, FK `tblBulkRegion`) |
 | `ZoneZip` | `ZoneZipID`, `Zip` (varchar), `ZoneNameID`, `ZoneNumber` (int, nullable), `ClientID` (nullable), `ApplyCongestion`, `ZoneZipGroupID` (unread) |
 
-Territory API on master: `GET us/zone-names`, `GET us/zip-zones`, `POST/PUT/DELETE us/zip-zones/{id}`
-(one ZIP per request). `TerritoryService.CreateZoneNameAsync` / `UpdateZoneNameAsync` exist
-(`:551`, `:566`, both set `LocationId`) but no controller route calls them, so there is no UI that sets a
-US zone's depot. Cheetah's zones 39 and 40 have `LocationID = NULL` (Dane's export, 23 Oct).
+Territory API on master: `GET us/zone-names`, `GET us/zone-groups`, `GET us/zip-zones`,
+`POST/PUT/DELETE us/zip-zones/{id}` (one ZIP per request), `POST/PUT/DELETE us/zone-names/{id}`
+(`ZoneNameUpsertRequest { Name, ZoneGroupId, LocationId }`) and `POST/PUT/DELETE us/zone-groups/{id}`.
+**[27 Oct, corrected]** The zone-name routes exist and Kevin's 22 Oct Zone groups tab calls them
+(`ZoneGroupsTab.tsx`, Name / Zone Group / Location (Depot)), so a US zone's depot is editable in the
+UI today; the 24 Oct text saying otherwise was stale. Cheetah's zones 39 and 40 have `LocationID = NULL`
+(Dane's export, 23 Oct) because nobody has set it yet, not because nothing can.
 
 ---
 
@@ -111,26 +131,48 @@ Same words as parent 6.3, applied to US:
 
 Consequences:
 
-- Every existing US schedule has no zone ticks and no bound ZIPs `[C, section 3]`, so nothing changes
-  for OTG or any other US tenant until an operator ticks a zone or binds a ZIP.
-- A zone is "the ZIPs in `ZoneZip` whose `ZoneNameID` is the ticked zone". A ZIP may be in several
-  zones; the rate function builds `@ToZoneIDs` as the list of all of them (`20261019150000`, lines
-  226 to 227, commented "supports duplicate zip entries") and matches `ZoneCombo` lanes with `IN`
-  (lines 261, 268, 281, 292), so a coverage zone with no lane never prices. Section 2.1.
-- The ticked zone must belong to the schedule's region (`ZoneName.LocationID = s.Region`), mirroring
-  the NZ `p.DepotId = s.Region` test. A zone with no depot never matches. The picker only offers zones
-  under the leg's depot (section 5.1), so this is a safety net, not a user-facing rule.
+- **[27 Oct]** Existing ticks are not zero. Measured by Kevin on 27 Oct: Medical Couriers production
+  3a = 47 live schedules (every live schedule on the tenant), 77 active ticks; the DFRNT seed, which is
+  a copy of Medical Couriers, 53 schedules. OTG and Cheetah are unmeasured (open point 1). None of
+  those ticks is read today, so with the setting off nothing changes anywhere; with it on, those
+  schedules become limited to their ticked zones for the first time. That is why the setting exists
+  and why the 4.5 diff is reviewed per tenant before it is switched on.
+- **[27 Oct]** A ticked zone is "the `ZoneZip` rows whose `ZoneNumber` is the tick and whose
+  `ZoneName.LocationID` is the schedule's region". That is the NZ reading (`BulkZonePostcode.Zone`
+  under `p.DepotId = s.Region`) with `ZoneZip` in place of `BulkZonePostcode`. Two zones at one depot
+  may share a number (Medical Couriers depot 35: Sacramento and SMF are both 1); the tick then means
+  both, a union, which is what "zone 1 at this depot" meant to whoever ticked it.
+- A ZIP may be in several zones; the rate function builds `@ToZoneIDs` as the list of all of them
+  (`20261019150000`, lines 226 to 227, commented "supports duplicate zip entries") and matches
+  `ZoneCombo` lanes with `IN` (lines 261, 268, 281, 292), so a coverage zone with no lane never
+  prices. Section 2.1.
+- A zone with no depot never matches, because `ZoneName.LocationID = s.Region` is part of the join.
+  The picker only offers numbers under the leg's depot (section 5.1), so this is a safety net, not a
+  user-facing rule.
 - Client-specific ZIP rows (`ZoneZip.ClientID`) count for that client only, as in the rate function.
 - Bound ZIPs match on the integer: `tblSchedulePostcode.PostCode = @ToPostCode`. The function receives
   the ZIP as `int`, so a leading zero is gone before the function is called; a 5-digit US ZIP compared
   as `int` is still unique. Display is zero-padded (section 5.2).
 
-**D1, zone key on US.** `BulkZoneSchedule.Zone` stores `ZoneName.ZoneNameID` on US tenants. Not
-`ZoneZip.ZoneNumber`: it is nullable, it is a per-ZIP-row value rather than a zone attribute, and the
-depot test needs `ZoneName` anyway. Kevin's zone-groups tab groups US members by `ZoneNumber` with the
-zone name as label (`TerritoryService.cs:130`); that is a display grouping and is not changed here. If
-`ZoneNumber` turns out to be populated one-to-one with `ZoneNameID` on OTG `[C]`, this decision costs
-nothing; if it is not, it is the only key that works.
+**D1, zone key on US (reversed 27 Oct).** `BulkZoneSchedule.Zone` on US is a **zone number**
+(`ZoneZip.ZoneNumber`), resolved under the schedule's depot, exactly as NZ resolves
+`BulkZonePostcode.Zone`. The 24 Oct version chose `ZoneName.ZoneNameID` because `ZoneNumber` is
+nullable and per row; Kevin's count-first run showed the live data is numbers (77 of 77 Medical
+Couriers ticks resolve as numbers under their depot, 0 as `ZoneNameID`) and the picker writes numbers.
+Rejected alternatives, with Kevin's reasons:
+
+- *Convert the ticks to `ZoneNameID`.* Clean on Medical Couriers (77 ticks, one zone each, no orphans)
+  but the seed has 18 ambiguous, 16 unresolvable and 40 rows on day rows that no longer exist, and
+  depot plus number is not unique (depot 35), so the conversion needs rules and a failure mode. Not
+  needed when nothing is converted.
+- *Try both readings, id first then number.* Works today by one row: zone numbers run to 38 on Medical
+  Couriers and the lowest `ZoneNameID` with a depot is 39. The first zone numbered 39 or 40 would
+  match two different zones.
+
+Consequences of the number reading: a coverage zone must carry a number on its `ZoneZip` rows (5.3
+writes it), new coverage zones take a number unused at that depot (3c lists what is used), and the
+Zone groups tab's grouping of US members by `ZoneNumber` (`TerritoryService.cs:130`) is now the same
+key the schedule uses.
 
 ### 2.1 Pricing zones and coverage zones share one table `[V]`
 
@@ -169,18 +211,27 @@ rule for coverage rows so prices do not move.
 
 `ClientID` on coverage rows: NULL unless the zone exists for one client's schedules; both the rater
 and the section 4 predicate honour it the same way (`ClientID IS NULL OR ClientID = @ClientID`).
-`ZoneNumber` and `ZoneZipGroupID` on coverage rows: NULL (D1 does not use `ZoneNumber`; nothing reads
-`ZoneZipGroupID`). If 3b shows OTG keeps `ZoneNumber` filled one-to-one with the zone, copy the
-convention so the Zip Groups view (hidden on US today) does not show a zero bucket later.
+`ZoneNumber` on coverage rows **[27 Oct]**: required, the coverage zone's number, the same on every
+row of the zone, chosen from the numbers not yet used at that depot (3c). It is the key the tick
+resolves by (D1). `ZoneZipGroupID`: NULL, nothing reads it.
 
 ---
 
-## 3. Count first (SELECT only; OTG and Cheetah production, Kerran or Kevin)
+## 3. Count first (SELECT only; every US tenant's production, Kerran or Kevin)
 
-Run before building. Paste results on the card.
+**[27 Oct]** Every US tenant, not two: OTG, Cheetah and Medical Couriers, plus any other US tenant the
+migration pipeline reaches (open point 2). Kevin ran 3a to 3e on Medical Couriers production and the
+seed on 27 Oct; his login is refused on `Despatch-Otgcargo-Prod` and `Despatch-Cheetah-Prod`, so those
+two are Kerran's. Paste results on the card.
+
+Medical Couriers, 27 Oct (Kevin): 3a = 47 schedules, 77 active ticks, all resolving as numbers under
+their depot; 3d = 0; 3e = 0 distance rates, 0 congestion ZIPs; zone numbers run to 38, lowest
+`ZoneNameID` with a depot = 39; depot 35 has two zones numbered 1. Seed: 3a = 53; of 75 ticks on day
+rows 41 clean, 18 ambiguous, 16 unresolvable, plus 40 ticks on day rows that no longer exist.
 
 ```sql
--- 3a. Any US schedule already carrying zone ticks or bound ZIPs? Expect 0 on both tenants.
+-- 3a. Any US schedule already carrying zone ticks or bound ZIPs? Medical Couriers = 47. On Cheetah,
+--     say which rows are Dane's: if the tenant was stood up from the seed it may carry the seed's 53.
 SELECT s.ScheduleId, h.Name, s.BulkRunScheduleId, s.Region, s.SpeedId,
        ActiveZones = (SELECT COUNT(*) FROM dbo.BulkZoneSchedule zs
                       WHERE zs.ScheduleId = s.BulkRunScheduleId AND zs.Active = 1),
@@ -199,11 +250,17 @@ SELECT Padded = SUM(CASE WHEN Zip LIKE '0%' THEN 1 ELSE 0 END),
        NoZoneNumber = SUM(CASE WHEN ZoneNumber IS NULL THEN 1 ELSE 0 END)
 FROM dbo.ZoneZip;
 
--- 3c. Zones without a depot (these can never be offered, before or after this change).
-SELECT zn.ZoneNameID, zn.ZoneName, zn.LocationID, Zips = COUNT(zz.ZoneZipID)
+-- 3c. Every zone with its depot and the number(s) its rows carry. A zone with no depot can never be
+--     offered, before or after this change. Numbers > 1 on one zone, or one number shared by two
+--     zones at one depot (Medical depot 35), are findings to note, not to fix.
+SELECT zn.ZoneNameID, zn.ZoneName, zn.LocationID, zn.ZoneGroupID,
+       Zips = COUNT(zz.ZoneZipID),
+       Numbers = COUNT(DISTINCT zz.ZoneNumber),
+       MinNumber = MIN(zz.ZoneNumber), MaxNumber = MAX(zz.ZoneNumber),
+       NullNumbers = SUM(CASE WHEN zz.ZoneNumber IS NULL THEN 1 ELSE 0 END)
 FROM dbo.ZoneName zn LEFT JOIN dbo.ZoneZip zz ON zz.ZoneNameID = zn.ZoneNameID
-GROUP BY zn.ZoneNameID, zn.ZoneName, zn.LocationID
-ORDER BY zn.LocationID, zn.ZoneName;
+GROUP BY zn.ZoneNameID, zn.ZoneName, zn.LocationID, zn.ZoneGroupID
+ORDER BY zn.LocationID, MinNumber, zn.ZoneName;
 
 -- 3d. Cheetah speeds 418 / 419: ZoneRated must be 0 (section 4.4). Any US speed with it set is a finding.
 SELECT ucjtID, ucjtName, ZoneRated FROM dbo.tucJobType WHERE ISNULL(ZoneRated, 0) > 0;
@@ -221,6 +278,27 @@ SELECT zg.ZoneGroupID, zg.Name,
                 WHERE z2.ZoneGroupID = zg.ZoneGroupID)
 FROM dbo.ZoneGroup zg LEFT JOIN dbo.ZoneName zn ON zn.ZoneGroupID = zg.ZoneGroupID
 GROUP BY zg.ZoneGroupID, zg.Name ORDER BY zg.Name;
+
+-- 3f. [27 Oct] Ticks under the number reading (D1). Every active tick on a live day row, with how many
+--     zones at the schedule's depot carry that number. Zones = 0 is a tick that will never match
+--     (the schedule stays limited to its other ticks and bound ZIPs); Zones > 1 is a union.
+--     Medical Couriers: 77 rows, all Zones = 1. The migration does not change these rows.
+SELECT s.ScheduleId, h.Name, s.BulkRunScheduleId, s.Region, zs.Zone,
+       Zones = (SELECT COUNT(DISTINCT zn.ZoneNameID)
+                FROM dbo.ZoneZip zz INNER JOIN dbo.ZoneName zn ON zn.ZoneNameID = zz.ZoneNameID
+                WHERE zz.ZoneNumber = zs.Zone AND zn.LocationID = s.Region),
+       Zips  = (SELECT COUNT(*)
+                FROM dbo.ZoneZip zz INNER JOIN dbo.ZoneName zn ON zn.ZoneNameID = zz.ZoneNameID
+                WHERE zz.ZoneNumber = zs.Zone AND zn.LocationID = s.Region)
+FROM dbo.BulkZoneSchedule zs
+INNER JOIN dbo.tblBulkRunSchedule s ON s.BulkRunScheduleId = zs.ScheduleId
+INNER JOIN dbo.tblBulkRunScheduleHeader h ON h.ScheduleId = s.ScheduleId AND h.RetiredUtc IS NULL
+WHERE zs.Active = 1
+ORDER BY s.Region, s.ScheduleId, zs.Zone;
+
+-- Orphan ticks (day row gone): count only; they are inert and are not touched.
+SELECT Orphans = COUNT(*) FROM dbo.BulkZoneSchedule zs
+WHERE NOT EXISTS (SELECT 1 FROM dbo.tblBulkRunSchedule s WHERE s.BulkRunScheduleId = zs.ScheduleId);
 ```
 
 ---
@@ -240,9 +318,16 @@ the whole function, US body only; the NZ body is untouched. Keep the plan-flush 
 DECLARE @ToZipText   varchar(10) = CAST(@ToPostCode AS varchar(10))
 DECLARE @ToZipPadded varchar(10) = RIGHT('00000' + CAST(@ToPostCode AS varchar(10)), 5)
 
+-- [27 Oct] Tenant switch. Off = both sets stay empty and the predicate in 4.2 passes every
+-- row, so the function is byte-for-byte the old behaviour. Same pattern as
+-- tblSetting.PolygonZoneResolutionEnabled (20261007200000). The migration adds the column
+-- (bit NOT NULL DEFAULT 0) if missing; nothing turns it on.
+DECLARE @CoverageOn bit = ISNULL((SELECT TOP 1 ScheduleCoverageEnabled FROM dbo.tblSetting), 0)
+
 -- Schedules that limit themselves. Small set, materialised once (plan stability; the
 -- 8 Oct and 14 Oct booking-page outages were both bad plans on this function).
 DECLARE @CoverageLimited TABLE (BulkRunScheduleId int PRIMARY KEY)
+IF @CoverageOn = 1
 INSERT INTO @CoverageLimited (BulkRunScheduleId)
 SELECT s.BulkRunScheduleId
 FROM dbo.tblBulkRunSchedule s
@@ -254,17 +339,22 @@ WHERE EXISTS (SELECT 1 FROM dbo.BulkZoneSchedule zs
 -- Schedules whose coverage contains the destination ZIP.
 DECLARE @CoverageMatched TABLE (BulkRunScheduleId int PRIMARY KEY)
 
--- (a) by zone: an active tick whose zone belongs to the schedule's region and holds the ZIP
+-- (a) by zone [27 Oct, D1 reversed]: an active tick is a zone NUMBER; it matches when a ZoneZip
+--     row with that number, under a zone whose depot is the schedule's region, holds the ZIP.
+--     Two zones at the depot with the same number both count (union). This is the NZ join
+--     (BulkZonePostcode.Zone = zs.Zone AND p.DepotId = s.Region) on the US tables.
+IF @CoverageOn = 1
 INSERT INTO @CoverageMatched (BulkRunScheduleId)
 SELECT DISTINCT s.BulkRunScheduleId
 FROM dbo.tblBulkRunSchedule s
 INNER JOIN dbo.BulkZoneSchedule zs ON zs.ScheduleId = s.BulkRunScheduleId AND zs.Active = 1
-INNER JOIN dbo.ZoneName zn ON zn.ZoneNameID = zs.Zone AND zn.LocationID = s.Region   -- D1
-INNER JOIN dbo.ZoneZip zz ON zz.ZoneNameID = zn.ZoneNameID
+INNER JOIN dbo.ZoneZip zz ON zz.ZoneNumber = zs.Zone
       AND zz.Zip IN (@ToZipText, @ToZipPadded)
       AND (zz.ClientID IS NULL OR zz.ClientID = @ClientID)
+INNER JOIN dbo.ZoneName zn ON zn.ZoneNameID = zz.ZoneNameID AND zn.LocationID = s.Region
 
 -- (b) by bound ZIP
+IF @CoverageOn = 1
 INSERT INTO @CoverageMatched (BulkRunScheduleId)
 SELECT DISTINCT s.BulkRunScheduleId
 FROM dbo.tblBulkRunSchedule s
@@ -300,34 +390,49 @@ Replace lines 62 to 64 ("no US change") with a pointer to this spec and the rule
 - Pickup-side zone ticks (`BulkPickupZoneSchedule`) on US: not read today and not added here. The US
   body has no pickup zone-group predicate (comment at ~line 1000). A later item, the US twin of 6.4.
 
-### 4.5 Regression gate before merge (staging, OTG and Cheetah)
+### 4.5 Regression gate before merge (staging, every US tenant) **[27 Oct]**
 
-With no US schedule carrying zones or bound ZIPs (3a = 0 rows), the new function must return exactly
-the old rows. Keep a copy of the current function as `DD_fncJob_GetClientAvailableBulkRunSchedule_pre`
-on staging, run both for every distinct `(ClientID, FromZip, ToZip)` quoted on that tenant in the last
-30 days (`tucJob` pickup and delivery ZIPs are enough), and `EXCEPT` both ways. Expect zero rows. Then
-tick one zone on one test schedule and confirm the function narrows (section 7, tests 1 to 4). Drop
-the `_pre` copy after.
+Keep a copy of the current function as `DD_fncJob_GetClientAvailableBulkRunSchedule_pre` on each US
+staging (OTG, Cheetah, Medical Couriers, plus any other the pipeline reaches), run both for every
+distinct `(ClientID, FromZip, ToZip)` quoted on that tenant in the last 30 days (`tucJob` pickup and
+delivery ZIPs are enough), and `EXCEPT` both ways. Two passes:
+
+1. **Setting off.** Expect zero rows on every tenant. This is the merge gate.
+2. **Setting on.** On a tenant with no ticks (Cheetah today) expect zero rows. On a tenant with ticks
+   (Medical Couriers: 47 schedules) the diff is the list of quotes that lose a schedule because its
+   ticks now apply. That list is not a failure; it is the review pack for that tenant's ops before
+   their switch is turned on (M6). Kevin's live case to include: client 1, speed 421, 89301 to 90620,
+   5 schedules today; the number reading should keep 5, and if it does not the diff explains which tick
+   removed which.
+
+Then tick one zone on one test schedule and confirm the function narrows (section 7, tests 1 to 4).
+Drop the `_pre` copy after.
 
 ---
 
 ## 5. Routed Operations
 
-### 5.1 Leg zone picker lists US zones under the leg's depot
+### 5.1 Leg zone picker: labelled zone numbers under the leg's depot **[27 Oct, reworked]**
+
+Today on US the picker renders bare numbers from the tick union (section 1). M2 is about stopping it
+offering meaningless numbers, not switching it on.
 
 - `GetLookupsAsync` (`ScheduleService.cs:1198`): on a US tenant (`IsUsTenant()` as in
-  `TerritoryService`), build the list from `ZoneName` instead of `BulkZonePostcode`. The DTO gains a
-  labelled shape next to `ZoneNumbers` (keep `ZoneNumbers` for NZ callers):
-  `Zones: List<ZoneOptionDto(int Zone, string Label, int? DepotId, int ZipCount)>`. On NZ `Zone` is
-  the zone number and `Label` the `BulkZonePostcode.Name`; on US `Zone` is `ZoneNameID` (D1), `Label`
-  the zone name, `DepotId` the `LocationID`.
+  `TerritoryService`), build the list from `ZoneZip` grouped by `(ZoneName.LocationID, ZoneNumber)`
+  instead of `BulkZonePostcode`. The DTO gains a labelled shape next to `ZoneNumbers` (keep
+  `ZoneNumbers` for NZ callers):
+  `Zones: List<ZoneOptionDto(int Zone, string Label, int? DepotId, int ZipCount, string GroupLabel)>`.
+  On NZ `Zone` is the zone number and `Label` the `BulkZonePostcode.Name`; on US `Zone` is the
+  `ZoneNumber` (D1), `Label` the zone name(s) carrying that number at that depot (two names joined
+  with " + " when a depot has two zones on one number), `DepotId` the `LocationID`, `GroupLabel` the
+  `ZoneGroup` name (2.1). Rows with `ZoneNumber` NULL are not offered.
 - `ChainBuilder.tsx` (`:834`, `:1236`): render the picker from `Zones` when non-empty. Filter to the
-  leg's depot (`DepotId = the leg's region`); show zones with no depot greyed with "no depot set"
-  rather than hiding them, so the operator learns why. Chip label = zone name, with the ZIP count,
-  listed under the zone's `ZoneGroup` name as a heading (2.1), so pricing zones and coverage zones
-  read as two families. `ZoneOptionDto` gains `string GroupLabel` (null on NZ).
-- Save path unchanged: `req.Zones[{ zone: ZoneNameID, active }]` to `BulkZoneSchedule`. Null still
-  means leave alone (F7).
+  leg's depot. A number already ticked on the leg that has no zone at that depot is shown greyed with
+  "no zone numbered N at this depot" rather than hidden, so the operator sees why it never matches
+  (3f Zones = 0). Chip label = zone name(s), with the ZIP count, listed under the `ZoneGroup` heading
+  so pricing zones and coverage zones read as two families.
+- Save path unchanged: `req.Zones[{ zone: ZoneNumber, active }]` to `BulkZoneSchedule`. Null still
+  means leave alone (F7). Existing ticks are untouched and now display with their names.
 - `ScheduleDetailModal` Coverage tab: on US paint the ticked zones' ZIPs from `ZoneZip` plus the bound
   ZIPs, the same union the SQL applies. `ScheduleCoverageMap` already draws US polygons bound to
   zone names (`BindPolygonsModal`); where a zone has none, list the ZIPs.
@@ -359,9 +464,11 @@ so 602 ZIPs across eight coverage zones is 602 form submissions.
   zones is normal (pricing zone plus coverage zone, 2.1). Store the ZIP exactly as the tenant's
   existing rows are stored (3b decides padded or not); never mix spellings within a tenant.
 - Rows written by the paste: `ZoneNameID` = the zone, `Zip` as above, `ApplyCongestion = 0`,
-  `ClientID` from an optional request field (default NULL), `ZoneNumber` NULL unless 3b says OTG
-  keeps it one-to-one with the zone, `ZoneZipGroupID` NULL. These are the 2.1 rules; the paste never
-  writes a congestion flag.
+  `ClientID` from an optional request field (default NULL), **`ZoneNumber` required [27 Oct]**: the
+  request carries `zoneNumber`, prefilled from the zone's existing rows when they all agree, otherwise
+  typed, and the endpoint refuses a number that another zone at the same depot already uses unless the
+  caller passes `allowSharedNumber` (the depot 35 case is legitimate but must be deliberate).
+  `ZoneZipGroupID` NULL. These are the 2.1 rules; the paste never writes a congestion flag.
 - UI: a "+ paste ZIPs" box on the zone row in the Zone groups tab, same contract as 5.2
   (separators, 5-digit padding with a warning, de-duplicate), result list added / already here /
   ignored.
@@ -378,16 +485,20 @@ Replaces the rollout in Dane's report. Ruth's file: 602 ZIPs, eight distinct wee
    only whether Cheetah has the deploy). Zone 40 keeps the 602 ZIPs and the $120 / $150 lanes; it is
    the pricing zone and is never ticked on a schedule.
 2. Create a zone group "KC coverage" (2.1), then eight coverage zones in it under Kansas City, one per
-   weekday pattern ("KC Mon+Thu", "KC Fri", ...), and paste each pattern's ZIPs (5.3). 602 rows once,
-   all with the congestion flag off. Hold back the 118 ZIPs Dane listed (116 "DOS NOT ON FILE",
-   64429 / 64430 with no territory, 65333 with no day) until Hub Group answers.
+   weekday pattern ("KC Mon+Thu", "KC Fri", ...), each with a zone number not yet used at Kansas City
+   (3c on Cheetah says which are free; 1 to 8 if none are), and paste each pattern's ZIPs (5.3). 602
+   rows once, all with the congestion flag off. Hold back the 118 ZIPs Dane listed (116 "DOS NOT ON
+   FILE", 64429 / 64430 with no territory, 65333 with no day) until Hub Group answers.
 3. Five schedules, Monday to Friday, 07:00 to 20:00, region Kansas City, origin Depot, linked to
    Hub Group (client-specific; the 6.1 fix is on master). Speed left as "any" so one schedule serves
    both 418 and 419 (`t1.SpeedID = s.SpeedId OR s.SpeedId IS NULL`), or ten schedules if ops prefer
    one per speed. On each schedule's Delivery leg tick every pattern zone whose pattern includes that
    weekday.
 4. `UseSchedules = 1` on both Hub Group speeds; `ZoneRated` stays 0 (3d).
-5. Quotes only, no bookings: run section 7 live. A ZIP that changes days later is one move between
+5. **[27 Oct]** `tblSetting.ScheduleCoverageEnabled = 1` on Cheetah (Kerran, confirm-then-write; one
+   row). Cheetah is the first tenant switched on. OTG and Medical Couriers stay off until their 4.5
+   pass-2 diff has been reviewed with their ops (M6).
+6. Quotes only, no bookings: run section 7 live. A ZIP that changes days later is one move between
    pattern zones.
 
 ---
@@ -406,9 +517,12 @@ Cheetah data: pickup 1200 Main St, Grandview, MO 64030. Customer Hub Group (84).
 | 6 | schedule with no ticks, one bound ZIP 65201 | 65201 / 63501 | offered / not offered |
 | 7 | ticked zone plus a bound ZIP outside it | the bound ZIP | offered (union, not intersection) |
 | 8 | ticked zone whose depot is NULL | a ZIP in it | no line, and the picker showed the zone greyed |
-| 9 | ZIP stored as "07030" on a test zone, OTG staging | quote to 07030 | matches (both spellings) |
+| 9 | **[27 Oct] moved to open point 3.** The depot lookup in front of the coverage sets is unpadded and returns early for a padded ZIP (Kevin, live body), so a padded-ZIP quote cannot reach this change. 4.1 keeps both spellings so it works once that item lands | | |
 | 10 | `UseSchedules = 0` on the client speed | any | on-demand lines only, as today |
 | 11 | client-specific `ZoneZip` row (`ClientID` = another client) in the ticked zone | quote for Hub Group | not matched |
+| 12 | **[27 Oct]** `ScheduleCoverageEnabled = 0`, schedule with ticks | any ZIP under its depot | identical to before the change (4.5 pass 1) |
+| 13 | **[27 Oct]** two zones at one depot numbered 1 (Medical depot 35 shape), schedule ticks 1 | a ZIP in either zone | offered (union) |
+| 14 | **[27 Oct]** Medical Couriers staging, setting on, client 1, speed 421, 89301 to 90620 | quote | the same 5 schedules as before, or the 4.5 pass-2 diff names the tick that removed one |
 
 Part 2 tests from Dane's table (no undated line, API booking refused, hybrid customers) belong to the
 Part 2 spec, not this one.
@@ -431,6 +545,10 @@ Part 2 spec, not this one.
 - Polygons as US coverage (`tblSchedulePolygon`, `BulkRunPolygonZip`): the NZ polygon fallback only
   fills the depot lookup when the setting is on; no US polygon coverage in this change.
 - Zip Groups (`ZoneZipGroupID`) on US.
+- **[27 Oct]** Converting existing ticks to `ZoneName` ids, and cleaning the seed's ambiguous,
+  unresolvable and orphan ticks. Nothing is converted (D1); orphans are inert and stay.
+- **[27 Oct]** Turning the setting on for OTG or Medical Couriers. That is a per-tenant decision after
+  their 4.5 pass-2 review, not part of the build.
 
 ---
 
@@ -438,11 +556,12 @@ Part 2 spec, not this one.
 
 | # | Point | Owner |
 |---|---|---|
-| 1 | 3a to 3e on OTG and Cheetah production, pasted on the card | Kerran (prod write access, SELECT only here) or Kevin |
-| 2 | Whether `ZoneNumber` is one-to-one with `ZoneNameID` on OTG (D1 holds either way) | from 3b |
-| 3 | NJ leading-zero ZIPs: if 3b shows padded rows, raise the existing depot-lookup miss as its own item | Kevin |
+| 1 | 3a to 3f on OTG and Cheetah production, pasted on the card (Kevin's login is refused on both; Medical Couriers done 27 Oct) | Kerran (SELECT only) |
+| 2 | **[27 Oct]** Which tenants a dbmigrationsv2 migration and a routed-operations deploy reach. The job list is in the shared ci-templates project Kevin cannot read; dbmigrationsv2 holds a medical production value file, so Medical Couriers is assumed in. This absorbs the 24 Oct question about Cheetah auto-deploying since `bf51541` | Garry or George |
+| 3 | NJ leading-zero ZIPs: the depot lookup in front of this change is unpadded and returns early (Kevin, live body). Own item; acceptance test 9 moves there | Kevin |
 | 4 | Hub Group's booking channel, which decides whether Part 2 blocks go-live | Dane |
-| 5 | Cheetah routed-operations and dbmigrationsv2 production deploys: both auto-deploy since `bf51541`? Confirm from the pipeline before telling Dane the UI is there | Steve / Garry |
+| 5 | **[27 Oct]** Kevin's live Medical case (client 1, speed 421, 89301 to 90620, 5 schedules today) re-run on Medical staging under the number reading with the setting on: still 5? | Kevin (M1) |
+| 6 | **[27 Oct]** Was Cheetah stood up from the DFRNT seed? If so its 3a may carry the seed's 53 Medical schedules and 40 orphan ticks, and they need to be retired before Cheetah's switch is turned on | Kerran (3a) / George |
 
 ---
 
@@ -450,10 +569,10 @@ Part 2 spec, not this one.
 
 | | Title | Done when |
 |---|---|---|
-| M0 | Count-first queries and decisions | 3a to 3e results on the card; D1, the leading-zero handling and the 2.1 coverage-row rules confirmed against them |
-| M1 | Migration: coverage predicate in both US candidate blocks | Migration on an MR; 4.5 regression gate zero rows on OTG and Cheetah staging; tests 1 to 4, 9, 11 pass on staging via the function directly |
-| M2 | Leg zone picker lists US zones under the leg's depot; Coverage tab paints the union | A US schedule can tick a zone in Schedules NEW and the tick lands in `BulkZoneSchedule` as `ZoneNameID`; test 8 greyed state shown |
+| M0 | Count-first queries on every US tenant, and decisions | 3a to 3f on OTG, Cheetah and Medical Couriers on the card (Medical done 27 Oct); open points 2 and 6 answered |
+| M1 | Migration: tenant setting + coverage predicate in both US candidate blocks, number reading | Migration on an MR; 4.5 pass 1 zero rows on every US staging; pass 2 diff produced for Medical Couriers and test 14 answered; tests 1 to 4, 11 to 13 pass on staging via the function directly |
+| M2 | Leg zone picker shows labelled zone numbers under the leg's depot; Coverage tab paints the union | On Medical Couriers staging the 77 existing ticks display with zone names; a new tick lands in `BulkZoneSchedule` as a `ZoneNumber`; a number with no zone at the depot shows greyed |
 | M3 | Paste on the schedule postcode picker; zero-padded display | 100 pasted ZIPs bind in one save; unknown ZIPs warned |
-| M4 | ZIP paste into a US zone (depot editor already exists) | `POST us/zone-names/{id}/zips` live with the 2.1 row rules; "+ paste ZIPs" on the Zone groups tab; a coverage group with eight zones built on Cheetah staging from Ruth's file in one sitting |
-| M5 | Staging acceptance | Section 7 table green on Cheetah staging, quotes only |
-| M6 | Production: OTG and Cheetah | Deployed; 3a re-run shows only the intended Cheetah schedules limited; Dane runs section 6 and the live quote checks |
+| M4 | ZIP paste into a US zone with its zone number (depot editor already exists) | `POST us/zone-names/{id}/zips` live with the 2.1 row rules and the shared-number guard; "+ paste ZIPs" on the Zone groups tab; a coverage group with eight numbered zones built on Cheetah staging from Ruth's file in one sitting |
+| M5 | Staging acceptance | Section 7 table green on Cheetah staging with the setting on, quotes only |
+| M6 | Production, per tenant | Deployed everywhere with the setting off (no behaviour change); Cheetah switched on and Dane runs section 6; OTG and Medical Couriers switched on only after their pass-2 diff is reviewed with their ops |
