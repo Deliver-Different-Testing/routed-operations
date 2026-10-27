@@ -156,6 +156,27 @@ export interface ZoneGroupUpsertBody {
   clearListAreaId: number | null;
 }
 
+/** Bulk ZIP add into one US zone. */
+export interface ZoneZipPasteBody {
+  /** Pasted as typed. The server splits, pads and de-duplicates, so the
+   *  stored spelling is decided in one place rather than per caller. */
+  zips: string[];
+  /** Required: it is the key a schedule leg tick resolves by, so a row
+   *  without one can never be reached. */
+  zoneNumber: number;
+  clientId?: number | null;
+  /** Two zones at one depot sharing a number means a tick covers both. It is
+   *  legitimate but widens coverage, so it has to be asked for. */
+  allowSharedNumber?: boolean;
+}
+export interface ZoneZipPasteResult {
+  added: string[];
+  alreadyInThisZone: string[];
+  /** Returned verbatim so the operator can see what in their paste was not a
+   *  ZIP, rather than guessing at a count. */
+  ignored: string[];
+}
+
 /** A polygon bound (or bindable) to a zone name / postcode group.
  *  Response shape from /api/territory/{zone|group}/{id}/polygons. */
 export interface BoundPolygon {
@@ -233,6 +254,10 @@ export const territoryService = {
     write<ZoneNameRow, ZoneNameUpsertBody>('/territory/us/zone-names', 'POST', b),
   updateZoneName: (id: number, b: ZoneNameUpsertBody) =>
     write<ZoneNameRow, ZoneNameUpsertBody>(`/territory/us/zone-names/${id}`, 'PUT', b),
+  /** Add many ZIPs to one zone in a single call. The Zones tab adds one per
+   *  request, which is 602 submissions for Cheetah's Hub Group file. */
+  pasteZoneZips: (id: number, b: ZoneZipPasteBody) =>
+    write<ZoneZipPasteResult, ZoneZipPasteBody>(`/territory/us/zone-names/${id}/zips`, 'POST', b),
   removeZoneName: (id: number) =>
     write<string, undefined>(`/territory/us/zone-names/${id}`, 'DELETE'),
 

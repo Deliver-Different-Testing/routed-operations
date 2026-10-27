@@ -55,15 +55,17 @@ public class ScheduleServiceTests : IDisposable
     {
         var (opts, connection) = CockpitTestHarness.NewSqliteOptions();
         _connections.Add(connection);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
         converter = NewConverter();
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
             cache,
-            converter);
+            converter,
+            accessor);
     }
 
     /// <summary>Constructs the service AND hands back the shared
@@ -93,14 +95,16 @@ public class ScheduleServiceTests : IDisposable
     {
         opts = CockpitTestHarness.NewInMemoryOptions();
         seed = CockpitTestHarness.Context(opts);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
             cache,
-            NewConverter());
+            NewConverter(),
+            accessor);
     }
 
     private ScheduleService NewSvcWithSeed(
@@ -111,14 +115,16 @@ public class ScheduleServiceTests : IDisposable
         _connections.Add(connection);
         opts = sqliteOpts;
         seed = CockpitTestHarness.Context(opts);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
             cache,
-            NewConverter());
+            NewConverter(),
+            accessor);
     }
 
     private static ScheduleGroupUpsertRequest ValidRequest() => new()

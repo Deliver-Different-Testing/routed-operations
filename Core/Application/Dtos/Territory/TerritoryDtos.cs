@@ -43,6 +43,26 @@ public record PostcodeGroupDto(
 /// <summary>One zone inside a group, with how many members carry it.
 /// The label comes from BulkZonePostcode.Name on NZ (denormalised onto
 /// every member row) and from ZoneName.ZoneName1 on US.</summary>
+/// <summary>
+/// What a ZIP paste into a US zone did, split so the operator can see the
+/// difference between work done and work skipped. A paste of Ruth's Cheetah
+/// file is 602 ZIPs across eight zones, so "it worked" is not a useful
+/// answer on its own.
+/// </summary>
+/// <param name="Added">ZIPs now in this zone that were not before.</param>
+/// <param name="AlreadyInThisZone">
+/// Already present, so not written again. Not an error: re-pasting a
+/// corrected list is the normal way to fix one.
+/// </param>
+/// <param name="Ignored">
+/// Entries that could not be read as a US ZIP, returned verbatim so the
+/// operator can see what was in their paste rather than guessing.
+/// </param>
+public record ZoneZipPasteResultDto(
+    List<string> Added,
+    List<string> AlreadyInThisZone,
+    List<string> Ignored);
+
 public record PostcodeGroupZoneDto(
     int Zone,
     string Label,

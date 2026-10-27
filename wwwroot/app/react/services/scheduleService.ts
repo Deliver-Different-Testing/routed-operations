@@ -277,6 +277,28 @@ export interface LinehaulRunLookup {
   courierId: number | null;
 }
 export interface StateOption { id: number; label: string; }
+
+/**
+ * A tickable zone on a schedule leg, labelled and scoped to a depot.
+ *
+ * `zone` is the value that persists, and it is a zone NUMBER on both
+ * tenants. `zoneNumbers` below is the bare list this replaces for the chain
+ * editor; it stays because the older schedule modal still reads it, and
+ * because it is the only thing that can show a number the tenant has ticked
+ * but that no longer resolves to a zone.
+ */
+export interface ZoneOption {
+  zone: number;
+  /** Zone name(s) on this number at this depot, joined with " + " when a
+   *  depot legitimately has two zones sharing a number. */
+  label: string;
+  depotId: number;
+  zipCount: number;
+  /** Zone group name, used as a heading so pricing zones and coverage zones
+   *  read as two families. Empty on NZ. */
+  groupLabel: string;
+}
+
 export interface ScheduleLookups {
   depots: LookupItem[];
   speeds: LookupItem[];
@@ -287,6 +309,7 @@ export interface ScheduleLookups {
   postcodeGroups: PostcodeGroupLookup[];
   linehaulRuns: LinehaulRunLookup[];
   zoneNumbers: number[];
+  zones: ZoneOption[];
   storageStates: StateOption[];
   deliveryStates: StateOption[];
   pickupBoxDiscounts: StateOption[];

@@ -225,6 +225,15 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     public async Task<IActionResult> DeleteZoneName(int id) =>
         await WrapVoid(() => svc.DeleteZoneNameAsync(id));
 
+    /// <summary>
+    /// Add many ZIPs to one US zone in a single call. The Zones tab adds one
+    /// per request, which is 602 submissions for Cheetah's Hub Group file.
+    /// </summary>
+    [HttpPost("us/zone-names/{id:int}/zips")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> PasteZoneZips(int id, [FromBody] ZoneZipPasteRequest req) =>
+        await Wrap(() => svc.PasteZoneZipsAsync(id, req));
+
     // ─── ZONE GROUP WRITES (US) ────────────────────────────────────────────
 
     [HttpPost("us/zone-groups")]
