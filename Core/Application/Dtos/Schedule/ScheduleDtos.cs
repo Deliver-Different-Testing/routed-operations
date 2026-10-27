@@ -454,11 +454,50 @@ public record ScheduleLookupsDto(
     List<PostcodeGroupLookupDto> PostcodeGroups,
     List<LinehaulRunDto> LinehaulRuns,
     List<int> ZoneNumbers,
+    List<ZoneOptionDto> Zones,
     List<StateOptionDto> StorageStates,
     List<StateOptionDto> DeliveryStates,
     List<StateOptionDto> PickupBoxDiscounts);
 
 public record LookupItemDto(int Id, string Name);
+
+/// <summary>
+/// One tickable zone on a schedule leg, labelled and scoped to a depot.
+///
+/// <para><see cref="ZoneNumbers"/> on <see cref="ScheduleLookupsDto"/> is the
+/// bare list this replaces for the chain editor, and it stays for the older
+/// schedule modal. The bare list is the reason the US picker was unusable:
+/// its source unions in <c>BulkZoneSchedule</c>, the very table the picker
+/// writes to, so on a tenant that has ever been ticked it offered naked
+/// numbers with no name and no depot filter. That is how Medical Couriers
+/// ended up with 77 ticks nobody could read back.</para>
+///
+/// <para><see cref="Zone"/> is the value that persists, and it is a zone
+/// NUMBER on both tenants: <c>BulkZonePostcode.Zone</c> on NZ and
+/// <c>ZoneZip.ZoneNumber</c> on US. That is decision D1 of the US coverage
+/// spec as reversed on 27 Oct, and it is the same key the availability
+/// function resolves a tick by.</para>
+/// </summary>
+/// <param name="Zone">The persisted tick value, a zone number.</param>
+/// <param name="Label">
+/// Zone name(s) carrying this number at this depot. Two names joined with
+/// " + " when a depot has two zones on one number, which is legitimate and
+/// means the tick covers both (Medical Couriers depot 35).
+/// </param>
+/// <param name="DepotId">
+/// The depot this number belongs to, so the picker can show only the numbers
+/// that can actually match the leg. Never null: a zone with no depot can
+/// never be offered by the availability function, so it is not offered here.
+/// </param>
+/// <param name="ZipCount">How many postcodes or ZIPs the number covers at
+/// that depot, so an operator can tell a populated zone from an empty one.</param>
+/// <param name="GroupLabel">
+/// The zone's group name, used as a heading so pricing zones and coverage
+/// zones read as two families (US coverage spec 2.1). Empty on NZ, which has
+/// no equivalent grouping.
+/// </param>
+public record ZoneOptionDto(int Zone, string Label, int DepotId, int ZipCount, string GroupLabel);
+
 public record DropOffLocationDto(int Id, string Name, int DepotId);
 public record PostcodeGroupLookupDto(int Id, string Name, int? DepotId, int? ClientId);
 public record LinehaulRunDto(

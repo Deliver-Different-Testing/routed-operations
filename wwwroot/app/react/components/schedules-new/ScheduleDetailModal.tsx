@@ -735,6 +735,7 @@ export function ScheduleDetailModal({
         id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
       })),
       zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+      zones: lookupsQuery.data?.zones ?? [],
       dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
     }),
     [lookupsQuery.data],
@@ -2065,6 +2066,7 @@ interface RouteTabProps {
     dropOffLocations: { id: number; name: string; depotId: number }[];
     linehaulRuns: { id: number; runName: string; fromDepotId: number | null; toDepotId: number | null }[];
     zoneNumbers: number[];
+    zones: { zone: number; label: string; depotId: number; zipCount: number; groupLabel: string }[];
   };
   advanced: {
     parentSpeedId: number | null;
@@ -2405,11 +2407,27 @@ function CoverageTab({
           dropdown above). Resolver union: schedule covers a postcode if it's in the
           bound group OR in this list.
         </p>
-        <p className="text-xs text-text-muted mb-3">
-          <strong>Active zones and bound postcodes limit where this schedule can be
-          booked, for every speed</strong>, not only zone-rated ones. A schedule with
-          no active zones and no bound postcodes stays open to its whole depot area.
-        </p>
+        {/* Tenant-split on 27 Oct. The NZ sentence was shown on both tenants
+            and is false on US: nothing there reads the ticks or the bound
+            ZIPs today, and the US coverage spec puts the rule behind
+            tblSetting.ScheduleCoverageEnabled, off by default. Saying "this
+            limits where the schedule can be booked" on a US tenant with the
+            setting off is the tab making the same promise it already broke
+            once for Hyper, in the other direction. */}
+        {isUsTenant ? (
+          <p className="text-xs text-text-muted mb-3">
+            On this tenant active zones and bound zips are <strong>saved but not yet
+            enforced</strong>. They start limiting where the schedule can be booked
+            once schedule coverage is switched on for the tenant, and a schedule with
+            neither stays open to its whole depot area either way.
+          </p>
+        ) : (
+          <p className="text-xs text-text-muted mb-3">
+            <strong>Active zones and bound postcodes limit where this schedule can be
+            booked, for every speed</strong>, not only zone-rated ones. A schedule with
+            no active zones and no bound postcodes stays open to its whole depot area.
+          </p>
+        )}
         <PostcodeLookupInput
           selected={postcodeIds}
           onChange={onPostcodeIdsChange}

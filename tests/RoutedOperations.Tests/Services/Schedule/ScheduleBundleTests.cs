@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,14 +36,16 @@ public class ScheduleBundleTests
     {
         var opts = CockpitTestHarness.NewInMemoryOptions();
         seed = CockpitTestHarness.Context(opts);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
             cache,
-            Substitute.For<IScheduleConverter>());
+            Substitute.For<IScheduleConverter>(),
+            accessor);
     }
 
     private static void Header(DynamicDespatchDbContext seed, int id, string name, bool isDefault)
