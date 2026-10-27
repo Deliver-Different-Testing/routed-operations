@@ -34,6 +34,40 @@ public class UsZipZoneUpsertRequest
     public int? ClientId { get; set; }
 }
 
+/// <summary>
+/// Add many ZIPs to one US zone in a single call.
+///
+/// The Zones tab adds one ZIP per request, which is 602 form submissions for
+/// Cheetah's Hub Group file, so this is the bulk path (US coverage spec 5.3).
+/// </summary>
+public class ZoneZipPasteRequest
+{
+    /// <summary>
+    /// Pasted ZIPs. Accepted as typed, in any of the separators the postcode
+    /// pickers accept, and normalised server-side so the stored spelling is
+    /// decided in one place rather than by whichever client called.
+    /// </summary>
+    [Required] public List<string> Zips { get; set; } = new();
+
+    /// <summary>
+    /// Required, and it is the key a schedule leg tick resolves by (decision
+    /// D1 of the coverage spec, as reversed on 27 Oct). A coverage row with no
+    /// number can never be reached by a tick, so there is no useful default.
+    /// </summary>
+    [Required, Range(1, int.MaxValue)] public int ZoneNumber { get; set; }
+
+    /// <summary>Only when the zone exists for one client's schedules.
+    /// NULL means every client, which is the normal case.</summary>
+    public int? ClientId { get; set; }
+
+    /// <summary>
+    /// Two zones at one depot sharing a number is legitimate and means the
+    /// tick covers both (Medical Couriers depot 35), but it widens coverage,
+    /// so it has to be asked for rather than happen by accident.
+    /// </summary>
+    public bool AllowSharedNumber { get; set; }
+}
+
 public class ZoneNameUpsertRequest
 {
     [Required, StringLength(200)] public string Name { get; set; } = string.Empty;

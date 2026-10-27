@@ -1,4 +1,6 @@
 ﻿using System.Diagnostics;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
@@ -41,9 +43,26 @@ public class ScheduleService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     ILogger<ScheduleService> logger,
     TenantScopedCache cache,
-    IScheduleConverter converter)
+    IScheduleConverter converter,
+    IHttpContextAccessor httpContextAccessor)
     : BaseService(contextFactory)
 {
+    /// <summary>
+    /// Which tenant this caller is on, read from the CountryCode claim the
+    /// Hub cookie carries. Literal "US" is the US path and anything else,
+    /// including a missing claim, is NZ, matching TerritoryService and
+    /// ZoneLookupService rather than inventing a third rule.
+    ///
+    /// Note the claim is the only source worth reading: tblSetting.CountryCode
+    /// is NULL on both US tenants (measured 27 Oct), so a database-side test
+    /// would answer NZ for them.
+    /// </summary>
+    private bool IsUsTenant() =>
+        string.Equals(
+            httpContextAccessor.HttpContext?.User.FindFirstValue("CountryCode"),
+            "US",
+            StringComparison.OrdinalIgnoreCase);
+
     private readonly ILogger<ScheduleService> _logger = logger;
 
     // Collapses a saved schedule onto its detail row. See IScheduleConverter
@@ -1202,6 +1221,33 @@ public class ScheduleService(
             .OrderBy(z => z)
             .ToListAsync();
 
+        // Labelled, depot-scoped zones for the chain editor (US coverage spec
+        // 5.1). zoneNumbers above stays exactly as it was, both because the
+        // older schedule modal reads it and because it is the only thing that
+        // can offer a number the tenant has ticked but can no longer resolve.
+        //
+        // It is also why this exists. That list unions BulkZoneSchedule, the
+        // table the picker WRITES to, so it is self-feeding: one tick and the
+        // number is offered forever, with no name, no depot and no way to see
+        // what it covers. Medical Couriers has 77 ticks made that way.
+        //
+        // US ONLY, deliberately. The coverage spec is a US change and NZ was
+        // left alone (Kevin, 27 Oct): an NZ leg keeps offering every zone
+        // number the tenant uses, unfiltered, exactly as it always has.
+        // Filtering NZ would have been defensible, since its availability
+        // function tests p.DepotId = s.Region too, but it is a visible change
+        // nobody asked for - measured on Urgent staging, 545 of 24,068 active
+        // ticks would have started rendering greyed.
+        //
+        // An empty list here is the signal the chain editor falls back on, so
+        // NZ needs no tenant knowledge of its own.
+        //
+        // Grouping and counting happen in SQL: the biggest US tenant has
+        // 4,437 ZoneZip rows and this runs every time the modal opens.
+        var zones = IsUsTenant()
+            ? await BuildUsZoneOptionsAsync()
+            : new List<ZoneOptionDto>();
+
         // Labels for the legacy int enum. Source of truth:
         // C:\Gitlab\ClientManager_Root\ClientManager\wwwroot\app\components\schedules\schedulesControl.js:5-7
         // Ids match the persisted values in tblBulkRunSchedule.StorageState / .DeliveryState /
@@ -1229,8 +1275,75 @@ public class ScheduleService(
 
         return new ScheduleLookupsDto(
             depots, speeds, couriers, clients, dropOffs, postcodeGroups, linehaulRuns,
-            zoneNumbers, storageStates, deliveryStates, pickupBoxDiscounts);
+            zoneNumbers, zones, storageStates, deliveryStates, pickupBoxDiscounts);
     }
+
+    /// <summary>
+    /// US tickable zones: one entry per (depot, zone number). A zone with no
+    /// depot is left out because the availability function joins
+    /// ZoneName.LocationID to the schedule's region, so it could never match;
+    /// a ZIP row with no number is left out because the number IS the key a
+    /// tick resolves by.
+    ///
+    /// Two zones at one depot may share a number and that is legitimate: the
+    /// tick then covers both, so both names appear in the label joined with
+    /// " + ". Medical Couriers depot 35 has Sacramento and SMF on number 1.
+    /// </summary>
+    private async Task<List<ZoneOptionDto>> BuildUsZoneOptionsAsync()
+    {
+        var rows = Context.ZoneZips.AsNoTracking()
+            .Where(z => z.ZoneNumber != null
+                     && z.ZoneName != null
+                     && z.ZoneName.LocationId != null);
+
+        // Counted in SQL rather than by pulling every ZIP row back.
+        var counts = await rows
+            .GroupBy(z => new { Depot = z.ZoneName.LocationId!.Value, Zone = z.ZoneNumber!.Value })
+            .Select(g => new { g.Key.Depot, g.Key.Zone, Zips = g.Count() })
+            .ToListAsync();
+
+        // One row per zone that carries a number, not per ZIP.
+        var named = await rows
+            .Select(z => new
+            {
+                Depot = z.ZoneName.LocationId!.Value,
+                Zone = z.ZoneNumber!.Value,
+                ZoneName = z.ZoneName.ZoneName1,
+                Group = z.ZoneName.ZoneGroup != null ? z.ZoneName.ZoneGroup.Name : null,
+            })
+            .Distinct()
+            .ToListAsync();
+
+        var labels = named
+            .GroupBy(r => new { r.Depot, r.Zone })
+            .ToDictionary(
+                g => (g.Key.Depot, g.Key.Zone),
+                g => (
+                    Label: Join(g.Select(x => x.ZoneName)),
+                    Group: Join(g.Select(x => x.Group))));
+
+        return counts
+            .Select(c =>
+            {
+                labels.TryGetValue((c.Depot, c.Zone), out var l);
+                return new ZoneOptionDto(
+                    c.Zone,
+                    string.IsNullOrWhiteSpace(l.Label) ? $"Zone {c.Zone}" : l.Label,
+                    c.Depot,
+                    c.Zips,
+                    l.Group ?? "");
+            })
+            .OrderBy(z => z.DepotId).ThenBy(z => z.Zone)
+            .ToList();
+
+        static string Join(IEnumerable<string> values) =>
+            string.Join(" + ", values
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v.Trim())
+                .Distinct()
+                .OrderBy(v => v));
+    }
+
 
     // ─── WRITES ────────────────────────────────────────────────────────────
 

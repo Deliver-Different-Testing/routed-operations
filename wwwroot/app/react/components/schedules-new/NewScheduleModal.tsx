@@ -577,6 +577,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
                 })),
                 zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+                zones: lookupsQuery.data?.zones ?? [],
                 dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
                 pickupBoxDiscounts: lookupsQuery.data?.pickupBoxDiscounts ?? [],
               }}

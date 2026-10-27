@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useAuth } from '../../context/AuthContext';
@@ -13,6 +13,7 @@ import {
   type PostcodeGroupUpsertBody,
   type ZoneNameUpsertBody,
   type ZoneGroupUpsertBody,
+  type ZoneZipPasteResult,
 } from '../../services/territoryService';
 import { RowActionsMenu } from '../../components/tenant/RowActionsMenu';
 import { Modal } from '../../components/common/Modal';
@@ -43,6 +44,9 @@ export function ZoneGroupsTab() {
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
   const [editingZn, setEditingZn] = useState<ZoneNameRow | 'new' | null>(null);
   const [editingZg, setEditingZg] = useState<ZoneGroupRow | 'new' | null>(null);
+  // Bulk ZIP add. The Zones tab adds one per request, which is 602 form
+  // submissions for Cheetah's Hub Group file (US coverage spec 5.3).
+  const [pastingZips, setPastingZips] = useState<ZoneNameRow | null>(null);
   // Row click opens the DETAIL view; the small identity editor stays on
   // the kebab menu. Clicking a row used to open the 3-field editor, which
   // told an operator nothing about what the group was actually doing.
@@ -289,6 +293,7 @@ export function ZoneGroupsTab() {
                   <RowActionsMenu
                     actions={[
                       { label: 'Edit', onClick: () => setEditingZn(n) },
+                      { label: 'Paste ZIPs', onClick: () => setPastingZips(n) },
                       { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'zoneName', id: n.id, label: n.name ?? '' }) },
                       { label: 'Delete', onClick: () => deleteZn(n), danger: true },
                     ]}
@@ -343,6 +348,14 @@ export function ZoneGroupsTab() {
           row={editingZg === 'new' ? null : editingZg}
           onClose={() => setEditingZg(null)}
           onSaved={async () => { setEditingZg(null); await load(); }}
+        />
+      )}
+      {pastingZips !== null && (
+        <ZoneZipPasteModal
+          row={pastingZips}
+          bootstrap={bootstrap}
+          onClose={() => setPastingZips(null)}
+          onSaved={async () => { await load(); }}
         />
       )}
       {bindingTarget !== null && (
@@ -557,5 +570,148 @@ function Fld({ label, required, children }: { label: string; required?: boolean;
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * Bulk ZIP add into one US zone (US coverage spec 5.3).
+ *
+ * The Zones tab adds one ZIP per request, so Ruth's Cheetah file is 602 form
+ * submissions across eight zones. This is the one-sitting path.
+ *
+ * The zone number is required and is not a formality: it is the key a
+ * schedule leg tick resolves by, so a row written without one can never be
+ * reached by a tick. It prefills when the zone's existing rows all agree.
+ */
+function ZoneZipPasteModal({
+  row, bootstrap, onClose, onSaved,
+}: {
+  row: ZoneNameRow;
+  bootstrap: TerritoryBootstrap | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  // Prefill only when every existing row of this zone carries the same
+  // number. Two different numbers on one zone is a finding worth seeing
+  // rather than papering over with a guess.
+  const existingNumbers = Array.from(new Set(
+    (bootstrap?.usZipZones ?? [])
+      .filter((z) => z.zoneNameId === row.id && z.zoneNumber != null)
+      .map((z) => z.zoneNumber as number),
+  ));
+  const [text, setText] = useState('');
+  const [zoneNumber, setZoneNumber] = useState<string>(
+    existingNumbers.length === 1 ? String(existingNumbers[0]) : '',
+  );
+  const [allowShared, setAllowShared] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<ZoneZipPasteResult | null>(null);
+
+  const submit = async () => {
+    const n = Number(zoneNumber);
+    if (!Number.isInteger(n) || n <= 0) {
+      toast.show('A zone number is required.', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      // Sent as typed. The server splits, pads and de-duplicates so the
+      // stored spelling is decided in one place.
+      const res = await territoryService.pasteZoneZips(row.id, {
+        zips: [text],
+        zoneNumber: n,
+        allowSharedNumber: allowShared,
+      });
+      setResult(res.response);
+      toast.show(
+        `${res.response.added.length} zip${res.response.added.length === 1 ? '' : 's'} added`,
+        'success',
+      );
+      onSaved();
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={`Paste ZIPs into "${row.name}"`}
+      size="2xl"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="neutral" onClick={onClose} disabled={saving}>Close</Button>
+          <Button variant="secondary" data-primary="true" onClick={submit} disabled={saving}>
+            {saving ? 'Adding...' : 'Add ZIPs'}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        <Fld label="Zone number" required>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            value={zoneNumber}
+            onChange={(e) => setZoneNumber(e.target.value)}
+            placeholder={existingNumbers.length > 1
+              ? `This zone already uses ${existingNumbers.join(', ')}`
+              : 'The number a schedule leg ticks'}
+          />
+          <p className="text-[11px] text-text-muted mt-1">
+            {existingNumbers.length === 1
+              ? `Prefilled from this zone's existing rows.`
+              : existingNumbers.length > 1
+                ? `This zone's rows carry more than one number (${existingNumbers.join(', ')}), so there is nothing to prefill.`
+                : 'This zone has no numbered rows yet.'}
+          </p>
+        </Fld>
+
+        <Fld label="ZIPs">
+          <textarea
+            className={INPUT_CLASS + ' h-32 font-mono'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={'64030, 65201\n63501 64429'}
+          />
+          <p className="text-[11px] text-text-muted mt-1">
+            Commas, spaces, semicolons or new lines. Four digits are padded to five,
+            duplicates are dropped, and a ZIP already in another zone is added here as
+            well rather than moved.
+          </p>
+        </Fld>
+
+        <label className="flex items-start gap-2 text-[11px] text-text-secondary">
+          <input
+            type="checkbox"
+            checked={allowShared}
+            onChange={(e) => setAllowShared(e.target.checked)}
+            className="mt-0.5 accent-brand-cyan"
+          />
+          <span>
+            Allow a number another zone at this depot already uses. A schedule ticking it
+            would then serve both zones, which is legitimate but widens coverage, so it is
+            off unless you ask for it.
+          </span>
+        </label>
+
+        {result && (
+          <div className="rounded-lg border border-border p-2 text-[11px] space-y-1">
+            <div className="text-text-primary font-semibold">Result</div>
+            <div>Added: {result.added.length === 0 ? 'none' : result.added.join(', ')}</div>
+            <div className="text-text-muted">
+              Already in this zone: {result.alreadyInThisZone.length === 0
+                ? 'none' : result.alreadyInThisZone.join(', ')}
+            </div>
+            {result.ignored.length > 0 && (
+              <div className="text-brand-orange">
+                Not a ZIP, so skipped: {result.ignored.join(', ')}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
