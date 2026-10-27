@@ -488,6 +488,126 @@ public class TerritoryService(
 
     // ─── US ZIP ZONE WRITES ────────────────────────────────────────────────
 
+    /// <summary>
+    /// Add many ZIPs to one US zone in a single call (US coverage spec 5.3).
+    ///
+    /// The single-row endpoint means 602 form submissions for Cheetah's Hub
+    /// Group file, which is why this exists.
+    ///
+    /// The row rules come from section 2.1 and exist so a coverage zone never
+    /// moves a price. Three things the rater reads off ZoneZip ignore which
+    /// zone the row belongs to:
+    ///   * the congestion flag, so these rows are written with it off;
+    ///   * "only in zips" distance rates, which turn on a ZIP having ANY zone
+    ///     row (there are none on OTG or Cheetah today, measured 27 Oct);
+    ///   * the depot lookup, which takes every zone's depot, and that is the
+    ///     intended meaning of a depot on a zone rather than a side effect.
+    ///
+    /// A ZIP already in another zone is added here as well, not moved: on US a
+    /// ZIP sitting in one pricing zone plus any number of coverage zones is
+    /// the normal shape, and the rater matches lanes against the whole list.
+    /// </summary>
+    public async Task<ZoneZipPasteResultDto> PasteZoneZipsAsync(int zoneNameId, ZoneZipPasteRequest req)
+    {
+        var zone = await Context.ZoneNames.AsNoTracking()
+            .FirstOrDefaultAsync(z => z.ZoneNameId == zoneNameId)
+            ?? throw new InvalidOperationException("Zone name not found.");
+
+        if (req.ZoneNumber <= 0)
+            throw new InvalidOperationException("A zone number is required.");
+
+        // Spelling. Every US tenant measured on 27 Oct stores a 5-character
+        // ZIP with the leading zero kept: OTG 1,269 of 1,269, Cheetah 1,281 of
+        // 1,281, and the seed 4,420 of 4,427 (its 7 odd ones are 7-digit junk,
+        // not a shorter spelling). So padding to 5 is the convention, not a
+        // guess. If a tenant ever turns out to strip instead, mixing the two
+        // spellings would put one ZIP in different zones depending on how it
+        // was typed, so that case refuses rather than guessing.
+        var stripped = await Context.ZoneZips.AsNoTracking()
+            .Where(z => z.Zip != null && z.Zip.Length > 0 && z.Zip.Length < 5)
+            .Select(z => z.Zip)
+            .FirstOrDefaultAsync();
+        if (stripped != null)
+            throw new InvalidOperationException(
+                $"This tenant stores at least one ZIP unpadded (\"{stripped}\"). Adding padded rows "
+                + "would leave the same ZIP in different zones depending on its spelling, so the "
+                + "paste has stopped. Settle the tenant's spelling first.");
+
+        // The shared-number guard. Legitimate, but it widens what a tick
+        // covers, so it is opt-in rather than silent. A zone with no depot has
+        // no depot to collide at, and cannot be matched by the availability
+        // function either way.
+        if (!req.AllowSharedNumber && zone.LocationId != null)
+        {
+            var clash = await Context.ZoneZips.AsNoTracking()
+                .Where(z => z.ZoneNumber == req.ZoneNumber
+                         && z.ZoneNameId != zoneNameId
+                         && z.ZoneName != null
+                         && z.ZoneName.LocationId == zone.LocationId)
+                .Select(z => z.ZoneName.ZoneName1)
+                .Distinct()
+                .ToListAsync();
+
+            if (clash.Count > 0)
+                throw new InvalidOperationException(
+                    $"Zone number {req.ZoneNumber} is already used at this depot by "
+                    + $"{string.Join(", ", clash)}. A schedule ticking {req.ZoneNumber} would then "
+                    + "serve both zones. Pick an unused number, or resend with allowSharedNumber to "
+                    + "mean both.");
+        }
+
+        // Normalise once, server-side, so the stored spelling does not depend
+        // on which client called. Same separators as the postcode pickers.
+        var ignored = new List<string>();
+        var wanted = new List<string>();
+        foreach (var raw in (req.Zips ?? new List<string>())
+                     .SelectMany(s => (s ?? "").Split(
+                         new[] { ',', ' ', ';', '\t', '\n', '\r' },
+                         StringSplitOptions.RemoveEmptyEntries)))
+        {
+            var zip = raw.Trim();
+            if (zip.Length is > 0 and < 5 && zip.All(char.IsDigit)) zip = zip.PadLeft(5, '0');
+            if (zip.Length == 5 && zip.All(char.IsDigit))
+            {
+                if (!wanted.Contains(zip)) wanted.Add(zip);
+            }
+            else if (!ignored.Contains(raw.Trim()))
+            {
+                ignored.Add(raw.Trim());
+            }
+        }
+
+        var existing = await Context.ZoneZips.AsNoTracking()
+            .Where(z => z.ZoneNameId == zoneNameId)
+            .Select(z => z.Zip)
+            .ToListAsync();
+        var already = wanted.Where(z => existing.Contains(z)).ToList();
+        var toAdd = wanted.Where(z => !existing.Contains(z)).ToList();
+
+        if (toAdd.Count > 0)
+        {
+            var now = DateTime.UtcNow;
+            var who = CurrentUser();
+            Context.ZoneZips.AddRange(toAdd.Select(zip => new Domain.Despatch.ZoneZip
+            {
+                ZoneNameId = zoneNameId,
+                Zip = zip,
+                ZoneNumber = req.ZoneNumber,
+                // 2.1: a coverage row never adds a congestion charge.
+                ApplyCongestion = false,
+                ClientId = req.ClientId,
+                // Nothing on master reads ZoneZipGroupId and Zip Groups stay
+                // hidden on US, so it is left unset rather than invented.
+                ZoneZipGroupId = null,
+                Created = now,
+                CreatedBy = who,
+            }));
+            await Context.SaveChangesAsync();
+        }
+
+        return new ZoneZipPasteResultDto(toAdd, already, ignored);
+    }
+
     public async Task<UsZipZoneDto> CreateUsZipZoneAsync(UsZipZoneUpsertRequest req)
     {
         var entity = new Domain.Despatch.ZoneZip
@@ -499,6 +619,7 @@ public class TerritoryService(
             ApplyCongestion = req.ApplyCongestion,
             ClientId = req.ClientId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneZips.Add(entity);
         await Context.SaveChangesAsync();
@@ -517,6 +638,7 @@ public class TerritoryService(
         entity.ApplyCongestion = req.ApplyCongestion;
         entity.ClientId = req.ClientId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetUsZipZoneAsync(id);
     }
@@ -557,6 +679,7 @@ public class TerritoryService(
             ZoneGroupId = req.ZoneGroupId,
             LocationId = req.LocationId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneNames.Add(entity);
         await Context.SaveChangesAsync();
@@ -573,6 +696,7 @@ public class TerritoryService(
         entity.ZoneGroupId = req.ZoneGroupId;
         entity.LocationId = req.LocationId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetZoneNameAsync(id);
     }
@@ -607,6 +731,7 @@ public class TerritoryService(
             Name = req.Name.Trim(),
             ClearListAreaId = req.ClearListAreaId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneGroups.Add(entity);
         await Context.SaveChangesAsync();
@@ -622,6 +747,7 @@ public class TerritoryService(
         entity.Name = req.Name.Trim();
         entity.ClearListAreaId = req.ClearListAreaId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetZoneGroupAsync(id);
     }
@@ -647,6 +773,27 @@ public class TerritoryService(
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new InvalidOperationException("Name is required.");
+    }
+
+    /// <summary>
+    /// Who to stamp on a territory write, same resolution order as
+    /// RecurringRouteService.
+    ///
+    /// The US territory tables all carry CreatedBy / LastModifiedBy and
+    /// the legacy AdminManager screen fills them on every row: measured
+    /// 23 Oct on DFRNT_SEED_CR, 26 of 26 ZoneGroup, 77 of 77 ZoneName
+    /// and 4,427 of 4,427 ZoneZip rows had a name on them ("MikeS",
+    /// "kerrant", "seed"). Routed Operations was stamping the timestamp
+    /// and not the name, so anything created or edited here was the
+    /// only row on the tenant with no author - which is exactly the
+    /// row someone would want the author of.
+    /// </summary>
+    private string CurrentUser()
+    {
+        var user = httpContextAccessor.HttpContext?.User;
+        return user?.FindFirstValue(ClaimTypes.Email)
+            ?? user?.FindFirstValue(ClaimTypes.Name)
+            ?? "system";
     }
 
     /// <summary>Resolve the postcodes the Schedule editor map should

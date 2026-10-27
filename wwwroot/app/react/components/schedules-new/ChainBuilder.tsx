@@ -175,8 +175,23 @@ interface LookupCatalogue {
   postcodeGroups: LookupItem[];
   storageStates: Array<{ id: number; label: string }>;
   linehaulRuns: Array<{ id: number; runName: string; fromDepotId: number | null; toDepotId: number | null }>;
-  /** Available zone numbers this tenant supports. Optional. */
+  /** Available zone numbers this tenant supports. Optional.
+   *
+   *  Kept for the greyed state only. Its source unions BulkZoneSchedule, the
+   *  table the picker writes to, so it is self-feeding: a number stays on the
+   *  list forever once ticked, with no name and no depot. `zones` below is
+   *  what the picker renders. */
   zoneNumbers?: number[];
+  /** Tickable zones, labelled and scoped to a depot. `zone` is the value that
+   *  persists and is a zone number on both tenants. Optional so an older
+   *  cached lookups payload still renders. */
+  zones?: Array<{
+    zone: number;
+    label: string;
+    depotId: number;
+    zipCount: number;
+    groupLabel: string;
+  }>;
   /** Drop-off locations for the linehaul leg destination end. Optional. */
   dropOffLocations?: Array<{ id: number; name: string; depotId: number }>;
   /** Pickup box-discount options. Optional; rendered on the Collection
@@ -735,6 +750,150 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
 
 // ─── Inline editor per leg type ──────────────────────────────────────
 
+/**
+ * The zone picker on a leg, for both the Collection and the Delivery card.
+ *
+ * What persists is a zone NUMBER, and a number only means something next to a
+ * depot: the availability function resolves a tick by joining the zone's depot
+ * to the schedule's region. So the list is filtered to this leg's depot and
+ * each chip carries the zone's name and how many postcodes it covers.
+ *
+ * Numbers already ticked that have no zone at this depot are shown greyed
+ * rather than hidden. They are what the old bare-number picker produced: its
+ * source unions the tick table itself, so one tick put a number on the list
+ * forever with nothing to explain it. Hiding them would leave a tick the
+ * operator cannot see and cannot clear, while the function silently ignores
+ * it.
+ */
+export function LegZonePicker({
+  title,
+  depotId,
+  selected,
+  lookups,
+  onChange,
+  hideCheckbox,
+  numberPrefix = '',
+}: {
+  title: string;
+  depotId: number | null;
+  selected: number[];
+  lookups: LookupCatalogue;
+  onChange: (zones: number[]) => void;
+  /** The Delivery card renders chips without a visible checkbox. */
+  hideCheckbox?: boolean;
+  /** Prefix on the bare-number chips of the NZ list. The Delivery card has
+   *  always shown "Z1", the Collection card "1". */
+  numberPrefix?: string;
+}) {
+  const labelled = lookups.zones ?? [];
+
+  const toggle = (zone: number, on: boolean) =>
+    onChange(on ? [...selected, zone].sort((a, b) => a - b) : selected.filter((v) => v !== zone));
+
+  // NZ, unchanged. The labelled, depot-scoped list is a US change (coverage
+  // spec 5.1) and NZ was explicitly left alone, so the server sends no
+  // labelled zones there and this keeps the list it has always had: every
+  // zone number the tenant uses, on every leg, no filter. Filtering it would
+  // have been defensible but it is a visible change nobody asked for.
+  if (labelled.length === 0) {
+    const numbers = lookups.zoneNumbers ?? [];
+    if (numbers.length === 0) return null;
+    return (
+      <div className="block col-span-2 text-xs">
+        <div className="mb-1">{title}</div>
+        <div className="flex flex-wrap gap-1">
+          {numbers.map((z) => {
+            const checked = selected.includes(z);
+            return (
+              <label
+                key={z}
+                className={`px-2 py-1 border rounded cursor-pointer ${
+                  checked
+                    ? 'border-brand-cyan bg-brand-cyan/10 text-text-primary'
+                    : 'border-border text-text-muted'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => toggle(z, e.target.checked)}
+                  className={hideCheckbox ? 'hidden' : 'mr-1 accent-brand-cyan'}
+                />
+                {numberPrefix}{z}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const available = labelled.filter((z) => depotId != null && z.depotId === depotId);
+  const orphans = selected.filter((z) => !available.some((a) => a.zone === z));
+
+  if (available.length === 0 && orphans.length === 0) return null;
+
+  // One heading per zone group so pricing zones and coverage zones read as two
+  // families. NZ sends no group, which collapses to a single unlabelled block.
+  const groups = Array.from(new Set(available.map((z) => z.groupLabel ?? ''))).sort();
+
+  return (
+    <div className="block col-span-2 text-xs">
+      <div className="mb-1">{title}</div>
+      {groups.map((group) => (
+        <div key={group || '_'} className="mb-1">
+          {group && <div className="text-text-muted mb-0.5">{group}</div>}
+          <div className="flex flex-wrap gap-1">
+            {available
+              .filter((z) => (z.groupLabel ?? '') === group)
+              .map((z) => {
+                const checked = selected.includes(z.zone);
+                return (
+                  <label
+                    key={z.zone}
+                    title={`Zone ${z.zone} - ${z.zipCount} postcode${z.zipCount === 1 ? '' : 's'}`}
+                    className={`px-2 py-1 border rounded cursor-pointer ${
+                      checked
+                        ? 'border-brand-cyan bg-brand-cyan/10 text-text-primary'
+                        : 'border-border text-text-muted'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => toggle(z.zone, e.target.checked)}
+                      className={hideCheckbox ? 'hidden' : 'mr-1 accent-brand-cyan'}
+                    />
+                    {z.label} <span className="opacity-60">({z.zipCount})</span>
+                  </label>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+      {orphans.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {orphans.map((z) => (
+            <label
+              key={z}
+              title={`No zone numbered ${z} at this depot, so this tick never matches. Untick it to clear it.`}
+              className="px-2 py-1 border border-dashed border-border rounded cursor-pointer text-text-muted opacity-60"
+            >
+              <input
+                type="checkbox"
+                checked
+                onChange={() => toggle(z, false)}
+                className={hideCheckbox ? 'hidden' : 'mr-1'}
+              />
+              {z} - no zone numbered {z} at this depot
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LegEditor({
   leg,
   onPatch,
@@ -831,37 +990,18 @@ function LegEditor({
             </select>
           </label>
         )}
-        {(lookups.zoneNumbers?.length ?? 0) > 0 && (
-          <div className="block col-span-2 text-xs">
-            <div className="mb-1">Zones this leg collects from</div>
-            <div className="flex flex-wrap gap-1">
-              {lookups.zoneNumbers!.map((z) => {
-                const checked = leg.zones.includes(z);
-                return (
-                  <label
-                    key={z}
-                    className={`px-2 py-1 border rounded cursor-pointer ${
-                      checked ? 'border-brand-cyan bg-brand-cyan/10 text-text-primary' : 'border-border text-text-muted'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const next = e.target.checked
-                          ? [...leg.zones, z].sort((a, b) => a - b)
-                          : leg.zones.filter((v) => v !== z);
-                        onPatch({ zones: next } as Partial<Leg>);
-                      }}
-                      className="mr-1 accent-brand-cyan"
-                    />
-                    {z}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {/* The pickup side writes BulkPickupZoneSchedule, which no booking
+            object reads on US yet, so these ticks do not gate anything there.
+            The picker is still the labelled one: a bare number is unreadable
+            on either tenant. */}
+        <LegZonePicker
+          title="Zones this leg collects from"
+          depotId={originDepotId}
+          selected={leg.zones}
+          lookups={lookups}
+          onChange={(zones) => onPatch({ zones } as Partial<Leg>)}
+          numberPrefix=""
+        />
         {showBoxDiscount && (
           <label className="block col-span-2 text-xs">
             Collection box discount
@@ -1233,37 +1373,19 @@ function LegEditor({
           ))}
         </select>
       </label>
-      {(lookups.zoneNumbers?.length ?? 0) > 0 && (
-        <div className="block col-span-2 text-xs">
-          <div className="mb-1">Zones this leg fulfils</div>
-          <div className="flex flex-wrap gap-1">
-            {lookups.zoneNumbers!.map((z) => {
-              const checked = leg.zones.includes(z);
-              return (
-                <label
-                  key={z}
-                  className={`px-2 py-1 border rounded cursor-pointer ${
-                    checked ? 'border-brand-cyan bg-brand-cyan/10 text-text-primary' : 'border-border text-text-muted'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                        ? [...leg.zones, z].sort((a, b) => a - b)
-                        : leg.zones.filter((v) => v !== z);
-                      onPatch({ zones: next } as Partial<Leg>);
-                    }}
-                    className="hidden"
-                  />
-                  Z{z}
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* The delivery side writes BulkZoneSchedule, which IS what the US
+          coverage rule reads, so these ticks are the ones that limit what the
+          schedule serves once the tenant setting is on. The depot is this
+          leg's own region, the same value the SQL joins the zone's depot to. */}
+      <LegZonePicker
+        title="Zones this leg fulfils"
+        depotId={leg.regionId}
+        selected={leg.zones}
+        lookups={lookups}
+        onChange={(zones) => onPatch({ zones } as Partial<Leg>)}
+        hideCheckbox
+        numberPrefix="Z"
+      />
     </div>
   );
 }
