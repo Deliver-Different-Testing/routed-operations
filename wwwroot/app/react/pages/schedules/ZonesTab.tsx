@@ -314,6 +314,29 @@ function NzPostcodeEditModal({
 
 // ─── US Zip Zone edit modal ─────────────────────────────────────────────
 
+/**
+ * The US zip form's starting state.
+ *
+ * `zoneZipGroupId` is read off the row and has no input behind it any
+ * more: the zip-group column and its picker left the US grid on 23 Oct,
+ * because ZoneZip.ZoneZipGroupId is null for every zip on that tenant
+ * (0 of 4,428, measured on DFRNT_SEED_CR) and US booking never reads
+ * it. Carrying the value means a row that somehow does hold one keeps
+ * it through an edit instead of being silently cleared by a form that
+ * no longer shows it - and since no row on the tenant can exercise
+ * that, this is the only place it gets checked.
+ */
+export function usZipFormFrom(row: UsZipZone | null): UsZipZoneUpsertBody {
+  return {
+    zip: row?.zip ?? '',
+    zoneNumber: row?.zoneNumber ?? null,
+    zoneNameId: row?.zoneNameId ?? null,
+    zoneZipGroupId: row?.postcodeGroupId ?? null,
+    applyCongestion: row?.applyCongestion ?? null,
+    clientId: null,
+  };
+}
+
 function UsZipZoneEditModal({
   row, bootstrap, onClose, onSaved,
 }: {
@@ -324,14 +347,7 @@ function UsZipZoneEditModal({
 }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<UsZipZoneUpsertBody>(() => ({
-    zip: row?.zip ?? '',
-    zoneNumber: row?.zoneNumber ?? null,
-    zoneNameId: row?.zoneNameId ?? null,
-    zoneZipGroupId: row?.postcodeGroupId ?? null,
-    applyCongestion: row?.applyCongestion ?? null,
-    clientId: null,
-  }));
+  const [form, setForm] = useState<UsZipZoneUpsertBody>(() => usZipFormFrom(row));
 
   const save = async () => {
     setSaving(true);

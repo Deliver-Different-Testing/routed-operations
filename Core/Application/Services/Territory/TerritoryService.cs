@@ -499,6 +499,7 @@ public class TerritoryService(
             ApplyCongestion = req.ApplyCongestion,
             ClientId = req.ClientId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneZips.Add(entity);
         await Context.SaveChangesAsync();
@@ -517,6 +518,7 @@ public class TerritoryService(
         entity.ApplyCongestion = req.ApplyCongestion;
         entity.ClientId = req.ClientId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetUsZipZoneAsync(id);
     }
@@ -557,6 +559,7 @@ public class TerritoryService(
             ZoneGroupId = req.ZoneGroupId,
             LocationId = req.LocationId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneNames.Add(entity);
         await Context.SaveChangesAsync();
@@ -573,6 +576,7 @@ public class TerritoryService(
         entity.ZoneGroupId = req.ZoneGroupId;
         entity.LocationId = req.LocationId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetZoneNameAsync(id);
     }
@@ -607,6 +611,7 @@ public class TerritoryService(
             Name = req.Name.Trim(),
             ClearListAreaId = req.ClearListAreaId,
             Created = DateTime.UtcNow,
+            CreatedBy = CurrentUser(),
         };
         Context.ZoneGroups.Add(entity);
         await Context.SaveChangesAsync();
@@ -622,6 +627,7 @@ public class TerritoryService(
         entity.Name = req.Name.Trim();
         entity.ClearListAreaId = req.ClearListAreaId;
         entity.LastModified = DateTime.UtcNow;
+        entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
         return await GetZoneGroupAsync(id);
     }
@@ -647,6 +653,27 @@ public class TerritoryService(
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new InvalidOperationException("Name is required.");
+    }
+
+    /// <summary>
+    /// Who to stamp on a territory write, same resolution order as
+    /// RecurringRouteService.
+    ///
+    /// The US territory tables all carry CreatedBy / LastModifiedBy and
+    /// the legacy AdminManager screen fills them on every row: measured
+    /// 23 Oct on DFRNT_SEED_CR, 26 of 26 ZoneGroup, 77 of 77 ZoneName
+    /// and 4,427 of 4,427 ZoneZip rows had a name on them ("MikeS",
+    /// "kerrant", "seed"). Routed Operations was stamping the timestamp
+    /// and not the name, so anything created or edited here was the
+    /// only row on the tenant with no author - which is exactly the
+    /// row someone would want the author of.
+    /// </summary>
+    private string CurrentUser()
+    {
+        var user = httpContextAccessor.HttpContext?.User;
+        return user?.FindFirstValue(ClaimTypes.Email)
+            ?? user?.FindFirstValue(ClaimTypes.Name)
+            ?? "system";
     }
 
     /// <summary>Resolve the postcodes the Schedule editor map should
