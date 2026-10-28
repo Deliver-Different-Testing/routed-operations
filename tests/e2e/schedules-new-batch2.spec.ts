@@ -424,10 +424,16 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await expect(page.getByRole('heading', { level: 3, name: /AKL > CHCH Pre 8am Medical/ })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Route', exact: true })).toBeVisible();
 
-    // Close clears the query param so the URL isn't stuck on ?edit.
-    // Two "Close" buttons render: the modal's aria-label icon in the
-    // header + the footer text button. Click the footer one.
-    await page.getByText('Close', { exact: true }).click();
+    // Closing clears the query param so the URL isn't stuck on ?edit.
+    //
+    // This used to click getByText('Close'), which matched the footer
+    // button back when it was labelled "Close". It is labelled "Cancel"
+    // now, and the only other close control is the header icon, which
+    // carries aria-label="Close" but no text - so getByText found
+    // nothing and the test sat until the 30s timeout. Matched by role +
+    // accessible name so a future relabel fails loudly on the name
+    // rather than hanging.
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.getByRole('heading', { level: 3, name: /AKL > CHCH Pre 8am Medical/ })).toHaveCount(0);
     await expect(page).toHaveURL(/\/schedules-new(?!\?edit=)/);
   });

@@ -42,7 +42,11 @@ public record RouteAutoAssignLogEntryDto(
     string Outcome,
     string TriggerSource,
     int? PriorRouteId,
-    string Side);
+    string Side,
+    // Feature 5.2: which delivery attempt won - 'FM-Depot' / 'FM-Addr' /
+    // 'Legacy'. Null on pickup rows and on anything logged before the
+    // feature shipped.
+    string? MatchStrategy);
 
 public record RouteAutoAssignLogPageDto(
     int Total,

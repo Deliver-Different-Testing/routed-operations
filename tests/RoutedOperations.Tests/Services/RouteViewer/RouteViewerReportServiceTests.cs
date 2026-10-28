@@ -54,6 +54,52 @@ public class RouteViewerReportServiceTests
         Assert.Empty(result);
     }
 
+    // ── A REAL network partner, i.e. one with a resolved NpAgentId. ──
+    // Now that dbmigrationsv2 20261001153500 has given all four SPs an
+    // @NpAgentId parameter, a scoped partner is ALLOWED through and the SP
+    // filters their rows. So the assertion is "reaches the SP", not
+    // "returns empty" - InMemory cannot execute the ADO path, same as the
+    // _Admin_HitsSp cases below.
+    //
+    // These four exist because the gate once read
+    // `!scope.IsAdmin && scope.NpAgentId == null` while the SPs had no way
+    // to scope, which handed a partner the full tenant-wide CSV. They are
+    // the regression cover for that whole sequence; the degenerate-partner
+    // tests above stay as they are.
+    // See NP-PAY-PART4-TODO.md T5/T6/T17/T18.
+
+    [Fact]
+    public async Task GetRunAllocationCsvAsync_NpWithAgentId_ReachesTheScopedSp()
+    {
+        var sut = NewSvc(new NpScope(false, 42));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetRunAllocationCsvAsync(new ReportRequest { RunDate = DateTime.Today }));
+    }
+
+    [Fact]
+    public async Task GetMissingScanCsvAsync_NpWithAgentId_ReachesTheScopedSp()
+    {
+        var sut = NewSvc(new NpScope(false, 42));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetMissingScanCsvAsync(new ReportRequest { RunDate = DateTime.Today }));
+    }
+
+    [Fact]
+    public async Task GetMissingRunScanCsvAsync_NpWithAgentId_ReachesTheScopedSp()
+    {
+        var sut = NewSvc(new NpScope(false, 42));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetMissingRunScanCsvAsync(new ReportRequest { RunDate = DateTime.Today }));
+    }
+
+    [Fact]
+    public async Task GetMissingTransitScanCsvAsync_NpWithAgentId_ReachesTheScopedSp()
+    {
+        var sut = NewSvc(new NpScope(false, 42));
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            sut.GetMissingTransitScanCsvAsync(new ReportRequest { RunDate = DateTime.Today }));
+    }
+
     [Fact]
     public async Task GetWoopRunNumberXlsxAsync_Np_ReturnsEmpty()
     {

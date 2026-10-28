@@ -141,12 +141,8 @@ export default function RunViewer() {
   // homeView.html:128-138 getClientIntel(mobile) behaviour.
   const clientIntelRef = useRef<HTMLDivElement | null>(null);
 
-  const { clientInternal, multipleClients } = useRouteViewerLookups(filters.runDate, false);
-
   const runsQuery = useRouteViewerRuns({
     runDate: filters.runDate,
-    clientInternal,
-    multipleClients,
     clientIds: filters.clientIds,
     regionIds: filters.regionIds,
     speedIds: filters.speedIds,
@@ -239,6 +235,28 @@ export default function RunViewer() {
   // of the last plain-click. Shift+click extends selection from anchor
   // to clicked row (inclusive) using the currently-visible run order.
   const runAnchorRef = useRef<number | null>(null);
+
+  // 2026-10-09: drop id-keyed selection when the date or the region changes.
+  // Run ids and job ids are both date-scoped, so a selection made on one date
+  // or region points at rows that are not in the next result set. Removing
+  // keepPreviousData from useRouteViewerRuns clears the Run List itself, but
+  // without this the Run Jobs grid, JobDetail and the map tint keep rendering
+  // the previous filter's run until the operator clicks something, which is
+  // the same stale-screen complaint one box over. Guarded on a ref rather than
+  // run on mount, so it cannot wipe the `?jobNumber=` deep-link selection that
+  // the effect above applies once the run list has loaded.
+  const filterIdentity = `${filters.runDate}|${[...filters.regionIds].sort((a, b) => a - b).join(',')}`;
+  const lastFilterIdentityRef = useRef(filterIdentity);
+  useEffect(() => {
+    if (lastFilterIdentityRef.current === filterIdentity) return;
+    lastFilterIdentityRef.current = filterIdentity;
+    setSelectedRunIds([]);
+    setSelectedJobId(null);
+    setSelectedJobIds([]);
+    setSiblingOverride(null);
+    setSelectedCourier(null);
+    runAnchorRef.current = null;
+  }, [filterIdentity]);
   const onSelectRun = useCallback((id: number, mods: { ctrl: boolean; shift: boolean }) => {
     setSelectedRunIds((prev) => {
       if (mods.shift && runAnchorRef.current != null) {
@@ -746,6 +764,15 @@ export default function RunViewer() {
                         />
                         Multibox
                       </label>
+                      {/* Both print controls are bulk-label flows, which the
+                          server refuses for a partner
+                          (EnsureBulkLabelFlowSupportedForNpAsync). Hiding them
+                          so a partner is not handed two buttons whose only
+                          outcome is a failure toast. Same reasoning as the
+                          Print menu in RvUtilityActions.
+                          See NP-PAY-PART4-TODO.md F7. */}
+                      {!user.isNetworkPartner && (
+                      <>
                       <button
                         type="button"
                         title="Print labels for run"
@@ -780,6 +807,8 @@ export default function RunViewer() {
                           <rect x="6" y="14" width="12" height="8" />
                         </svg>
                       </button>
+                      </>
+                      )}
                       <button
                         type="button"
                         title="Refresh"

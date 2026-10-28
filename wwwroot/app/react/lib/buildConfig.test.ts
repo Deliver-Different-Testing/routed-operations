@@ -245,6 +245,62 @@ describe('bucketJobs', () => {
     expect(bucketJobs([], 'deliveryWindow')).toEqual([]);
   });
 
+  // ─── Client-origin bucketing (schedule-origin spec 4.2) ───────────
+
+  it('buckets client-origin jobs by origin region, client and book date', () => {
+    const jobs = [
+      // Same client, same day, same origin region -> one run.
+      makeJob({ bulkJobId: 1, toPostCode: 1010, originRegionId: 8, clientId: 100, bookDate: '2026-10-08T00:00:00Z' }),
+      makeJob({ bulkJobId: 2, toPostCode: 1020, originRegionId: 8, clientId: 100, bookDate: '2026-10-08T06:30:00Z' }),
+      // Different client -> its own run, even from the same site.
+      makeJob({ bulkJobId: 3, toPostCode: 1010, originRegionId: 8, clientId: 200, bookDate: '2026-10-08T00:00:00Z' }),
+      // Next day -> its own run.
+      makeJob({ bulkJobId: 4, toPostCode: 1010, originRegionId: 8, clientId: 100, bookDate: '2026-10-09T00:00:00Z' }),
+    ];
+    const buckets = bucketJobs(jobs, 'maxBoxes');
+    expect(buckets).toHaveLength(3);
+    // Jobs 1 and 2 share a bucket despite different postcodes: a client's
+    // fan-out is one vehicle leaving one site, so postcode must not split it.
+    const together = buckets.find((b) => b.jobs.length === 2);
+    expect(together?.jobs.map((j) => j.bulkJobId).sort()).toEqual([1, 2]);
+  });
+
+  it('ignores the time component of bookDate when bucketing client-origin jobs', () => {
+    // Two bookings on the same day at different times belong to one run. If
+    // the whole ISO string were used as the key they would split.
+    const jobs = [
+      makeJob({ bulkJobId: 1, toPostCode: 1010, originRegionId: 8, clientId: 100, bookDate: '2026-10-08T00:00:00Z' }),
+      makeJob({ bulkJobId: 2, toPostCode: 1010, originRegionId: 8, clientId: 100, bookDate: '2026-10-08T23:59:00Z' }),
+    ];
+    expect(bucketJobs(jobs, 'maxBoxes')).toHaveLength(1);
+  });
+
+  it('never mixes a client-origin job into a depot-origin bucket', () => {
+    // Same postcode, so the old logic would have put all three in one run and
+    // sent a driver to two different starting points.
+    const jobs = [
+      makeJob({ bulkJobId: 1, toPostCode: 1010, originRegionId: null }),
+      makeJob({ bulkJobId: 2, toPostCode: 1010, originRegionId: null }),
+      makeJob({ bulkJobId: 3, toPostCode: 1010, originRegionId: 8, clientId: 100, bookDate: '2026-10-08T00:00:00Z' }),
+    ];
+    const buckets = bucketJobs(jobs, 'maxBoxes');
+    expect(buckets).toHaveLength(2);
+    const depotBucket = buckets.find((b) => b.jobs.every((j) => j.originRegionId == null));
+    expect(depotBucket?.jobs.map((j) => j.bulkJobId)).toEqual([1, 2]);
+  });
+
+  it('leaves depot-origin bucketing untouched in deliveryWindow mode', () => {
+    // The client-origin split must not disturb the mode it wraps: same window
+    // still means same bucket, and the hhmm run-name hint survives.
+    const jobs = [
+      makeJob({ bulkJobId: 1, scheduleWindowStart: '2026-10-08T06:00:00Z', scheduleWindowEnd: '2026-10-08T08:00:00Z', toPostCode: 1010 }),
+      makeJob({ bulkJobId: 2, scheduleWindowStart: '2026-10-08T06:00:00Z', scheduleWindowEnd: '2026-10-08T08:00:00Z', toPostCode: 1020 }),
+    ];
+    const buckets = bucketJobs(jobs, 'deliveryWindow');
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0].hhmm).toBe('0600');
+  });
+
   it('groups jobs by postcode in maxBoxes mode', () => {
     const jobs = [
       makeJob({ bulkJobId: 1, toPostCode: 1010 }),

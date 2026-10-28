@@ -4,6 +4,7 @@ import {
   addRegion,
   cutRegion,
   keepRegion,
+  snapToNearestEdge,
   latLngRingsToMultiPolygon,
   latLngRingsToPolygon,
   multiPolygonToLatLngRings,
@@ -214,5 +215,61 @@ describe('totalVertexCount', () => {
 
   it('sums vertices across all rings', () => {
     expect(totalVertexCount([SQUARE, RIGHT_HALF])).toBe(SQUARE.length + RIGHT_HALF.length);
+  });
+});
+
+describe('snapToNearestEdge', () => {
+  // A unit square roughly 1.1 km on a side near Auckland.
+  const square: LatLng[][] = [[
+    { lat: -36.850, lng: 174.760 },
+    { lat: -36.850, lng: 174.772 },
+    { lat: -36.860, lng: 174.772 },
+    { lat: -36.860, lng: 174.760 },
+  ]];
+
+  it('returns null when nothing is within tolerance', () => {
+    // ~1 km away from the square's west edge, tolerance 25 m.
+    const far = { lat: -36.855, lng: 174.748 };
+    expect(snapToNearestEdge(far, [square], 25)).toBeNull();
+  });
+
+  it('snaps a vertex just outside an edge onto that edge', () => {
+    // A few metres west of the west edge (lng 174.760).
+    const near = { lat: -36.855, lng: 174.75995 };
+    const snapped = snapToNearestEdge(near, [square], 25);
+    expect(snapped).not.toBeNull();
+    // Lands on the edge's longitude, keeping its own latitude.
+    expect(snapped!.lng).toBeCloseTo(174.760, 5);
+    expect(snapped!.lat).toBeCloseTo(-36.855, 5);
+  });
+
+  it('clamps to the segment ends rather than running past a corner', () => {
+    // Beyond the square's north-west corner on both axes. The foot of the
+    // perpendicular would sit off the end of the edge; it must clamp to the
+    // corner instead of inventing a point outside the shape.
+    const offCorner = { lat: -36.8498, lng: 174.7598 };
+    const snapped = snapToNearestEdge(offCorner, [square], 100);
+    expect(snapped).not.toBeNull();
+    expect(snapped!.lat).toBeCloseTo(-36.850, 4);
+    expect(snapped!.lng).toBeCloseTo(174.760, 4);
+  });
+
+  it('treats the ring as closed so the final edge can be snapped to', () => {
+    // Just outside the edge joining the LAST vertex back to the first (the
+    // west edge of this ring is written last). A ring that is not closed
+    // implicitly would miss it entirely.
+    const nearClosingEdge = { lat: -36.8599, lng: 174.75993 };
+    expect(snapToNearestEdge(nearClosingEdge, [square], 25)).not.toBeNull();
+  });
+
+  it('returns null for a non-positive tolerance', () => {
+    const onEdge = { lat: -36.855, lng: 174.760 };
+    expect(snapToNearestEdge(onEdge, [square], 0)).toBeNull();
+  });
+
+  it('ignores degenerate rings with fewer than two vertices', () => {
+    const degenerate: LatLng[][] = [[{ lat: -36.855, lng: 174.760 }]];
+    const p = { lat: -36.855, lng: 174.7601 };
+    expect(snapToNearestEdge(p, [degenerate], 100)).toBeNull();
   });
 });

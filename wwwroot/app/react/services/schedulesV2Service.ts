@@ -1,4 +1,4 @@
-import { request, buildQuery } from './api';
+﻿import { request, buildQuery } from './api';
 import type { ScheduleGroup, ScheduleGroupSummary, ScheduleGroupUpsertBody } from './scheduleService';
 
 // Client for /api/v2/schedules (Steve's 2026-09-08 id-keyed view).
@@ -50,7 +50,54 @@ export interface ScheduleBundle {
   scheduleNames: string[];
 }
 
+/** One member row of GET /api/v2/schedule-bundles/{id}. */
+export interface ScheduleBundleMember {
+  scheduleId: number;
+  name: string;
+  isDefault: boolean;
+  /** tblScheduleClient rows on this member; 0 on a default. */
+  clientCount: number;
+  regionName: string | null;
+  speedName: string | null;
+  /** 1=Mon..7=Sun, ascending. */
+  activeDays: number[];
+}
+
+/** One client on a bundle: linked to at least one non-default member.
+ *  onMembers < ofMembers means the client joined before some member did. */
+export interface ScheduleBundleClient {
+  clientId: number;
+  code: string;
+  name: string | null;
+  onMembers: number;
+  ofMembers: number;
+}
+
+/** GET /api/v2/schedule-bundles/{id} - bundle modal payload. */
+export interface ScheduleBundleDetail {
+  bundleId: number;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  members: ScheduleBundleMember[];
+  clients: ScheduleBundleClient[];
+}
+
 export const schedulesV2Service = {
+  /** GET /api/v2/schedule-bundles/{id} - one bundle with members + clients
+   *  (SCHEDULE-BUNDLES-UI-2026-10-16). */
+  getBundle: (bundleId: number) =>
+    request<{ response: ScheduleBundleDetail }>(`/v2/schedule-bundles/${bundleId}`)
+      .then((r) => r.response),
+
+  /** DELETE /api/v2/schedule-bundles/{id}/clients/{clientId} - take one
+   *  client off every member of the bundle. */
+  detachClientFromBundle: (bundleId: number, clientId: number) =>
+    request<{ response: { removed: number } }>(
+      `/v2/schedule-bundles/${bundleId}/clients/${clientId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.response),
+
   /** GET /api/v2/schedules?type=&q= - the Schedules tab list. */
   list: (filters?: SchedulesV2Filters) =>
     request<{ response: SchedulesV2Page }>(
@@ -139,6 +186,17 @@ export const schedulesV2Service = {
       { method: 'POST', body: JSON.stringify({ ...body, scheduleId: undefined }) },
     ).then((r) => r.response),
 
+  /**
+   * GET /api/v2/schedules/{id}/occurrences?n= - the next runs this
+   * schedule would offer. `n` lets the preview follow an UNSAVED edit, so
+   * the modal passes what is in the box rather than what is in the
+   * database.
+   */
+  occurrences: (scheduleId: number, n?: number | null) =>
+    request<{ response: ScheduleOccurrence[] }>(
+      `/v2/schedules/${scheduleId}/occurrences${n != null ? `?n=${n}` : ''}`,
+    ).then((r) => r.response),
+
   /** PUT /api/v2/schedules/{id} - update existing schedule (path id wins). */
   update: (scheduleId: number, body: ScheduleGroupUpsertBody) =>
     request<{ response: ScheduleGroup }>(
@@ -213,11 +271,13 @@ export const schedulesV2Service = {
       `/v2/clients/${clientId}/schedules`,
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedule-bundles/{id}/members - add schedules. */
-  addBundleMembers: (bundleId: number, scheduleIds: number[]) =>
+  /** POST /api/v2/schedule-bundles/{id}/members - add schedules.
+   *  `linkExistingClients` also links every client already on the bundle
+   *  to the new non-default members. */
+  addBundleMembers: (bundleId: number, scheduleIds: number[], linkExistingClients = false) =>
     request<{ response: { added: number } }>(
       `/v2/schedule-bundles/${bundleId}/members`,
-      { method: 'POST', body: JSON.stringify({ scheduleIds }) },
+      { method: 'POST', body: JSON.stringify({ scheduleIds, linkExistingClients }) },
     ).then((r) => r.response),
 
   /** DELETE /api/v2/schedule-bundles/{id}/members/{scheduleId}. */
@@ -233,6 +293,26 @@ export const schedulesV2Service = {
  *  F11 Phase C (2026-09-24): cutoffHours dropped from the wire in favour
  *  of the absolute (cutoffDay, cutoffTime) pair. Tenant SPs coalesce the
  *  new pair over the legacy CutoffHours column on the row itself. */
+/** One run the booking page would offer. Preview only, never a booking. */
+export interface ScheduleOccurrence {
+  /** ISO yyyy-MM-dd. */
+  date: string;
+  /** 1 = Monday .. 7 = Sunday. */
+  dayOfWeek: number;
+  /** "HH:mm". */
+  startTime: string;
+  /** "yyyy-MM-dd HH:mm" - when ordering closes for this run. F23: this is
+   *  now the absolute cutoffDay/cutoffTime pair where the schedule has one
+   *  and startTime minus cutoffHours where it does not, matching the
+   *  availability function rather than only ever doing the second. */
+  cutoffAt: string;
+  /** "yyyy-MM-dd HH:mm" - the TENANT-local moment the cutoff test was
+   *  applied. Repeated on every row, which keeps the field additive; the
+   *  label reads it off the first. Here because the operator's clock is not
+   *  necessarily the tenant's, which is the server-side mistake F23 fixed. */
+  asAt: string;
+}
+
 export interface ScheduleScopeOverride {
   cutoffDay: number | null;
   cutoffTime: string | null;
@@ -240,6 +320,11 @@ export interface ScheduleScopeOverride {
   isActive: boolean | null;
   displayName: string | null;
   displayDescription: string | null;
+  /**
+   * How many upcoming runs of this schedule the booking page offers this
+   * client. null inherits the schedule's own value. 1 to 60.
+   */
+  occurrencesAhead: number | null;
 }
 
 /** Leg-scope delta fields (used for both collection and delivery). */

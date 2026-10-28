@@ -133,7 +133,7 @@ function AutoAssignLogTab() {
       'LogId', 'CreatedAtUtc', 'Side', 'JobId', 'JobBookingId', 'SpeedId',
       'PickupZip', 'PickupAtUtc', 'BookingKind', 'ResolvedRouteId',
       'ResolvedRouteName', 'ResolvedCourier', 'ResolvedAgent', 'ResolvedNpAgent',
-      'Outcome', 'TriggerSource', 'PriorRouteId',
+      'Outcome', 'MatchStrategy', 'TriggerSource', 'PriorRouteId',
     ];
     const cell = (v: unknown) => {
       if (v == null) return '';
@@ -144,7 +144,8 @@ function AutoAssignLogTab() {
       e.logId, e.createdAtUtc, e.side, e.jobId, e.jobBookingId, e.speedId,
       e.pickupZip, e.pickupAtUtc, e.bookingKindName, e.resolvedRouteId,
       e.resolvedRouteName, e.resolvedCourierName, e.resolvedAgentName,
-      e.resolvedNpAgentName, e.outcome, e.triggerSource, e.priorRouteId,
+      e.resolvedNpAgentName, e.outcome, e.matchStrategy, e.triggerSource,
+      e.priorRouteId,
     ].map(cell).join(','));
     const blob = new Blob([[header.join(','), ...rows].join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -227,6 +228,7 @@ function AutoAssignLogTab() {
                   <th className="px-2 py-1 w-16">Side</th>
                   <th className="px-2 py-1 w-20">Zip</th>
                   <th className="px-2 py-1 w-44">Outcome</th>
+                  <th className="px-2 py-1 w-28">Match strategy</th>
                   <th className="px-2 py-1">Resolved Route</th>
                   <th className="px-2 py-1">Resolved Target</th>
                   <th className="px-2 py-1 w-20">Job Id</th>
@@ -240,7 +242,7 @@ function AutoAssignLogTab() {
                     onToggle={() => setExpandedId((prev) => prev === e.logId ? null : e.logId)} />
                 ))}
                 {data && data.entries.length === 0 && (
-                  <tr><td colSpan={8} className="px-2 py-6 text-center text-text-muted italic">
+                  <tr><td colSpan={9} className="px-2 py-6 text-center text-text-muted italic">
                     {loading ? 'Loading…' : 'No entries match the filters.'}
                   </td></tr>
                 )}
@@ -499,6 +501,15 @@ function formatDateShort(iso: string | null): string {
   } catch { return iso; }
 }
 
+// Feature 5.2 writes the raw code; these are the operator-facing words for
+// the three delivery attempts the resolver makes, in order. Anything else
+// renders as the raw value rather than being swallowed.
+const MATCH_STRATEGY_LABELS: Record<string, string> = {
+  'FM-Depot': 'Depot',
+  'FM-Addr': 'Address radius',
+  Legacy: 'Legacy',
+};
+
 const OUTCOME_COLOURS: Record<string, string> = {
   AssignedToRoute: 'bg-success-bg text-success',
   AssignedToRouteViaCustomPolygon: 'bg-brand-cyan/20 text-brand-dark',
@@ -534,6 +545,13 @@ function TableRow({ entry: e, expanded, onToggle }: {
             {e.outcome}
           </span>
         </td>
+        <td className="px-2 py-1 whitespace-nowrap">
+          {e.matchStrategy
+            ? <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-light text-text-secondary">
+                {MATCH_STRATEGY_LABELS[e.matchStrategy] ?? e.matchStrategy}
+              </span>
+            : <span className="text-text-muted">-</span>}
+        </td>
         <td className="px-2 py-1">
           {e.resolvedRouteId != null
             ? <><span className="font-medium">{e.resolvedRouteName ?? '(unnamed)'}</span>
@@ -550,7 +568,7 @@ function TableRow({ entry: e, expanded, onToggle }: {
       </tr>
       {expanded && (
         <tr className="border-t border-border-light bg-surface-cream">
-          <td colSpan={8} className="px-4 py-2">
+          <td colSpan={9} className="px-4 py-2">
             <pre className="text-[10px] bg-surface-white p-2 rounded border border-border-light overflow-x-auto">
               {JSON.stringify(e, null, 2)}
             </pre>

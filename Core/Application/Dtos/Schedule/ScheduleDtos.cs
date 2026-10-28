@@ -1,4 +1,4 @@
-namespace RoutedOperations.Core.Application.Dtos.Schedule;
+﻿namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
 /// <summary>
 /// A schedule "group" - all tblBulkRunSchedule rows sharing (Name, ClientId).
@@ -31,6 +31,28 @@ public record ScheduleGroupDto(
     int? PickupPostcodeGroupId,
     string PickupPostcodeGroupName,
     int? PickupRatingSpeed,
+    /// <summary>'depot' or 'client'. 'client' means the chain starts at the
+    /// client's own address: no collection job, and the booking's own From
+    /// address survives instead of being replaced by a depot's. Stored on
+    /// tblBulkRunScheduleHeader (schedule-origin spec 5.1).</summary>
+    string OriginType,
+    /// <summary>Origin branch for a client-origin schedule. Counterpart of
+    /// PickupDepotId, not of RegionId: RegionId stays the delivery branch.
+    /// Null for depot-origin schedules.</summary>
+    int? OriginRegionId,
+    /// <summary>Name of OriginRegionId resolved from tblBulkRegion.</summary>
+    string OriginRegionName,
+    /// <summary>
+    /// Names of this schedule's linked clients that have no site coordinates
+    /// (schedule-origin spec 4.5). Only meaningful when OriginType is
+    /// 'client': a client-origin run starts at the client's site, so without
+    /// coordinates it starts in the wrong place. Always empty for depot
+    /// origin, which never reads the client's site.
+    ///
+    /// A warning, not a block: the booking path still works from the address
+    /// the booking itself carries.
+    /// </summary>
+    List<ClientGeocodeGapDto> ClientsMissingGeocode,
     bool? AutoBook,
     bool? BookPickup,
     bool? ApplyPickupCutoff,
@@ -43,6 +65,9 @@ public record ScheduleGroupDto(
     string Description,
     List<DayWindowDto> DayWindows,
     List<ScheduleZoneDto> Zones,
+    /// <summary>Zones the collection leg collects from. Empty on every
+    /// schedule until the Collection card starts writing them.</summary>
+    List<ScheduleZoneDto> PickupZones,
     List<ScheduleLinehaulDto> Linehauls,
     /// <summary>Client ids bound via the new tblScheduleClient junction. Empty for legacy per-client groups.</summary>
     List<int> ClientIds,
@@ -65,7 +90,89 @@ public record ScheduleGroupDto(
     /// <summary>True if this schedule can be booked at all. Separate from
     /// AutoBook (which controls book-immediately vs stage). Added
     /// 2026-09-22 (Steve F21).</summary>
-    bool IsActive);
+    bool IsActive,
+    /// <summary>
+    /// True when this schedule has been collapsed onto a single detail row,
+    /// which is to say it has a tblBulkRunScheduleDetail row. Its day rows
+    /// are then key rows carrying no payload, and everything in this DTO
+    /// comes from the detail row by way of the compatibility view.
+    ///
+    /// False is not a problem to fix: an old-shape schedule is correct and
+    /// bookable. Schedules collapse opportunistically, when someone saves
+    /// one and its days agree, so the estate converges without a campaign.
+    /// Worth showing in the UI only so ops can see that happening.
+    /// </summary>
+    bool IsCollapsed,
+    /// <summary>
+    /// How many upcoming runs the booking page offers. Null on an old-shape
+    /// schedule, which has nowhere to store it and falls back to one week's
+    /// worth. A per-client override can raise or lower it; that lives on the
+    /// client's override row, not here.
+    /// </summary>
+    byte? OccurrencesAhead,
+    /// <summary>
+    /// Why the last save did NOT collapse this schedule, verbatim from
+    /// dbo.uspScheduleConvert, or null when it did collapse or the question
+    /// has not been asked. Reasons are semicolon-separated and name the
+    /// obstacle: WindowVariesByDay, PayloadVaries:&lt;column&gt;,
+    /// CutoffDayNotExpressible, ShopWindowReferenced:&lt;shop&gt;. Observed
+    /// verbatim from a save on a real database, not translated here, so the
+    /// operator sees the actual obstacle.
+    ///
+    /// Only populated on the DTO a save returns. A plain GET leaves it null,
+    /// because the question "why did it not convert" is only meaningful
+    /// about an attempt that just happened.
+    /// </summary>
+    string ConvertRefusalReasons,
+    /// <summary>
+    /// True when every client can book this schedule, straight off
+    /// tblBulkRunScheduleHeader.IsDefault. It is an explicit setting on the
+    /// header, NOT a derived "has no link rows": the two came apart as soon
+    /// as the Clients tab could attach a client to a default, and the modal
+    /// used to infer it from ClientIds.Count, which is why its radio pair
+    /// read the wrong way round on a default that had a client configured
+    /// (spec 6.1, Steve 2026-10-16).
+    ///
+    /// Optional with a true default so a positional caller written before
+    /// 6.1 still compiles and keeps the pre-6.1 reading.
+    /// </summary>
+    bool IsDefault = true);
+
+/// <summary>
+/// One run the booking page would offer, for the preview under the
+/// "occurrences ahead" field. NOT a booking and not persisted: it answers
+/// "if N were this, which dates would a client see".
+/// </summary>
+public record ScheduleOccurrenceDto(
+    /// <summary>Local date of the run, ISO yyyy-MM-dd.</summary>
+    string Date,
+    /// <summary>1 = Monday .. 7 = Sunday, matching the day rows.</summary>
+    int DayOfWeek,
+    /// <summary>Run start, "HH:mm". The window the day opens.</summary>
+    string StartTime,
+    /// <summary>
+    /// When ordering closes for this run, "yyyy-MM-dd HH:mm".
+    ///
+    /// F23 (Anisah's 14 to 16 Oct smoke test): this now uses the SAME
+    /// expression as UTL_fncJob_GetClientAvailableBulkRunSchedule, which is
+    /// the absolute CutoffDay / CutoffTime pair where the schedule has one
+    /// and StartTime minus CutoffHours where it does not. It previously only
+    /// ever did the second, so a schedule with a day-before absolute cutoff
+    /// previewed a date the booking page had already closed. #713 KSFRS was
+    /// the clearest case: cutoff 17:00 the day before, tested at 18:15 on a
+    /// Thursday, preview started Friday and the booking page started Monday.
+    /// </summary>
+    string CutoffAt,
+    /// <summary>
+    /// The tenant-local moment the cutoff test was applied, "yyyy-MM-dd HH:mm".
+    ///
+    /// Same on every row of one response, which is redundant but keeps this
+    /// additive: a wrapper object would have broken the service, the hook and
+    /// the component for what is a label. It is here because the list is only
+    /// true as at a moment, and the operator's own clock is not necessarily
+    /// the tenant's, which is the mistake this item fixed on the server side.
+    /// </summary>
+    string AsAt);
 
 /// <summary>
 /// A single day-window entry within a schedule group. One tblBulkRunSchedule
@@ -193,7 +300,28 @@ public record ScheduleGroupSummaryDto(
     /// 13:00 (base Fri 15:00)", etc). Empty when the schedule has no
     /// overrides. Rendered as nested rows under the base in the Schedules
     /// NEW list view. Appended so positional callers don't break.</summary>
-    List<ScheduleOverrideRowDto> Overrides);
+    List<ScheduleOverrideRowDto> Overrides,
+    /// <summary>True when the schedule has been collapsed onto a single
+    /// detail row. See ScheduleGroupDto.IsCollapsed; this is the same flag on
+    /// the list row so ops can see the estate converging.</summary>
+    bool IsCollapsed,
+    /// <summary>How many upcoming runs the booking page offers, or null on an
+    /// old-shape schedule. See ScheduleGroupDto.OccurrencesAhead.</summary>
+    byte? OccurrencesAhead,
+    /// <summary>'depot', 'client' or 'direct', straight off
+    /// tblBulkRunScheduleHeader.OriginType. The Schedules NEW list needs it
+    /// for the ORIGIN column: PickupDepotName is NULL for BOTH 'client' and
+    /// 'direct', so the column cannot tell them apart without this.
+    /// Last because it is the only optional parameter; IsCollapsed and
+    /// OccurrencesAhead landed in the same release and sit ahead of it.</summary>
+    string OriginType = "depot",
+    /// <summary>
+    /// Header IsDefault. The list row's client chip and the type= filter both
+    /// read this rather than inferring a default from ClientCount == 0, which
+    /// mislabelled every default that had a client configured on it (spec
+    /// 6.1). Optional so positional callers keep compiling.
+    /// </summary>
+    bool IsDefault = true);
 
 /// <summary>
 /// One nested override-row entry under a base schedule in the Schedules
@@ -232,6 +360,48 @@ public record ScheduleBundleDto(
     string[] ScheduleNames);
 
 /// <summary>
+/// One member schedule inside a bundle, for the bundle modal (Steve
+/// 2026-10-16, SCHEDULE-BUNDLES-UI-2026-10-16). Carries enough to render
+/// the member row without a second fetch.
+/// </summary>
+public record ScheduleBundleMemberDto(
+    int ScheduleId,
+    string Name,
+    bool IsDefault,
+    /// <summary>tblScheduleClient rows on this member. Not necessarily 0 on a
+    /// default: since spec 6.1 a client can be configured on a schedule every
+    /// client can book. The bundle's own client count still skips defaults;
+    /// see ListBundleDetailAsync for why.</summary>
+    int ClientCount,
+    /// <summary>Delivery depot of the first day row (tblBulkRunSchedule.Region).</summary>
+    string RegionName,
+    /// <summary>Delivery speed of the first day row.</summary>
+    string SpeedName,
+    /// <summary>Active DayOfWeek values (1=Mon..7=Sun), ascending.</summary>
+    int[] ActiveDays);
+
+/// <summary>
+/// One client "on the bundle": linked to at least one non-default member.
+/// OnMembers / OfMembers show partial coverage (a client attached before a
+/// schedule joined the bundle) so the modal can offer "Complete".
+/// </summary>
+public record ScheduleBundleClientDto(
+    int ClientId,
+    string Code,
+    string Name,
+    int OnMembers,
+    int OfMembers);
+
+/// <summary>GET /api/v2/schedule-bundles/{id} payload for the bundle modal.</summary>
+public record ScheduleBundleDetailDto(
+    int BundleId,
+    string Name,
+    string Description,
+    bool IsActive,
+    List<ScheduleBundleMemberDto> Members,
+    List<ScheduleBundleClientDto> Clients);
+
+/// <summary>
 /// One row of "the schedules this client can actually book" per Steve's
 /// brief §5 resolution rule. Source tag lets the frontend tag each row
 /// in the View-as-client view: "override" = the client owns this
@@ -262,7 +432,14 @@ public record ScheduleLinehaulDto(
     bool? FromClientAddress,
     int? DropOffLocationId,
     int? SpeedId,
-    string SpeedName);
+    string SpeedName,
+    /// <summary>
+    /// 1-based travel order within the schedule. NULL means the chain was
+    /// never ordered (or was ambiguous at backfill time) and the booking SPs
+    /// fall back to Id order. The list is returned in this order, so the
+    /// chain editor renders legs in travel order.
+    /// </summary>
+    int? LegOrder);
 
 /// <summary>
 /// Bundled lookup payload for the schedule edit modal. One roundtrip
@@ -277,11 +454,50 @@ public record ScheduleLookupsDto(
     List<PostcodeGroupLookupDto> PostcodeGroups,
     List<LinehaulRunDto> LinehaulRuns,
     List<int> ZoneNumbers,
+    List<ZoneOptionDto> Zones,
     List<StateOptionDto> StorageStates,
     List<StateOptionDto> DeliveryStates,
     List<StateOptionDto> PickupBoxDiscounts);
 
 public record LookupItemDto(int Id, string Name);
+
+/// <summary>
+/// One tickable zone on a schedule leg, labelled and scoped to a depot.
+///
+/// <para><see cref="ZoneNumbers"/> on <see cref="ScheduleLookupsDto"/> is the
+/// bare list this replaces for the chain editor, and it stays for the older
+/// schedule modal. The bare list is the reason the US picker was unusable:
+/// its source unions in <c>BulkZoneSchedule</c>, the very table the picker
+/// writes to, so on a tenant that has ever been ticked it offered naked
+/// numbers with no name and no depot filter. That is how Medical Couriers
+/// ended up with 77 ticks nobody could read back.</para>
+///
+/// <para><see cref="Zone"/> is the value that persists, and it is a zone
+/// NUMBER on both tenants: <c>BulkZonePostcode.Zone</c> on NZ and
+/// <c>ZoneZip.ZoneNumber</c> on US. That is decision D1 of the US coverage
+/// spec as reversed on 27 Oct, and it is the same key the availability
+/// function resolves a tick by.</para>
+/// </summary>
+/// <param name="Zone">The persisted tick value, a zone number.</param>
+/// <param name="Label">
+/// Zone name(s) carrying this number at this depot. Two names joined with
+/// " + " when a depot has two zones on one number, which is legitimate and
+/// means the tick covers both (Medical Couriers depot 35).
+/// </param>
+/// <param name="DepotId">
+/// The depot this number belongs to, so the picker can show only the numbers
+/// that can actually match the leg. Never null: a zone with no depot can
+/// never be offered by the availability function, so it is not offered here.
+/// </param>
+/// <param name="ZipCount">How many postcodes or ZIPs the number covers at
+/// that depot, so an operator can tell a populated zone from an empty one.</param>
+/// <param name="GroupLabel">
+/// The zone's group name, used as a heading so pricing zones and coverage
+/// zones read as two families (US coverage spec 2.1). Empty on NZ, which has
+/// no equivalent grouping.
+/// </param>
+public record ZoneOptionDto(int Zone, string Label, int DepotId, int ZipCount, string GroupLabel);
+
 public record DropOffLocationDto(int Id, string Name, int DepotId);
 public record PostcodeGroupLookupDto(int Id, string Name, int? DepotId, int? ClientId);
 public record LinehaulRunDto(
@@ -293,3 +509,10 @@ public record LinehaulRunDto(
     string DespatchTime,
     int? CourierId);
 public record StateOptionDto(int Id, string Label);
+
+/// <summary>
+/// A linked client with no site coordinates. Carries the id as well as the
+/// name so the warning can offer to geocode that client directly rather than
+/// sending the operator off to find it (schedule-origin spec 4.5).
+/// </summary>
+public record ClientGeocodeGapDto(int ClientId, string ClientName);

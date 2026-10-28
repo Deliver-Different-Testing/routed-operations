@@ -2,6 +2,7 @@
 // under /api/runviewer/jobs/) because the "active routes" endpoint is
 // a route-scoped read, not a job-scoped one.
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
@@ -12,6 +13,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs only (route transfer) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs")]
 public class RunViewerRouteTransferController(
     RouteViewerRouteTransferService transferService) : BaseController
 {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useConfirm } from '../context/ConfirmContext';
 import { useAuth } from '../context/AuthContext';
@@ -10,11 +10,20 @@ import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
 import { RowActionsMenu } from '../components/tenant/RowActionsMenu';
 import { MappedStopsDrilldown } from './recurring-routes/MappedStopsDrilldown';
+// Feature 5.1: depot list for the final-mile origin picker and HERE
+// forward-geocode for the address origin. Both already exist; there is no
+// shared depot-picker component in the codebase to reuse.
+import { addressService, type RegionDto } from '../services/addressService';
 import {
   recurringRouteService,
   type RecurringRoute,
   type UpsertRouteBody,
+  RouteDirection,
+  type RouteDirectionValue,
+  type RouteOrigin,
+  type PickupAddressSuggestion,
   type ZipcodeLookup,
+  type CoverageLookup,
   type ZipPolygonShape,
   type AssignableTargets,
   type AssignableTarget,
@@ -22,6 +31,10 @@ import {
   type RouteRosterEntry,
   type UpsertRosterBody,
   type RouteBooking,
+  FinalMileDeliveryMode,
+  type FinalMileDeliveryModeValue,
+  type RouteLinkableBooking,
+  mayOfferHardDelete,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
@@ -107,6 +120,32 @@ export default function ScheduledRoutes() {
       toast.show('Route deactivated', 'success');
       await load();
     } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
+  // Permanent delete, offered only on a route nothing references (Steve,
+  // 22 Oct). The confirmation spells out that it cannot be undone and
+  // that deactivation is the alternative, because the two sit next to
+  // each other in the same menu.
+  const doHardDelete = async (r: RecurringRoute) => {
+    if (!(await askConfirm({
+      title: 'Delete route permanently?',
+      message: `Permanently delete "${r.name}" (#${r.routeId})? This cannot be undone. `
+        + 'The route is removed only if nothing references it; the server checks again '
+        + 'as it deletes and refuses if anything does. To keep it on record, deactivate it instead.',
+      confirmLabel: 'Delete permanently',
+      danger: true,
+    }))) return;
+    try {
+      await recurringRouteService.hardRemove(r.routeId);
+      toast.show('Route deleted', 'success');
+      await load();
+    } catch (e) {
+      // 409 carries the server's re-check, which is the authority. It
+      // fires when something claimed the route between the page loading
+      // and this click.
+      toast.show((e as Error).message, 'error');
+      await load();
+    }
   };
 
   // Deep-copy the route (name auto-suffixed with "(copy)") + copy zip
@@ -286,7 +325,10 @@ export default function ScheduledRoutes() {
                           { label: 'Edit', onClick: () => setEditing(r) },
                           { label: 'Copy', onClick: () => doCopy(r) },
                           { label: r.active ? 'Pause' : 'Resume', onClick: () => doToggleActive(r) },
-                          { label: 'Delete', onClick: () => doDelete(r), danger: true },
+                          { label: 'Deactivate', onClick: () => doDelete(r), danger: true },
+                          ...(mayOfferHardDelete(r)
+                            ? [{ label: 'Delete permanently', onClick: () => doHardDelete(r), danger: true }]
+                            : []),
                         ]}
                       />
                     </td>
@@ -322,7 +364,7 @@ export default function ScheduledRoutes() {
 
       {drillRoute && (
         <MappedStopsDrilldown
-          source="route"
+          tab="route"
           run={{ id: drillRoute.routeId, runName: drillRoute.name, fromDepotName: drillRoute.area || '-', toDepotName: '' }}
           onClose={() => setDrillRoute(null)}
         />
@@ -355,10 +397,47 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   const [zips, setZips] = useState<ZipcodeLookup[]>(
     initial?.zipcodes.map((z) => ({ zipPolygonId: z.zipPolygonId, zip: z.zip, latitude: null, longitude: null })) ?? []);
   const [zipSearch, setZipSearch] = useState('');
-  const [zipResults, setZipResults] = useState<ZipcodeLookup[]>([]);
+  const [coverageResults, setCoverageResults] = useState<CoverageLookup[]>([]);
   const [targets, setTargets] = useState<AssignableTargets | null>(null);
   const [schedules, setSchedules] = useState<ScheduleLookup[]>([]);
   const [saving, setSaving] = useState(false);
+
+  // ── Feature 5.1: direction + origin ──────────────────────────────────
+  // A final-mile route fans out from exactly ONE origin, which is either a
+  // depot or an address the route owns itself. originKind is derived from
+  // what is already stored so reopening a route lands on the tab that
+  // matches its data rather than always on the first one.
+  const [direction, setDirection] = useState<RouteDirectionValue>(
+    initial?.direction ?? RouteDirection.FirstMile);
+  const [originKind, setOriginKind] = useState<'depot' | 'address'>(
+    initial?.depotId != null ? 'depot'
+      : initial?.origin?.latitude != null ? 'address'
+      : 'depot');
+  const [depotId, setDepotId] = useState<number | null>(initial?.depotId ?? null);
+  const [originName, setOriginName] = useState(initial?.origin?.name ?? '');
+  const [originAddress, setOriginAddress] = useState(initial?.origin?.address ?? '');
+  const [originZip, setOriginZip] = useState(initial?.origin?.zip ?? '');
+  const [originLat, setOriginLat] = useState<number | null>(initial?.origin?.latitude ?? null);
+  const [originLng, setOriginLng] = useState<number | null>(initial?.origin?.longitude ?? null);
+  // 5000 m matches the default the resolver applies when the column is null,
+  // so what the operator sees pre-filled is what they would get anyway.
+  const [originRadiusM, setOriginRadiusM] = useState<number>(initial?.origin?.radiusM ?? 5000);
+  // Final-mile tote scanning. The master is the booking whose realised job the
+  // driver opens to scan totes on and off; without one the handset has nothing
+  // to route the tote screens from.
+  const [masterBookingId, setMasterBookingId] = useState<number | null>(initial?.masterBookingId ?? null);
+  const [masterLabel, setMasterLabel] = useState<string | null>(initial?.masterBookingLabel ?? null);
+  const [deliveryMode, setDeliveryMode] = useState<FinalMileDeliveryModeValue>(
+    initial?.finalMileDeliveryMode ?? FinalMileDeliveryMode.SealedTotes);
+  const [bookingQuery, setBookingQuery] = useState('');
+  const [bookingResults, setBookingResults] = useState<RouteLinkableBooking[]>([]);
+  const [searchingBookings, setSearchingBookings] = useState(false);
+  const [depots, setDepots] = useState<RegionDto[]>([]);
+  const [geocoding, setGeocoding] = useState(false);
+  // K6: recent pickup addresses for the origin box. Fetched once when the
+  // operator first switches to the address tab, not on mount - most routes
+  // are first mile and never open this.
+  const [addressSuggestions, setAddressSuggestions] = useState<PickupAddressSuggestion[] | null>(null);
 
   // Loaded ZIP polygon shapes for the map preview. Populated on demand as
   // the operator adds zips to the route; cached by id so removing + re-adding
@@ -387,6 +466,14 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
     active: initial?.active ?? true,
     zipIds: [...(initial?.zipcodes.map((z) => z.zipPolygonId) ?? [])].sort((a, b) => a - b),
     bulkPolygonIds: [...(initial?.bulkPolygons.map((p) => p.polygonId) ?? [])].sort((a, b) => a - b),
+    direction: initial?.direction ?? RouteDirection.FirstMile,
+    depotId: initial?.depotId ?? null,
+    originName: initial?.origin?.name ?? '',
+    originAddress: initial?.origin?.address ?? '',
+    originZip: initial?.origin?.zip ?? '',
+    originLat: initial?.origin?.latitude ?? null,
+    originLng: initial?.origin?.longitude ?? null,
+    originRadiusM: initial?.origin?.radiusM ?? 5000,
   });
   const isDirty = useMemo(() => {
     const snap = initialSnapshotRef.current;
@@ -403,9 +490,26 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
       (targetType ? targetId : null) !== snap.targetId ||
       active !== snap.active ||
       !arraysEqual(currentZipIds, snap.zipIds) ||
-      !arraysEqual(currentBulkPolygonIds, snap.bulkPolygonIds)
+      !arraysEqual(currentBulkPolygonIds, snap.bulkPolygonIds) ||
+      direction !== snap.direction ||
+      // Only compare the fields the CURRENT direction actually persists.
+      // A first-mile route discards depot + origin on save, so leftover form
+      // values must not light up the unsaved-changes guard.
+      (direction === RouteDirection.FinalMile && (
+        (originKind === 'depot' ? depotId : null) !== snap.depotId ||
+        (originKind === 'address' && (
+          originName.trim() !== snap.originName ||
+          originAddress.trim() !== snap.originAddress ||
+          originZip.trim() !== snap.originZip ||
+          originLat !== snap.originLat ||
+          originLng !== snap.originLng ||
+          originRadiusM !== snap.originRadiusM
+        ))
+      ))
     );
-  }, [name, area, scheduleIds, targetType, targetId, active, zips, bulkPolygonIds]);
+  }, [name, area, scheduleIds, targetType, targetId, active, zips, bulkPolygonIds,
+      direction, originKind, depotId, originName, originAddress, originZip,
+      originLat, originLng, originRadiusM]);
 
   // Confirmation dialog when the operator tries to close with unsaved changes.
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -417,33 +521,56 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   useEffect(() => {
     void (async () => {
       try {
-        const [t, s] = await Promise.all([
+        const [t, s, d] = await Promise.all([
           recurringRouteService.getAssignableTargets(),
           recurringRouteService.getSchedules(),
+          // Depot list for the final-mile origin picker. Same endpoint the
+          // rest of the app uses; there is no shared depot picker component
+          // to reuse, so this renders a plain select.
+          addressService.getRegions(),
         ]);
         setTargets(t.response);
         setSchedules(s.response);
+        setDepots(d.response.regions ?? []);
       } catch (e) { toast.show((e as Error).message, 'error'); }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (!zipSearch.trim()) { setZipResults([]); return; }
+    if (!zipSearch.trim()) { setCoverageResults([]); return; }
     const t = setTimeout(async () => {
       try {
-        const res = await recurringRouteService.searchZipcodes(zipSearch.trim(), 15);
-        setZipResults(res.response ?? []);
+        // Polygons spec part 1: one lookup over postcodes AND polygons.
+        const res = await recurringRouteService.searchCoverage(zipSearch.trim(), 15);
+        setCoverageResults(res.response ?? []);
       } catch { /* silent */ }
     }, 250);
     return () => clearTimeout(t);
   }, [zipSearch]);
 
+  // A result is either a postcode or a polygon; the chips and the save path
+  // differ, the box does not.
+  const addCoverage = (c: CoverageLookup) => {
+    if (c.kind === 'polygon') {
+      setBulkPolygonIds((prev) => {
+        if (prev.has(c.id)) return prev;
+        const next = new Set(prev);
+        next.add(c.id);
+        return next;
+      });
+    } else {
+      addZip({ zipPolygonId: c.id, zip: c.label, latitude: c.latitude, longitude: c.longitude });
+    }
+    setZipSearch('');
+    setCoverageResults([]);
+  };
+
   const addZip = (z: ZipcodeLookup) => {
     if (zips.some((x) => x.zipPolygonId === z.zipPolygonId)) return;
     setZips([...zips, z]);
     setZipSearch('');
-    setZipResults([]);
+    setCoverageResults([]);
   };
   const removeZip = (id: number) => setZips(zips.filter((z) => z.zipPolygonId !== id));
 
@@ -541,9 +668,92 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
       : [];
   }, [targets, targetType]);
 
+  // K6: load the suggestion list the first time the address tab is shown.
+  // Booking search for the master picker. Two characters minimum and
+  // debounced, the same shape the linehaul picker uses, because this searches
+  // every active parent booking rather than a route-scoped list.
+  useEffect(() => {
+    const term = bookingQuery.trim();
+    if (direction !== RouteDirection.FinalMile || term.length < 2) {
+      setBookingResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearchingBookings(true);
+    const t = window.setTimeout(() => {
+      recurringRouteService.getLinkableBookings(initial?.routeId ?? 0, term)
+        .then((r) => { if (!cancelled) setBookingResults(r.response ?? []); })
+        .catch(() => { if (!cancelled) setBookingResults([]); })
+        .finally(() => { if (!cancelled) setSearchingBookings(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(t); };
+  }, [bookingQuery, direction, initial?.routeId]);
+
+  useEffect(() => {
+    if (direction !== RouteDirection.FinalMile || originKind !== 'address') return;
+    if (addressSuggestions !== null) return;
+    void (async () => {
+      try {
+        const res = await recurringRouteService.getPickupAddressSuggestions();
+        setAddressSuggestions(res.response ?? []);
+      } catch {
+        // A failed suggestion fetch must not block the editor - the operator
+        // can still type an address and press Locate. Empty array so the
+        // effect does not retry on every render.
+        setAddressSuggestions([]);
+      }
+    })();
+  }, [direction, originKind, addressSuggestions]);
+
+  // Picking a suggestion fills the address AND its coordinates, so the
+  // common case needs no geocode round-trip at all.
+  const applySuggestion = (sug: PickupAddressSuggestion) => {
+    setOriginAddress([sug.company, sug.address, sug.city].filter(Boolean).join(', '));
+    if (sug.zip) setOriginZip(sug.zip);
+    if (!originName.trim() && sug.company) setOriginName(sug.company);
+    setOriginLat(sug.latitude);
+    setOriginLng(sug.longitude);
+  };
+
+  // Geocode the typed origin address. Reuses the HERE forward-geocode
+  // endpoint the Fix GPS modal already drives, including its country hint so
+  // a bare street name resolves in the tenant's own hemisphere.
+  const geocodeOrigin = async () => {
+    const q = originAddress.trim();
+    if (!q) { toast.show('Enter an origin address first', 'error'); return; }
+    setGeocoding(true);
+    try {
+      const res = await addressService.forwardGeocode(q, user.isUsTenant ? 'USA' : 'NZL');
+      if (!res.found || res.lat == null || res.lng == null) {
+        toast.show('No results found. Try a more specific address.', 'error');
+        return;
+      }
+      setOriginLat(res.lat);
+      setOriginLng(res.lng);
+      if (res.postCode) setOriginZip(res.postCode);
+      if (res.formattedAddress) setOriginAddress(res.formattedAddress);
+      toast.show('Origin located', 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setGeocoding(false); }
+  };
+
   const commit = async () => {
     if (!name.trim()) { toast.show('Route name is required', 'error'); return; }
     if (targetType && !targetId) { toast.show('Pick a default target or clear the type', 'error'); return; }
+    // Mirror of CK_Routes_Direction and of the server's ValidateDirection, so
+    // the operator finds out before the round-trip. The server still checks;
+    // this is not the enforcement point, it is the fast feedback.
+    if (direction === RouteDirection.FinalMile) {
+      if (originKind === 'depot' && depotId == null) {
+        toast.show('A final-mile route needs a depot to fan out from', 'error'); return;
+      }
+      if (originKind === 'address' && (originLat == null || originLng == null)) {
+        toast.show('Geocode the origin address so it has coordinates', 'error'); return;
+      }
+      if (originKind === 'address' && originRadiusM <= 0) {
+        toast.show('Origin radius must be greater than zero metres', 'error'); return;
+      }
+    }
     setSaving(true);
     try {
       const body: UpsertRouteBody = {
@@ -558,6 +768,31 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
         // the M:N binding; omitting would leave the server-side list
         // untouched, which is wrong when the operator has removed all).
         bulkPolygonIds: Array.from(bulkPolygonIds),
+        direction,
+        // Exactly one origin kind is persisted. The server clears the other
+        // side anyway when direction is FirstMile, but sending a coherent
+        // payload keeps the request readable in the network log.
+        depotId: direction === RouteDirection.FinalMile && originKind === 'depot' ? depotId : null,
+        origin: direction === RouteDirection.FinalMile && originKind === 'address'
+          ? {
+              name: originName.trim() || null,
+              address: originAddress.trim() || null,
+              zip: originZip.trim() || null,
+              latitude: originLat,
+              longitude: originLng,
+              radiusM: originRadiusM,
+            } satisfies RouteOrigin
+          : null,
+        // Final-mile only, and 0 rather than null to CLEAR: null means "leave
+        // it alone" on the server, so a first-mile route's save must not send
+        // a value at all or it would be read as a clear it never asked for.
+        ...(direction === RouteDirection.FinalMile
+          ? {
+              masterBookingId: masterBookingId ?? 0,
+              // Only meaningful once a master exists to carry it.
+              finalMileDeliveryMode: masterBookingId != null ? deliveryMode : null,
+            }
+          : {}),
       };
       if (isNew) {
         await recurringRouteService.create(body);
@@ -709,7 +944,224 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               </select>
             </Field>
           </div>
-          <Field label={`${zipLongLabel}s (${zips.length})`}>
+          <FieldGroup label="Direction">
+            <div className="flex gap-2">
+              {([
+                [RouteDirection.FirstMile, 'First mile', 'Collects from the customer'],
+                [RouteDirection.FinalMile, 'Final mile', 'Fans out from one origin to the drop'],
+              ] as const).map(([value, label, hint]) => (
+                <button key={value} type="button" title={hint} aria-label={label}
+                  onClick={() => setDirection(value)}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition ${
+                    direction === value
+                      ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
+                      : 'border-border bg-surface-white text-text-muted hover:border-brand-cyan/50'
+                  }`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {direction === RouteDirection.FinalMile && (
+              <p className="mt-1 text-[10px] text-text-muted">
+                Switching back to first mile clears the origin below.
+              </p>
+            )}
+          </FieldGroup>
+
+          {direction === RouteDirection.FinalMile && (
+            <FieldGroup label="Origin">
+              <div className="border border-border rounded-lg p-2 bg-surface-white space-y-2">
+                <div className="flex gap-2">
+                  {([['depot', 'A depot'], ['address', 'An address']] as const).map(([kind, label]) => (
+                    <button key={kind} type="button" aria-label={label}
+                      onClick={() => setOriginKind(kind)}
+                      className={`flex-1 px-2 py-1 rounded text-[11px] border transition ${
+                        originKind === kind
+                          ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
+                          : 'border-border text-text-muted hover:border-brand-cyan/50'
+                      }`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {originKind === 'depot' ? (
+                  <select value={depotId ?? ''} className={INPUT_CLASS}
+                    onChange={(e) => setDepotId(e.target.value ? Number(e.target.value) : null)}>
+                    <option value="">- Pick a depot -</option>
+                    {depots.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <>
+                    <input value={originName} onChange={(e) => setOriginName(e.target.value)}
+                      placeholder="Origin label (shown on Route Viewer runs)"
+                      className={INPUT_CLASS} />
+                    <div className="flex gap-2">
+                      <input value={originAddress} onChange={(e) => setOriginAddress(e.target.value)}
+                        placeholder="Origin address" className={`${INPUT_CLASS} flex-1`} />
+                      <button type="button" onClick={() => void geocodeOrigin()}
+                        disabled={geocoding || !originAddress.trim()}
+                        className="px-3 py-2 rounded-lg border border-border text-xs font-medium
+                                   text-text-muted hover:border-brand-cyan/50 disabled:opacity-50">
+                        {geocoding ? 'Locating...' : 'Locate'}
+                      </button>
+                    </div>
+                    {addressSuggestions !== null && addressSuggestions.length > 0 && (
+                      <div>
+                        <div className="text-[10px] text-text-muted mb-1">
+                          Recently collected from
+                        </div>
+                        <ul className="max-h-28 overflow-auto border border-border rounded divide-y divide-border">
+                          {addressSuggestions.map((sug) => (
+                            <li key={`${sug.company ?? ''}|${sug.zip ?? ''}|${sug.latitude ?? ''}`}>
+                              <button type="button" onClick={() => applySuggestion(sug)}
+                                className="w-full text-left px-2 py-1 text-[11px] hover:bg-brand-cyan/10">
+                                <span className="truncate block">{sug.label}</span>
+                                <span className="text-[10px] text-text-muted">
+                                  {sug.usageCount} job{sug.usageCount === 1 ? '' : 's'}
+                                  {sug.latitude != null && ' - already located'}
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={originZip} onChange={(e) => setOriginZip(e.target.value)}
+                        placeholder={zipLongLabel} className={INPUT_CLASS} />
+                      <input type="number" min={1} step={100} value={originRadiusM}
+                        onChange={(e) => setOriginRadiusM(Number(e.target.value))}
+                        placeholder="Radius (m)" className={INPUT_CLASS} />
+                    </div>
+                    <p className="text-[10px] text-text-muted">
+                      {originLat != null && originLng != null
+                        ? `Located at ${originLat.toFixed(5)}, ${originLng.toFixed(5)}. The route claims a delivery only when the booking's PICKUP point is within ${originRadiusM} m of here.`
+                        : 'Not located yet. Press Locate - a final-mile address origin needs coordinates before it can be saved.'}
+                    </p>
+                  </>
+                )}
+              </div>
+            </FieldGroup>
+          )}
+
+          {/* Final-mile tote scanning (spec 4.1 and 4.7). Only a final-mile
+              route has a master: a first-mile route's driver never scans a
+              tote onto a vehicle at the depot. */}
+          {direction === RouteDirection.FinalMile && (
+            <FieldGroup label="Tote scanning">
+              <div className="border border-border rounded-lg p-2 bg-surface-white space-y-3">
+                <div>
+                  <span className="block text-[11px] font-medium text-text-secondary mb-1">
+                    Master job
+                  </span>
+                  {masterBookingId ? (
+                    <div className="flex items-center justify-between gap-2 border border-border rounded px-2 py-1.5 text-xs">
+                      <span className="truncate font-medium text-text-primary">
+                        {masterLabel ?? `Booking #${masterBookingId}`}
+                      </span>
+                      <button type="button" data-testid="clear-final-mile-master"
+                        onClick={() => { setMasterBookingId(null); setMasterLabel(null); }}
+                        className="text-[11px] text-danger hover:underline shrink-0">Clear</button>
+                    </div>
+                  ) : (
+                    <>
+                      <input value={bookingQuery} onChange={(e) => setBookingQuery(e.target.value)}
+                        data-testid="final-mile-master-search"
+                        placeholder="Search by job number, name, client or address..."
+                        className={INPUT_CLASS} />
+                      {bookingQuery.trim().length >= 2 && (
+                        <div className="mt-1 border border-border rounded divide-y divide-border max-h-40 overflow-y-auto">
+                          {searchingBookings && (
+                            <div className="px-2 py-1.5 text-[11px] text-text-muted">Searching...</div>
+                          )}
+                          {!searchingBookings && bookingResults.length === 0 && (
+                            <div className="px-2 py-1.5 text-[11px] text-text-muted">No matching bookings.</div>
+                          )}
+                          {!searchingBookings && bookingResults.map((b) => (
+                            <button key={b.bookingId} type="button"
+                              disabled={b.isLinehaulMasterElsewhere}
+                              title={b.isLinehaulMasterElsewhere
+                                ? 'This booking is the master job of a linehaul run. Clear it there first.'
+                                : undefined}
+                              onClick={() => {
+                                setMasterBookingId(b.bookingId);
+                                setMasterLabel(b.jobName || b.clientName
+                                  ? `${b.jobNumber} - ${b.jobName ?? b.clientName}`
+                                  : b.jobNumber);
+                                setBookingQuery('');
+                                setBookingResults([]);
+                              }}
+                              className="w-full text-left px-2 py-1.5 text-xs hover:bg-surface-light
+                                         disabled:opacity-50 disabled:cursor-not-allowed
+                                         flex items-center justify-between gap-2">
+                              <span className="truncate">
+                                <span className="font-medium text-text-primary">{b.jobNumber}</span>
+                                {(b.jobName || b.clientName) && (
+                                  <span className="text-text-muted"> - {b.jobName ?? b.clientName}</span>
+                                )}
+                              </span>
+                              {b.isLinehaulMasterElsewhere && (
+                                <span className="text-[10px] text-warning shrink-0 rounded-full bg-warning-bg px-1.5 py-0.5">
+                                  linehaul master
+                                </span>
+                              )}
+                              {!b.isLinehaulMasterElsewhere && b.linkedRouteId != null && !b.linkedToThisRoute && (
+                                <span className="text-[10px] text-text-muted shrink-0">on another route</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <p className="mt-1 text-[10px] text-text-muted">
+                    The booking whose daily job the driver opens to scan totes on at the
+                    depot and off at the destination. Without one there is nothing for the
+                    handset to open.
+                    {masterBookingId != null && ' Clearing it also unbinds the booking from this route.'}
+                  </p>
+                </div>
+
+                <div>
+                  <span className="block text-[11px] font-medium text-text-secondary mb-1">
+                    Delivery scanning
+                  </span>
+                  <div className="flex gap-2">
+                    {([
+                      [FinalMileDeliveryMode.SealedTotes, 'Accept sealed totes', 'Scan the tote; everything inside is delivered.'],
+                      [FinalMileDeliveryMode.ScanEachItem, 'Scan each item out', 'Scan the tote, then every item out of it.'],
+                    ] as const).map(([value, label, hint]) => (
+                      <button key={value} type="button" title={hint}
+                        data-testid={`delivery-mode-${value}`}
+                        disabled={masterBookingId == null}
+                        onClick={() => setDeliveryMode(value)}
+                        className={`flex-1 px-2 py-1 rounded text-[11px] border transition
+                          disabled:opacity-50 disabled:cursor-not-allowed ${
+                          deliveryMode === value
+                            ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan'
+                            : 'border-border text-text-muted hover:border-brand-cyan/50'
+                        }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-text-muted">
+                    {masterBookingId == null
+                      ? 'Set a master job first: the mode is stored on it.'
+                      : 'What the destination expects. The lab decides, not the driver.'}
+                  </p>
+                </div>
+              </div>
+            </FieldGroup>
+          )}
+
+          {/* One Coverage box (polygons spec part 1). Postcodes and custom
+              polygons answer the same question, so they share an input and a
+              chip row; the colour swatch is what tells them apart. */}
+          <Field label={`Coverage (${zips.length + bulkPolygonIds.size})`}>
             <div className="border border-border rounded-lg p-2 bg-surface-white">
               {zips.length > 0 && (
                 <div className="flex flex-wrap gap-1 mb-2">
@@ -733,47 +1185,24 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                   ))}
                 </div>
               )}
-              <input type="text" value={zipSearch} onChange={(e) => setZipSearch(e.target.value)}
-                className={INPUT_CLASS + ' text-xs'} placeholder={`Type to search ${zipLongLabel.toLowerCase()}s...`} />
-              {zipResults.length > 0 && (
-                <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white text-xs">
-                  {zipResults.map((z) => (
-                    <li key={z.zipPolygonId}>
-                      <button type="button" onClick={() => addZip(z)}
-                        className="w-full text-left px-2 py-1 hover:bg-surface-cream">
-                        {z.zip}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </Field>
-          <Field label={`Coverage polygons (${bulkPolygonIds.size})`}>
-            <div className="border border-border rounded-lg p-2 bg-surface-white">
-              {bulkPolygonIds.size === 0 ? (
-                <div className="text-[10px] text-text-muted italic">
-                  No coverage polygons attached. Attach via Polygon Builder -&gt;
-                  Save coverage as Route, or via the map on the right.
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-1">
+              {bulkPolygonIds.size > 0 && (
+                <div className="flex flex-wrap gap-1 mb-2">
                   {[...bulkPolygonIds].map((id) => {
                     const shape = bulkPolygonShapes.get(id);
                     // Fall back to the RouteBulkPolygonRef name from the
                     // initial payload while the full shape is still fetching.
-                    const initialRef = initial?.bulkPolygons.find((p) => p.polygonId === id);
+                    const initialRef = initial?.bulkPolygons.find((pg) => pg.polygonId === id);
                     const label = shape?.name ?? initialRef?.name ?? `Polygon #${id}`;
+                    const colour = shape?.colorHex ?? '#7c3aed';
                     return (
-                      <span key={id}
-                        className="inline-flex items-center gap-0.5 rounded bg-brand-purple/15 text-brand-dark text-xs">
-                        {/* Label click = zoom map to this coverage
-                            polygon. × detaches. Two distinct hit
-                            targets so a mis-hit on the label doesn't
-                            drop coverage. */}
+                      <span key={`poly-${id}`}
+                        className="inline-flex items-center gap-0.5 rounded text-brand-dark text-xs border"
+                        style={{ backgroundColor: `${colour}26`, borderColor: `${colour}80` }}>
+                        <span className="inline-block w-2 h-2 ml-2 rounded-sm shrink-0"
+                          style={{ backgroundColor: colour }} />
                         <button type="button"
                           onClick={() => focusBulkPolygon(id)}
-                          className="pl-2 py-0.5 hover:underline"
+                          className="pl-1 py-0.5 hover:underline"
                           title={`Zoom map to "${label}"`}>
                           {label}
                         </button>
@@ -785,6 +1214,39 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                     );
                   })}
                 </div>
+              )}
+              <input type="text" value={zipSearch} onChange={(e) => setZipSearch(e.target.value)}
+                className={INPUT_CLASS + ' text-xs'} placeholder={`Type a ${zipLongLabel.toLowerCase()} or a polygon name...`} />
+              {coverageResults.length > 0 && (
+                <ul className="mt-1 max-h-40 overflow-auto border border-border-light rounded bg-surface-white text-xs">
+                  {(['postcode', 'polygon'] as const).map((kind) => {
+                    const rows = coverageResults.filter((c) => c.kind === kind);
+                    if (rows.length === 0) return null;
+                    return (
+                      <li key={kind}>
+                        <div className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-muted bg-surface-cream/60">
+                          {kind === 'postcode' ? `${zipLongLabel}s` : 'Polygons'}
+                        </div>
+                        <ul>
+                          {rows.map((c) => (
+                            <li key={`${c.kind}-${c.id}`}>
+                              <button type="button" onClick={() => addCoverage(c)}
+                                className="w-full text-left px-2 py-1 hover:bg-surface-cream flex items-center gap-1.5">
+                                {c.kind === 'polygon' && (
+                                  <span
+                                    className="inline-block w-2.5 h-2.5 rounded-sm border border-black/20 shrink-0"
+                                    style={{ backgroundColor: c.colorHex ?? '#7c3aed' }}
+                                  />
+                                )}
+                                {c.label}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           </Field>
@@ -811,6 +1273,12 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               .filter((p): p is BulkPolygon => !!p)}
             onRemoveBulkPolygon={removeBulkPolygon}
             focusRequest={focusRequest}
+            originCircle={
+              direction === RouteDirection.FinalMile && originKind === 'address'
+                && originLat != null && originLng != null
+                ? { lat: originLat, lng: originLng, radiusM: originRadiusM }
+                : null
+            }
             isUsTenant={user.isUsTenant}
             googleMapsKey={user.googleMapsKey}
           />
@@ -891,6 +1359,7 @@ function RouteCoverageMap({
   bulkPolygons,
   onRemoveBulkPolygon,
   focusRequest,
+  originCircle,
   isUsTenant,
   googleMapsKey,
 }: {
@@ -908,6 +1377,12 @@ function RouteCoverageMap({
    *  every request so the effect re-fires even when the same shape is
    *  clicked twice. Kind + id identifies the target shape. */
   focusRequest: { kind: 'zip' | 'bulkPolygon'; id: number; nonce: number } | null;
+  /** Feature 5.1. The address origin of a final-mile route, drawn as a
+   *  radius circle so the operator can see what the resolver will measure
+   *  against. Null for every other route. This is the first persisted
+   *  circle in the codebase - PolygonBuilder's only circle is a transient
+   *  drawing gesture that becomes a 32-vertex polygon before it is saved. */
+  originCircle: { lat: number; lng: number; radiusM: number } | null;
   isUsTenant: boolean;
   googleMapsKey: string | null;
 }) {
@@ -915,6 +1390,9 @@ function RouteCoverageMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const overlaysRef = useRef<Map<number, any>>(new Map());
+  // Feature 5.1: the single origin-radius circle for a final-mile route
+  // with an address origin. One per map, so a bare ref rather than a Map.
+  const originCircleRef = useRef<any>(null);
   const centroidsRef = useRef<ZipcodeLookup[]>([]);
   const centroidMarkersRef = useRef<Map<number, any>>(new Map());
   const clustererRef = useRef<MarkerClusterer | null>(null);
@@ -1130,6 +1608,55 @@ function RouteCoverageMap({
   };
 
   // Sync bound-zip polygon overlays. Polygons are clickable = remove.
+  // Feature 5.1: draw the origin radius of a final-mile address origin.
+  // This is what the resolver's attempt 2 measures the booking's PICKUP point
+  // against, so seeing it on the map is the difference between an operator
+  // guessing at a radius and choosing one.
+  //
+  // Purple rather than the orange used for zip coverage and the blue used for
+  // unbound viewport shapes: the circle is not coverage, it is where the route
+  // collects FROM, and colouring it like coverage would read as a third
+  // coverage layer.
+  useEffect(() => {
+    const g = (window as any).google;
+    const map = mapRef.current;
+    if (!map || !g?.maps) return;
+
+    if (!originCircle) {
+      if (originCircleRef.current) {
+        originCircleRef.current.setMap(null);
+        originCircleRef.current = null;
+      }
+      return;
+    }
+
+    const centre = { lat: originCircle.lat, lng: originCircle.lng };
+    if (!originCircleRef.current) {
+      originCircleRef.current = new g.maps.Circle({
+        center: centre,
+        radius: originCircle.radiusM,
+        strokeColor: '#9B51E0', strokeOpacity: 0.9, strokeWeight: 2,
+        fillColor: '#9B51E0', fillOpacity: 0.12,
+        // Display-only, same rule the zip overlays follow since 2026-08-06:
+        // an accidental pan-click must never mutate the route.
+        map, clickable: false,
+      });
+    } else {
+      originCircleRef.current.setCenter(centre);
+      originCircleRef.current.setRadius(originCircle.radiusM);
+      originCircleRef.current.setMap(map);
+    }
+  }, [originCircle, ready]);
+
+  // Tear the circle down with the map so a closed editor leaves nothing
+  // attached to a stale map instance.
+  useEffect(() => () => {
+    if (originCircleRef.current) {
+      originCircleRef.current.setMap(null);
+      originCircleRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     const g = (window as any).google;
     const map = mapRef.current;
@@ -1584,6 +2111,26 @@ function RosterModal({ route, onClose, onChanged }: RosterProps) {
 }
 
 const INPUT_CLASS = 'w-full border border-border rounded-lg px-3 py-1.5 text-sm bg-surface-white text-text-primary focus:outline-none focus:ring-2 focus:ring-brand-cyan/30 focus:border-brand-cyan';
+
+/** Same visual shell as Field, but a div rather than a label.
+ *
+ *  Field wraps its children in <label>, which is right for a single input or
+ *  select: the control inherits the label's text as its accessible name. It is
+ *  WRONG for a group of buttons. The accessible-name computation folds the
+ *  label text into every nested button, so the Direction group's "First mile"
+ *  button announced itself as "Direction Final mile" - the opposite of what it
+ *  does. Caught by the Playwright spec, which could not tell the two buttons
+ *  apart.
+ *
+ *  Use Field for one labelable control, FieldGroup for anything else. */
+function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="block" role="group" aria-label={label}>
+      <span className="block text-text-secondary text-xs mb-1">{label}</span>
+      {children}
+    </div>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

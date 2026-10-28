@@ -1,4 +1,4 @@
-import { request, buildQuery } from './api';
+﻿import { request, buildQuery } from './api';
 
 // Wire shapes for /api/schedules (group-shaped). Mirror the C# DTOs in
 // RoutedOperations.Core.Application.Dtos.Schedule.ScheduleDtos. A
@@ -51,6 +51,11 @@ export interface ScheduleLinehaul {
   speedId: number | null;
   /** Resolved speed name for display. Null when speedId is null. */
   speedName: string | null;
+  /** 1-based travel order within the schedule. The API returns linehauls
+   *  sorted by this, so the chain editor renders legs in travel order.
+   *  Null means the chain was never ordered (or was ambiguous at backfill
+   *  time) and the booking SPs fall back to Id order. */
+  legOrder: number | null;
 }
 
 /** Slim projection returned by GET /schedules for the list table.
@@ -124,6 +129,16 @@ export interface ScheduleGroupSummary {
   /** Whether the schedule can be booked at all. Independent of
    *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
   isActive: boolean;
+  /** True when the schedule has been collapsed onto a single row
+   *  (it has a tblBulkRunScheduleDetail row). False is NOT a problem to
+   *  fix: an old-shape schedule is correct and bookable. Schedules
+   *  collapse opportunistically when someone saves one whose days agree,
+   *  so this is here mainly so ops can watch the estate converge. */
+  isCollapsed: boolean;
+  /** How many upcoming runs the booking page offers. null on an
+   *  old-shape schedule, which has nowhere to store it and falls back to
+   *  one week's worth. A per-client override can change it. */
+  occurrencesAhead: number | null;
   /** Nested override rows for the Schedules NEW list (2026-09-24). One
    *  entry per client that owns any delta on this schedule; each row
    *  carries the delta labels the frontend joins with " . " under the
@@ -134,6 +149,18 @@ export interface ScheduleGroupSummary {
     clientName: string;
     deltaLabels: string[];
   }>;
+  /** 'depot', 'client' or 'direct' from tblBulkRunScheduleHeader.OriginType.
+   *  The list's ORIGIN column needs it because `pickupDepotName` is null for
+   *  BOTH client and direct origin, so the column cannot tell them apart
+   *  without it. Optional for legacy payloads that pre-date the field. */
+  originType?: string | null;
+  /** True when every client can book this schedule, straight off the
+   *  header flag. Do NOT re-derive it from `clientCount === 0`: a default
+   *  schedule may have clients configured on it, and inferring the flag
+   *  from the count is what made the list chip and the modal radios lie
+   *  (spec 6.1). Optional for legacy payloads that pre-date the field;
+   *  treat an absent value as true, which is what the backend defaults. */
+  isDefault?: boolean;
 }
 
 export interface ScheduleGroup {
@@ -162,6 +189,18 @@ export interface ScheduleGroup {
   pickupPostcodeGroupId: number | null;
   pickupPostcodeGroupName: string | null;
   pickupRatingSpeed: number | null;
+  /** 'depot' or 'client'. 'client' means the chain starts at the client's
+   *  own address: no collection job, and the booking's own From address is
+   *  kept instead of being replaced by a depot's. */
+  originType: string | null;
+  /** Origin branch for a client-origin schedule. Counterpart of
+   *  pickupDepotId, NOT of regionId, which stays the delivery branch. */
+  originRegionId: number | null;
+  originRegionName: string | null;
+  /** Linked clients with no site coordinates. Only populated for a
+   *  client-origin schedule, whose runs start at the client's site and so
+   *  would start in the wrong place without them. */
+  clientsMissingGeocode?: Array<{ clientId: number; clientName: string }>;
   autoBook: boolean | null;
   bookPickup: boolean | null;
   applyPickupCutoff: boolean | null;
@@ -174,6 +213,9 @@ export interface ScheduleGroup {
   description: string | null;
   dayWindows: DayWindow[];
   zones: ScheduleZone[];
+  /** Zones the collection leg collects from (BulkPickupZoneSchedule).
+   *  Empty on every schedule until the Collection card starts writing. */
+  pickupZones: ScheduleZone[];
   linehauls: ScheduleLinehaul[];
   clientIds: number[];
   /** Resolved client codes, same order as clientIds. Prefer these for display. */
@@ -196,6 +238,27 @@ export interface ScheduleGroup {
   /** Whether the schedule can be booked at all. Independent of
    *  `autoBook` (book-immediately vs stage). Steve F21 (2026-09-22). */
   isActive: boolean;
+  /** True when the schedule has been collapsed onto a single row
+   *  (it has a tblBulkRunScheduleDetail row). False is NOT a problem to
+   *  fix: an old-shape schedule is correct and bookable. Schedules
+   *  collapse opportunistically when someone saves one whose days agree,
+   *  so this is here mainly so ops can watch the estate converge. */
+  isCollapsed: boolean;
+  /** How many upcoming runs the booking page offers. null on an
+   *  old-shape schedule, which has nowhere to store it and falls back to
+   *  one week's worth. A per-client override can change it. */
+  occurrencesAhead: number | null;
+  /** Why the save that returned this object did NOT collapse the
+   *  schedule, verbatim from the database. Semicolon-separated, naming
+   *  the obstacle (WindowVariesByDay, PayloadVaries:<column>,
+   *  ShopWindowReferenced:<shop>). null when it collapsed, or on a plain
+   *  read, where nothing was attempted. */
+  convertRefusalReasons: string | null;
+  /** True when every client can book this schedule. The header's own flag,
+   *  not a derivation from `clientIds.length`: the Clients tab can attach a
+   *  client to a default schedule, so the two are independent (spec 6.1).
+   *  Optional for legacy payloads; absent reads as true. */
+  isDefault?: boolean;
 }
 
 export interface LookupItem {
@@ -214,6 +277,28 @@ export interface LinehaulRunLookup {
   courierId: number | null;
 }
 export interface StateOption { id: number; label: string; }
+
+/**
+ * A tickable zone on a schedule leg, labelled and scoped to a depot.
+ *
+ * `zone` is the value that persists, and it is a zone NUMBER on both
+ * tenants. `zoneNumbers` below is the bare list this replaces for the chain
+ * editor; it stays because the older schedule modal still reads it, and
+ * because it is the only thing that can show a number the tenant has ticked
+ * but that no longer resolves to a zone.
+ */
+export interface ZoneOption {
+  zone: number;
+  /** Zone name(s) on this number at this depot, joined with " + " when a
+   *  depot legitimately has two zones sharing a number. */
+  label: string;
+  depotId: number;
+  zipCount: number;
+  /** Zone group name, used as a heading so pricing zones and coverage zones
+   *  read as two families. Empty on NZ. */
+  groupLabel: string;
+}
+
 export interface ScheduleLookups {
   depots: LookupItem[];
   speeds: LookupItem[];
@@ -224,6 +309,7 @@ export interface ScheduleLookups {
   postcodeGroups: PostcodeGroupLookup[];
   linehaulRuns: LinehaulRunLookup[];
   zoneNumbers: number[];
+  zones: ZoneOption[];
   storageStates: StateOption[];
   deliveryStates: StateOption[];
   pickupBoxDiscounts: StateOption[];
@@ -237,6 +323,10 @@ export interface ScheduleGroupUpsertBody {
   description: string | null;
   regionId: number;
   pickupDepotId: number | null;
+  /** 'depot' or 'client'. Omitting it means 'depot', today's behaviour. */
+  originType?: string | null;
+  /** Required when originType is 'client', ignored otherwise. */
+  originRegionId?: number | null;
   speedId: number | null;
   parentSpeedId: number | null;
   autoBook: boolean | null;
@@ -265,6 +355,8 @@ export interface ScheduleGroupUpsertBody {
    *  picker so the backend null-guard preserves seeded zones (see
    *  ScheduleService.SaveAsync). */
   zones: Array<{ zone: number; active: boolean | null }> | null;
+  /** Same null-means-leave-alone contract as zones. */
+  pickupZones?: Array<{ zone: number; active: boolean | null }> | null;
   /** Steve F7 (2026-09-20): same null-vs-empty semantics as `zones`. */
   linehauls: Array<{
     name: string | null;
@@ -284,6 +376,11 @@ export interface ScheduleGroupUpsertBody {
     dropOffLocationId: number | null;
     /** Per-leg service class override. Null = inherit. */
     speedId: number | null;
+    /** 1-based travel order within the schedule. The chain editor sends the
+     *  leg's position in the chain. Omitting it makes the backend fall back
+     *  to this row's position in the array, which is the same thing as long
+     *  as the caller sends legs in chain order. */
+    legOrder?: number | null;
   }> | null;
   /** Legacy id-based fallback. Consulted only when `clientCodes` is
    *  null in the request body. The NewScheduleModal + `ClientMultiPicker`
@@ -310,6 +407,17 @@ export interface ScheduleGroupUpsertBody {
    *  `autoBook`. Omit to keep the existing value on update paths;
    *  defaults to true on create when unset. Steve F21 (2026-09-22). */
   isActive?: boolean;
+  /** Whether every client can book this schedule (spec 6.1). Omit to leave
+   *  it alone on update; unset defaults to true on create. A `false` needs
+   *  at least one client configured, or the save is refused: a schedule
+   *  neither default nor configured for anybody is bookable by nobody. */
+  isDefault?: boolean;
+  /** How many upcoming runs the booking page should offer, 1 to 60. Omit
+   *  to leave it alone: a schedule that has just collapsed already has
+   *  one week's worth (the number of days in its mask), and an old-shape
+   *  schedule has nowhere to store it. Sets the SCHEDULE's value; a
+   *  client needing a different number gets an override instead. */
+  occurrencesAhead?: number | null;
 }
 
 export interface ScheduleCopyBody {

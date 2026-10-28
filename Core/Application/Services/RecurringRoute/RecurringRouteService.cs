@@ -1,6 +1,9 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
+using Dapper;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -52,6 +55,11 @@ public class RecurringRouteService(
             .SelectMany(r => r.Schedules.Select(s => s.BulkRunScheduleId))
             .Distinct().ToList();
         var routeIds = rows.Select(r => r.RouteId).ToList();
+        // Feature 5.1. Route.DepotId is a bare scalar with no navigation
+        // property on purpose (see Route.Direction.cs), so the name is
+        // resolved here the same way courier and agent names already are.
+        var depotIds = rows.Where(r => r.DepotId.HasValue)
+            .Select(r => r.DepotId!.Value).Distinct().ToList();
 
         var couriersTask = Task.Run(async () =>
         {
@@ -68,6 +76,14 @@ public class RecurringRouteService(
             return await ctx.TucAgents.AsNoTracking()
                 .Where(a => agentIds.Contains(a.UcagId))
                 .ToDictionaryAsync(a => a.UcagId, a => a.UcagName ?? string.Empty);
+        });
+        var depotsTask = Task.Run(async () =>
+        {
+            if (depotIds.Count == 0) return new Dictionary<int, string>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.TblBulkRegions.AsNoTracking()
+                .Where(d => depotIds.Contains(d.BulkRegionId))
+                .ToDictionaryAsync(d => d.BulkRegionId, d => d.Name ?? string.Empty);
         });
         var scheduleMapTask = BuildScheduleLookupAsync(scheduleIds);
         var bookingCountsTask = Task.Run(async () =>
@@ -92,12 +108,49 @@ public class RecurringRouteService(
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
         });
 
-        await Task.WhenAll(couriersTask, agentsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask);
+        // Final-mile masters, one query for the whole page. A final-mile master
+        // is the route-keyed twin of a linehaul one: IsLinehaulMaster with a
+        // RouteId and NO LinehaulRunId. The flag is reused rather than renamed
+        // (spec 4.1), and that NULL run id is the only thing separating the two
+        // kinds, so it is in every predicate that touches them.
+        var mastersTask = Task.Run(async () =>
+        {
+            if (routeIds.Count == 0) return new Dictionary<int, (int Id, string Label, byte Mode)>();
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            var rows = await ctx.TucJobBookings.AsNoTracking()
+                .Where(b => b.RouteId != null && routeIds.Contains(b.RouteId.Value)
+                            && b.IsLinehaulMaster && b.LinehaulRunId == null)
+                .Select(b => new
+                {
+                    RouteId = b.RouteId!.Value,
+                    b.UcbkId,
+                    b.UcbkJobNumber,
+                    b.CustomJobName,
+                    ClientName = b.UcbkClient != null ? b.UcbkClient.UcclName : null,
+                    b.FinalMileDeliveryMode,
+                })
+                .ToListAsync();
+            return rows
+                .GroupBy(x => x.RouteId)
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var m = g.OrderBy(x => x.UcbkId).First();
+                    var name = m.CustomJobName ?? m.ClientName;
+                    var label = string.IsNullOrWhiteSpace(name)
+                        ? (m.UcbkJobNumber ?? $"Booking #{m.UcbkId}")
+                        : $"{m.UcbkJobNumber} - {name}";
+                    return (Id: m.UcbkId, Label: label, Mode: m.FinalMileDeliveryMode);
+                });
+        });
+
+        await Task.WhenAll(couriersTask, agentsTask, depotsTask, scheduleMapTask, bookingCountsTask, mappedStopsTask, mastersTask);
         var couriers = couriersTask.Result;
         var agents = agentsTask.Result;
+        var depots = depotsTask.Result;
         var scheduleMap = scheduleMapTask.Result;
         var bookingCounts = bookingCountsTask.Result;
         var mappedStopsCounts = mappedStopsTask.Result;
+        var masters = mastersTask.Result;
 
         return rows.Select(r =>
         {
@@ -136,7 +189,20 @@ public class RecurringRouteService(
                 bookingCounts.GetValueOrDefault(r.RouteId),
                 mappedStopsCounts.GetValueOrDefault(r.RouteId),
                 r.CreatedAt,
-                r.UpdatedAt);
+                r.UpdatedAt,
+                // Feature 5.1
+                r.Direction,
+                r.DepotId,
+                r.DepotId.HasValue
+                    ? depots.GetValueOrDefault(r.DepotId.Value, string.Empty)
+                    : string.Empty,
+                BuildOrigin(r),
+                masters.TryGetValue(r.RouteId, out var fm) ? fm.Id : null,
+                masters.TryGetValue(r.RouteId, out var fml) ? fml.Label : null,
+                // 1 when the route has no master yet, which is what the column
+                // defaults to anyway, so the editor opens on "accept sealed
+                // totes" rather than on an empty radio pair.
+                masters.TryGetValue(r.RouteId, out var fmm) ? fmm.Mode : (byte)1);
         }).ToList();
     }
 
@@ -147,6 +213,15 @@ public class RecurringRouteService(
     public async Task<List<Dtos.RecurringLinehaul.BulkJobListItemDto>> GetMappedStopsAsync(int routeId)
     {
         var q =
+            // Bug 3: this shares BulkJobListItemDto and the MappedStopsDrilldown
+            // component with the Linehaul tab, so it has to stamp Source even
+            // though it only reads one table. Route stops are keyed on RouteId,
+            // not LinehaulRunId, and every tenant currently has zero rows with a
+            // RouteId in tucJob / tucJobArchive (checked on all four 2026-09-30),
+            // so there is no second source to union here yet. If route stamping
+            // ever reaches tucJob, this needs the same treatment as the linehaul
+            // list. Note Bug 2 deliberately nulls RouteId on linehaul legs, so LH
+            // legs are expected to be absent from this list.
             from j in Context.TblBulkJobs.AsNoTracking()
             where j.RouteId == routeId && !j.Void
             join t in Context.TucJobTypes.AsNoTracking() on j.Speed equals t.UcjtId into ts
@@ -159,6 +234,7 @@ public class RecurringRouteService(
             select new Dtos.RecurringLinehaul.BulkJobListItemDto
             {
                 Id = j.BulkJobId,
+                Source = Dtos.RecurringLinehaul.JobSources.Bulk,
                 JobNumber = j.JobNumber ?? string.Empty,
                 Pickup = j.FromAddress,
                 Drop = j.ToAddress,
@@ -250,6 +326,130 @@ public class RecurringRouteService(
         return result;
     }
 
+    // ── Final-mile master job (spec 4.1 / 4.7) ──────────────────────────
+    //
+    // The route-keyed twin of RecurringLinehaulService.ApplyMasterBookingAsync,
+    // and deliberately the same shape so the two read as one idea: demote any
+    // current master for this route, then promote the chosen booking.
+    //
+    // Three things differ from the linehaul version, each because a route is
+    // not a run:
+    //   * The key is RouteId with LinehaulRunId left NULL. That NULL is what
+    //     stops a final-mile master ever being picked up by a linehaul query
+    //     and vice versa.
+    //   * Promoting a booking that is currently a LINEHAUL master would quietly
+    //     take it off its run, so that is refused here rather than silently
+    //     done. The picker warns, but the API is what has to be unfoolable.
+    //   * The courier is NOT inherited. A linehaul master takes the run's
+    //     courier; a final-mile master gets its driver from the route's roster
+    //     through uspPrebookSet like any other route booking, so writing one
+    //     here would fight the roster.
+    private async Task ApplyMasterBookingAsync(int routeId, int? masterBookingId, byte? deliveryMode)
+    {
+        // Null means "leave it alone", so a save that never mentions the master
+        // cannot demote one. 0 is the explicit clear.
+        if (masterBookingId is null && deliveryMode is null) return;
+
+        var current = await Context.TucJobBookings
+            .Where(b => b.RouteId == routeId && b.IsLinehaulMaster && b.LinehaulRunId == null)
+            .ToListAsync();
+
+        if (masterBookingId is null)
+        {
+            // Mode only. Nothing to write it to without a master.
+            if (current.Count == 0) return;
+            foreach (var b in current) b.FinalMileDeliveryMode = deliveryMode!.Value;
+            return;
+        }
+
+        // Demoting clears RouteId as well as the flag, which is what makes the
+        // operation reversible from the UI. Promoting SETS RouteId (spec 4.1),
+        // and the Route editor's only booking list is read-only, so a demote
+        // that left the binding behind would be a field this app can set and
+        // never unset - which is exactly how the 21 Oct browser test left a
+        // test booking stuck on a route with no way back.
+        //
+        // The cost, stated rather than hidden: a booking that was ALREADY
+        // bound to this route before it was promoted loses that binding when
+        // it is demoted. Rare, and the symmetric behaviour is worth more than
+        // preserving it, but it is a real trade and not an oversight. The
+        // linehaul twin makes the same one with LinehaulRunId.
+        void Demote(TucJobBooking b)
+        {
+            b.IsLinehaulMaster = false;
+            b.RouteId = null;
+        }
+
+        var wanted = masterBookingId.Value;
+
+        if (wanted == 0)
+        {
+            foreach (var b in current) Demote(b);
+            return;
+        }
+
+        var booking = current.FirstOrDefault(b => b.UcbkId == wanted)
+                      ?? await Context.TucJobBookings.FirstOrDefaultAsync(b => b.UcbkId == wanted);
+        if (booking is null)
+            throw new InvalidOperationException($"Booking {wanted} not found.");
+
+        if (booking.IsLinehaulMaster && booking.LinehaulRunId != null)
+            throw new InvalidOperationException(
+                $"Booking {wanted} is the master job of a linehaul run. "
+                + "Clear it there first, or choose a different booking.");
+
+        foreach (var b in current.Where(b => b.UcbkId != wanted))
+            Demote(b);
+
+        booking.RouteId = routeId;
+        booking.IsLinehaulMaster = true;
+        booking.LinehaulRunId = null;
+        if (deliveryMode is not null) booking.FinalMileDeliveryMode = deliveryMode.Value;
+    }
+
+    /// <summary>Bookings the Route editor's master picker can offer, searched
+    /// by text the way the linehaul picker searches.
+    ///
+    /// NOT the same thing as GetBookingsAsync, which lists bookings already
+    /// carrying this RouteId. A final-mile master has to be found and promoted
+    /// before it carries one, and on Medical no booking carries route 15 at
+    /// all, so a picker fed from that list would be empty on the one route
+    /// this feature exists for.</summary>
+    public async Task<List<RouteLinkableBookingDto>> SearchLinkableBookingsAsync(int routeId, string? q)
+    {
+        var term = (q ?? string.Empty).Trim();
+        if (term.Length < 2) return [];
+
+        return await Context.TucJobBookings.AsNoTracking()
+            .Where(b => b.UcbkActive == true && b.ParentId == null)
+            .Where(b =>
+                b.UcbkJobNumber.Contains(term) ||
+                (b.CustomJobName != null && b.CustomJobName.Contains(term)) ||
+                (b.UcbkClient != null && b.UcbkClient.UcclName != null && b.UcbkClient.UcclName.Contains(term)) ||
+                (b.FromAddressStreetName != null && b.FromAddressStreetName.Contains(term)) ||
+                (b.ToAddressStreetName != null && b.ToAddressStreetName.Contains(term)) ||
+                (b.PickupAddressLine1 != null && b.PickupAddressLine1.Contains(term)) ||
+                (b.DeliveryAddressLine1 != null && b.DeliveryAddressLine1.Contains(term)))
+            .OrderByDescending(b => b.UcbkJobNumber == term)
+            .ThenByDescending(b => b.UcbkJobNumber.StartsWith(term))
+            .ThenByDescending(b => b.UcbkTime)
+            .Take(50)
+            .Select(b => new RouteLinkableBookingDto
+            {
+                BookingId = b.UcbkId,
+                JobNumber = b.UcbkJobNumber ?? string.Empty,
+                JobName = b.CustomJobName,
+                ClientName = b.UcbkClient != null ? b.UcbkClient.UcclName : null,
+                PickupSummary = b.PickupAddressLine1,
+                DeliverySummary = b.DeliveryAddressLine1,
+                LinkedRouteId = b.IsLinehaulMaster && b.LinehaulRunId == null ? b.RouteId : null,
+                IsMaster = b.IsLinehaulMaster,
+                LinkedToThisRoute = b.IsLinehaulMaster && b.LinehaulRunId == null && b.RouteId == routeId,
+                IsLinehaulMasterElsewhere = b.IsLinehaulMaster && b.LinehaulRunId != null,
+            })
+            .ToListAsync();
+    }
+
     public async Task<RouteDto?> GetByIdAsync(int id)
     {
         var route = await Context.Routes
@@ -281,10 +481,15 @@ public class RecurringRouteService(
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
         };
+        ApplyDirection(route, req.Direction, req.DepotId, req.Origin);
         await AttachZipsAsync(route, req.ZipPolygonIds);
         await AttachBulkPolygonsAsync(route, req.BulkPolygonIds ?? new List<int>());
         await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
         Context.Routes.Add(route);
+        await Context.SaveChangesAsync();
+        // After the save, because the route needs an id before a booking can
+        // point at it.
+        await ApplyMasterBookingAsync(route.RouteId, req.MasterBookingId, req.FinalMileDeliveryMode);
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} ({Name}) created with {Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s)",
             route.RouteId, route.Name, route.ZipPolygons.Count, route.BulkRunPolygons.Count, route.Schedules.Count);
@@ -311,6 +516,7 @@ public class RecurringRouteService(
         route.Active = req.Active;
         route.UpdatedAt = DateTime.UtcNow;
         route.UpdatedBy = CurrentUser();
+        ApplyDirection(route, req.Direction, req.DepotId, req.Origin);
 
         // Replace zip coverage wholesale (matches Configurator UPDATE contract).
         route.ZipPolygons.Clear();
@@ -327,6 +533,11 @@ public class RecurringRouteService(
         route.Schedules.Clear();
         await AttachSchedulesAsync(route, req.ScheduleIds ?? new List<int>());
 
+        // Throws on a booking that is already a linehaul master, so this sits
+        // before the save: the route edit and the master move land together or
+        // not at all.
+        await ApplyMasterBookingAsync(id, req.MasterBookingId, req.FinalMileDeliveryMode);
+
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} updated ({Zips} zip(s), {Custom} bulk polygon(s), {Scheds} schedule(s))",
             id, route.ZipPolygons.Count, route.BulkRunPolygons.Count, route.Schedules.Count);
@@ -341,6 +552,16 @@ public class RecurringRouteService(
             .Include(r => r.Schedules)
             .FirstOrDefaultAsync(r => r.RouteId == sourceRouteId);
         if (source is null) return null;
+
+        // Feature 5.1 / pre-existing gap: CopyAsync never validated anything.
+        // CreateAsync and UpdateAsync both call ValidateUpsert as their first
+        // statement; this path did not, so a copy could persist a shape the
+        // other two reject. Validating the shape the copy is ABOUT to take -
+        // which inherits Direction and the origin from the source - closes it
+        // and, more importantly, stops a copy of a final-mile route silently
+        // becoming first-mile or tripping CK_Routes_Direction at SaveChanges.
+        ValidateDirection(source.Direction, source.DepotId, BuildOrigin(source));
+
         var (courierId, agentId) = SplitTarget(req.DefaultTargetType, req.DefaultTargetId);
 
         var copy = new RouteEntity
@@ -354,6 +575,12 @@ public class RecurringRouteService(
             CreatedAt = DateTime.UtcNow,
             CreatedBy = CurrentUser(),
         };
+        // Direction and origin come from the SOURCE, not from the request.
+        // CopyRouteRequest deliberately has no direction fields: a copy of a
+        // final-mile route that quietly became first-mile would be a worse
+        // surprise than not offering the choice, and the two must move
+        // together anyway or CK_Routes_Direction rejects the row.
+        ApplyDirection(copy, source.Direction, source.DepotId, BuildOrigin(source));
         if (req.CopyZipcodes && source.ZipPolygons.Count > 0)
         {
             var zipIds = source.ZipPolygons.Select(z => z.ZipPolygonId).ToList();
@@ -382,6 +609,87 @@ public class RecurringRouteService(
         route.UpdatedBy = CurrentUser();
         await Context.SaveChangesAsync();
         Log.Information("Route {Id} soft-deleted", id);
+        return true;
+    }
+
+    private static async Task<RouteUsageDto> CountUsageAsync(
+        int id, System.Data.Common.DbConnection conn, System.Data.Common.DbTransaction tx)
+    {
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+        return await conn.QuerySingleAsync<RouteUsageDto>(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM dbo.tucJob               WHERE RouteId = @id)          AS Jobs,
+              (SELECT COUNT(*) FROM dbo.tucJobBooking        WHERE RouteId = @id)          AS Bookings,
+              (SELECT COUNT(*) FROM dbo.tblBulkJob           WHERE RouteId = @id)          AS BulkJobs,
+              (SELECT COUNT(*) FROM dbo.Dispatch_RouteRoster WHERE RouteId = @id)          AS RosterEntries,
+              -- tblLinehaulTote is deliberately absent: the app has no SELECT
+              -- grant on it (see RouteUsageDto). Its FK still blocks, and the
+              -- 547 handler below turns that into the same refusal.
+              (SELECT COUNT(*) FROM dbo.RouteZipcodes        WHERE RouteId = @id)          AS Zipcodes,
+              (SELECT COUNT(*) FROM dbo.tblRouteSchedule     WHERE RouteId = @id)          AS Schedules,
+              (SELECT COUNT(*) FROM dbo.tblBulkRunPolygonRoute WHERE RouteId = @id)        AS Polygons
+            """,
+            new { id }, tx);
+    }
+
+    /// <summary>
+    /// Remove a route permanently. Only for one that was never used -
+    /// a mistake or a test - which is the case Steve approved on 22 Oct.
+    /// Everything else deactivates (<see cref="SoftDeleteAsync"/>).
+    ///
+    /// The counts are taken AGAIN inside the transaction that does the
+    /// delete, not trusted from whatever the UI saw when it decided to
+    /// show the button. Between the page loading and the operator
+    /// clicking, a prebook run can stamp this route onto a job; without
+    /// the re-check under the same transaction that row is orphaned,
+    /// and two of the eight tables have no foreign key to stop it.
+    ///
+    /// Nothing cascades. A route with any reference is refused, with the
+    /// reference named, so the operator clears it deliberately.
+    /// </summary>
+    /// <returns>false when the route does not exist.</returns>
+    /// <exception cref="InvalidOperationException">The route is in use.</exception>
+    public async Task<bool> HardDeleteAsync(int id)
+    {
+        var route = await Context.Routes.FirstOrDefaultAsync(r => r.RouteId == id);
+        if (route is null) return false;
+
+        await using var tx = await Context.Database.BeginTransactionAsync();
+        var usage = await CountUsageAsync(
+            id,
+            Context.Database.GetDbConnection(),
+            tx.GetDbTransaction());
+
+        if (!usage.IsUnused)
+        {
+            Log.Warning("Route {Id} hard delete refused: {Reason}", id, usage.BlockReason());
+            throw new InvalidOperationException(usage.BlockReason());
+        }
+
+        Context.Routes.Remove(route);
+        try
+        {
+            await Context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is SqlException { Number: 547 } sql)
+        {
+            // A foreign key caught something the count above could not see -
+            // either a tote (no SELECT grant, so it is never counted) or a row
+            // that appeared between the count and the delete. Either way the
+            // database refused and nothing is orphaned; translate it into the
+            // same refusal the counted cases give rather than a raw 500.
+            await tx.RollbackAsync();
+            Log.Warning("Route {Id} hard delete blocked by {Constraint}", id, sql.Message);
+            throw new InvalidOperationException(
+                "This route is still referenced by another record "
+                + (sql.Message.Contains("tblLinehaulTote", StringComparison.OrdinalIgnoreCase)
+                    ? "(a linehaul tote). "
+                    : "that appeared while the delete was running. ")
+                + "Remove it first, or deactivate the route instead.");
+        }
+        await tx.CommitAsync();
+        Log.Information("Route {Id} ({Name}) hard-deleted by {User}", id, route.Name, CurrentUser());
         return true;
     }
 
@@ -548,6 +856,43 @@ public class RecurringRouteService(
             .ToListAsync();
     }
 
+    /// <summary>
+    /// One lookup behind the recurring-route modal's Coverage box (polygons
+    /// spec part 1). Postcodes and custom polygons were two separate inputs
+    /// for one idea: which ground this route covers. The postcode half is the
+    /// same prefix seek SearchZipcodesAsync does; the polygon half is a
+    /// contains match on the name, active shapes only.
+    ///
+    /// Results are returned postcodes-first so the box behaves exactly as it
+    /// did for someone typing digits; a name match only appears when the
+    /// query is not a bare postcode prefix.
+    /// </summary>
+    public async Task<List<CoverageLookupDto>> SearchCoverageAsync(string q, int max = 25)
+    {
+        if (string.IsNullOrWhiteSpace(q))
+            return new List<CoverageLookupDto>();
+        var needle = q.Trim();
+
+        var zips = await Context.ZipPolygons
+            .AsNoTracking()
+            .Where(z => z.Zip != null && z.Zip.StartsWith(needle))
+            .OrderBy(z => z.Zip)
+            .Take(max)
+            .Select(z => new CoverageLookupDto("postcode", z.ZipPolygonId, z.Zip!, null, z.Latitude, z.Longitude))
+            .ToListAsync();
+
+        var polygons = await Context.BulkRunPolygons
+            .AsNoTracking()
+            .Where(p => p.Active && p.Name != null && p.Name.Contains(needle))
+            .OrderBy(p => p.Name)
+            .Take(max)
+            .Select(p => new CoverageLookupDto(
+                "polygon", p.PolygonId, p.Name, p.ColorHex, p.CentroidLatitude, p.CentroidLongitude))
+            .ToListAsync();
+
+        return zips.Concat(polygons).ToList();
+    }
+
     public async Task<List<ZipPolygonShapeDto>> GetPolygonShapesAsync(IEnumerable<int> zipPolygonIds)
     {
         var ids = zipPolygonIds.Distinct().ToList();
@@ -676,6 +1021,92 @@ public class RecurringRouteService(
         foreach (var s in found) route.Schedules.Add(s);
     }
 
+    /// <summary>K6: recent pickup addresses, for the final-mile origin box.
+    ///
+    /// Two passes on purpose. The first groups by the address text to get a
+    /// usage count and the id of the most recent job at each address; the
+    /// second reads the coordinates off exactly those jobs. Doing it in one
+    /// grouped query would force an aggregate over the coordinates, and on
+    /// medical-prod a single company + zip carries several distinct points
+    /// because a linehaul child leg stores its own leg's pickup point. An
+    /// averaged point would be somewhere no job has ever been.
+    ///
+    /// Scoped to the last 180 days: an address nobody has collected from in
+    /// six months is not a suggestion, it is clutter.
+    /// </summary>
+    public async Task<List<PickupAddressSuggestionDto>> GetPickupAddressSuggestionsAsync(
+        string? q, int max = 15)
+    {
+        var since = DateTime.UtcNow.AddDays(-180);
+        var term = (q ?? string.Empty).Trim();
+
+        var baseQuery = Context.TucJobs.AsNoTracking()
+            .Where(j => !j.UcjbVoid
+                        && j.CreatedTimeUtc >= since
+                        && j.PickupAddressLine1 != null && j.PickupAddressLine1 != ""
+                        && j.PickUpLatitude != null && j.PickUpLongitude != null);
+
+        if (term.Length > 0)
+        {
+            baseQuery = baseQuery.Where(j =>
+                j.PickupAddressLine1!.Contains(term)
+                || (j.PickupAddressLine5 != null && j.PickupAddressLine5.Contains(term))
+                || (j.PickupAddressLine7 != null && j.PickupAddressLine7.Contains(term)));
+        }
+
+        var grouped = await baseQuery
+            .GroupBy(j => new
+            {
+                Company = j.PickupAddressLine1,
+                Street3 = j.PickupAddressLine3,
+                Street4 = j.PickupAddressLine4,
+                City = j.PickupAddressLine5,
+                Zip = j.PickupAddressLine7,
+            })
+            .Select(g => new
+            {
+                g.Key,
+                UsageCount = g.Count(),
+                LatestJobId = g.Max(x => x.UcjbId),
+            })
+            // Frequency first so a real depot outranks a one-off, recency as
+            // the tiebreak.
+            .OrderByDescending(x => x.UsageCount)
+            .ThenByDescending(x => x.LatestJobId)
+            .Take(max)
+            .ToListAsync();
+
+        if (grouped.Count == 0) return new List<PickupAddressSuggestionDto>();
+
+        var latestIds = grouped.Select(x => x.LatestJobId).ToList();
+        var points = await Context.TucJobs.AsNoTracking()
+            .Where(j => latestIds.Contains(j.UcjbId))
+            .Select(j => new { j.UcjbId, j.PickUpLatitude, j.PickUpLongitude, j.CreatedTimeUtc })
+            .ToDictionaryAsync(x => x.UcjbId);
+
+        return grouped.Select(g =>
+        {
+            var pt = points.GetValueOrDefault(g.LatestJobId);
+            var street = string.Join(" ",
+                new[] { g.Key.Street3, g.Key.Street4 }
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x!.Trim()));
+            var label = string.Join(", ",
+                new[] { g.Key.Company?.Trim(), street, g.Key.City?.Trim(), g.Key.Zip?.Trim() }
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+            return new PickupAddressSuggestionDto(
+                label,
+                Trimmed(g.Key.Company),
+                string.IsNullOrWhiteSpace(street) ? null : street,
+                Trimmed(g.Key.City),
+                Trimmed(g.Key.Zip),
+                pt?.PickUpLatitude,
+                pt?.PickUpLongitude,
+                g.UsageCount,
+                pt?.CreatedTimeUtc);
+        }).ToList();
+    }
+
     private static void ValidateUpsert(UpsertRouteRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Name))
@@ -684,6 +1115,96 @@ public class RecurringRouteService(
             throw new InvalidOperationException("DefaultTargetType must be 1, 2 or 3.");
         if (req.DefaultTargetType.HasValue && !req.DefaultTargetId.HasValue)
             throw new InvalidOperationException("DefaultTargetId is required when DefaultTargetType is set.");
+        ValidateDirection(req.Direction, req.DepotId, req.Origin);
+    }
+
+    /// <summary>Feature 5.1. Mirrors CK_Routes_Direction so the operator gets a
+    /// sentence instead of "The UPDATE statement conflicted with the CHECK
+    /// constraint" (Msg 547), which names the constraint and nothing useful.
+    ///
+    /// Deliberately NOT stricter than the constraint. The database accepts a
+    /// final-mile route carrying BOTH a depot and coordinates, because the
+    /// resolver's attempt order already makes the depot win, and it accepts a
+    /// first-mile route that still has leftover origin values, because no code
+    /// path reads them when Direction = 1. Adding rules here that the database
+    /// does not enforce would mean the API rejects rows that Configurator,
+    /// which shares this table and knows nothing about these columns, can
+    /// still write.</summary>
+    private static void ValidateDirection(byte direction, int? depotId, RouteOriginDto? origin)
+    {
+        if (!RouteDirections.IsValid(direction))
+            throw new InvalidOperationException(
+                $"Direction must be {RouteDirections.FirstMile} (first mile) or {RouteDirections.FinalMile} (final mile).");
+
+        if (direction != RouteDirections.FinalMile) return;
+
+        var hasDepot = depotId.HasValue;
+        var hasPoint = origin?.Latitude is not null && origin?.Longitude is not null;
+        if (!hasDepot && !hasPoint)
+            throw new InvalidOperationException(
+                "A final-mile route needs an origin to fan out from: choose a depot, " +
+                "or set an origin address and geocode it so it has coordinates.");
+
+        // Half a coordinate pair is the mistake an operator actually makes -
+        // typing a latitude and tabbing away. CK_Routes_Direction would let it
+        // through whenever a depot is also set, and the resolver would then
+        // silently never use the address side.
+        var halfPoint = (origin?.Latitude is null) != (origin?.Longitude is null);
+        if (halfPoint)
+            throw new InvalidOperationException(
+                "An origin address needs both a latitude and a longitude. Geocode the address again.");
+
+        if (origin?.RadiusM is <= 0)
+            throw new InvalidOperationException("Origin radius must be greater than zero metres.");
+    }
+
+    /// <summary>Feature 5.1. Copies the direction + origin shape onto the
+    /// entity. One place, so Create, Update and Copy cannot drift.</summary>
+    private static void ApplyDirection(RouteEntity route, byte direction, int? depotId, RouteOriginDto? origin)
+    {
+        route.Direction = direction;
+
+        if (direction == RouteDirections.FirstMile)
+        {
+            // Clear the origin rather than leave it behind. The CHECK permits
+            // stale values on a first-mile route, but a later flip back to
+            // final mile would then silently inherit an address the operator
+            // has long forgotten. The migration header calls this out as the
+            // UI's job; this is the UI's server side.
+            route.DepotId = null;
+            route.OriginName = null;
+            route.OriginAddress = null;
+            route.OriginZip = null;
+            route.OriginLatitude = null;
+            route.OriginLongitude = null;
+            route.OriginRadiusM = null;
+            return;
+        }
+
+        route.DepotId = depotId;
+        route.OriginName = Trimmed(origin?.Name);
+        route.OriginAddress = Trimmed(origin?.Address);
+        route.OriginZip = Trimmed(origin?.Zip);
+        route.OriginLatitude = origin?.Latitude;
+        route.OriginLongitude = origin?.Longitude;
+        route.OriginRadiusM = origin?.RadiusM;
+    }
+
+    private static string? Trimmed(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>Feature 5.1. Null when the route carries no address origin, so
+    /// the frontend can treat "has an address origin" as one test rather than
+    /// six null checks.</summary>
+    private static RouteOriginDto? BuildOrigin(RouteEntity r)
+    {
+        var any = r.OriginName is not null || r.OriginAddress is not null
+                  || r.OriginZip is not null || r.OriginLatitude is not null
+                  || r.OriginLongitude is not null || r.OriginRadiusM is not null;
+        return any
+            ? new RouteOriginDto(r.OriginName, r.OriginAddress, r.OriginZip,
+                                 r.OriginLatitude, r.OriginLongitude, r.OriginRadiusM)
+            : null;
     }
 
     private static string FormatWindow(TimeSpan? start, TimeSpan? end)

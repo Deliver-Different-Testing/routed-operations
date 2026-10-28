@@ -11,15 +11,10 @@ public class BulkRunListRequest
     /// resolved via tenantTodayYmd() on the client.</summary>
     public DateTime? RunDate { get; set; }
 
-    /// <summary>true when the caller's Hub client is marked internal
-    /// (tenant staff / UCL ops). Drives SP branches that unlock the
-    /// full client scope. NP + external logins pass false.</summary>
-    public bool ClientInternal { get; set; }
-
-    /// <summary>true when the Hub session has multiple sub-accounts
-    /// (external multi-account client). Drives the SP's multi-client
-    /// SELECT branch.</summary>
-    public bool MultipleClients { get; set; }
+    // ClientInternal / MultipleClients were removed 2026-10-09. Nothing on
+    // the server read them, but they invited exactly that: scope must come
+    // from claims (INpScopeResolver), never from the request. Older clients
+    // still send them and model binding ignores the unknown keys.
 
     /// <summary>Single-client convenience filter; usually null for
     /// admin sessions and stamped by claim for external logins.</summary>
@@ -33,7 +28,23 @@ public class BulkRunListRequest
 
     public string? SpeedIds { get; set; }
 
-    /// <summary>Legacy group-by filter (Combined / Inbound / Outbound).
-    /// Passed verbatim to the SP - values are the legacy strings.</summary>
+    /// <summary>Direction filter (Combined / Inbound / Outbound), bound from
+    /// the query string. The Run Viewer frontend sends it on /runs,
+    /// /runs/{id}/jobs and /runs/overview.
+    ///
+    /// Since Feature 5.4 this IS read server-side, but only here on the run
+    /// LIST: it goes to RVW_stpBulkRuns_2's @Group, which filters synthetic
+    /// route runs by Routes.Direction. NULL and 'Combined' are no-ops.
+    ///
+    /// The other two endpoints still ignore it, deliberately. Job-level
+    /// direction filtering already happens on the client in
+    /// runViewerViewMode.ts, so a second server-side copy would be two
+    /// places to keep in sync for no behaviour change.
+    ///
+    /// Still true and still worth heeding: RVW_stpBulkRunJobs and
+    /// RVW_stpBulkJobSearchData do NOT declare a @Group parameter. Do not
+    /// wire it into either without checking that SP's signature first - a
+    /// previous attempt passed it to RVW_stpBulkJobSearchData positionally
+    /// and broke the call outright.</summary>
     public string? Group { get; set; }
 }

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
@@ -86,8 +86,10 @@ public class ScheduleOverrideServiceTests
         string weekDays = null,
         bool? isActive = null,
         string displayName = null,
-        string displayDescription = null)
-        => new(cutoffDay, cutoffTime, weekDays, isActive, displayName, displayDescription);
+        string displayDescription = null,
+        byte? occurrencesAhead = null)
+        => new(cutoffDay, cutoffTime, weekDays, isActive, displayName, displayDescription,
+               occurrencesAhead);
 
     private static LegScopeOverrideDto LegScope(
         int? speedId = null,
@@ -126,6 +128,93 @@ public class ScheduleOverrideServiceTests
 
         var header = await read.BulkRunScheduleHeaders.SingleAsync(h => h.ScheduleId == HeaderA);
         Assert.Equal(1, header.OverrideCount);
+    }
+
+    // ─── OccurrencesAhead (20261009179000, retire DaysInFuture) ─────────────
+
+    [Fact]
+    public async Task PutAsync_persists_occurrences_ahead_as_the_only_schedule_field()
+    {
+        // Matters because the 20261009179000 seed writes exactly this
+        // shape: a schedule-scope row carrying nothing but N. If the
+        // "is this scope empty" test does not count OccurrencesAhead, the
+        // row is silently discarded and the client quietly falls back to
+        // one week's worth.
+        var svc = NewSvc(out var seed, out var opts);
+        await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
+
+        await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
+            Schedule: ScheduleScope(occurrencesAhead: 2),
+            Collection: null,
+            Delivery: null), Actor);
+
+        using var read = CockpitTestHarness.Context(opts);
+        var single = Assert.Single(await read.BulkRunScheduleOverrides
+            .Where(o => o.ScheduleId == HeaderA).ToListAsync());
+        Assert.Equal((byte?)2, single.OccurrencesAhead);
+        Assert.Null(single.CutoffDay);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(61)]
+    public async Task PutAsync_rejects_occurrences_ahead_outside_one_to_sixty(byte n)
+    {
+        // The bound is 1 to 60 since 2026-10-14. Rejected here so the
+        // caller is told which field is wrong, rather than letting
+        // CK_tblBulkRunScheduleOverride_OccurrencesAhead fail the write.
+        var svc = NewSvc(out var seed, out _);
+        await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
+                Schedule: ScheduleScope(occurrencesAhead: n),
+                Collection: null,
+                Delivery: null), Actor));
+    }
+
+    [Fact]
+    public async Task PutAsync_clears_occurrences_ahead_when_a_later_put_omits_it()
+    {
+        // The documented contract: the PUT replaces the client's delta
+        // wholesale and a null field clears it. This test exists to pin
+        // that down, because it is the reason ScheduleDetailModal has to
+        // round-trip the value it does not edit instead of sending null.
+        // If this ever starts preserving the old value, that round-trip
+        // becomes dead weight and should be removed with it.
+        var svc = NewSvc(out var seed, out var opts);
+        await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
+
+        await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
+            Schedule: ScheduleScope(occurrencesAhead: 5),
+            Collection: null,
+            Delivery: null), Actor);
+
+        await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
+            Schedule: ScheduleScope(displayName: "Weekday Run"),
+            Collection: null,
+            Delivery: null), Actor);
+
+        using var read = CockpitTestHarness.Context(opts);
+        var single = Assert.Single(await read.BulkRunScheduleOverrides
+            .Where(o => o.ScheduleId == HeaderA).ToListAsync());
+        Assert.Equal("Weekday Run", single.DisplayName);
+        Assert.Null(single.OccurrencesAhead);
+    }
+
+    [Fact]
+    public async Task ListForScheduleAsync_round_trips_occurrences_ahead()
+    {
+        var svc = NewSvc(out var seed, out _);
+        await SeedAsync(seed, new[] { HeaderA }, new[] { ClientA });
+
+        await svc.PutAsync(HeaderA, ClientA, new ScheduleOverridePutRequest(
+            Schedule: ScheduleScope(occurrencesAhead: 9),
+            Collection: null,
+            Delivery: null), Actor);
+
+        var dtos = await svc.ListForScheduleAsync(HeaderA);
+        Assert.Equal((byte?)9, Assert.Single(dtos).Schedule.OccurrencesAhead);
     }
 
     [Fact]

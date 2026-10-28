@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.Schedule;
@@ -292,9 +292,21 @@ public class ScheduleOverrideService(
         // RoutedOps no longer writes it.
         if (scope.CutoffDay == null && scope.CutoffTime == null
             && string.IsNullOrEmpty(scope.WeekDays) && scope.IsActive == null
-            && string.IsNullOrEmpty(scope.DisplayName) && string.IsNullOrEmpty(scope.DisplayDescription))
+            && string.IsNullOrEmpty(scope.DisplayName) && string.IsNullOrEmpty(scope.DisplayDescription)
+            && scope.OccurrencesAhead == null)
         {
             return null;
+        }
+        // 1 to 60, raised from decision D2's 14 on 2026-10-14. Enforced in
+        // the app as well as by CK_tblBulkRunScheduleOverride_OccurrencesAhead.
+        // Checked here rather than left to the constraint so a bad value
+        // comes back naming the field instead of as a constraint violation.
+        if (scope.OccurrencesAhead is < 1 or > 60)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(scope.OccurrencesAhead),
+                scope.OccurrencesAhead,
+                "Occurrences ahead must be between 1 and 60, or blank to inherit the schedule's value.");
         }
         return new BulkRunScheduleOverride
         {
@@ -304,6 +316,7 @@ public class ScheduleOverrideService(
             LegOrdinal         = 0,
             DayOfWeek          = 0,
             CutoffDay          = scope.CutoffDay.HasValue ? (byte?)scope.CutoffDay.Value : null,
+            OccurrencesAhead   = scope.OccurrencesAhead,
             CutoffTime         = ParseNullableTime(scope.CutoffTime),
             WeekDays           = string.IsNullOrEmpty(scope.WeekDays) ? null : scope.WeekDays,
             IsActive           = scope.IsActive,
@@ -369,7 +382,8 @@ public class ScheduleOverrideService(
             row.WeekDays,
             row.IsActive,
             row.DisplayName,
-            row.DisplayDescription);
+            row.DisplayDescription,
+            row.OccurrencesAhead);
     }
 
     private static LegScopeOverrideDto MapLegScope(BulkRunScheduleOverride row)

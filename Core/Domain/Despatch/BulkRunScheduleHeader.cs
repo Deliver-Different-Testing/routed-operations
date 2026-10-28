@@ -90,6 +90,31 @@ public partial class BulkRunScheduleHeader
     public int OverrideCount { get; set; }
 
     /// <summary>
+    /// Where the chain starts: 'depot' (every schedule today) or 'client'
+    /// when the goods begin at the client's own address and there is no
+    /// collection job. Added 2026-10-07 by
+    /// ScheduleOrigin_HeaderOriginTypeAndRegion (Steve's schedule-origin
+    /// spec 5.1). Lands on the header because tblBulkRunScheduleDetail does
+    /// not exist yet; moves there in collapse M1.
+    ///
+    /// Read by the write side only: the three single-job booking SPs decide
+    /// whether to overwrite the booking's From address with the depot's by
+    /// reading this column, never the section 5.2 derivation.
+    /// </summary>
+    [MaxLength(6)]
+    public string OriginType { get; set; } = "depot";
+
+    /// <summary>
+    /// Origin branch for a client-origin schedule. This is the counterpart
+    /// of tblBulkRunSchedule.PickupDepotId, NOT of Region: Region keeps
+    /// coming from the Delivery leg and names the delivery branch, while
+    /// this names the branch that owns the start of the chain. NULL for
+    /// depot-origin schedules, required when OriginType = 'client'
+    /// (CK_tblBulkRunScheduleHeader_ClientOriginHasRegion).
+    /// </summary>
+    public int? OriginRegionId { get; set; }
+
+    /// <summary>
     /// SQL rowversion, ticks on any change to the header row or its
     /// override rows. App-side cache keyed on
     /// (ScheduleId, ClientId, OverridesVersion) survives across

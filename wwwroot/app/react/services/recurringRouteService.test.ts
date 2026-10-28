@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '../test/server';
-import { recurringRouteService } from './recurringRouteService';
+import {
+  recurringRouteService,
+  mayOfferHardDelete,
+  type RecurringRoute,
+} from './recurringRouteService';
 
 const routeStub = {
   routeId: 1, name: 'R1', area: 'AKL', defaultTargetType: null, defaultTargetId: null,
@@ -178,5 +182,77 @@ describe('recurringRouteService', () => {
       http.get('/api/recurring-routes/schedules/lookup', () => HttpResponse.json({ response: [] })),
     );
     await recurringRouteService.getSchedules();
+  });
+});
+
+/**
+ * Whether the permanent-delete action is OFFERED on a row.
+ *
+ * The first version of this asked the server, which meant eight correlated
+ * NOT EXISTS probes over tucJob / tucJobBooking / tblBulkJob for every
+ * route on every page load - and tblBulkJob has no index on RouteId at
+ * all. This replacement reads only fields the list already returned, so
+ * it costs nothing, and the real guard moved entirely to the server's
+ * re-count inside the delete transaction.
+ *
+ * What is worth pinning is that it stays conservative: it must never say
+ * "offer it" for a route that carries any of the six references the list
+ * can see.
+ */
+function route(over: Partial<RecurringRoute> = {}): RecurringRoute {
+  return {
+    routeId: 1,
+    name: 'R',
+    area: 'A',
+    defaultTargetType: null,
+    defaultTargetId: null,
+    defaultTargetName: '',
+    scheduleId: null,
+    scheduleName: '',
+    scheduleWindow: '',
+    schedules: [],
+    active: true,
+    zipcodes: [],
+    bulkPolygons: [],
+    rosterEntryCount: 0,
+    bookingCount: 0,
+    mappedStopsCount: 0,
+    createdAt: '',
+    updatedAt: null,
+    direction: 1,
+    depotId: null,
+    depotName: '',
+    origin: null,
+    ...over,
+  } as RecurringRoute;
+}
+
+describe('mayOfferHardDelete', () => {
+  it('offers the delete on a route with nothing attached', () => {
+    expect(mayOfferHardDelete(route())).toBe(true);
+  });
+
+  it.each([
+    ['bound postcodes', { zipcodes: [{ zipPolygonId: 1, zip: '1010' }] }],
+    ['bound polygons', { bulkPolygons: [{ polygonId: 1, name: 'P', centroidLatitude: 0, centroidLongitude: 0 }] }],
+    ['bound schedules', { schedules: [{ scheduleId: 1, name: 'S', window: '', days: [] }] }],
+    ['roster entries', { rosterEntryCount: 1 }],
+    ['recurring bookings', { bookingCount: 1 }],
+    ['mapped stops', { mappedStopsCount: 1 }],
+  ])('withholds it when the route has %s', (_label, over) => {
+    expect(mayOfferHardDelete(route(over as Partial<RecurringRoute>))).toBe(false);
+  });
+
+  it('withholds it when only one of several references is present', () => {
+    // The guard is an AND across all six, so a route that was cleaned up
+    // everywhere except the roster must still not offer the action.
+    expect(mayOfferHardDelete(route({ rosterEntryCount: 2 }))).toBe(false);
+  });
+
+  it('treats missing collections as empty rather than throwing', () => {
+    // An older cached payload, or a trimmed response, must not take the
+    // page down - and must not accidentally read as "has references".
+    const partial = { routeId: 9 } as unknown as RecurringRoute;
+    expect(mayOfferHardDelete(partial)).toBe(true);
   });
 });

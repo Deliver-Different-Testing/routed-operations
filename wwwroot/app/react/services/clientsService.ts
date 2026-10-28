@@ -113,4 +113,31 @@ export const clientsService = {
     request<SchedulesResponse>(
       `/clients/${clientId}/schedules/${encodeURIComponent(bookDate)}/${speedId}/${depotId}`
     ).then((raw) => ({ response: raw })),
+
+  /** Geocode a client's site address (schedule-origin spec 4.5).
+   *
+   *  Two steps on purpose. Called without `confirm` it only previews the
+   *  candidate; call it again with `confirm: true` to write
+   *  tucClient.Latitude/Longitude. The response carries the previous values
+   *  either way, so the UI can show what is about to change rather than
+   *  overwriting a client's coordinates on one unseen lookup. */
+  geocodeSite: (clientId: number, body: { address?: string | null; confirm?: boolean } = {}) =>
+    request<ClientGeocodeResult>(`/clients/${clientId}/geocode`, {
+      method: 'POST',
+      body: JSON.stringify({ address: body.address ?? null, confirm: body.confirm ?? false }),
+    }),
 };
+
+export interface ClientGeocodeResult {
+  clientId: number;
+  clientName: string;
+  addressUsed: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  formattedAddress: string | null;
+  previousLatitude: number | null;
+  previousLongitude: number | null;
+  /** True only when this call wrote. */
+  written: boolean;
+  message: string;
+}

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common/Button';
 import { LabelsSortPickerModal, type LabelsSortMode } from './LabelsSortPickerModal';
 import { WoopReportDatePickerModal } from './WoopReportDatePickerModal';
@@ -62,6 +63,23 @@ const PRINT_OPTIONS: Array<[PrintKind, string]> = [
 ];
 
 export function RvUtilityActions({ onPrint, onTopUp, runDate, snapshotLayout, onApplyLayout }: Props) {
+  const user = useAuth();
+  // Network partners get neither cluster.
+  //
+  // Print: all six entries are refused server-side for an NP. The four
+  // CSVs and the Woop XLSX short-circuit in RouteViewerReportService, and
+  // Labels runs the bulk flow which throws NpLabelScopeException. Showing
+  // a menu where every item fails is worse than not showing it.
+  //
+  // Top Up: this button is a SECOND entry point to the same TopUpDialog
+  // that RvJobContextMenu.tsx:223 already hides from partners (inside its
+  // `{!user.isNetworkPartner && ...}` block at :194). The dialog carries an
+  // Amount ($) input and posts to /runviewer/booking/top-up. One entry
+  // gated and the other open is not a decision, it is a miss.
+  //
+  // Layout stays: it is per-viewer panel sizing in localStorage, no data.
+  // See NP-PAY-PART4-TODO.md T9 / M18.
+  const hideTenantActions = user.isNetworkPartner;
   const [layouts, setLayoutsState] = useState<CockpitLayout[]>(() => loadLayouts('home'));
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
@@ -96,6 +114,7 @@ export function RvUtilityActions({ onPrint, onTopUp, runDate, snapshotLayout, on
 
   return (
     <>
+      {!hideTenantActions && (
       <div className="relative -mt-1">
         <Button variant="neutral" size="sm" onClick={() => setPrintOpen((v) => !v)}>Print ▾</Button>
         {printOpen && (
@@ -116,7 +135,10 @@ export function RvUtilityActions({ onPrint, onTopUp, runDate, snapshotLayout, on
           </>
         )}
       </div>
-      <Button variant="neutral" size="sm" onClick={onTopUp}>Top Up</Button>
+      )}
+      {!hideTenantActions && (
+        <Button variant="neutral" size="sm" onClick={onTopUp}>Top Up</Button>
+      )}
       <div className="relative -mt-1">
         <Button variant="neutral" size="sm" onClick={() => setLayoutOpen((v) => !v)}>Layout ▾</Button>
         {layoutOpen && (

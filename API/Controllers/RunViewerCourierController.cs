@@ -3,6 +3,7 @@
 // INpScopeResolver.IsAdmin - NP portal clients do not see courier
 // data).
 using Microsoft.AspNetCore.Authorization;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -11,6 +12,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/runviewer/couriers")]
 [Authorize(Policy = "RouteViewer.Read")]
+// Access Control switch, ANY of the Route Viewer pages that call this:
+// Runs, Linehaul and Mobile (couriers, positions) (spec step 3b).
+[RequireFeature("ro-route-viewer-runs", "ro-linehaul", "ro-mobile")]
 public class RunViewerCourierController(
     RouteViewerCourierService courierService) : BaseController
 {

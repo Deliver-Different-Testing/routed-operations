@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService } from '../../services/scheduleService';
@@ -101,11 +101,16 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
     onError: (e: Error) => setError(e.message),
   });
 
+  // Spec 6.1 rule 2: the operator-facing verb is "configure for", not
+  // "attach". The endpoints keep their attach/detach verbs, which is what the
+  // audit trail on link rows records.
   const title = detailQuery.data
-    ? `Attach clients to #${detailQuery.data.scheduleId}`
-    : 'Attach clients';
+    ? `Configure #${detailQuery.data.scheduleId} for clients`
+    : 'Configure for clients';
   const subtitle = detailQuery.data
-    ? `"${detailQuery.data.name}" - each client you tick gets a link row.`
+    ? `"${detailQuery.data.name}" - each client you tick has this schedule `
+      + `configured for it. On a schedule every client can book, that changes `
+      + `what those clients see, not who is allowed.`
     : '';
 
   return (

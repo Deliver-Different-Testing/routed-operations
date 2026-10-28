@@ -21,6 +21,12 @@ using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.Tests.Controllers;
 
+// 2026-09-28: pinned into a shared collection with NwShipBookingServiceTests.
+// This class nulls WebAPIUrl on purpose to test the "missing env var surfaces as
+// 501" path, but environment variables are process-global and xUnit runs test
+// classes in parallel, so that null used to reach NwShipBookingServiceTests
+// mid-flight and fail it. See NwShipEnvironment for the full note.
+[Collection(RoutedOperations.Tests.Services.RouteViewer.NwShipEnvironment.CollectionName)]
 public class RunViewerBookingControllerTests : IDisposable
 {
     public RunViewerBookingControllerTests()

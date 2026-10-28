@@ -1,3 +1,5 @@
+using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.BulkPolygon;
@@ -16,9 +18,14 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/bulk-polygons")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Polygon Builder owns the polygons (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-polygon-builder")]
 public class BulkPolygonsController(BulkPolygonService svc) : BaseController
 {
     [HttpGet]
+    // polygon pickers on both schedule editors and Bind Polygons.
+    [RequireFeature("ro-polygon-builder", "ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetAll()
     {
         var list = await svc.GetAllAsync();
@@ -26,6 +33,8 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
     }
 
     [HttpGet("{id:int}")]
+    // Only Recurring Routes reads a single polygon.
+    [RequireFeature("ro-recurring-routes")]
     public async Task<IActionResult> GetOne(int id)
     {
         var row = await svc.GetByIdAsync(id);
@@ -78,6 +87,43 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
         {
             return BadRequest(new { message = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// POST /api/bulk-polygons/{polygonId}/zones - place this shape in a zone
+    /// of a zone group (custom-polygons spec 3.1 / 3.2).
+    ///
+    /// Refused with 400 and the clashing shape named when it would overlap a
+    /// polygon already in a different zone of the same group (spec 3.6).
+    /// Overlap is prevented at authoring time because two zones for one point
+    /// is a pricing question that cannot be answered later.
+    /// </summary>
+    [HttpPost("{polygonId:int}/zones")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> AddToZone(int polygonId, [FromBody] BulkPolygonAddToZoneRequest body)
+    {
+        try
+        {
+            var actor = User?.FindFirstValue(ClaimTypes.Name) ?? "unknown";
+            var row = await svc.AddToZoneAsync(polygonId, body.PostcodeGroupId, body.Zone, actor);
+            return Ok(new { response = row });
+        }
+        catch (InvalidOperationException e)
+        {
+            return BadRequest(new { message = e.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/bulk-polygons/zones/{membershipId} - take the shape out of
+    /// that zone group.
+    /// </summary>
+    [HttpDelete("zones/{membershipId:int}")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> RemoveFromZone(int membershipId)
+    {
+        var ok = await svc.RemoveFromZoneAsync(membershipId);
+        return ok ? Ok(new { response = "Removed" }) : NotFound();
     }
 
     [HttpDelete("{id:int}")]

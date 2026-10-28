@@ -8,6 +8,14 @@ namespace RoutedOperations.Core.Application.Dtos.Territory;
 /// </summary>
 public record DepotDto(int Id, string Name, bool Active);
 
+/// <summary>
+/// A postcode / zip group. ONE table (BulkZonePostcodeGroup) serves both
+/// tenants; only the member table differs - BulkZonePostcode on NZ,
+/// ZoneZip on US via FK_ZoneZip_BulkZonePostcodeGroup. Do NOT confuse
+/// this with <see cref="ZoneGroupDto"/>, which is the parent of ZoneName
+/// for clear lists and gates no booking. See
+/// .claude/sp-reference/zones-zone-groups-and-schedules.md.
+/// </summary>
 public record PostcodeGroupDto(
     int Id,
     string Name,
@@ -16,7 +24,68 @@ public record PostcodeGroupDto(
     int? ClientId,
     /// <summary>Client code resolved from ClientId (e.g. "ACME"). Null when the group is client-agnostic.</summary>
     string ClientCode,
-    int PostcodeCount);
+    /// <summary>Member count. Counts BulkZonePostcode on NZ and ZoneZip on US,
+    /// so a single count is wrong on one tenant or the other.</summary>
+    int PostcodeCount,
+    /// <summary>Distinct zone numbers used by this group's members.</summary>
+    int ZoneCount,
+    /// <summary>Active polygons bound to this group.</summary>
+    int PolygonCount,
+    /// <summary>Schedules (distinct headers, not day rows) using this group for
+    /// DELIVERY coverage.</summary>
+    int DeliveryScheduleCount,
+    /// <summary>Schedules using this group for PICKUP coverage. Counted
+    /// separately because plenty of groups are pickup-only and a single
+    /// combined figure shows them as unused: on Urgent production
+    /// "PU Regional Tauranga Z1" is 0 delivery and 329 pickup day rows.</summary>
+    int PickupScheduleCount);
+
+/// <summary>One zone inside a group, with how many members carry it.
+/// The label comes from BulkZonePostcode.Name on NZ (denormalised onto
+/// every member row) and from ZoneName.ZoneName1 on US.</summary>
+/// <summary>
+/// What a ZIP paste into a US zone did, split so the operator can see the
+/// difference between work done and work skipped. A paste of Ruth's Cheetah
+/// file is 602 ZIPs across eight zones, so "it worked" is not a useful
+/// answer on its own.
+/// </summary>
+/// <param name="Added">ZIPs now in this zone that were not before.</param>
+/// <param name="AlreadyInThisZone">
+/// Already present, so not written again. Not an error: re-pasting a
+/// corrected list is the normal way to fix one.
+/// </param>
+/// <param name="Ignored">
+/// Entries that could not be read as a US ZIP, returned verbatim so the
+/// operator can see what was in their paste rather than guessing.
+/// </param>
+public record ZoneZipPasteResultDto(
+    List<string> Added,
+    List<string> AlreadyInThisZone,
+    List<string> Ignored);
+
+public record PostcodeGroupZoneDto(
+    int Zone,
+    string Label,
+    int MemberCount);
+
+/// <summary>A schedule that references this group, and on which side.
+/// A schedule can use the same group for both pickup and delivery, so the
+/// two flags are not exclusive.</summary>
+public record PostcodeGroupScheduleDto(
+    int ScheduleId,
+    string Name,
+    bool UsedForDelivery,
+    bool UsedForPickup,
+    /// <summary>How many of the schedule's day rows reference the group.</summary>
+    int DayCount);
+
+/// <summary>Group detail: the group itself plus everything that points at
+/// it. Nothing on the group row gives it force; these references do.</summary>
+public record PostcodeGroupDetailDto(
+    PostcodeGroupDto Group,
+    List<PostcodeGroupZoneDto> Zones,
+    List<PostcodeGroupScheduleDto> Schedules,
+    List<BoundPolygonDto> Polygons);
 
 /// <summary>NZ (non-US) rating-postcode row. One per BulkZonePostcode.</summary>
 public record NzPostcodeDto(

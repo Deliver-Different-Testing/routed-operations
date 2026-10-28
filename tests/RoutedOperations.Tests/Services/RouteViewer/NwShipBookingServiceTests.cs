@@ -12,6 +12,14 @@ using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.Tests.Services.RouteViewer;
 
+// 2026-09-28: pinned into a shared collection with RunViewerBookingControllerTests.
+// Environment variables are process-global and xUnit runs test CLASSES in
+// parallel, so while that class deliberately nulls WebAPIUrl to exercise its
+// "missing env var surfaces as 501" path, any test here that happens to be
+// mid-flight reads null and fails with "Route Viewer booking requires env var
+// `WebAPIUrl`". A pre-existing race - it only shows up when scheduling lines
+// the two classes up - and putting both in one collection serialises them.
+[Collection(NwShipEnvironment.CollectionName)]
 public class NwShipBookingServiceTests : IDisposable
 {
     public NwShipBookingServiceTests()

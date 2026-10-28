@@ -1,3 +1,4 @@
+﻿using System.Data.Common;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -22,18 +23,49 @@ namespace RoutedOperations.Tests.Services.Schedule;
 ///   * Junction sync: ClientIds / PostcodeIds / PolygonIds are
 ///     insert-and-delete-diffed on save
 /// </summary>
-public class ScheduleServiceTests
+public class ScheduleServiceTests : IDisposable
 {
-    private static ScheduleService NewSvc()
+    // Sqlite, not InMemory, since 2026-10-09. The write path targets
+    // tblBulkRunScheduleDay and every read comes back through the
+    // tblBulkRunSchedule VIEW over it, so the two have to be the same store
+    // or a save is invisible to the read that verifies it. InMemory keeps one
+    // dictionary per entity type and has no notion of a view, so these tests
+    // would pass or fail for reasons unrelated to the product.
+    private readonly List<DbConnection> _connections = new();
+
+    public void Dispose()
     {
-        var opts = CockpitTestHarness.NewInMemoryOptions();
+        foreach (var c in _connections) c.Dispose();
+    }
+
+    /// <summary>
+    /// A converter that reports "not attempted", which is what the real one
+    /// does on a provider with no stored procedures. The in-memory store
+    /// these tests run on is exactly that, so no test here can observe a
+    /// conversion; the tests that care about convert-on-save assert that it
+    /// was CALLED, and the derivation itself is verified against a real
+    /// database, not here.
+    /// </summary>
+    private static IScheduleConverter NewConverter() =>
+        Substitute.For<IScheduleConverter>();
+
+    private ScheduleService NewSvc() => NewSvc(out _);
+
+    private ScheduleService NewSvc(out IScheduleConverter converter)
+    {
+        var (opts, connection) = CockpitTestHarness.NewSqliteOptions();
+        _connections.Add(connection);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
+        converter = NewConverter();
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
-            cache);
+            cache,
+            converter,
+            accessor);
     }
 
     /// <summary>Constructs the service AND hands back the shared
@@ -41,19 +73,58 @@ public class ScheduleServiceTests
     /// header + client + day-row + override rows before calling the
     /// service can do so directly (mirrors ScheduleOverrideServiceTests'
     /// NewSvc(out ..., out ...) pattern).</summary>
-    private static ScheduleService NewSvcWithSeed(
+    /// <summary>
+    /// InMemory variant, for a test that cannot use the Sqlite harness.
+    ///
+    /// ListSummaryAsync fans its queries out across ~11 contexts in parallel
+    /// waves on purpose (the 2026-09-17 perf pass). A Sqlite :memory:
+    /// database lives on ONE connection, and EF registers custom SQL
+    /// functions when a context first touches it, so the second context in a
+    /// wave fails with "database is locked". That is a property of the test
+    /// harness, not of the code under test.
+    ///
+    /// The cost of staying on InMemory: it has no notion of a view, so a seed
+    /// may write TblBulkRunSchedule, which a relational provider refuses.
+    /// Acceptable for a test about how the summary labels client overrides.
+    /// The view-versus-table split is covered by ScheduleModelShapeTests and
+    /// by verification against a real database.
+    /// </summary>
+    private static ScheduleService NewSvcWithSeedInMemory(
         out DynamicDespatchDbContext seed,
         out DbContextOptions<DespatchContext> opts)
     {
         opts = CockpitTestHarness.NewInMemoryOptions();
         seed = CockpitTestHarness.Context(opts);
+        var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
-            new HttpContextAccessor());
+            accessor);
         return new ScheduleService(
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
-            cache);
+            cache,
+            NewConverter(),
+            accessor);
+    }
+
+    private ScheduleService NewSvcWithSeed(
+        out DynamicDespatchDbContext seed,
+        out DbContextOptions<DespatchContext> opts)
+    {
+        var (sqliteOpts, connection) = CockpitTestHarness.NewSqliteOptions();
+        _connections.Add(connection);
+        opts = sqliteOpts;
+        seed = CockpitTestHarness.Context(opts);
+        var accessor = new HttpContextAccessor();
+        var cache = new TenantScopedCache(
+            new MemoryCache(new MemoryCacheOptions()),
+            accessor);
+        return new ScheduleService(
+            CockpitTestHarness.Factory(opts),
+            NullLogger<ScheduleService>.Instance,
+            cache,
+            NewConverter(),
+            accessor);
     }
 
     private static ScheduleGroupUpsertRequest ValidRequest() => new()
@@ -75,6 +146,208 @@ public class ScheduleServiceTests
         },
         Linehauls = new List<ScheduleLinehaulUpsertRequest>(),
     };
+
+    // ─── F23: the preview closes a run at the same moment the booking page does ───
+
+    [Theory]
+    // Absolute pair, same day: Monday run, cutoff Monday 15:00.
+    [InlineData("2026-10-19", 1, "08:00", 2, (byte)1, "15:00", "2026-10-19 15:00")]
+    // Absolute pair, the day before: #713 KSFRS, cutoff 17:00 the day before a
+    // Friday run. This is the case Anisah caught: tested Thursday 18:15, the
+    // preview offered Friday and the booking page did not.
+    [InlineData("2026-10-23", 5, "08:00", 2, (byte)4, "17:00", "2026-10-22 17:00")]
+    // Absolute pair reaching back across the weekend: a Monday run whose
+    // cutoff is the previous Friday. The offset has to be -3, not +4.
+    [InlineData("2026-10-19", 1, "08:00", 2, (byte)5, "16:00", "2026-10-16 16:00")]
+    // No pair, so the relative form, unchanged: start minus CutoffHours.
+    [InlineData("2026-10-19", 1, "08:00", 2, null, null, "2026-10-19 06:00")]
+    // A pair is only honoured when BOTH halves are present; a lone day falls
+    // back rather than inventing midnight.
+    [InlineData("2026-10-19", 1, "08:00", 3, (byte)1, null, "2026-10-19 05:00")]
+    public void CutoffFor_matches_the_availability_function(
+        string runDate, int isoDay, string startTime, int cutoffHours,
+        byte? cutoffDay, string? cutoffTime, string expected)
+    {
+        // F23. The preview and the booking page disagreed because the preview
+        // only ever computed "start minus CutoffHours" while the availability
+        // function uses the absolute CutoffDay / CutoffTime pair when the
+        // schedule has one. Six schedules showed it, including a run the
+        // preview offered after its cutoff had passed.
+        //
+        // These cases encode the rule rather than the arithmetic: the day
+        // offset must land on the most recent occurrence of the cutoff weekday
+        // at or BEFORE the run day. If someone writes the obvious
+        // (cutoffDay - isoDay) and loses the modulo, the Friday-before-Monday
+        // case goes four days forward instead of three days back, which would
+        // close ordering after the run had already started.
+        var actual = ScheduleService.CutoffFor(
+            DateTime.Parse(runDate),
+            isoDay,
+            TimeSpan.Parse(startTime),
+            cutoffHours,
+            cutoffDay,
+            cutoffTime is null ? null : TimeSpan.Parse(cutoffTime));
+
+        Assert.Equal(DateTime.Parse(expected), actual);
+    }
+
+    // ─── F24: a depot-origin schedule keeps its depot ───────────────────
+
+    [Fact]
+    public async Task UpsertAsync_keeps_PickupDepotId_when_a_depot_origin_save_omits_it()
+    {
+        // F24, the blocker from Anisah's 14 to 16 Oct smoke test. Both modals
+        // derived PickupDepotId only when the chain had a Collection leg, so a
+        // rename-and-save on a cross-depot schedule with BookPickup = 0 sent
+        // null and nulled the column on every day row. Client Manager then
+        // read it as "Client Address" and the schedule left the booking page.
+        //
+        // The derivation is fixed in the modals, but this asserts the SERVER
+        // half, because that is the only place the column is written and a
+        // stale bundle or a direct API call would otherwise do the same thing
+        // just as quietly. On Urgent production 5,211 day rows across 1,531
+        // schedules were one save away from it.
+        //
+        // The test sends a second save with no depot and BookPickup false,
+        // which is exactly the payload the broken frontend produced.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.OriginType = "depot";
+            create.PickupDepotId = 7;
+            create.BookPickup = false;
+            var created = await svc.UpsertAsync(create);
+
+            var resave = ValidRequest();
+            resave.ScheduleId = created.ScheduleId;
+            resave.Name = "Test Group renamed";
+            resave.OriginType = "depot";
+            resave.PickupDepotId = null;
+            resave.BookPickup = false;
+            await svc.UpsertAsync(resave);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays
+                .Where(r => r.ScheduleId == created.ScheduleId)
+                .ToList();
+            Assert.NotEmpty(rows);
+            Assert.All(rows, r => Assert.Equal(7, r.PickupDepotId));
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_still_clears_PickupDepotId_for_a_non_depot_origin()
+    {
+        // The other half of the same rule, and the reason the guard is scoped
+        // to a depot origin rather than refusing every null. A Direct origin
+        // takes its pickup address from the booking and stores no depot, so
+        // switching a schedule to it MUST clear the column. A guard that
+        // blocked this would quietly pin the old depot on a schedule that no
+        // longer starts at one: the same class of silent wrong data as F24,
+        // in the other direction.
+        //
+        // Direct rather than Client deliberately. A client origin is rejected
+        // on a default schedule, and nothing in Routed Operations ever sets
+        // IsDefault to 0, so that path is unreachable through this service
+        // today. Direct is explicitly exempt from that rule and is reachable,
+        // so it is the honest way to test the property.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.OriginType = "depot";
+            create.PickupDepotId = 7;
+            create.BookPickup = false;
+            var created = await svc.UpsertAsync(create);
+
+            var switchToDirect = ValidRequest();
+            switchToDirect.ScheduleId = created.ScheduleId;
+            switchToDirect.OriginType = "direct";
+            switchToDirect.OriginRegionId = null;
+            switchToDirect.PickupDepotId = null;
+            switchToDirect.BookPickup = false;
+            await svc.UpsertAsync(switchToDirect);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays
+                .Where(r => r.ScheduleId == created.ScheduleId)
+                .ToList();
+            Assert.NotEmpty(rows);
+            Assert.All(rows, r => Assert.Null(r.PickupDepotId));
+        }
+    }
+
+    // ─── convert-on-save ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UpsertAsync_asks_the_database_to_collapse_the_schedule()
+    {
+        // Convert-on-save is the entire migration of existing data in the
+        // collapse plan: schedules collapse when someone touches them, and
+        // there is no campaign to catch the ones nobody touches. If this
+        // call stops happening, nothing fails and nothing converts, which is
+        // the kind of regression that is invisible for months.
+        //
+        // Asserted at the seam rather than on its effect, because the
+        // derivation lives in dbo.uspScheduleConvert and the in-memory
+        // provider has no stored procedures. The effect is verified against
+        // a real database.
+        var svc = NewSvc(out var converter);
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        await converter.Received(1).ConvertAsync(
+            Arg.Any<DbContext>(), dto.ScheduleId, true, Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_surfaces_the_reason_a_schedule_did_not_collapse()
+    {
+        // A refusal is a normal answer, not a failure: the schedule saves,
+        // stays on one row per day, and is still bookable. What must not
+        // happen is the operator seeing a clean save with no hint that two
+        // of their days disagree, so the reason rides back on the DTO.
+        var svc = NewSvc(out var converter);
+        converter.ConvertAsync(Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>())
+            .Returns(new ScheduleConvertResult
+            {
+                CanConvert = false,
+                Reasons = "WindowVariesByDay;",
+            });
+
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        Assert.False(dto.IsCollapsed);
+        Assert.Null(dto.OccurrencesAhead);
+        Assert.Equal("WindowVariesByDay;", dto.ConvertRefusalReasons);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_reports_no_refusal_when_the_schedule_collapsed()
+    {
+        var svc = NewSvc(out var converter);
+        converter.ConvertAsync(Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>())
+            .Returns(new ScheduleConvertResult { CanConvert = true, Committed = true });
+
+        var dto = await svc.UpsertAsync(ValidRequest());
+
+        Assert.Null(dto.ConvertRefusalReasons);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(61)]
+    public async Task UpsertAsync_rejects_occurrences_ahead_outside_one_to_sixty(byte n)
+    {
+        // The CHECK on the column says 1 to 60. Rejected here so the caller
+        // is told which field is wrong instead of getting a constraint
+        // violation from the database.
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.OccurrencesAhead = n;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(req));
+        Assert.Contains("1 and 60", ex.Message);
+    }
 
     [Fact]
     public async Task UpsertAsync_missing_name_is_rejected()
@@ -233,15 +506,58 @@ public class ScheduleServiceTests
     }
 
     [Fact]
-    public async Task UpsertAsync_syncs_postcode_and_polygon_junctions()
+    public async Task UpsertAsync_syncs_postcodes_but_no_longer_writes_polygon_junction()
     {
+        // tblSchedulePolygon is retired (custom-polygons spec 3.4). A polygon
+        // attached to a SCHEDULE never affected booking - no stored procedure
+        // read that junction - so PolygonIds on the request is now ignored and
+        // PolygonIds on the response is derived from the schedule's ZONE
+        // memberships instead. This schedule has none, so it reads empty.
+        //
+        // The postcode junction is untouched and still round-trips, which is
+        // what keeps this test honest: a blanket "both are empty" would pass
+        // even if the postcode sync had broken too.
         var svc = NewSvc();
         var req = ValidRequest();
         req.PostcodeIds = new List<int> { 1010, 6011 };
         req.PolygonIds = new List<int> { 500, 501 };
         var created = await svc.UpsertAsync(req);
         Assert.Equal(new[] { 1010, 6011 }, created.PostcodeIds.ToArray());
-        Assert.Equal(new[] { 500, 501 }, created.PolygonIds.ToArray());
+        Assert.Empty(created.PolygonIds);
+    }
+
+    [Fact]
+    public async Task Postcode_binding_is_written_with_BOTH_the_id_and_the_name()
+    {
+        // The re-key of tblSchedulePostcode onto ScheduleId is in its
+        // transition: dbmigrationsv2 20261016165000 adds the id nullable, and
+        // ScheduleName stays NOT NULL as half of the database primary key
+        // until a later migration moves it. So a row has to carry both, and
+        // the reason is not symmetry:
+        //
+        //   * drop the NAME and the real INSERT fails on a NOT NULL primary
+        //     key column, on every tenant, while the round-trip tests above
+        //     stay green because they read back through the same id.
+        //   * drop the ID and the row becomes invisible to the bound-postcode
+        //     half of availability spec 6.3, so the Coverage tab silently
+        //     goes back to being a picture rather than a gate.
+        //
+        // This test exists to fail when either half is removed, which is
+        // exactly what a round-trip assertion cannot see. Delete it only when
+        // the step-3 migration has dropped ScheduleName on both tenants.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var req = ValidRequest();
+            req.PostcodeIds = new List<int> { 1010 };
+            var created = await svc.UpsertAsync(req);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var row = Assert.Single(read.SchedulePostcodes.ToList());
+            Assert.Equal(1010, row.PostCode);
+            Assert.Equal(created.ScheduleId, row.ScheduleId);
+            Assert.Equal(created.Name, row.ScheduleName);
+        }
     }
 
     [Fact]
@@ -278,9 +594,11 @@ public class ScheduleServiceTests
         Assert.Equal("Source (copy)", copy.Name);
         Assert.Null(copy.LegacyClientId);
         Assert.Equal(2, copy.DayWindows.Count);
-        // Junctions copied.
+        // Postcode junction still copies.
         Assert.Contains(1010, copy.PostcodeIds);
-        Assert.Contains(500, copy.PolygonIds);
+        // The polygon junction is retired (spec 3.4); a copy's polygon
+        // coverage comes from its zone groups, not from a copied junction.
+        Assert.Empty(copy.PolygonIds);
         // Client bindings inherited from source's junction.
         Assert.Contains(100, copy.ClientIds);
     }
@@ -342,6 +660,36 @@ public class ScheduleServiceTests
     }
 
     [Fact]
+    public async Task CopyAsync_with_CopyClientLinks_false_creates_no_client_links()
+    {
+        // Regression guard for the 2026-10-05 defect: POST /api/v2/schedules/{id}/copy
+        // sends an empty ClientIds and its modal promises "Client link rows are NOT
+        // copied", but the resolver's fall-through inherited the source's junction, so
+        // copying a 40-client schedule produced a second 40-client schedule. The empty
+        // list cannot carry that intent on its own because the legacy endpoint relies
+        // on the same emptiness to mean "inherit", so the caller states it explicitly.
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.ClientIds = new List<int> { 100, 200 };
+        await svc.UpsertAsync(src);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceName = "Source", NewName = "Source (copy)",
+            ClientCodes = new List<string>(),
+            ClientIds = new List<int>(),
+            CopyClientLinks = false,
+        });
+
+        Assert.Empty(copy.ClientIds);
+
+        // The source keeps its own clients - this is a copy, not a move.
+        var reread = await svc.GetDetailAsync("Source", null);
+        Assert.Equal(new[] { 100, 200 }, reread.ClientIds.OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task DeleteAsync_removes_group_and_junctions()
     {
         var svc = NewSvc();
@@ -370,7 +718,7 @@ public class ScheduleServiceTests
         const int ScheduleId = 42;
         const int ClientA = 100;
         const int ClientB = 200;
-        var svc = NewSvcWithSeed(out var seed, out var opts);
+        var svc = NewSvcWithSeedInMemory(out var seed, out var opts);
         seed.BulkRunScheduleHeaders.Add(new BulkRunScheduleHeader
         {
             ScheduleId = ScheduleId,
@@ -381,6 +729,8 @@ public class ScheduleServiceTests
             CreatedUtc = DateTime.UtcNow,
             CreatedBy = "seed",
         });
+        // Seeded through the view entity, which only works because this test
+        // runs on InMemory; see NewSvcWithSeedInMemory for why it has to.
         seed.TblBulkRunSchedules.Add(new TblBulkRunSchedule
         {
             Name = "Nested Test",
@@ -434,5 +784,402 @@ public class ScheduleServiceTests
         Assert.Equal("BBB", overrides[1].ClientCode);
         Assert.Single(overrides[1].DeltaLabels);
         Assert.Equal("Cut-off Fri 13:00 (base Fri 15:00)", overrides[1].DeltaLabels[0]);
+    }
+
+    // ── LegOrder (Bug 1, Steve "Linehaul Leg Fixes" 2026-09-25) ────────────
+    //
+    // Why these matter rather than just asserting a field round-trips:
+    // tblBulkScheduleLinehaul.LegOrder is what DD_/WS_stpBulkScheduleJob_
+    // InsertChildJobs walk to number the legs LH1..LHn and, on the US branch,
+    // to time each hop. Before it existed those SPs ordered by clustered Id,
+    // i.e. the order the legs were first typed in, and hops were being
+    // dispatched before the freight reached them (Steve's NEOGE P4206 had the
+    // Burbank hop scheduled four hours before the flight landed).
+    //
+    // The save path does a RemoveRange + re-add, so every leg gets a fresh
+    // identity Id. If the order is not written back on save, the backfilled
+    // values are wiped and the schedule silently regresses to Id order. That
+    // is the failure these tests exist to catch.
+
+    private static ScheduleLinehaulUpsertRequest Leg(string name, int from, int to, int? legOrder = null) => new()
+    {
+        Name = name,
+        FromDepotId = from,
+        ToDepotId = to,
+        WeekDay = new[] { 1, 0, 0, 0, 0, 0, 0 },
+        LegOrder = legOrder,
+    };
+
+    [Fact]
+    public async Task UpsertAsync_assigns_LegOrder_from_request_position_when_the_caller_omits_it()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        // Names deliberately in the opposite order to travel order, so a Name
+        // sort anywhere in the read path would fail this test.
+        req.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        req.Linehauls.Add(Leg("Yankee leg", 2, 3));
+        req.Linehauls.Add(Leg("Xray leg", 3, 4));
+
+        var result = await svc.UpsertAsync(req);
+
+        Assert.Equal(new int?[] { 1, 2, 3 }, result.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "Zulu leg", "Yankee leg", "Xray leg" },
+            result.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_explicit_LegOrder_wins_over_the_request_position()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        // Sent in the wrong order on purpose, with the true travel order
+        // declared explicitly. A client that reorders its own array and a
+        // client that sends LegOrder must both end up with the same chain.
+        req.Linehauls.Add(Leg("second hop", 2, 3, legOrder: 2));
+        req.Linehauls.Add(Leg("first hop", 1, 2, legOrder: 1));
+
+        var result = await svc.UpsertAsync(req);
+
+        Assert.Equal(new int?[] { 1, 2 }, result.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "first hop", "second hop" },
+            result.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_resave_preserves_travel_order_instead_of_wiping_it()
+    {
+        // The regression this whole change exists for. The save path removes and
+        // re-adds every linehaul row, so a resave used to hand the legs back in
+        // fresh-Id order with no travel order at all.
+        var svc = NewSvc();
+        var first = ValidRequest();
+        first.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        first.Linehauls.Add(Leg("Alpha leg", 2, 3));
+        var created = await svc.UpsertAsync(first);
+        Assert.Equal(new int?[] { 1, 2 }, created.Linehauls.Select(l => l.LegOrder).ToArray());
+
+        // Post the legs back exactly as the editor received them.
+        var second = ValidRequest();
+        foreach (var l in created.Linehauls)
+            second.Linehauls.Add(Leg(l.Name, l.FromDepotId ?? 0, l.ToDepotId ?? 0, l.LegOrder));
+
+        var resaved = await svc.UpsertAsync(second);
+
+        Assert.Equal(new int?[] { 1, 2 }, resaved.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal(
+            new[] { "Zulu leg", "Alpha leg" },
+            resaved.Linehauls.Select(l => l.Name).ToArray());
+    }
+
+    [Fact]
+    public async Task CopyAsync_carries_LegOrder_and_SpeedId_onto_the_copy()
+    {
+        // SpeedId was missing from the copy initialiser since the per-leg
+        // override shipped 2026-06-19, so copying a schedule silently dropped
+        // every leg's service class and the copy re-rated off the run speed.
+        // LegOrder would have had the same problem from day one.
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls.Add(Leg("Zulu leg", 1, 2));
+        req.Linehauls.Add(Leg("Alpha leg", 2, 3));
+        req.Linehauls[0].SpeedId = 77;
+        var source = await svc.UpsertAsync(req);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Copied Group",
+        });
+
+        Assert.Equal(new int?[] { 1, 2 }, copy.Linehauls.Select(l => l.LegOrder).ToArray());
+        Assert.Equal("Zulu leg", copy.Linehauls[0].Name);
+        Assert.Equal(77, copy.Linehauls[0].SpeedId);
+        Assert.Null(copy.Linehauls[1].SpeedId);
+    }
+
+    // ─── A cleared day row must stay readable through the compat view ───
+
+    [Fact]
+    public async Task UpsertAsync_clearing_a_day_row_leaves_the_view_mapped_columns_non_null()
+    {
+        // Dropping a weekday from a schedule blanks that day row rather than
+        // deleting it, because other tables hold its id. The blanking is
+        // correct; what was not, until 2026-10-20, is that it wrote NULL into
+        // MaxJobs and CutoffHours. `dbo.tblBulkRunSchedule` is a compatibility
+        // VIEW over this table and EF maps BOTH of those as non-nullable int,
+        // so a NULL made every read of the schedule throw
+        // SqlNullValueException out of the materialiser, and because the list
+        // query reads the same view, one cleared row returned HTTP 500 for the
+        // whole Schedules NEW list until it was repaired by hand.
+        //
+        // The detail row's weekday mask normally hides a cleared row, which is
+        // why this hid for so long. But the convert refuses whenever the days
+        // genuinely differ, the caller treats a refusal as a normal outcome,
+        // and with no detail row the view emits every day row regardless.
+        // The converter here reports "not attempted", which is that same
+        // shape.
+        //
+        // 74 live schedules on Urgent production could not convert, so this
+        // was reachable on all of them.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();            // Monday and Tuesday
+            var created = await svc.UpsertAsync(create);
+
+            var drop = ValidRequest();              // Monday only
+            drop.ScheduleId = created.ScheduleId;
+            drop.DayWindows = new List<DayWindowUpsertRequest>
+            {
+                new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            };
+            await svc.UpsertAsync(drop);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var cleared = read.TblBulkRunScheduleDays
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 2);
+
+            // Still cleared: the window is what makes it unbookable.
+            Assert.Null(cleared.StartTime);
+            Assert.Null(cleared.EndTime);
+            Assert.Null(cleared.Region);
+
+            // But readable. These two are the ones the view maps non-nullable.
+            Assert.NotNull(cleared.MaxJobs);
+            Assert.NotNull(cleared.CutoffHours);
+        }
+    }
+
+    // ─── 6.1: who can book a schedule is a setting, not a derivation ───
+    //
+    // These four pin the rule rather than the field, which is the point: the
+    // bug was never that IsDefault stored the wrong value, it was that nobody
+    // could set it and three readers inferred it from "how many clients are
+    // linked". So a schedule every client can book, with one client
+    // configured on it, read as client-specific everywhere while the booking
+    // functions still offered it to everybody. Anisah's 20 Oct schedule was
+    // exactly that shape, and operations could see it but not change it.
+    //
+    // A test that only asserted "IsDefault round-trips" would stay green if
+    // someone put the derivation back on the read side, which is the half
+    // that was actually visible.
+
+    [Fact]
+    public async Task UpsertAsync_create_honours_an_explicit_IsDefault_false()
+    {
+        // Create hardcoded IsDefault = true, so the New Schedule modal's
+        // "Specific clients" option produced a header every client could book
+        // that ALSO carried link rows. That is the stray-default shape.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var header = read.BulkRunScheduleHeaders.Single(h => h.ScheduleId == created.ScheduleId);
+            Assert.False(header.IsDefault);
+            Assert.False(created.IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_unset_IsDefault_still_creates_a_default_and_does_not_flip_one()
+    {
+        // The back-compat half. A caller that has never heard of the field -
+        // the legacy POST /api/schedules contract, and every integration on
+        // it - must keep getting a default on create, and must not flip the
+        // flag on a schedule it edits for some unrelated reason.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var created = await svc.UpsertAsync(ValidRequest());   // IsDefault unset
+            Assert.True(created.IsDefault);
+
+            var turnSpecific = ValidRequest();
+            turnSpecific.ScheduleId = created.ScheduleId;
+            turnSpecific.IsDefault = false;
+            turnSpecific.ClientCodes = new List<string> { "AAA" };
+            await svc.UpsertAsync(turnSpecific);
+
+            // Now an edit that says nothing about it. Renaming must not put
+            // the schedule back in front of every client.
+            var rename = ValidRequest();
+            rename.ScheduleId = created.ScheduleId;
+            rename.Name = "Renamed Group";
+            rename.ClientCodes = new List<string> { "AAA" };
+            var renamed = await svc.UpsertAsync(rename);
+
+            Assert.False(renamed.IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_refuses_a_non_default_schedule_with_no_client()
+    {
+        // Rule 3. A schedule that is neither default nor configured for
+        // anybody is bookable by nobody: it does not appear for any client and
+        // nothing says why. The guard is on the DESIRED client set, so the
+        // case it has to catch is an operator REMOVING the last client from a
+        // client-specific schedule, whose link row is still on disk when the
+        // check runs.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            var strip = ValidRequest();
+            strip.ScheduleId = created.ScheduleId;
+            strip.IsDefault = false;
+            strip.ClientCodes = new List<string>();     // last chip removed
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.UpsertAsync(strip));
+            Assert.Contains("needs at least one client", ex.Message);
+
+            // And the refusal left the schedule alone rather than half-saving.
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Single(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+        }
+    }
+
+    [Fact]
+    public async Task ListSummary_reports_IsDefault_from_the_header_not_from_the_client_count()
+    {
+        // The read half, and the one that was visible to operations. A default
+        // schedule with a client configured on it must still read as default:
+        // the old inference ("no legacy client and no links") put it in the
+        // client-specific bucket, so the list row dropped its "All clients"
+        // chip, the type= filter moved it to "shared", and the modal's radio
+        // pair selected "Specific clients" on a header that says otherwise.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.ClientCodes = new List<string> { "AAA" };   // default WITH a client
+            var created = await svc.UpsertAsync(create);
+
+            // And a genuinely client-specific one, so the assertions cannot
+            // pass on the DTO's own `IsDefault = true` default. Without the
+            // projection carrying the flag, this row reads true and the test
+            // fails, which is what makes the pair worth having.
+            var specific = ValidRequest();
+            specific.Name = "Specific Group";
+            specific.IsDefault = false;
+            specific.ClientCodes = new List<string> { "AAA" };
+            var specificCreated = await svc.UpsertAsync(specific);
+
+            var summaries = await svc.ListSummaryAsync(
+                clientId: null, includeClientSpecific: false, includeAllLive: true);
+
+            var row = Assert.Single(summaries.Where(s => s.ScheduleId == created.ScheduleId));
+            Assert.True(row.IsDefault);
+            Assert.Equal(1, row.ClientCount);          // both facts, independently
+
+            var specificRow = Assert.Single(
+                summaries.Where(s => s.ScheduleId == specificCreated.ScheduleId));
+            Assert.False(specificRow.IsDefault);
+            Assert.Equal(1, specificRow.ClientCount);  // same count, opposite flag
+
+            Assert.True((await svc.GetDetailAsync(created.ScheduleId)).IsDefault);
+            Assert.False((await svc.GetDetailAsync(specificCreated.ScheduleId)).IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task DetachClientAsync_refuses_to_remove_the_last_client_from_a_non_default_schedule()
+    {
+        // The Clients tab's Remove button calls this endpoint directly rather
+        // than going through the upsert, so guarding only the upsert would
+        // leave the unbookable state one click away. The same hole exists on
+        // the full-replace endpoint, covered below.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            seed.TucClients.Add(new TucClient { UcclId = 42, UcclCode = "BBB", UcclName = "Client B" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA", "BBB" };
+            var created = await svc.UpsertAsync(create);
+
+            // Two configured, so removing one is fine.
+            Assert.Equal(1, await svc.DetachClientAsync(created.ScheduleId, 42));
+
+            // One left, so removing it is not.
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.DetachClientAsync(created.ScheduleId, 41));
+            Assert.Contains("only client", ex.Message);
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Single(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+        }
+    }
+
+    [Fact]
+    public async Task DetachClientAsync_allows_removing_the_last_client_from_a_default_schedule()
+    {
+        // The other half of the same rule, and the one that must NOT be
+        // refused: a client configured on a default schedule is an extra, not
+        // the thing that makes it bookable, so removing it is ordinary. A
+        // guard written as "never remove the last client" would break this.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.ClientCodes = new List<string> { "AAA" };   // default WITH a client
+            var created = await svc.UpsertAsync(create);
+
+            Assert.Equal(1, await svc.DetachClientAsync(created.ScheduleId, 41));
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.Empty(read.ScheduleClients.Where(c => c.ScheduleId == created.ScheduleId));
+            Assert.True(read.BulkRunScheduleHeaders.Single(h => h.ScheduleId == created.ScheduleId).IsDefault);
+        }
+    }
+
+    [Fact]
+    public async Task ReplaceClientsAsync_refuses_to_empty_a_non_default_schedule()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "AAA" };
+            var created = await svc.UpsertAsync(create);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => svc.ReplaceClientsAsync(created.ScheduleId, new List<int>()));
+            Assert.Contains("needs at least one client", ex.Message);
+        }
     }
 }

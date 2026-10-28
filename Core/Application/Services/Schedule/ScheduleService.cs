@@ -1,5 +1,8 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Utilities;
@@ -21,7 +24,9 @@ namespace RoutedOperations.Core.Application.Services.Schedule;
 ///   tblBulkRunSchedule.BulkRunScheduleId      - day-row PK (legacy, unchanged)
 ///   tblScheduleClient.(ScheduleId, ClientId)  - link table PK/FK
 ///
-/// Postcode + polygon junctions still key on ScheduleName (out of scope).
+/// Postcode junction keys on ScheduleId (re-key, 2026-10-16); the polygon
+/// junction was retired. Writes still carry ScheduleName until the step-3
+/// migration drops it, because it is half of the database key.
 ///
 /// Public API keeps the (Name, LegacyClientId) tuple as the group
 /// identifier for one release so existing consumers do not break; the
@@ -37,10 +42,32 @@ namespace RoutedOperations.Core.Application.Services.Schedule;
 public class ScheduleService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     ILogger<ScheduleService> logger,
-    TenantScopedCache cache)
+    TenantScopedCache cache,
+    IScheduleConverter converter,
+    IHttpContextAccessor httpContextAccessor)
     : BaseService(contextFactory)
 {
+    /// <summary>
+    /// Which tenant this caller is on, read from the CountryCode claim the
+    /// Hub cookie carries. Literal "US" is the US path and anything else,
+    /// including a missing claim, is NZ, matching TerritoryService and
+    /// ZoneLookupService rather than inventing a third rule.
+    ///
+    /// Note the claim is the only source worth reading: tblSetting.CountryCode
+    /// is NULL on both US tenants (measured 27 Oct), so a database-side test
+    /// would answer NZ for them.
+    /// </summary>
+    private bool IsUsTenant() =>
+        string.Equals(
+            httpContextAccessor.HttpContext?.User.FindFirstValue("CountryCode"),
+            "US",
+            StringComparison.OrdinalIgnoreCase);
+
     private readonly ILogger<ScheduleService> _logger = logger;
+
+    // Collapses a saved schedule onto its detail row. See IScheduleConverter
+    // for why the derivation stays in the stored procedure.
+    private readonly IScheduleConverter _converter = converter;
 
     // Cache key + TTL for ListSummaryAsync (all-live browse path only).
     // 30s matches the frontend's React Query staleTime so a rapid
@@ -51,6 +78,25 @@ public class ScheduleService(
     // NOT cached: they hit different code paths and are only called by
     // niche legacy views; safer to leave them uncached than to grow the
     // invalidation surface.
+    /// <summary>Upper bound on the occurrences field, matching the CHECK on
+    /// both columns. 14 originally (decision D2 of the occurrences spec),
+    /// raised to 60 on 2026-10-14 by 20261014090000: 14 was arbitrary and
+    /// clamping at it cost 21 client and schedule pairs dates they are
+    /// offered today, the largest wanting 53.
+    ///
+    /// Note this counts OCCURRENCES while OccurrencePreviewHorizonDays
+    /// counts DAYS, and they are not the same 60. A schedule running once a
+    /// week asked for 60 will preview about 8, because the horizon runs out
+    /// first. That is correct and visible rather than silent: the preview
+    /// shows what the booking page would actually offer.</summary>
+    private const int MaxOccurrencesAhead = 60;
+
+    /// <summary>How far the preview looks forward. Same 60 days the
+    /// availability functions use, so a schedule the booking page cannot
+    /// fill inside the horizon previews as short here too rather than
+    /// quietly reaching further.</summary>
+    private const int OccurrencePreviewHorizonDays = 60;
+
     private const string AllLiveListCacheKey = "schedules-v2:list-summary:all-live";
     private static readonly TimeSpan ListSummaryCacheTtl = TimeSpan.FromSeconds(30);
 
@@ -64,6 +110,66 @@ public class ScheduleService(
         cache.Invalidate(AllLiveListCacheKey);
     }
 
+    /// <summary>
+    /// Patch ONE schedule's row into the cached all-live list instead of
+    /// dropping the whole entry, and fall back to dropping it if there is
+    /// nothing to patch.
+    ///
+    /// Why, measured on the office-local copy 2026-10-20. Invalidating makes
+    /// the next reader rebuild from scratch, and a save is the worst possible
+    /// moment to ask for that: the writer's own locks are still settling, so
+    /// all four wave-2 queries block on them. One save produced a 19.9s list
+    /// load (link=19722 rows=18923 ovrScope=19168 ovrFull=16625) against a
+    /// 0.3 to 3.2s steady state, and every concurrent reader waited on the
+    /// same single-flight gate. Recomputing one schedule touches the same
+    /// code path but with liveHeaderIds narrowed to a single id, so wave 2
+    /// reads a handful of rows rather than 7,748.
+    ///
+    /// This keeps the property the invalidation was there for: the operator
+    /// still sees their own write on the very next read, because the row is
+    /// recomputed rather than left stale. Ordering is preserved because the
+    /// list's contract is Name ascending, OrdinalIgnoreCase.
+    ///
+    /// An empty result means the header is no longer in the all-live set, so
+    /// the row is dropped rather than re-added. Any failure falls through to
+    /// the old behaviour, which is correct but slow, never wrong.
+    /// </summary>
+    private async Task RefreshListSummaryEntryAsync(int scheduleId)
+    {
+        try
+        {
+            var patched = await cache.TryPatchAsync<List<ScheduleGroupSummaryDto>>(
+                AllLiveListCacheKey,
+                ListSummaryCacheTtl,
+                async current =>
+                {
+                    var fresh = await ListSummaryUncachedAsync(
+                        clientId: null,
+                        includeClientSpecific: false,
+                        includeAllLive: true,
+                        onlyScheduleIds: new[] { scheduleId });
+
+                    var next = current.Where(s => s.ScheduleId != scheduleId).ToList();
+                    next.AddRange(fresh);
+                    return next
+                        .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                },
+                sliding: false);
+
+            if (!patched) InvalidateListSummaryCache();
+        }
+        catch (Exception ex)
+        {
+            // Never let a cache optimisation fail a save that already
+            // committed. Dropping the key is always safe.
+            _logger.LogWarning(ex,
+                "List summary patch failed for schedule {ScheduleId}; invalidating instead.",
+                scheduleId);
+            InvalidateListSummaryCache();
+        }
+    }
+
     // ─── READS ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -72,8 +178,9 @@ public class ScheduleService(
     /// page load stays sub-500ms even on tenants with 2k+ schedules.
     ///
     /// `includeClientSpecific`:
-    ///   - false (default): only "default" headers (IsDefault=1 with no
-    ///     link rows scoped to a specific client). Fastest.
+    ///   - false (default): only headers with IsDefault = 1. The flag
+    ///     alone, NOT "has no link rows": since spec 6.1 a default may
+    ///     have clients configured on it and is still a default. Fastest.
     ///   - true: every live header, regardless of link state. Used by the
     ///     Schedules tab search box so operators can find a per-client
     ///     schedule by name without knowing the client code up front.
@@ -102,7 +209,19 @@ public class ScheduleService(
             ListSummaryUncachedAsync(clientId, includeClientSpecific, includeAllLive);
     }
 
-    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(int? clientId, bool includeClientSpecific, bool includeAllLive)
+    /// <param name="onlyScheduleIds">
+    /// Restricts the computation to these headers. Null means every live
+    /// header, which is the browse path. Passing a single id is what the
+    /// post-save cache patch uses (see RefreshListSummaryEntryAsync): every
+    /// wave-2 query already filters on liveHeaderIds, which is derived from
+    /// the header set, so narrowing the headers narrows the whole second wave
+    /// without touching any of those queries. Wave 1 is left unscoped on
+    /// purpose; it is nine small lookups totalling well under 100ms and
+    /// several of them have no schedule to filter by.
+    /// </param>
+    private async Task<List<ScheduleGroupSummaryDto>> ListSummaryUncachedAsync(
+        int? clientId, bool includeClientSpecific, bool includeAllLive,
+        IReadOnlyCollection<int> onlyScheduleIds = null)
     {
         // Perf 2026-09-17 v2: v1 parallelization dropped 11 sequential
         // round-trips to 3 waves (~5s -> ~3s). v2 pushes the three
@@ -145,25 +264,45 @@ public class ScheduleService(
         var headersTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => h.RetiredUtc == null)
-                .ToListAsync();
+            var q = ctx.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => h.RetiredUtc == null);
+            // The one narrowing that matters: everything in wave 2 keys off
+            // the header set, so scoping here scopes the expensive half.
+            if (onlyScheduleIds != null)
+                q = q.Where(h => onlyScheduleIds.Contains(h.ScheduleId));
+            return await q.ToListAsync();
         });
         var postcodeCountsTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
             return await ctx.SchedulePostcodes.AsNoTracking()
-                .GroupBy(x => x.ScheduleName)
-                .Select(g => new { Name = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.Name, x => x.Count);
+                .Where(x => x.ScheduleId != null)
+                .GroupBy(x => x.ScheduleId.Value)
+                .Select(g => new { ScheduleId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.ScheduleId, x => x.Count);
         });
         var polygonCountsTask = Timed(async () =>
         {
             await using var ctx = await contextFactory.CreateDbContextAsync();
-            return await ctx.SchedulePolygons.AsNoTracking()
-                .GroupBy(x => x.ScheduleName)
-                .Select(g => new { Name = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.Name, x => x.Count);
+            // Derived from zone membership now that tblSchedulePolygon is
+            // retired (custom-polygons spec 3.4). A polygon counts towards a
+            // schedule when it is a member of a zone that schedule fulfils,
+            // in that schedule's delivery or pickup zone group.
+            var pairs = await (
+                from row in ctx.TblBulkRunSchedules.AsNoTracking()
+                join h in ctx.BulkRunScheduleHeaders.AsNoTracking()
+                    on row.ScheduleId equals h.ScheduleId
+                join z in ctx.BulkZoneSchedules.AsNoTracking()
+                    on row.BulkRunScheduleId equals z.ScheduleId
+                join zp in ctx.BulkZonePolygons.AsNoTracking()
+                    on new { G = row.PostcodeGroupId ?? 0, z.Zone }
+                    equals new { G = zp.PostcodeGroupId, zp.Zone }
+                where h.RetiredUtc == null && z.Active == true && zp.Active
+                select new { h.Name, zp.PolygonId })
+                .Distinct().ToListAsync();
+            return pairs
+                .GroupBy(x => x.Name)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.PolygonId).Distinct().Count());
         });
         // SQL-side aggregate: one row per day-row (BulkRunScheduleId) with
         // its active-zone count. Retired-header day rows are filtered out
@@ -240,7 +379,7 @@ public class ScheduleService(
         var (depotNames, w1DepotMs) = depotNamesTask.Result;
         var (speedNames, w1SpeedMs) = speedNamesTask.Result;
         var (headers, w1HeadersMs) = headersTask.Result;
-        var (postcodeCountByName, w1PostcodeMs) = postcodeCountsTask.Result;
+        var (postcodeCountById, w1PostcodeMs) = postcodeCountsTask.Result;
         var (polygonCountByName, w1PolygonMs) = polygonCountsTask.Result;
         var (zoneCountByDayRowId, w1ZoneMs) = zoneCountsTask.Result;
         var (linehaulByDayRow, w1LinehaulMs) = linehaulByDayRowTask.Result;
@@ -325,8 +464,20 @@ public class ScheduleService(
             return await ctx.BulkZonePostcodeGroups.AsNoTracking()
                 .ToDictionaryAsync(g => g.Id, g => g.Name);
         });
+        // Which schedules have collapsed, and their occurrences-ahead. One
+        // row per converted schedule, so this table is at most as big as the
+        // header table and usually far smaller. Joined into wave 2 rather
+        // than queried on its own so it costs no extra round trip.
+        var detailsTask = Timed(async () =>
+        {
+            await using var ctx = await contextFactory.CreateDbContextAsync();
+            return await ctx.BulkRunScheduleDetails.AsNoTracking()
+                .Where(d => liveHeaderIds.Contains(d.ScheduleId))
+                .ToDictionaryAsync(d => d.ScheduleId);
+        });
         await Task.WhenAll(linkRowsTask, rowBasesTask, overrideScopeRowsTask,
-            overrideFullRowsTask, postcodeGroupNamesTask);
+            overrideFullRowsTask, postcodeGroupNamesTask, detailsTask);
+        var (detailsByScheduleId, w2DetailMs) = detailsTask.Result;
         var (linkRows, w2LinkMs) = linkRowsTask.Result;
         var (rowBases, w2RowsMs) = rowBasesTask.Result;
         var (overrideScopeRows, w2OverrideScopeMs) = overrideScopeRowsTask.Result;
@@ -533,7 +684,7 @@ public class ScheduleService(
                     linehaulHint = $"LH {fromCode}-{toCode} {time}";
                 }
                 var clientCount = linkClientsByHeaderId.TryGetValue(header.ScheduleId, out var ids) ? ids.Count : 0;
-                var postcodeCount = postcodeCountByName.TryGetValue(header.Name, out var pc) ? pc : 0;
+                var postcodeCount = postcodeCountById.TryGetValue(header.ScheduleId, out var pc) ? pc : 0;
                 var polygonCount = polygonCountByName.TryGetValue(header.Name, out var poc) ? poc : 0;
 
                 // F3 (2026-09-23): derived server-side from the delta
@@ -609,7 +760,11 @@ public class ScheduleService(
                     header.DisplayName,
                     header.DisplayDescription,
                     header.IsActive,
-                    overridesForSchedule);
+                    overridesForSchedule,
+                    detailsByScheduleId.TryGetValue(header.ScheduleId, out var det),
+                    det?.OccurrencesAhead,
+                    header.OriginType ?? "depot",
+                    header.IsDefault);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -692,11 +847,14 @@ public class ScheduleService(
         var headersById = headers.ToDictionary(h => h.ScheduleId);
 
         // Client count = union of link rows across every non-default
-        // member. Default headers do not carry link rows so they add
-        // zero to the client count, matching Steve's brief section 2
-        // Schedule Bundles tab semantics ("Attach clients to bundle -
-        // one link row per client per member; members that are
-        // defaults are skipped").
+        // member, per Steve's brief section 2 Schedule Bundles tab semantics
+        // ("Attach clients to bundle - one link row per client per member;
+        // members that are defaults are skipped").
+        //
+        // The skip is deliberate, not an optimisation on an empty set: since
+        // spec 6.1 a default CAN carry link rows, and those clients are
+        // configured on it rather than restricted to it, so counting them
+        // would overstate how many clients the bundle restricts to.
         var nonDefaultMemberIds = headers
             .Where(h => !h.IsDefault)
             .Select(h => h.ScheduleId)
@@ -784,14 +942,13 @@ public class ScheduleService(
             .Where(x => x.ScheduleId == header.ScheduleId)
             .ToListAsync();
         var postcodeJunctions = await Context.SchedulePostcodes.AsNoTracking()
-            .Where(x => x.ScheduleName == header.Name)
+            .Where(x => x.ScheduleId == header.ScheduleId)
             .ToListAsync();
-        var polygonJunctions = await Context.SchedulePolygons.AsNoTracking()
-            .Where(x => x.ScheduleName == header.Name)
-            .ToListAsync();
+        var polygonJunctions = await GetZoneDerivedPolygonsAsync(new List<int> { header.ScheduleId });
 
         var rows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => s.ScheduleId == header.ScheduleId)
             .OrderBy(s => s.DayOfWeek)
@@ -799,8 +956,14 @@ public class ScheduleService(
         if (rows.Count == 0)
             throw new InvalidOperationException($"Schedule group '{header.Name}' has no day rows.");
 
-        return MapGroup(header, rows, clientJunctions, postcodeJunctions, polygonJunctions,
-            depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
+        var clientsWithoutGeocode = await GetClientsWithoutGeocodeAsync(
+            clientJunctions.Select(x => x.ClientId));
+        var detail = await Context.BulkRunScheduleDetails.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.ScheduleId == header.ScheduleId);
+        return MapGroup(header, rows, detail, _lastConvert is { CanConvert: false } ? _lastConvert.Reasons : null,
+            clientJunctions, postcodeJunctions, polygonJunctions,
+            depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames,
+            clientsWithoutGeocode);
     }
 
     /// <summary>
@@ -888,15 +1051,27 @@ public class ScheduleService(
             .Where(sc => liveHeaderIds.Contains(sc.ScheduleId))
             .ToListAsync();
         var postcodeJunctions = await Context.SchedulePostcodes.AsNoTracking().ToListAsync();
-        var polygonJunctions = await Context.SchedulePolygons.AsNoTracking().ToListAsync();
+        var polygonJunctions = await GetZoneDerivedPolygonsAsync(liveHeaderIds.ToList());
 
         var rows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => liveHeaderIds.Contains(s.ScheduleId))
             .OrderBy(s => s.Name)
             .ThenBy(s => s.DayOfWeek)
             .ToListAsync();
+
+        // One lookup for the whole page rather than per group. Scoped to the
+        // clients actually linked here, so it stays small (spec 4.5).
+        var clientsWithoutGeocode = await GetClientsWithoutGeocodeAsync(
+            clientJunctions.Select(x => x.ClientId));
+
+        // Which of these schedules have collapsed. One query for the page.
+        var headerIdsOnPage = headersById.Keys.ToList();
+        var detailsById = await Context.BulkRunScheduleDetails.AsNoTracking()
+            .Where(d => headerIdsOnPage.Contains(d.ScheduleId))
+            .ToDictionaryAsync(d => d.ScheduleId);
 
         var groups = rows
             .GroupBy(r => r.ScheduleId)
@@ -905,8 +1080,12 @@ public class ScheduleService(
             {
                 var header = headersById[g.Key];
                 var scoped = clientJunctions.Where(cj => cj.ScheduleId == header.ScheduleId).ToList();
-                return MapGroup(header, g.ToList(), scoped, postcodeJunctions, polygonJunctions,
-                    depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames);
+                detailsById.TryGetValue(g.Key, out var detail);
+                // No refusal reasons on a read: nothing was attempted here.
+                return MapGroup(header, g.ToList(), detail, null,
+                    scoped, postcodeJunctions, polygonJunctions,
+                    depotNames, speedNames, groupNames, dropOffNames, clientCodes, clientNames,
+                    clientsWithoutGeocode);
             })
             .ToList();
 
@@ -1042,6 +1221,33 @@ public class ScheduleService(
             .OrderBy(z => z)
             .ToListAsync();
 
+        // Labelled, depot-scoped zones for the chain editor (US coverage spec
+        // 5.1). zoneNumbers above stays exactly as it was, both because the
+        // older schedule modal reads it and because it is the only thing that
+        // can offer a number the tenant has ticked but can no longer resolve.
+        //
+        // It is also why this exists. That list unions BulkZoneSchedule, the
+        // table the picker WRITES to, so it is self-feeding: one tick and the
+        // number is offered forever, with no name, no depot and no way to see
+        // what it covers. Medical Couriers has 77 ticks made that way.
+        //
+        // US ONLY, deliberately. The coverage spec is a US change and NZ was
+        // left alone (Kevin, 27 Oct): an NZ leg keeps offering every zone
+        // number the tenant uses, unfiltered, exactly as it always has.
+        // Filtering NZ would have been defensible, since its availability
+        // function tests p.DepotId = s.Region too, but it is a visible change
+        // nobody asked for - measured on Urgent staging, 545 of 24,068 active
+        // ticks would have started rendering greyed.
+        //
+        // An empty list here is the signal the chain editor falls back on, so
+        // NZ needs no tenant knowledge of its own.
+        //
+        // Grouping and counting happen in SQL: the biggest US tenant has
+        // 4,437 ZoneZip rows and this runs every time the modal opens.
+        var zones = IsUsTenant()
+            ? await BuildUsZoneOptionsAsync()
+            : new List<ZoneOptionDto>();
+
         // Labels for the legacy int enum. Source of truth:
         // C:\Gitlab\ClientManager_Root\ClientManager\wwwroot\app\components\schedules\schedulesControl.js:5-7
         // Ids match the persisted values in tblBulkRunSchedule.StorageState / .DeliveryState /
@@ -1069,8 +1275,75 @@ public class ScheduleService(
 
         return new ScheduleLookupsDto(
             depots, speeds, couriers, clients, dropOffs, postcodeGroups, linehaulRuns,
-            zoneNumbers, storageStates, deliveryStates, pickupBoxDiscounts);
+            zoneNumbers, zones, storageStates, deliveryStates, pickupBoxDiscounts);
     }
+
+    /// <summary>
+    /// US tickable zones: one entry per (depot, zone number). A zone with no
+    /// depot is left out because the availability function joins
+    /// ZoneName.LocationID to the schedule's region, so it could never match;
+    /// a ZIP row with no number is left out because the number IS the key a
+    /// tick resolves by.
+    ///
+    /// Two zones at one depot may share a number and that is legitimate: the
+    /// tick then covers both, so both names appear in the label joined with
+    /// " + ". Medical Couriers depot 35 has Sacramento and SMF on number 1.
+    /// </summary>
+    private async Task<List<ZoneOptionDto>> BuildUsZoneOptionsAsync()
+    {
+        var rows = Context.ZoneZips.AsNoTracking()
+            .Where(z => z.ZoneNumber != null
+                     && z.ZoneName != null
+                     && z.ZoneName.LocationId != null);
+
+        // Counted in SQL rather than by pulling every ZIP row back.
+        var counts = await rows
+            .GroupBy(z => new { Depot = z.ZoneName.LocationId!.Value, Zone = z.ZoneNumber!.Value })
+            .Select(g => new { g.Key.Depot, g.Key.Zone, Zips = g.Count() })
+            .ToListAsync();
+
+        // One row per zone that carries a number, not per ZIP.
+        var named = await rows
+            .Select(z => new
+            {
+                Depot = z.ZoneName.LocationId!.Value,
+                Zone = z.ZoneNumber!.Value,
+                ZoneName = z.ZoneName.ZoneName1,
+                Group = z.ZoneName.ZoneGroup != null ? z.ZoneName.ZoneGroup.Name : null,
+            })
+            .Distinct()
+            .ToListAsync();
+
+        var labels = named
+            .GroupBy(r => new { r.Depot, r.Zone })
+            .ToDictionary(
+                g => (g.Key.Depot, g.Key.Zone),
+                g => (
+                    Label: Join(g.Select(x => x.ZoneName)),
+                    Group: Join(g.Select(x => x.Group))));
+
+        return counts
+            .Select(c =>
+            {
+                labels.TryGetValue((c.Depot, c.Zone), out var l);
+                return new ZoneOptionDto(
+                    c.Zone,
+                    string.IsNullOrWhiteSpace(l.Label) ? $"Zone {c.Zone}" : l.Label,
+                    c.Depot,
+                    c.Zips,
+                    l.Group ?? "");
+            })
+            .OrderBy(z => z.DepotId).ThenBy(z => z.Zone)
+            .ToList();
+
+        static string Join(IEnumerable<string> values) =>
+            string.Join(" + ", values
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .Select(v => v.Trim())
+                .Distinct()
+                .OrderBy(v => v));
+    }
+
 
     // ─── WRITES ────────────────────────────────────────────────────────────
 
@@ -1089,7 +1362,21 @@ public class ScheduleService(
         var name = req.Name.Trim();
 
         BulkRunScheduleHeader header;
-        List<TblBulkRunSchedule> existing;
+        // The WRITE entity, not the view. 20261009177000 turned
+        // dbo.tblBulkRunSchedule into a view (IS_UPDATABLE = NO), so every
+        // write in this method targets tblBulkRunScheduleDay. Reads elsewhere
+        // in this service still go through the view, which is the only place
+        // a converted schedule's payload can be read from.
+        List<TblBulkRunScheduleDay> existing;
+        // Child rows keyed by DAY-ROW id. They used to be reached through
+        // navigation collections on the view entity; mirroring those
+        // collections onto the write entity makes EF mint a shadow FK per
+        // child (tried and reverted 2026-10-09, ScheduleModelShapeTests
+        // caught it), so the write path carries its own lookups and sets the
+        // FK column directly.
+        var zonesByDayRow = new Dictionary<int, List<BulkZoneSchedule>>();
+        var pickupZonesByDayRow = new Dictionary<int, List<BulkPickupZoneSchedule>>();
+        var linehaulsByDayRow = new Dictionary<int, List<TblBulkScheduleLinehaul>>();
         // F13 (Steve 2026-09-20): normalise empty/whitespace-only display
         // strings from the form to NULL on write so the backend can tell
         // "operator cleared it" (NULL, fall back to Name) apart from
@@ -1102,6 +1389,37 @@ public class ScheduleService(
         // where every schedule is bookable). Frontend always sends the
         // explicit boolean once the field ships.
         var isActive = req.IsActive ?? true;
+        // Origin (schedule-origin spec 5.1). Anything the caller does not
+        // recognise falls back to 'depot', which is today's behaviour, so the
+        // legacy POST /api/schedules contract is unaffected. The origin region
+        // is only meaningful for a client origin; a depot-origin schedule gets
+        // NULL so CK_tblBulkRunScheduleHeader_ClientOriginHasRegion stays
+        // satisfied either way.
+        //
+        // 'direct' (2026-10-08) is the third origin: the goods leave the
+        // pickup address the BOOKING declares and go straight to the delivery
+        // address, so no depot is touched at all. It differs from 'client' in
+        // three ways that are all enforced below - no linehaul legs, no
+        // origin region, and a default schedule may use it (there is no
+        // client-specific address to be undefined).
+        var originType =
+            string.Equals(req.OriginType, "client", StringComparison.OrdinalIgnoreCase) ? "client"
+            : string.Equals(req.OriginType, "direct", StringComparison.OrdinalIgnoreCase) ? "direct"
+            : "depot";
+        // OriginRegionId is meaningful for 'client' only. 'direct' shares the
+        // NULL with 'depot': its dispatch/reporting region is the schedule's
+        // own Region, taken from the Delivery leg like everybody else's.
+        var originRegionId = originType == "client" ? req.OriginRegionId : null;
+        if (originType == "client" && originRegionId is null)
+            throw new InvalidOperationException(
+                "A client-origin schedule needs an origin region.");
+        if (originType == "direct"
+            && (req.BookPickup == true || (req.Linehauls?.Count ?? 0) > 0))
+            throw new InvalidOperationException(
+                "A Direct schedule books one job from the pickup address given "
+                + "at booking time; remove the Collection and linehaul legs or "
+                + "choose Depot.");
+
         if (req.ScheduleId.HasValue && req.ScheduleId.Value > 0)
         {
             header = await Context.BulkRunScheduleHeaders
@@ -1112,11 +1430,47 @@ public class ScheduleService(
             header.DisplayName = displayName;
             header.DisplayDescription = displayDescription;
             header.IsActive = isActive;
-            existing = await Context.TblBulkRunSchedules
-                .Include(s => s.BulkZoneSchedules)
-                .Include(s => s.TblBulkScheduleLinehauls)
+            // Spec 6.1 rule 1: IsDefault is an explicit header setting, so an
+            // update writes it. Assigned BEFORE the client-origin guard below
+            // on purpose: the guard reads header.IsDefault, and an operator
+            // turning a schedule client-specific AND client-origin in one save
+            // would otherwise be refused on the value the schedule had before
+            // the save. Null leaves it alone, so a pre-6.1 caller is unchanged.
+            if (req.IsDefault.HasValue) header.IsDefault = req.IsDefault.Value;
+            // Spec 2.1: a default schedule cannot start at a client address,
+            // because "the client" is not defined for a schedule every client
+            // can book. Enforced here rather than in the UI so the API cannot
+            // be used to get around it.
+            //
+            // 'direct' is deliberately NOT caught by this: its pickup address
+            // comes from the booking, so it is defined for every client and a
+            // default Direct schedule is a legitimate shape.
+            if (originType == "client" && header.IsDefault)
+                throw new InvalidOperationException(
+                    "A default schedule cannot start at a client address. "
+                    + "Link it to a client first.");
+            header.OriginType = originType;
+            header.OriginRegionId = originRegionId;
+            existing = await Context.TblBulkRunScheduleDays
                 .Where(s => s.ScheduleId == header.ScheduleId)
                 .ToListAsync();
+            var dayRowIds = existing.Select(s => s.BulkRunScheduleId).ToList();
+            zonesByDayRow = (await Context.BulkZoneSchedules
+                    .Where(z => z.ScheduleId != null && dayRowIds.Contains(z.ScheduleId.Value))
+                    .ToListAsync())
+                .GroupBy(z => z.ScheduleId.Value)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            pickupZonesByDayRow = (await Context.BulkPickupZoneSchedules
+                    .Where(z => dayRowIds.Contains(z.ScheduleId))
+                    .ToListAsync())
+                .GroupBy(z => z.ScheduleId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            linehaulsByDayRow = (await Context.TblBulkScheduleLinehauls
+                    .Where(l => l.BulkRunScheduleId != null
+                                && dayRowIds.Contains(l.BulkRunScheduleId.Value))
+                    .ToListAsync())
+                .GroupBy(l => l.BulkRunScheduleId.Value)
+                .ToDictionary(g => g.Key, g => g.ToList());
         }
         else
         {
@@ -1124,16 +1478,40 @@ public class ScheduleService(
             header = new BulkRunScheduleHeader
             {
                 Name = name,
-                IsDefault = true,
+                // Spec 6.1 rule 1. Was hardcoded true, which is why a new
+                // schedule could not be created client-specific at all: the
+                // operator had to create it as a default, save, then attach.
+                // Unset still means true, so the legacy POST /api/schedules
+                // contract ("create always makes a default") is preserved for
+                // callers that do not send the field.
+                IsDefault = req.IsDefault ?? true,
                 LegacyClientId = null,
                 CreatedUtc = DateTime.UtcNow,
                 CreatedBy = "RoutedOps",
                 DisplayName = displayName,
                 DisplayDescription = displayDescription,
                 IsActive = isActive,
+                // Spec 2.1 again, now conditional. Create used to be
+                // unconditionally default, so a client origin was refused
+                // outright here; since 6.1 a create can be client-specific, and
+                // the rule that actually matters is the 2.1 one: a DEFAULT
+                // schedule cannot start at a client address, because "the
+                // client" is undefined for a schedule every client can book.
+                // A create that declares itself non-default is allowed the
+                // client origin straight away.
+                // 'direct' passes straight through either way - its pickup
+                // address comes from the booking, so a default Direct schedule
+                // is a legitimate shape.
+                OriginType = originType == "client" && (req.IsDefault ?? true)
+                    ? throw new InvalidOperationException(
+                        "A default schedule cannot start at a client address. "
+                        + "Set it to specific clients, or create it, link a "
+                        + "client, then set the origin.")
+                    : originType,
+                OriginRegionId = originRegionId,
             };
             Context.BulkRunScheduleHeaders.Add(header);
-            existing = new List<TblBulkRunSchedule>();
+            existing = new List<TblBulkRunScheduleDay>();
         }
 
         // Sync day-window rows.
@@ -1145,9 +1523,28 @@ public class ScheduleService(
                 (!w.Id.HasValue && w.DayOfWeek == row.DayOfWeek));
             if (matched == null)
             {
-                Context.BulkZoneSchedules.RemoveRange(row.BulkZoneSchedules);
-                Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
-                Context.TblBulkRunSchedules.Remove(row);
+                // The day row itself is NOT deleted. Other tables hold its id
+                // as a foreign key (ShopWindow, BulkZoneSchedule,
+                // TblBulkScheduleLinehaul, tblRouteSchedule) and the booking
+                // procedures pack it into a quote, so the id is a live
+                // external contract. A schedule stops running on a weekday by
+                // losing that bit from its detail row's mask, which is what
+                // the convert step below writes, and the view then stops
+                // emitting the day. uspScheduleConvert refuses to mask off a
+                // day an active ShopWindow points at, which is the same
+                // protection the foreign key used to give the delete.
+                //
+                // Until the schedule converts, the row has to stop being
+                // offered some other way, and the only lever the old shape
+                // has is its payload: a row with no window is not bookable.
+                // So the payload is cleared here and the key columns kept.
+                if (zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
+                    Context.BulkZoneSchedules.RemoveRange(zs);
+                if (pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
+                    Context.BulkPickupZoneSchedules.RemoveRange(pzs);
+                if (linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
+                    Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
+                ClearDayRowPayload(row);
                 existing.Remove(row);
             }
         }
@@ -1159,7 +1556,7 @@ public class ScheduleService(
                 : existing.FirstOrDefault(r => r.DayOfWeek == w.DayOfWeek);
             if (row == null)
             {
-                row = new TblBulkRunSchedule
+                row = new TblBulkRunScheduleDay
                 {
                     Name = name,
                     // Legacy ClientId column on the day row: keep writing it
@@ -1182,7 +1579,7 @@ public class ScheduleService(
                     MaxJobs = 10000,
                     Header = header, // EF wires ScheduleId on save
                 };
-                Context.TblBulkRunSchedules.Add(row);
+                Context.TblBulkRunScheduleDays.Add(row);
                 existing.Add(row);
             }
             else if (!string.Equals(row.Name, name, StringComparison.Ordinal))
@@ -1215,20 +1612,17 @@ public class ScheduleService(
         // the same and wiped live zone / linehaul rows on any save that
         // did not repopulate them (e.g. the operator edits a non-zone field
         // and the frontend omits Zones from the payload).
+        // Removals can be issued now; the inserts need day-row ids, so they
+        // are deferred to after the first save. A row created in this same
+        // call has BulkRunScheduleId = 0 until then.
         foreach (var row in existing)
         {
-            if (req.Zones != null)
-            {
-                Context.BulkZoneSchedules.RemoveRange(row.BulkZoneSchedules);
-                foreach (var z in req.Zones)
-                    row.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
-            }
-            if (req.Linehauls != null)
-            {
-                Context.TblBulkScheduleLinehauls.RemoveRange(row.TblBulkScheduleLinehauls);
-                foreach (var l in req.Linehauls)
-                    row.TblBulkScheduleLinehauls.Add(MapLinehaulToEntity(l));
-            }
+            if (req.Zones != null && zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
+                Context.BulkZoneSchedules.RemoveRange(zs);
+            if (req.PickupZones != null && pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
+                Context.BulkPickupZoneSchedules.RemoveRange(pzs);
+            if (req.Linehauls != null && linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
+                Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
         }
 
         // Resolve the desired client-link set. clientCodes is authoritative
@@ -1264,14 +1658,435 @@ public class ScheduleService(
             resolvedClientIds = new List<int>(req.ClientIds ?? new());
         }
 
-        await SyncClientsAsync(header, resolvedClientIds);
-        await SyncPostcodesAsync(header.Name, req.PostcodeIds);
-        await SyncPolygonsAsync(header.Name, req.PolygonIds);
+        // Spec 6.1 rule 3: a schedule that is neither default nor configured
+        // for anybody is bookable by nobody, so refuse that state rather than
+        // persist it. Enforced here, next to the client-origin guard and for
+        // the same reason: the UI can hide the combination but the API has to
+        // be the thing that cannot be talked into it.
+        //
+        // The test is on the DESIRED set, not the rows on disk, because this
+        // runs before SaveChanges and resolvedClientIds is authoritative: an
+        // operator removing the last chip from a non-default schedule is the
+        // case to catch, and its link row is still present at this point.
+        //
+        // LegacyClientId counts as configured. A pre-junction per-client
+        // schedule carries its one client in that column and has no link row
+        // at all, so counting only link rows would make every legacy
+        // client-specific schedule unsaveable.
+        if (!header.IsDefault
+            && resolvedClientIds.Count == 0
+            && !header.LegacyClientId.HasValue)
+            throw new InvalidOperationException(
+                "A schedule for specific clients needs at least one client. "
+                + "Configure a client, or set it to all clients.");
 
-        await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await SyncClientsAsync(header, resolvedClientIds);
+        await SyncPostcodesAsync(header, req.PostcodeIds);
+        // tblSchedulePolygon is retired (custom-polygons spec 3.4). No stored
+        // procedure, function, trigger or view ever read it, so a polygon
+        // attached to a schedule never affected booking: the attachment was
+        // wired to the wrong object. Coverage now comes from a polygon's
+        // membership of a ZONE (BulkZonePolygon), which is what zone groups
+        // actually decide bookability from.
+        //
+        // The write is removed rather than the call, so existing rows survive
+        // until the drop migration runs and nothing new accumulates. Zero rows
+        // on all four tenants as at 2026-10-07, so there is nothing to carry
+        // across by hand.
+        // await SyncPolygonsAsync(header.Name, req.PolygonIds);
+
+        // Two phases, because the child rows' foreign key is the day row's
+        // identity and a day row created in this call has no id until it is
+        // saved. Both phases plus the convert run inside one transaction so
+        // the intermediate old-shape state is never visible to another
+        // reader, and so a failure in any of them leaves the schedule as it
+        // was. BeginTransaction is relational-only; the in-memory provider
+        // the service tests run on has no transactions and needs none,
+        // because each test owns its own store.
+        // Only open one if the caller has not. EF throws "A transaction is
+        // already in progress" on a second BeginTransaction, so a caller that
+        // wraps several service calls in its own transaction, which is how a
+        // throwaway verification run against a real database rolls itself
+        // back, would otherwise fail here rather than being accommodated.
+        // When the caller owns the transaction, the caller commits it.
+        IDbContextTransaction tx = null;
+        if (Context.Database.IsRelational() && Context.Database.CurrentTransaction == null)
+            tx = await Context.Database.BeginTransactionAsync();
+        try
+        {
+            // An already-collapsed schedule goes back on its day rows first.
+            //
+            // Everything below writes the OLD shape and then asks the
+            // database to collapse it, because that is the only way the
+            // relative cutoff rule gets derived by the one implementation
+            // that owns it. On a schedule that already has a detail row the
+            // collapse refuses with DetailAlreadyExists, and the save then
+            // left the day rows carrying payload they should not have while
+            // the detail row kept its old window and cutoff. The view reads
+            // the detail row, so nothing looked wrong on screen: the
+            // operator's edit simply did nothing, which is worse than an
+            // error. Putting the schedule back first makes both shapes take
+            // one path.
+            //
+            // Found by saving a collapsed schedule in the real application,
+            // and then again when the first attempt failed on permissions:
+            // uspScheduleUnconvert needs EXECUTE AS OWNER to reach its
+            // SET IDENTITY_INSERT, which 20261009178300 gives it.
+            if (_converter != null
+                && await Context.BulkRunScheduleDetails
+                        .AnyAsync(d => d.ScheduleId == header.ScheduleId))
+            {
+                await _converter.UnconvertAsync(Context, header.ScheduleId);
+            }
+
+            await Context.SaveChangesAsync();
+
+            // Phase 2: children, now that every day row has an id.
+            foreach (var row in existing)
+            {
+                if (req.Zones != null)
+                    foreach (var z in req.Zones)
+                        Context.BulkZoneSchedules.Add(new BulkZoneSchedule
+                        {
+                            ScheduleId = row.BulkRunScheduleId,
+                            Zone = z.Zone,
+                            Active = z.Active,
+                        });
+                if (req.PickupZones != null)
+                    foreach (var z in req.PickupZones)
+                        Context.BulkPickupZoneSchedules.Add(new BulkPickupZoneSchedule
+                        {
+                            ScheduleId = row.BulkRunScheduleId,
+                            Zone = z.Zone,
+                            Active = z.Active ?? true,
+                        });
+                if (req.Linehauls != null)
+                    // Bug 1 (Steve 2026-09-25): this is a remove-and-re-add, so
+                    // every leg gets a fresh identity Id and the backfilled
+                    // LegOrder would be lost unless it is written back here. The
+                    // ordinal is the leg's position in the request array, which
+                    // the chain editor sends in travel order, so a caller that
+                    // does not know about LegOrder still produces the right
+                    // order just by sending legs in chain order.
+                    for (var i = 0; i < req.Linehauls.Count; i++)
+                    {
+                        var leg = MapLinehaulToEntity(req.Linehauls[i], i + 1);
+                        leg.BulkRunScheduleId = row.BulkRunScheduleId;
+                        Context.TblBulkScheduleLinehauls.Add(leg);
+                    }
+            }
+            if (req.Zones != null || req.PickupZones != null || req.Linehauls != null)
+                await Context.SaveChangesAsync();
+
+            // Convert-on-save (collapse plan 4.1, decided 8 Oct). The write
+            // above is deliberately in the OLD shape, per-day payload and an
+            // absolute cutoff pair, because that is what the request carries.
+            // The procedure turns it into the one relative rule the detail
+            // row stores, trying working days then calendar days, and nulls
+            // the day-row payload. It refuses when the days genuinely differ,
+            // and a refusal is a normal answer: the schedule stays in the old
+            // shape, still correct, still bookable, and the reasons come back
+            // for the operator.
+            //
+            // This is the whole migration of existing data in the plan:
+            // opportunistic, on touch, no campaign.
+            _lastConvert = _converter == null
+                ? null
+                : await _converter.ConvertAsync(Context, header.ScheduleId, commit: true, by: "RoutedOps");
+            // Both procedures changed rows underneath EF. Anything still
+            // tracked from the writes above now holds pre-collapse values,
+            // and the read that builds the response would hand those back.
+            Context.ChangeTracker.Clear();
+            if (_lastConvert != null && !_lastConvert.CanConvert)
+                _logger.LogInformation(
+                    "Schedule {ScheduleId} saved in the old shape; convert refused: {Reasons}",
+                    header.ScheduleId, _lastConvert.Reasons);
+
+            // The operator's occurrences-ahead, applied AFTER the convert
+            // because the convert is what creates the detail row to hold it,
+            // and it writes one week's worth as the default. An old-shape
+            // schedule has nowhere to put the value, so the request field is
+            // silently inapplicable there rather than an error: the operator
+            // is told the schedule did not collapse, and that is the thing
+            // to act on.
+            if (req.OccurrencesAhead.HasValue)
+            {
+                if (req.OccurrencesAhead.Value is < 1 or > 60)
+                    throw new InvalidOperationException(
+                        "Occurrences ahead must be between 1 and 60.");
+                var detailRow = await Context.BulkRunScheduleDetails
+                    .FirstOrDefaultAsync(d => d.ScheduleId == header.ScheduleId);
+                if (detailRow != null && detailRow.OccurrencesAhead != req.OccurrencesAhead.Value)
+                {
+                    detailRow.OccurrencesAhead = req.OccurrencesAhead.Value;
+                    detailRow.UpdatedUtc = DateTime.UtcNow;
+                    detailRow.UpdatedBy = "RoutedOps";
+                    await Context.SaveChangesAsync();
+                }
+            }
+
+            if (tx != null) await tx.CommitAsync();
+        }
+        finally
+        {
+            if (tx != null) await tx.DisposeAsync();
+        }
+
+        // Patch this one schedule into the cached list rather than dropping
+        // the list. Only the save does this: it is the heavy write, it is the
+        // one operators repeat, and it is the one whose settling locks made
+        // the next reader's rebuild take 19.9s. The lighter writes below
+        // still invalidate, which costs a rebuild but not a blocked one.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
 
         return await GetDetailByHeaderAsync(header);
+    }
+
+    /// <summary>
+    /// The outcome of the last convert-on-save, for the caller that wants to
+    /// tell the operator why a schedule did not collapse. Null means the
+    /// convert was not attempted, which is the case on a provider with no
+    /// stored procedures; it never means refused.
+    /// </summary>
+    private ScheduleConvertResult _lastConvert;
+
+    /// <summary>
+    /// Why the schedule saved by the most recent <see cref="UpsertAsync"/>
+    /// call did not collapse onto one row, or null when it did collapse or
+    /// the question does not apply.
+    /// </summary>
+    public string LastConvertRefusalReasons =>
+        _lastConvert is { CanConvert: false } ? _lastConvert.Reasons : null;
+
+    /// <summary>
+    /// Blanks every payload column on a day row, leaving the key columns
+    /// (Name, ClientId, ScheduleId, DayOfWeek) set.
+    ///
+    /// This is what a key row looks like, and it is what the row becomes
+    /// when the operator un-ticks its weekday. The row survives because
+    /// other tables hold its id; see the comment at the call site.
+    /// </summary>
+    /// <summary>
+    /// Blank a day row the request no longer describes. The row is kept, not
+    /// deleted, because other tables hold its id (see the caller).
+    ///
+    /// MaxJobs and CutoffHours are set to 0 rather than NULL, and that is not
+    /// cosmetic. `dbo.tblBulkRunSchedule` is a compatibility VIEW over this
+    /// table and EF maps BOTH of those columns as non-nullable `int`
+    /// (TblBulkRunSchedule.Schedules.cs and BulkImportEntityExtensions.cs), so
+    /// a NULL makes every read of that schedule throw SqlNullValueException
+    /// out of the materialiser. It is not contained either: the list query
+    /// reads the same view, so one cleared row takes the whole Schedules NEW
+    /// list down with a 500 until the row is repaired by hand.
+    ///
+    /// The mask on the detail row normally hides a cleared row, which is why
+    /// this went unnoticed: the convert runs straight after this and the view
+    /// stops emitting the day. But the convert REFUSES whenever the days
+    /// genuinely differ, and the caller treats a refusal as a normal answer
+    /// ("the schedule stays in the old shape, still correct, still bookable").
+    /// On a refusal there is no detail row, the view's `x.ScheduleId IS NULL`
+    /// arm emits every day row regardless, and the cleared row surfaces with
+    /// its NULLs. Found 2026-10-20 on a schedule that could not convert.
+    ///
+    /// 0 is the value the old table actually held for this case, not a default
+    /// invented here. 20261009178200_CompatView_CutoffHoursNeverNullAfterCollapse
+    /// makes exactly this argument for the collapsed arm of the same column,
+    /// and DeriveLegacyCutoffHours returns 0 the moment the absolute pair is
+    /// unset. The row still stops being bookable the way the caller intends,
+    /// through StartTime and EndTime going NULL: MaxJobs is carried by the
+    /// availability functions but never gates anything in them.
+    /// </summary>
+    private static void ClearDayRowPayload(TblBulkRunScheduleDay row)
+    {
+        row.StartTime = null;
+        row.EndTime = null;
+        row.MaxJobs = 0;
+        row.Region = null;
+        row.SpeedId = null;
+        row.CutoffHours = 0;
+        row.CutoffDay = null;
+        row.CutoffTime = null;
+        row.Description = null;
+        row.AutoBook = null;
+        row.PostcodeGroupId = null;
+        row.BookPickup = null;
+        row.PickupDepotId = null;
+        row.StorageState = null;
+        row.DeliveryState = null;
+        row.PickupRatingSpeed = null;
+        row.PickupPostcodeGroupId = null;
+        row.ParentSpeedId = null;
+        row.PickupBoxDiscount = null;
+        row.DropOffLocationId = null;
+        row.ApplyPickupCutoff = null;
+        row.PickupCutoff = null;
+        row.AutoBookScanAhead = null;
+        row.IsRecurringSchedule = null;
+    }
+
+    /// <summary>
+    /// The next <paramref name="count"/> runs this schedule would offer,
+    /// starting from now. Read-only; nothing is written and no booking is
+    /// made.
+    ///
+    /// WHY IT EXISTS: "occurrences ahead" is a bare number, and a number
+    /// does not tell an operator whether 3 means this week or next. The
+    /// detail modal renders this under the field so changing N shows its
+    /// effect immediately.
+    ///
+    /// WHAT IT DELIBERATELY DOES NOT DO: re-derive any booking rule. The
+    /// cutoff moment is the run start minus CutoffHours, and CutoffHours
+    /// comes from the database, where the compatibility view resolved it
+    /// through fnCutoffHoursFor for a collapsed schedule and passed the
+    /// stored offset through for an old-shape one. The working-day versus
+    /// calendar-day rule lives in SQL and stays there. All this method adds
+    /// is calendar walking: which dates fall on a masked weekday, which are
+    /// holidays, which are already past their cutoff.
+    ///
+    /// WHERE IT CAN DISAGREE WITH THE BOOKING PAGE, and it is a preview so
+    /// this is acceptable, but it should be said rather than discovered:
+    ///   * no client. A per-client OccurrencesAhead override, and any
+    ///     client-specific cutoff exception, are not applied. The preview
+    ///     answers for the schedule, which is what the field edits.
+    ///   * no zone or region matching. The booking page also has to find
+    ///     the client's postcode in the schedule's zones; a date shown here
+    ///     is offered only to clients the schedule actually covers.
+    ///   * fnCutoffHoursFor rounds up to whole hours, so a cutoff at 16:30
+    ///     previews as 17 hours before rather than 16.5.
+    /// </summary>
+    /// <summary>
+    /// When ordering closes for one run. F23 (Anisah's 14 to 16 Oct smoke
+    /// test): the same expression as
+    /// UTL_fncJob_GetClientAvailableBulkRunSchedule, which the preview did
+    /// not share. It only ever did the relative form, so a schedule with an
+    /// absolute day-before cutoff previewed a date the booking page had
+    /// already closed.
+    ///
+    /// Extracted rather than left inline so it can be tested without a
+    /// clock: the caller's "now" comes from the tenant database, which a
+    /// unit test cannot pin, and a test that depends on the real time of day
+    /// is the kind that passes locally and fails on a slow runner.
+    ///
+    /// An absolute pair names a weekday and a time, and the offset lands on
+    /// the most recent occurrence of that weekday at or before the run day:
+    /// 0 for a same-day cutoff, -1 for the day before, -3 for "the previous
+    /// Friday" on a Monday run. The expression is non-negative before the
+    /// modulo for every valid ISO day pair, so it matches T-SQL's % exactly
+    /// rather than only usually.
+    /// </summary>
+    /// Public rather than internal because this repo deliberately avoids
+    /// InternalsVisibleTo (see RecurringLinehaulJobsPagingTests), and a pure
+    /// static with no state is the cheapest thing to expose.
+    public static DateTime CutoffFor(
+        DateTime runDate, int isoDay, TimeSpan startTime,
+        int cutoffHours, byte? cutoffDay, TimeSpan? cutoffTime)
+    {
+        if (cutoffDay.HasValue && cutoffTime.HasValue)
+        {
+            var dayOffset = ((cutoffDay.Value - isoDay + 6) % 7) - 6;
+            return runDate.AddDays(dayOffset) + cutoffTime.Value;
+        }
+        return runDate + startTime - TimeSpan.FromHours(cutoffHours);
+    }
+
+    /// <param name="count">
+    /// How many to return. Null uses the schedule's own value, which is
+    /// what the field currently holds; the modal passes the number the
+    /// operator has typed so the preview tracks an unsaved edit.
+    /// </param>
+    public async Task<List<ScheduleOccurrenceDto>> PreviewOccurrencesAsync(int scheduleId, int? count)
+    {
+        var header = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
+            ?? throw new InvalidOperationException($"Schedule id {scheduleId} not found or retired.");
+
+        // Through the view, so a collapsed schedule hands over the payload
+        // synthesised from its detail row and an old-shape one its day rows.
+        // One code path for both shapes, which is the whole point of the view.
+        var days = await Context.TblBulkRunSchedules.AsNoTracking()
+            .Where(s => s.ScheduleId == scheduleId)
+            // F23: CutoffDay and CutoffTime were not even selected, which is
+            // why the absolute pair could not be honoured below.
+            .Select(s => new { s.DayOfWeek, s.StartTime, s.CutoffHours, s.CutoffDay, s.CutoffTime })
+            .ToListAsync();
+        if (days.Count == 0) return new List<ScheduleOccurrenceDto>();
+
+        var detail = await Context.BulkRunScheduleDetails.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.ScheduleId == scheduleId);
+
+        // Resolution order matches fnScheduleForClient's, minus the client
+        // level this preview does not have: asked-for, then the schedule's
+        // own, then one week's worth.
+        var wanted = count
+            ?? detail?.OccurrencesAhead
+            ?? days.Select(d => d.DayOfWeek).Distinct().Count();
+        if (wanted < 1) return new List<ScheduleOccurrenceDto>();
+        if (wanted > MaxOccurrencesAhead) wanted = MaxOccurrencesAhead;
+
+        // F23: tenant-local now, from the same function the availability
+        // path uses, so the preview and the booking page cannot disagree
+        // about what time it is. DateTime.Now was the SERVER clock, which on
+        // a US tenant is a different day from the one the operator is in.
+        //
+        // The provider test is for the test harness only: SQLite has no
+        // scalar functions, and falling back to UTC there keeps the unit
+        // tests runnable without pretending the fallback is correct for
+        // production. ProviderName rather than IsRelational() because SQLite
+        // is relational too.
+        var isSqlServer = Context.Database.ProviderName?
+            .Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true;
+        var now = isSqlServer
+            ? await Context.Database
+                .SqlQuery<DateTime>($"SELECT dbo.UTL_GetTenantLocalDateTime() AS Value")
+                .SingleAsync()
+            : DateTime.UtcNow;
+        var from = now.Date;
+        var until = from.AddDays(OccurrencePreviewHorizonDays);
+
+        // Holidays that block booking, over the horizon only. CanBook = 1 is
+        // a holiday the tenant still takes work on, so it does not skip the
+        // date; that is the same reading _fncJob_GetClientAvailableSpeed's
+        // callers use.
+        var holidays = await Context.TblHolidays.AsNoTracking()
+            .Where(h => h.Date >= from && h.Date <= until && !h.CanBook)
+            .Select(h => h.Date)
+            .ToListAsync();
+        var blocked = holidays.Select(h => h.Date).ToHashSet();
+
+        // One entry per weekday the schedule runs. A schedule can carry more
+        // than one day row for a weekday (one per speed); they share the
+        // date, so the earliest start wins and the date is offered once.
+        var byWeekday = days
+            .Where(d => d.DayOfWeek is >= 1 and <= 7 && d.StartTime.HasValue)
+            .GroupBy(d => (int)d.DayOfWeek!.Value)
+            .ToDictionary(g => g.Key, g => g.OrderBy(d => d.StartTime!.Value).First());
+
+        var result = new List<ScheduleOccurrenceDto>();
+        for (var date = from; date <= until && result.Count < wanted; date = date.AddDays(1))
+        {
+            // .NET counts Sunday as 0; the day rows count Monday as 1.
+            var isoDay = date.DayOfWeek == System.DayOfWeek.Sunday ? 7 : (int)date.DayOfWeek;
+            if (!byWeekday.TryGetValue(isoDay, out var row)) continue;
+            if (blocked.Contains(date)) continue;
+
+            var start = date + row.StartTime!.Value;
+
+            var cutoff = CutoffFor(date, isoDay, row.StartTime!.Value,
+                row.CutoffHours, row.CutoffDay, row.CutoffTime);
+
+            // Already closed, so the booking page would not offer it, and a
+            // preview that showed it would be telling the operator something
+            // untrue about today.
+            if (now > cutoff) continue;
+
+            result.Add(new ScheduleOccurrenceDto(
+                date.ToString("yyyy-MM-dd"),
+                isoDay,
+                start.ToString("HH:mm"),
+                cutoff.ToString("yyyy-MM-dd HH:mm"),
+                now.ToString("yyyy-MM-dd HH:mm")));
+        }
+        return result;
     }
 
     /// <summary>Retire the header (soft delete). Day rows + link rows survive
@@ -1285,7 +2100,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>Legacy (Name, LegacyClientId) overload. Resolves via header
@@ -1299,7 +2116,9 @@ public class ScheduleService(
         header.RetiredUtc = DateTime.UtcNow;
         header.RetiredBy = "RoutedOps";
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // Retiring REMOVES the row: the recompute filters on RetiredUtc being
+        // null, comes back empty, and the patch drops the entry.
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
     }
 
     /// <summary>
@@ -1339,6 +2158,7 @@ public class ScheduleService(
 
         var sourceRows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Include(s => s.BulkZoneSchedules)
+            .Include(s => s.BulkPickupZoneSchedules)
             .Include(s => s.TblBulkScheduleLinehauls)
             .Where(s => s.ScheduleId == source.ScheduleId)
             .ToListAsync();
@@ -1364,7 +2184,7 @@ public class ScheduleService(
         {
             targetClientIds = req.ClientIds.Distinct().ToList();
         }
-        else
+        else if (req.CopyClientLinks)
         {
             // Inherit source header's junction clients.
             targetClientIds = await Context.ScheduleClients.AsNoTracking()
@@ -1372,17 +2192,38 @@ public class ScheduleService(
                 .Select(x => x.ClientId)
                 .ToListAsync();
         }
+        else
+        {
+            // Caller named no clients and opted out of inheriting. The copy
+            // starts as a default group with no client link rows.
+            targetClientIds = new List<int>();
+        }
 
         var srcPostcodes = await Context.SchedulePostcodes.AsNoTracking()
-            .Where(x => x.ScheduleName == source.Name)
+            .Where(x => x.ScheduleId == source.ScheduleId)
             .Select(x => x.PostCode)
             .ToListAsync();
-        var srcPolygons = await Context.SchedulePolygons.AsNoTracking()
-            .Where(x => x.ScheduleName == source.Name)
-            .Select(x => x.PolygonId)
-            .ToListAsync();
+        // Retired with the junction (spec 3.4). Kept as an empty list so the
+        // copy path reads the same shape until the dead call below goes.
+        var srcPolygons = new List<int>();
 
         // New header + day-row clones + junction rows in one atomic save.
+        // CLIENT origin is deliberately NOT copied. A copy is created as a
+        // default header, and a default schedule cannot start at a client
+        // address (spec 2.1), so carrying OriginType = 'client' across would
+        // produce a row that violates its own rule. Such a copy lands as depot
+        // origin and the operator sets it after linking the client, the same
+        // order the create path forces.
+        //
+        // DIRECT origin IS copied (2026-10-08). The reason client origin
+        // cannot be carried is that the address is client-specific, so it
+        // means nothing on a default header. A Direct schedule has no
+        // client-specific address at all - its pickup address arrives with the
+        // booking - so the copy is meaningful as-is, and dropping it would
+        // silently turn a Direct schedule into a depot one.
+        var copiedOriginType =
+            string.Equals(source.OriginType, "direct", StringComparison.OrdinalIgnoreCase)
+                ? "direct" : "depot";
         var newHeader = new BulkRunScheduleHeader
         {
             Name = newName,
@@ -1390,12 +2231,20 @@ public class ScheduleService(
             LegacyClientId = null,
             CreatedUtc = DateTime.UtcNow,
             CreatedBy = "RoutedOps",
+            OriginType = copiedOriginType,
+            // NULL either way: 'depot' never has one and 'direct' forces it
+            // null (its dispatch region is the day row's Region).
+            OriginRegionId = null,
         };
         Context.BulkRunScheduleHeaders.Add(newHeader);
 
+        // src is read through the view, so a converted source hands over its
+        // synthesised payload and the copy starts life in the old shape with
+        // the same values. The convert at the end collapses it again.
+        var clones = new List<(TblBulkRunScheduleDay Clone, TblBulkRunSchedule Src)>();
         foreach (var src in sourceRows)
         {
-            var clone = new TblBulkRunSchedule
+            var clone = new TblBulkRunScheduleDay
             {
                 Name = newName,
                 // Legacy ClientId column on day row - see UpsertAsync for
@@ -1405,7 +2254,13 @@ public class ScheduleService(
                 // default-schedule day rows carry ClientId IS NULL.
                 ClientId = newHeader.LegacyClientId,
                 Header = newHeader, // EF wires ScheduleId on save
-                DayOfWeek = src.DayOfWeek,
+                // The view declares DayOfWeek nullable; the day table does not
+                // (smallint NOT NULL), so a null here is corrupt data rather
+                // than a case to handle. Coalescing it would write an invalid
+                // weekday that the mask and every cutoff derivation would then
+                // read as Monday.
+                DayOfWeek = src.DayOfWeek ?? throw new InvalidOperationException(
+                    $"Day row {src.BulkRunScheduleId} has no DayOfWeek and cannot be copied."),
                 StartTime = src.StartTime,
                 EndTime = src.EndTime,
                 // F11 Phase C (2026-09-24): copy the absolute pair plus
@@ -1432,11 +2287,47 @@ public class ScheduleService(
                 DropOffLocationId = src.DropOffLocationId,
                 Description = src.Description,
             };
-            foreach (var z in src.BulkZoneSchedules)
-                clone.BulkZoneSchedules.Add(new BulkZoneSchedule { Zone = z.Zone, Active = z.Active });
-            foreach (var l in src.TblBulkScheduleLinehauls)
-                clone.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
-                {
+            Context.TblBulkRunScheduleDays.Add(clone);
+            clones.Add((clone, src));
+        }
+
+        await SyncClientsAsync(newHeader, targetClientIds);
+        await SyncPostcodesAsync(newHeader, srcPostcodes);
+        // Polygon junction retired with the rest (spec 3.4). A copy no longer
+        // carries schedule-attached polygons because nothing reads them; the
+        // copy's coverage comes from its zone groups.
+        // await SyncPolygonsAsync(newName, srcPolygons);
+
+        // Two phases inside one transaction, for the same reason as
+        // UpsertAsync: the child rows' foreign key is the clone's identity,
+        // which does not exist until the clone is saved.
+        IDbContextTransaction copyTx = null;
+        if (Context.Database.IsRelational() && Context.Database.CurrentTransaction == null)
+            copyTx = await Context.Database.BeginTransactionAsync();
+        try
+        {
+            await Context.SaveChangesAsync();
+
+            foreach (var (clone, src) in clones)
+            {
+                foreach (var z in src.BulkZoneSchedules)
+                    Context.BulkZoneSchedules.Add(new BulkZoneSchedule
+                    {
+                        ScheduleId = clone.BulkRunScheduleId,
+                        Zone = z.Zone,
+                        Active = z.Active,
+                    });
+                foreach (var z in src.BulkPickupZoneSchedules)
+                    Context.BulkPickupZoneSchedules.Add(new BulkPickupZoneSchedule
+                    {
+                        ScheduleId = clone.BulkRunScheduleId,
+                        Zone = z.Zone,
+                        Active = z.Active,
+                    });
+                foreach (var l in src.TblBulkScheduleLinehauls)
+                    Context.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
+                    {
+                        BulkRunScheduleId = clone.BulkRunScheduleId,
                     Name = l.Name, Active = l.Active,
                     Amount = l.Amount, AmountPercentage = l.AmountPercentage,
                     FromDepotId = l.FromDepotId, ToDepotId = l.ToDepotId,
@@ -1445,16 +2336,38 @@ public class ScheduleService(
                     ApplyDiscount = l.ApplyDiscount, ApplyAddOnPercentage = l.ApplyAddOnPercentage,
                     WeekDay = l.WeekDay, DepartureAdvanceDays = l.DepartureAdvanceDays,
                     FromClientAddress = l.FromClientAddress, DropOffLocationId = l.DropOffLocationId,
-                });
-            Context.TblBulkRunSchedules.Add(clone);
+                    // Bug 1 (Steve 2026-09-25): carry the travel order, or the clone
+                    // would start life unordered and its first booking would number
+                    // and time the legs in Id order again.
+                    LegOrder = l.LegOrder,
+                    // 2026-09-28: SpeedId was missing from this initialiser since the
+                    // per-leg override shipped (20260619040000_LinehaulScheduleLegSpeedId),
+                    // so copying a schedule silently dropped every leg's service-class
+                    // override and the copy re-rated off the run / schedule speed.
+                    // Carrying it is a behaviour change to the copy path, made on
+                    // Kevin's explicit call 2026-09-28.
+                        SpeedId = l.SpeedId,
+                    });
+            }
+            await Context.SaveChangesAsync();
+
+            // A copy of a schedule that was collapsed should be collapsed
+            // too, and a copy of one that was not has the same reasons not to
+            // be, so the answer is simply to try. A refusal leaves the copy
+            // in the old shape, which is a faithful copy either way.
+            if (_converter != null)
+                await _converter.ConvertAsync(Context, newHeader.ScheduleId, commit: true, by: "RoutedOps");
+
+            if (copyTx != null) await copyTx.CommitAsync();
+        }
+        finally
+        {
+            if (copyTx != null) await copyTx.DisposeAsync();
         }
 
-        await SyncClientsAsync(newHeader, targetClientIds);
-        await SyncPostcodesAsync(newName, srcPostcodes);
-        await SyncPolygonsAsync(newName, srcPolygons);
-
-        await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        // A copy ADDS a row; the patch computes the new schedule and splices
+        // it in, so the list does not rebuild to show one extra entry.
+        await RefreshListSummaryEntryAsync(newHeader.ScheduleId);
 
         return await GetDetailByHeaderAsync(newHeader);
     }
@@ -1465,14 +2378,33 @@ public class ScheduleService(
         var header = await Context.BulkRunScheduleHeaders.AsNoTracking()
             .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
             ?? throw new InvalidOperationException("Schedule not found.");
-        var rows = await Context.TblBulkRunSchedules
+        // On a collapsed schedule AutoBook lives once, on the detail row, and
+        // the day rows carry NULL. Writing the day rows there would set a
+        // column nothing reads and leave the real value untouched, so the
+        // shape decides which row to write. Reading the view and writing the
+        // day table would have exactly that effect, which is why this does
+        // not just swap the DbSet.
+        var detail = await Context.BulkRunScheduleDetails
+            .FirstOrDefaultAsync(d => d.ScheduleId == header.ScheduleId);
+        if (detail != null)
+        {
+            var toggled = !(detail.AutoBook ?? false);
+            detail.AutoBook = toggled;
+            detail.UpdatedUtc = DateTime.UtcNow;
+            detail.UpdatedBy = "RoutedOps";
+            await Context.SaveChangesAsync();
+            await RefreshListSummaryEntryAsync(scheduleId);
+            return toggled;
+        }
+
+        var rows = await Context.TblBulkRunScheduleDays
             .Where(s => s.ScheduleId == header.ScheduleId)
             .ToListAsync();
         if (rows.Count == 0) throw new InvalidOperationException("Schedule has no day rows.");
         var newValue = !(rows[0].AutoBook ?? false);
         foreach (var r in rows) r.AutoBook = newValue;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return newValue;
     }
 
@@ -1498,7 +2430,7 @@ public class ScheduleService(
         var previous = header.IsActive;
         header.IsActive = isActive;
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(header.ScheduleId);
         _logger.LogInformation(
             "ToggleIsActive: scheduleId={ScheduleId} {Previous} -> {Next}",
             scheduleId, previous, isActive);
@@ -1546,6 +2478,62 @@ public class ScheduleService(
         return candidates[0];
     }
 
+    /// <summary>
+    /// Polygons that cover a schedule, derived from its ZONE groups
+    /// (custom-polygons spec 3.4). Replaces the tblSchedulePolygon junction,
+    /// which is being dropped: nothing ever read it, so attaching a polygon
+    /// to a schedule had no effect on booking. A polygon covers a schedule
+    /// when it is a member of a zone the schedule actually fulfils, in the
+    /// schedule's delivery or pickup zone group.
+    ///
+    /// Read-only by design. The Coverage tab shows this; it no longer writes.
+    /// Keyed by header ScheduleId.
+    /// </summary>
+    private async Task<Dictionary<int, List<int>>> GetZoneDerivedPolygonsAsync(List<int> headerIds)
+    {
+        if (headerIds.Count == 0) return new Dictionary<int, List<int>>();
+
+        // (header, group, zone) triples the schedules actually fulfil, both
+        // sides. A schedule with no zone rows covers nothing, which is the
+        // same answer the junction gave once it stopped being written.
+        var delivery = await (
+            from row in Context.TblBulkRunSchedules.AsNoTracking()
+            join z in Context.BulkZoneSchedules.AsNoTracking()
+                on row.BulkRunScheduleId equals z.ScheduleId
+            where headerIds.Contains(row.ScheduleId) && row.PostcodeGroupId != null && z.Active == true
+            select new { row.ScheduleId, GroupId = row.PostcodeGroupId!.Value, z.Zone })
+            .Distinct().ToListAsync();
+        var pickup = await (
+            from row in Context.TblBulkRunSchedules.AsNoTracking()
+            join z in Context.BulkPickupZoneSchedules.AsNoTracking()
+                on row.BulkRunScheduleId equals z.ScheduleId
+            where headerIds.Contains(row.ScheduleId) && row.PickupPostcodeGroupId != null && z.Active
+            select new { row.ScheduleId, GroupId = row.PickupPostcodeGroupId!.Value, z.Zone })
+            .Distinct().ToListAsync();
+
+        var wanted = delivery.Concat(pickup).ToList();
+        if (wanted.Count == 0) return new Dictionary<int, List<int>>();
+
+        var groupIds = wanted.Select(w => w.GroupId).Distinct().ToList();
+        var members = await Context.BulkZonePolygons.AsNoTracking()
+            .Where(zp => zp.Active && groupIds.Contains(zp.PostcodeGroupId))
+            .Select(zp => new { zp.PostcodeGroupId, zp.Zone, zp.PolygonId })
+            .ToListAsync();
+
+        var byGroupZone = members
+            .GroupBy(m => (m.PostcodeGroupId, m.Zone))
+            .ToDictionary(g => g.Key, g => g.Select(x => x.PolygonId).ToList());
+
+        return wanted
+            .GroupBy(w => w.ScheduleId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.SelectMany(w =>
+                        byGroupZone.TryGetValue((w.GroupId, w.Zone), out var ps)
+                            ? ps : Enumerable.Empty<int>())
+                      .Distinct().OrderBy(x => x).ToList());
+    }
+
     private async Task SyncClientsAsync(BulkRunScheduleHeader header, IEnumerable<int> desired)
     {
         // When the header is brand-new (id == 0), we cannot query
@@ -1577,11 +2565,22 @@ public class ScheduleService(
         }
     }
 
-    private async Task SyncPostcodesAsync(string name, IEnumerable<int> desired)
+    private async Task SyncPostcodesAsync(BulkRunScheduleHeader header, IEnumerable<int> desired)
     {
-        var current = await Context.SchedulePostcodes
-            .Where(x => x.ScheduleName == name)
-            .ToListAsync();
+        // Same shape as SyncClientsAsync: a brand-new header has no id until
+        // SaveChanges, so there is nothing to delete and every desired
+        // postcode is an add.
+        List<SchedulePostcode> current;
+        if (header.ScheduleId == 0)
+        {
+            current = new List<SchedulePostcode>();
+        }
+        else
+        {
+            current = await Context.SchedulePostcodes
+                .Where(x => x.ScheduleId == header.ScheduleId)
+                .ToListAsync();
+        }
         var desiredSet = new HashSet<int>(desired ?? Enumerable.Empty<int>());
         Context.SchedulePostcodes.RemoveRange(current.Where(x => !desiredSet.Contains(x.PostCode)));
         var currentSet = new HashSet<int>(current.Select(x => x.PostCode));
@@ -1589,32 +2588,48 @@ public class ScheduleService(
         {
             Context.SchedulePostcodes.Add(new SchedulePostcode
             {
-                ScheduleName = name, PostCode = p, CreatedUtc = DateTime.UtcNow,
+                // Both columns on purpose. ScheduleName is still half of the
+                // database primary key until the step-3 migration moves it,
+                // and Header lets EF fill ScheduleId even for a header that
+                // has not been saved yet.
+                Header = header,
+                ScheduleName = header.Name,
+                PostCode = p,
+                CreatedUtc = DateTime.UtcNow,
             });
         }
     }
 
-    private async Task SyncPolygonsAsync(string name, IEnumerable<int> desired)
-    {
-        var current = await Context.SchedulePolygons
-            .Where(x => x.ScheduleName == name)
-            .ToListAsync();
-        var desiredSet = new HashSet<int>(desired ?? Enumerable.Empty<int>());
-        Context.SchedulePolygons.RemoveRange(current.Where(x => !desiredSet.Contains(x.PolygonId)));
-        var currentSet = new HashSet<int>(current.Select(x => x.PolygonId));
-        foreach (var pid in desiredSet.Where(pid => !currentSet.Contains(pid)))
-        {
-            Context.SchedulePolygons.Add(new SchedulePolygon
-            {
-                ScheduleName = name, PolygonId = pid, CreatedUtc = DateTime.UtcNow,
-            });
-        }
-    }
 
-    private static void ApplyGroupTemplateToRow(TblBulkRunSchedule row, ScheduleGroupUpsertRequest req)
+    private void ApplyGroupTemplateToRow(TblBulkRunScheduleDay row, ScheduleGroupUpsertRequest req)
     {
         row.Region = req.RegionId;
-        row.PickupDepotId = req.PickupDepotId;
+
+        // F24 guard (BLOCKER, Anisah 14 to 16 Oct). A depot-origin schedule
+        // keeps its depot. The frontend bug that nulled it is fixed in both
+        // modals, but this is the only place the column is written, so a
+        // caller that simply omits the field would do the same damage just as
+        // silently: a stale bundle, another UI, or a direct API call.
+        //
+        // Clearing IS legitimate for a client or direct origin, which both
+        // store no depot, so only the depot case is defended. The suppression
+        // is logged rather than thrown: refusing the save would break any
+        // client that omits the field, while losing the depot silently is the
+        // failure actually being fixed.
+        var originIsDepot =
+            !string.Equals(req.OriginType, "client", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(req.OriginType, "direct", StringComparison.OrdinalIgnoreCase);
+        if (originIsDepot && req.PickupDepotId is null && row.PickupDepotId is not null)
+        {
+            _logger.LogWarning(
+                "F24 guard: refused to clear PickupDepotId {DepotId} on day row {RowId} "
+                + "for a depot-origin schedule; the request carried no depot.",
+                row.PickupDepotId, row.BulkRunScheduleId);
+        }
+        else
+        {
+            row.PickupDepotId = req.PickupDepotId;
+        }
         row.SpeedId = req.SpeedId;
         row.ParentSpeedId = req.ParentSpeedId;
         row.AutoBook = req.AutoBook;
@@ -1631,18 +2646,50 @@ public class ScheduleService(
         row.Description = req.Description;
     }
 
+    /// <summary>
+    /// Client ids among <paramref name="clientIds"/> with no site coordinates
+    /// on tucClient (schedule-origin spec 4.5). Only client-origin schedules
+    /// care, so callers pass the ids they actually have and the query stays
+    /// small.
+    /// </summary>
+    private async Task<HashSet<int>> GetClientsWithoutGeocodeAsync(IEnumerable<int> clientIds)
+    {
+        var ids = clientIds.Distinct().ToList();
+        if (ids.Count == 0) return new HashSet<int>();
+        var found = await Context.TucClients.AsNoTracking()
+            .Where(c => ids.Contains(c.UcclId) && (c.Latitude == null || c.Longitude == null))
+            .Select(c => c.UcclId)
+            .ToListAsync();
+        return found.ToHashSet();
+    }
+
     private static ScheduleGroupDto MapGroup(
         BulkRunScheduleHeader header,
         List<TblBulkRunSchedule> rows,
+        // The collapsed body, or null for an old-shape schedule. Everything
+        // else in this method still reads `rows`, which come through the
+        // compatibility view and therefore already carry the detail row's
+        // payload spread back across the masked days. This parameter is only
+        // for the two facts the view does not expose: that the schedule IS
+        // collapsed, and its occurrences-ahead value.
+        BulkRunScheduleDetail detail,
+        // Why the save that produced this DTO did not collapse the schedule.
+        // Null on a plain read.
+        string convertRefusalReasons,
         List<ScheduleClient> clientJunctions,
         List<SchedulePostcode> postcodeJunctions,
-        List<SchedulePolygon> polygonJunctions,
+        // Derived from zone membership, keyed by header ScheduleId
+        // (custom-polygons spec 3.4). Was tblSchedulePolygon rows.
+        Dictionary<int, List<int>> polygonsByScheduleId,
         Dictionary<int, string> depotNames,
         Dictionary<int, string> speedNames,
         Dictionary<int, string> groupNames,
         Dictionary<int, string> dropOffNames,
         Dictionary<int, string> clientCodes,
-        Dictionary<int, string> clientNames)
+        Dictionary<int, string> clientNames,
+        // Client ids with no tucClient.Latitude/Longitude. Supplied by the
+        // caller because MapGroup is static and must not touch the DB.
+        HashSet<int> clientsWithoutGeocode)
     {
         string LookupClientCode(int id) =>
             clientCodes.TryGetValue(id, out var c) && !string.IsNullOrWhiteSpace(c) ? c : $"#{id}";
@@ -1664,17 +2711,28 @@ public class ScheduleService(
         var clientLinkedUtcs = linksForHeader
             .Select(x => (DateTime?)x.CreatedUtc)
             .ToList();
+        // Computed for every schedule, not just the ones already stored as
+        // client origin. The editor decides whether to SHOW it, from the live
+        // chain, so the warning appears the moment the operator switches the
+        // Depot leg to Client address rather than only after a save and a
+        // reopen. Gating it here on the stored OriginType made the list empty
+        // at exactly the moment it was needed.
+        //
+        // Harmless for depot origin: the client's site is never read there, so
+        // the field is simply ignored.
+        var clientsMissingGeocode = clientIds
+            .Where(clientsWithoutGeocode.Contains)
+            .Select(id => new ClientGeocodeGapDto(id, LookupClientName(id) ?? $"#{id}"))
+            .ToList();
         var legacyClientCode = header.LegacyClientId.HasValue ? LookupClientCode(header.LegacyClientId.Value) : null;
         var postcodeIds = postcodeJunctions
-            .Where(x => x.ScheduleName == header.Name)
+            .Where(x => x.ScheduleId == header.ScheduleId)
             .Select(x => x.PostCode)
             .OrderBy(x => x)
             .ToList();
-        var polygonIds = polygonJunctions
-            .Where(x => x.ScheduleName == header.Name)
-            .Select(x => x.PolygonId)
-            .OrderBy(x => x)
-            .ToList();
+        var polygonIds = polygonsByScheduleId.TryGetValue(header.ScheduleId, out var derivedPolys)
+            ? derivedPolys
+            : new List<int>();
 
         var dayWindows = rows
             .OrderBy(r => r.DayOfWeek)
@@ -1691,15 +2749,26 @@ public class ScheduleService(
             .OrderBy(z => z.Zone)
             .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
             .ToList();
+        var pickupZones = t.BulkPickupZoneSchedules
+            .OrderBy(z => z.Zone)
+            .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
+            .ToList();
+        // Bug 1 (Steve 2026-09-25): order by travel order, not by Name. The
+        // chain editor renders legs in the order this list arrives, and the
+        // booking SPs walk the same LegOrder, so a Name sort would show the
+        // operator a different order from the one that actually gets
+        // dispatched. Legs with no LegOrder sort last, by Id, which mirrors
+        // the SPs' ISNULL(LegOrder, 2147483647), Id.
         var linehauls = t.TblBulkScheduleLinehauls
-            .OrderBy(l => l.Name)
+            .OrderBy(l => l.LegOrder ?? int.MaxValue)
+            .ThenBy(l => l.Id)
             .Select(l => new ScheduleLinehaulDto(
                 l.Id, l.Name, l.Active, l.Amount, l.AmountPercentage,
                 l.FromDepotId, l.ToDepotId, l.Minutes, l.LinehaulRunId,
                 l.InsertToBulk, l.ApplyDiscount, l.ApplyAddOnPercentage,
                 ParseWeekday(l.WeekDay), l.DepartureAdvanceDays,
                 l.FromClientAddress, l.DropOffLocationId,
-                l.SpeedId, LookupSpeed(l.SpeedId)))
+                l.SpeedId, LookupSpeed(l.SpeedId), l.LegOrder))
             .ToList();
 
         return new ScheduleGroupDto(
@@ -1712,15 +2781,24 @@ public class ScheduleService(
             t.PostcodeGroupId, LookupGroup(t.PostcodeGroupId),
             t.PickupPostcodeGroupId, LookupGroup(t.PickupPostcodeGroupId),
             t.PickupRatingSpeed,
+            // Origin lives on the header, not the day row: it is a property
+            // of the schedule, not of a weekday.
+            header.OriginType ?? "depot",
+            header.OriginRegionId, LookupDepot(header.OriginRegionId),
+            clientsMissingGeocode,
             t.AutoBook, t.BookPickup,
             t.ApplyPickupCutoff, t.PickupCutoff,
             t.StorageState, t.DeliveryState, t.PickupBoxDiscount,
             t.DropOffLocationId, LookupDropOff(t.DropOffLocationId),
             t.Description,
-            dayWindows, zones, linehauls,
+            dayWindows, zones, pickupZones, linehauls,
             clientIds, clientCodesForGroup, postcodeIds, polygonIds,
             clientLinkedUtcs, clientNamesForGroup,
-            header.DisplayName, header.DisplayDescription, header.IsActive);
+            header.DisplayName, header.DisplayDescription, header.IsActive,
+            detail != null,
+            detail?.OccurrencesAhead,
+            convertRefusalReasons,
+            header.IsDefault);
     }
 
     private static string FormatTime(TimeSpan? t) =>
@@ -1775,7 +2853,11 @@ public class ScheduleService(
         return null;
     }
 
-    private static TblBulkScheduleLinehaul MapLinehaulToEntity(ScheduleLinehaulUpsertRequest l) =>
+    /// <param name="ordinal">
+    /// 1-based position of this leg in the request's Linehauls array, used as
+    /// the LegOrder fallback when the caller did not send one explicitly.
+    /// </param>
+    private static TblBulkScheduleLinehaul MapLinehaulToEntity(ScheduleLinehaulUpsertRequest l, int ordinal) =>
         new()
         {
             Name = l.Name,
@@ -1794,6 +2876,7 @@ public class ScheduleService(
             FromClientAddress = l.FromClientAddress,
             DropOffLocationId = l.DropOffLocationId,
             SpeedId = l.SpeedId,
+            LegOrder = l.LegOrder ?? ordinal,
         };
 
     private static TimeSpan ParseTime(string hhmm)
@@ -1894,7 +2977,7 @@ public class ScheduleService(
 
         Context.ScheduleClients.AddRange(toAdd);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return toAdd.Count;
     }
 
@@ -1924,6 +3007,14 @@ public class ScheduleService(
                     $"Client id(s) {string.Join(", ", missing)} do not exist. Refresh and try again.");
         }
 
+        // Spec 6.1 rule 3, same test as the upsert path. This endpoint can
+        // empty the link set outright, which on a non-default schedule leaves
+        // it bookable by nobody.
+        if (!header.IsDefault && desired.Count == 0 && !header.LegacyClientId.HasValue)
+            throw new InvalidOperationException(
+                "A schedule for specific clients needs at least one client. "
+                + "Keep a client, or set the schedule to all clients first.");
+
         var current = await Context.ScheduleClients
             .Where(sc => sc.ScheduleId == scheduleId)
             .ToListAsync();
@@ -1948,7 +3039,7 @@ public class ScheduleService(
 
         if (toAdd.Count > 0 || toRemove.Count > 0)
             await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
 
         return (toAdd.Count, toRemove.Count);
     }
@@ -1962,9 +3053,27 @@ public class ScheduleService(
         var row = await Context.ScheduleClients
             .FirstOrDefaultAsync(sc => sc.ScheduleId == scheduleId && sc.ClientId == clientId);
         if (row == null) return 0;
+
+        // Spec 6.1 rule 3. Removing the LAST client from a schedule that is
+        // not a default leaves it bookable by nobody, and this endpoint is the
+        // easiest way to reach that state: the Clients tab's Remove button
+        // goes straight here without passing through the upsert guard.
+        var header = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId);
+        if (header != null && !header.IsDefault && !header.LegacyClientId.HasValue)
+        {
+            var remaining = await Context.ScheduleClients.AsNoTracking()
+                .CountAsync(sc => sc.ScheduleId == scheduleId && sc.ClientId != clientId);
+            if (remaining == 0)
+                throw new InvalidOperationException(
+                    "This is the only client on a schedule for specific clients. "
+                    + "Set the schedule to all clients first, or configure another "
+                    + "client before removing this one.");
+        }
+
         Context.ScheduleClients.Remove(row);
         await Context.SaveChangesAsync();
-        InvalidateListSummaryCache();
+        await RefreshListSummaryEntryAsync(scheduleId);
         return 1;
     }
 
@@ -2056,7 +3165,11 @@ public class ScheduleService(
     }
 
     /// <summary>Add member schedules to a bundle. Idempotent.</summary>
-    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds)
+    /// <param name="linkExistingClients">When true, every client already on the
+    /// bundle (linked to at least one non-default member) is also linked to
+    /// each newly added non-default member, so the bundle stays whole
+    /// (SCHEDULE-BUNDLES-UI-2026-10-16 section 4). Idempotent.</param>
+    public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds, bool linkExistingClients = false)
     {
         var ids = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
         if (ids.Count == 0) return 0;
@@ -2082,10 +3195,171 @@ public class ScheduleService(
             .Select(id => new BulkRunScheduleBundleMember { BundleId = bundleId, ScheduleId = id })
             .ToList();
         if (toAdd.Count == 0) return 0;
+
+        // Clients on the bundle BEFORE the new members join: anyone linked to
+        // an existing non-default member. Read first so the new members do
+        // not count themselves.
+        var clientsOnBundle = new List<int>();
+        if (linkExistingClients)
+        {
+            var existingMemberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+                .Where(m => m.BundleId == bundleId)
+                .Select(m => m.ScheduleId)
+                .ToListAsync();
+            var existingNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => existingMemberIds.Contains(h.ScheduleId) && h.RetiredUtc == null && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            if (existingNonDefault.Count > 0)
+                clientsOnBundle = await Context.ScheduleClients.AsNoTracking()
+                    .Where(sc => existingNonDefault.Contains(sc.ScheduleId))
+                    .Select(sc => sc.ClientId)
+                    .Distinct()
+                    .ToListAsync();
+        }
+
         Context.BulkRunScheduleBundleMembers.AddRange(toAdd);
+
+        if (clientsOnBundle.Count > 0)
+        {
+            var newIds = toAdd.Select(m => m.ScheduleId).ToList();
+            var newNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => newIds.Contains(h.ScheduleId) && !h.IsDefault)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
+            var alreadyLinked = await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => newNonDefault.Contains(sc.ScheduleId) && clientsOnBundle.Contains(sc.ClientId))
+                .Select(sc => new { sc.ScheduleId, sc.ClientId })
+                .ToListAsync();
+            var linkedSet = new HashSet<(int, int)>(alreadyLinked.Select(x => (x.ScheduleId, x.ClientId)));
+            var now = DateTime.UtcNow;
+            foreach (var sid in newNonDefault)
+                foreach (var cid in clientsOnBundle)
+                    if (!linkedSet.Contains((sid, cid)))
+                        Context.ScheduleClients.Add(new ScheduleClient
+                        {
+                            ScheduleId = sid,
+                            ClientId = cid,
+                            CreatedUtc = now,
+                            CreatedBy = $"RoutedOps:bundle-member-link:{bundleId}",
+                        });
+        }
+
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
         return toAdd.Count;
+    }
+
+    /// <summary>
+    /// One bundle with its live members and the clients linked to them,
+    /// for the bundle modal (SCHEDULE-BUNDLES-UI-2026-10-16 section 4).
+    /// A client is "on the bundle" when it has a link row on at least one
+    /// non-default live member; OnMembers / OfMembers carry the coverage.
+    /// </summary>
+    public async Task<ScheduleBundleDetailDto> GetBundleDetailAsync(int bundleId)
+    {
+        var bundle = await Context.BulkRunScheduleBundles.AsNoTracking()
+            .FirstOrDefaultAsync(b => b.BundleId == bundleId)
+            ?? throw new InvalidOperationException($"Bundle {bundleId} not found.");
+
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+
+        var headers = memberIds.Count == 0
+            ? new List<BulkRunScheduleHeader>()
+            : await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => memberIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
+                .OrderBy(h => h.Name)
+                .ToListAsync();
+
+        var nonDefaultIds = headers.Where(h => !h.IsDefault).Select(h => h.ScheduleId).ToList();
+        var links = nonDefaultIds.Count == 0
+            ? new List<ScheduleClient>()
+            : await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => nonDefaultIds.Contains(sc.ScheduleId))
+                .ToListAsync();
+
+        var linksBySchedule = links.GroupBy(l => l.ScheduleId).ToDictionary(g => g.Key, g => g.Count());
+
+        // Depot / speed / days come from the day rows (tblBulkRunSchedule view),
+        // the same source the Schedules tab summary uses.
+        var liveIds = headers.Select(h => h.ScheduleId).ToList();
+        var dayRows = liveIds.Count == 0
+            ? new List<TblBulkRunSchedule>()
+            : await Context.TblBulkRunSchedules.AsNoTracking()
+                .Where(r => liveIds.Contains(r.ScheduleId))
+                .ToListAsync();
+        var depotNames = await Context.TblBulkRegions.AsNoTracking()
+            .ToDictionaryAsync(r => r.BulkRegionId, r => r.Name);
+        var speedNames = await Context.TucJobTypes.AsNoTracking()
+            .ToDictionaryAsync(t => t.UcjtId, t => t.UcjtName);
+        var rowsBySchedule = dayRows.GroupBy(r => r.ScheduleId).ToDictionary(g => g.Key, g => g.ToList());
+
+        var members = headers
+            .Select(h =>
+            {
+                rowsBySchedule.TryGetValue(h.ScheduleId, out var rows);
+                var first = rows?.OrderBy(r => r.DayOfWeek).FirstOrDefault();
+                string LookupDepot(int? id) => id.HasValue && depotNames.TryGetValue(id.Value, out var d) ? d : null;
+                string LookupSpeed(int? id) => id.HasValue && speedNames.TryGetValue(id.Value, out var sp) ? sp : null;
+                var days = rows == null
+                    ? Array.Empty<int>()
+                    : rows.Where(r => r.DayOfWeek.HasValue).Select(r => (int)r.DayOfWeek.Value).Distinct().OrderBy(d => d).ToArray();
+                return new ScheduleBundleMemberDto(
+                    h.ScheduleId, h.Name, h.IsDefault,
+                    linksBySchedule.TryGetValue(h.ScheduleId, out var n) ? n : 0,
+                    LookupDepot(first?.Region), LookupSpeed(first?.SpeedId), days);
+            })
+            .ToList();
+
+        var clientIds = links.Select(l => l.ClientId).Distinct().ToList();
+        var clientLookup = clientIds.Count == 0
+            ? new List<TucClientNameCode>()
+            : await Context.TucClients.AsNoTracking()
+                .Where(c => clientIds.Contains(c.UcclId))
+                .Select(c => new TucClientNameCode { Id = c.UcclId, Code = c.UcclCode, Name = c.UcclName })
+                .ToListAsync();
+        var byId = clientLookup.ToDictionary(c => c.Id);
+        var clients = links
+            .GroupBy(l => l.ClientId)
+            .Select(g => new ScheduleBundleClientDto(
+                g.Key,
+                byId.TryGetValue(g.Key, out var c) && !string.IsNullOrWhiteSpace(c.Code) ? c.Code : $"#{g.Key}",
+                byId.TryGetValue(g.Key, out var c2) ? c2.Name : null,
+                g.Select(l => l.ScheduleId).Distinct().Count(),
+                nonDefaultIds.Count))
+            .OrderByDescending(c => c.OnMembers)
+            .ThenBy(c => c.Code)
+            .ToList();
+
+        return new ScheduleBundleDetailDto(
+            bundle.BundleId, bundle.Name, bundle.Description, bundle.IsActive, members, clients);
+    }
+
+    /// <summary>
+    /// Remove one client from every member of a bundle. Deletes the
+    /// tblScheduleClient rows only, the same as DetachClientAsync does for a
+    /// single schedule, so the two paths stay consistent. Returns rows removed.
+    /// </summary>
+    public async Task<int> DetachClientFromBundleAsync(int bundleId, int clientId)
+    {
+        if (clientId <= 0) return 0;
+        var memberIds = await Context.BulkRunScheduleBundleMembers.AsNoTracking()
+            .Where(m => m.BundleId == bundleId)
+            .Select(m => m.ScheduleId)
+            .ToListAsync();
+        if (memberIds.Count == 0) return 0;
+
+        var rows = await Context.ScheduleClients
+            .Where(sc => memberIds.Contains(sc.ScheduleId) && sc.ClientId == clientId)
+            .ToListAsync();
+        if (rows.Count == 0) return 0;
+        Context.ScheduleClients.RemoveRange(rows);
+        await Context.SaveChangesAsync();
+        InvalidateListSummaryCache();
+        return rows.Count;
     }
 
     /// <summary>Remove a schedule from a bundle.</summary>

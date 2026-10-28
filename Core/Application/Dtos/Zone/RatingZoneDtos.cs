@@ -23,4 +23,11 @@ public record RatingZoneGroupDto(
 
 public record RatingZoneBucketDto(
     int Zone,
-    List<string> Postcodes);
+    List<string> Postcodes,
+    /// <summary>Custom polygons that are members of this zone
+    /// (custom-polygons spec 3.2). Rendered after the postcodes so the group
+    /// reads as one coverage set rather than two lists.</summary>
+    List<RatingZonePolygonDto> Polygons);
+
+/// <summary>A polygon member of a zone, with the colour the drawer draws.</summary>
+public record RatingZonePolygonDto(int PolygonId, string Name, string? ColorHex);

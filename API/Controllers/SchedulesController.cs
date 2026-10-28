@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
@@ -15,6 +16,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/schedules")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: the v1 Schedules page (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-schedules")]
 public class SchedulesController(ScheduleService svc) : BaseController
 {
     /// <summary>
@@ -91,6 +95,8 @@ public class SchedulesController(ScheduleService svc) : BaseController
     }
 
     [HttpGet("lookups")]
+    // regions / speeds / zone groups for the Schedules (NEW) detail modal, which Client Overrides also opens; without it the modal renders half empty.
+    [RequireFeature("ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> GetLookups()
     {
         var lookups = await svc.GetLookupsAsync();
@@ -106,6 +112,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
     /// lookups payload is capped.
     /// </summary>
     [HttpGet("clients")]
+    [RequireFeature("ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> SearchClients(
         [FromQuery] string q = null,
         [FromQuery] int limit = 50)
@@ -193,6 +200,8 @@ public class SchedulesController(ScheduleService svc) : BaseController
     /// `scheduleId`. Legacy tuple retained for one release.
     /// </summary>
     [HttpPost("auto-book")]
+    // Schedules (NEW) list row toggle.
+    [RequireFeature("ro-schedules", "ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> ToggleAutoBook(
         [FromQuery] int? scheduleId = null,

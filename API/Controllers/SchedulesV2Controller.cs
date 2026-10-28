@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Schedule;
 using RoutedOperations.Core.Application.Services.Schedule;
@@ -30,6 +31,11 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/v2/schedules")]
 [Authorize(Policy = "RouteBuilder.Read")]
+// Access Control switch: Schedules (NEW), and Client Overrides which opens the same detail modal.
+// Several routes here are absolute (~/api/v2/clients/..., /api/v2/schedule-bundles...),
+// so key by caller, not by route prefix (Routed Ops switches spec step 3b).
+// Actions other pages call declare their own keys below, which replace this one.
+[RequireFeature("ro-schedules-new", "ro-client-overrides")]
 public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService overrides) : BaseController
 {
     /// <summary>
@@ -102,14 +108,22 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             IEnumerable<ScheduleGroupSummaryDto> filtered = type?.ToLowerInvariant() switch
             {
                 // Bases (headers with no BaseScheduleId) split into two
-                // buckets: defaults (no clients bound) and shared
-                // (clients bound via link table). Overrides are anything
-                // with a BaseScheduleId set - populated as soon as
+                // buckets by the header's own IsDefault flag. Overrides are
+                // anything with a BaseScheduleId set - populated as soon as
                 // migration 20260914140000 applies. Pre-migration the
                 // BaseScheduleId is always null so "override" returns
                 // empty which is the correct behaviour.
-                "default"  => all.Where(s => s.BaseScheduleId == null && s.LegacyClientId == null && s.ClientCount == 0),
-                "shared"   => all.Where(s => s.BaseScheduleId == null && !(s.LegacyClientId == null && s.ClientCount == 0)),
+                //
+                // Spec 6.1 rule 4: this used to infer the bucket from
+                // "LegacyClientId == null && ClientCount == 0". That is the
+                // same mistake the modal made, and it puts a default schedule
+                // in the "shared" bucket the moment a client is configured on
+                // it, which is a thing 6.1 makes ordinary. Behaviour-neutral
+                // on today's data (checked on staging: IsDefault agrees with
+                // the old predicate on all 2,059 live headers), and correct
+                // from here on.
+                "default"  => all.Where(s => s.BaseScheduleId == null && s.IsDefault),
+                "shared"   => all.Where(s => s.BaseScheduleId == null && !s.IsDefault),
                 "override" => all.Where(s => s.BaseScheduleId != null),
                 _          => all,
             };
@@ -191,6 +205,30 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// 2026-09-22 delta migration; supersedes the clone-based
     /// BaseScheduleId model (Steve F1 2026-09-20).
     /// </summary>
+    /// <summary>
+    /// GET /api/v2/schedules/{id}/occurrences?n= - the next runs this
+    /// schedule would offer. Feeds the preview under the "occurrences
+    /// ahead" field so a number the operator types turns into dates they
+    /// can read. Read-only.
+    ///
+    /// `n` is optional and lets the preview track an UNSAVED edit: the
+    /// modal passes what is in the box, not what is in the database.
+    /// Omitted, it falls back to the schedule's own value.
+    /// </summary>
+    [HttpGet("{scheduleId:int}/occurrences")]
+    public async Task<IActionResult> PreviewOccurrences(int scheduleId, [FromQuery] int? n)
+    {
+        try
+        {
+            var list = await svc.PreviewOccurrencesAsync(scheduleId, n);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpGet("{scheduleId:int}/overrides")]
     public async Task<IActionResult> ListOverrides(int scheduleId)
     {
@@ -211,6 +249,8 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// "you differ from N schedules" view.
     /// </summary>
     [HttpGet("~/api/v2/clients/{clientId:int}/overrides")]
+    // Only the Client Overrides page.
+    [RequireFeature("ro-client-overrides")]
     public async Task<IActionResult> ListClientOverrides(int clientId)
     {
         try
@@ -387,6 +427,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// existing ScheduleService.DeleteAsync retire path.
     /// </summary>
     [HttpPost("{scheduleId:int}/retire")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Retire(int scheduleId)
     {
@@ -409,6 +450,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// schedule can be booked at all (Steve F21 2026-09-22).
     /// </summary>
     [HttpPost("{scheduleId:int}/is-active")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> SetIsActive(int scheduleId, [FromBody] SetIsActiveRequest req)
     {
@@ -430,6 +472,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// empty for a "default" copy).
     /// </summary>
     [HttpPost("{scheduleId:int}/copy")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Copy(int scheduleId, [FromBody] CopyScheduleRequest req)
     {
@@ -443,6 +486,11 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
                 NewName = req.NewName,
                 ClientCodes = new List<string>(),   // link-row semantics: copy uses ClientIds directly.
                 ClientIds = (req.ClientIds ?? Array.Empty<int>()).ToList(),
+                // An empty ClientIds here means "no client links", not
+                // "inherit the source's". Without this the shared resolver
+                // falls through to its inherit branch and the copy silently
+                // picks up every one of the source's clients.
+                CopyClientLinks = false,
             });
             return Ok(new { response = new { scheduleId = group.ScheduleId } });
         }
@@ -475,11 +523,53 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     }
 
     /// <summary>
+    /// GET /api/v2/schedule-bundles/{bundleId} - one bundle with its live
+    /// members and the clients linked to them (bundle modal,
+    /// SCHEDULE-BUNDLES-UI-2026-10-16).
+    /// </summary>
+    [HttpGet("/api/v2/schedule-bundles/{bundleId:int}")]
+    public async Task<IActionResult> GetBundle(int bundleId)
+    {
+        try
+        {
+            var dto = await svc.GetBundleDetailAsync(bundleId);
+            return Ok(new { response = dto });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// DELETE /api/v2/schedule-bundles/{bundleId}/clients/{clientId} - take
+    /// one client off every member of the bundle (link rows only, same as a
+    /// single-schedule detach). Returns rows removed.
+    /// </summary>
+    [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}/clients/{clientId:int}")]
+    [RequireFeature("ro-schedules-new")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DetachClientFromBundle(int bundleId, int clientId)
+    {
+        try
+        {
+            var removed = await svc.DetachClientFromBundleAsync(bundleId, clientId);
+            return Ok(new { response = new { removed } });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
+    }
+
+    /// <summary>
     /// POST /api/v2/schedule-bundles - create a Schedule Bundle with an
     /// initial member list. Body `{ name, description, scheduleIds[] }`.
     /// Returns the new bundleId.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> CreateBundle([FromBody] CreateBundleRequest req)
     {
@@ -498,6 +588,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>PUT /api/v2/schedule-bundles/{bundleId} - rename / redescribe.</summary>
     [HttpPut("/api/v2/schedule-bundles/{bundleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> UpdateBundle(int bundleId, [FromBody] CreateBundleRequest req)
     {
@@ -522,6 +613,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// the Schedules NEW tab.
     /// </summary>
     [HttpGet("/api/v2/clients/{clientId:int}/schedules")]
+    [RequireFeature("ro-schedules-new")]
     public async Task<IActionResult> ClientSchedules(int clientId)
     {
         try
@@ -540,12 +632,13 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// to a bundle. Body `{ scheduleIds: int[] }`. Idempotent.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/members")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> AddBundleMembers(int bundleId, [FromBody] AddBundleMembersRequest req)
     {
         try
         {
-            var added = await svc.AddBundleMembersAsync(bundleId, req?.ScheduleIds ?? Array.Empty<int>());
+            var added = await svc.AddBundleMembersAsync(bundleId, req?.ScheduleIds ?? Array.Empty<int>(), req?.LinkExistingClients ?? false);
             return Ok(new { response = new { added } });
         }
         catch (InvalidOperationException ex)
@@ -557,6 +650,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>DELETE /api/v2/schedule-bundles/{bundleId}/members/{scheduleId}.</summary>
     [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}/members/{scheduleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> RemoveBundleMember(int bundleId, int scheduleId)
     {
@@ -574,6 +668,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>DELETE /api/v2/schedule-bundles/{bundleId} - hard-delete.</summary>
     [HttpDelete("/api/v2/schedule-bundles/{bundleId:int}")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> DeleteBundle(int bundleId)
     {
@@ -596,6 +691,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     /// skipped). Returns the total number of link rows added.
     /// </summary>
     [HttpPost("/api/v2/schedule-bundles/{bundleId:int}/clients")]
+    [RequireFeature("ro-schedules-new")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> AttachClientsToBundle(int bundleId, [FromBody] AttachClientsRequest req)
     {
@@ -627,6 +723,9 @@ public class CreateBundleRequest
 public class AddBundleMembersRequest
 {
     public int[] ScheduleIds { get; set; } = Array.Empty<int>();
+    /// <summary>Also link every client already on the bundle to the new
+    /// non-default members (bundle modal "link the N clients too?").</summary>
+    public bool LinkExistingClients { get; set; }
 }
 
 public class CopyScheduleRequest

@@ -1,8 +1,18 @@
 import { request } from './api';
 
+export interface RatingZonePolygon {
+  polygonId: number;
+  name: string;
+  colorHex: string | null;
+}
+
 export interface RatingZoneBucket {
   zone: number;
   postcodes: string[];
+  /** Custom polygons that are members of this zone (custom-polygons spec
+   *  3.2). Rendered after the postcodes so a zone reads as one coverage set.
+   *  Defaulted defensively because older fixtures omit it. */
+  polygons?: RatingZonePolygon[];
 }
 
 export interface RatingZoneGroup {

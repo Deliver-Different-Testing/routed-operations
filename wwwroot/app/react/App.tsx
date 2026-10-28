@@ -1,5 +1,7 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppLayout } from './components/Layout/AppLayout';
+import { useAuth } from './context/AuthContext';
+import { isPartnerDeniedPath } from './lib/partnerAccess';
 import Dashboard from './pages/Dashboard';
 import RoutesPage from './pages/RoutesPage';
 import Quoting from './pages/Quoting';
@@ -38,10 +40,30 @@ import Mobile from './pages/route-viewer/Mobile';
 // The other Phase 6 wins (prod sourcemap off, modulepreload hint) are safe
 // and stay in place. Followup on a dedicated branch.
 
+/**
+ * Redirects a network partner off the tenant-planning surfaces.
+ *
+ * Wraps the layout rather than each route, so a page added later is covered
+ * the moment its path goes in PARTNER_DENIED_PATHS, with no second edit here.
+ *
+ * Defence in depth only. The authoritative gate is server-side: the
+ * RouteBuilder.* policies in Program.cs deny the NP claim, so the API 403s
+ * whatever the browser does. This stops a partner landing on a page that
+ * would render nothing but errors. See NP-PAY-PART4-TODO.md T3.
+ */
+function PartnerGuard({ children }: { children: React.ReactNode }) {
+  const auth = useAuth();
+  const location = useLocation();
+  if (auth.isNetworkPartner && isPartnerDeniedPath(location.pathname)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <Routes>
-      <Route element={<AppLayout />}>
+      <Route element={<PartnerGuard><AppLayout /></PartnerGuard>}>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/routes" element={<RoutesPage />} />

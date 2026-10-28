@@ -153,6 +153,9 @@ public class RouteViewerLabelService(
 
     public async Task<byte[]> GetLineHaulLabelsAsync(LabelRequest request)
     {
+        // Was missing: the two sibling bulk flows above both open with this
+        // guard, and the controller doc comment already claimed "NP blocked".
+        await EnsureBulkLabelFlowSupportedForNpAsync();
         var templateId = await GetDefaultBulkTemplateIdAsync();
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
@@ -173,6 +176,10 @@ public class RouteViewerLabelService(
 
     public async Task<string> GetLineHaulManifestCsvAsync(LabelRequest request)
     {
+        // Tenant-wide CSV proxied straight to legacy with no row filter of
+        // any kind, so an NP must not reach it. Same guard as the bulk
+        // label flows below.
+        await EnsureBulkLabelFlowSupportedForNpAsync();
         var bytes = await ProxyGetBytesAsync(BuildManifestQuery(request), "linehaul-manifest",
             new MediaTypeWithQualityHeaderValue("text/csv"));
         return Encoding.UTF8.GetString(bytes);

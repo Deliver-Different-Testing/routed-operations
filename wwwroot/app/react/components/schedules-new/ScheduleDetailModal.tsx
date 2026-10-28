@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
-import { schedulesV2Keys, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
+import { schedulesV2Keys, useScheduleOccurrences, useSchedulesV2Detail } from '../../hooks/queries/useSchedulesV2';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { scheduleService, type ScheduleGroup, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
 import {
@@ -16,12 +16,17 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, type Leg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
-// same modal in override-edit mode). The ClientOverrideEditor.tsx
-// file is left on disk untouched; nothing imports or renders it.
+// same modal in override-edit mode). ClientOverrideEditor.tsx was left on
+// disk at the time and deleted on 2026-10-13: three weeks of nothing
+// importing it was enough, and leaving it there had already cost two
+// people time. Garry hit it mapping the Routed Ops feature switches and
+// had to ask whether DeleteOverride was still live, and the per-client
+// occurrences field was built into it by someone who did not know it was
+// dead, so that field shipped invisible until it was moved here.
 import type {
   ScheduleOverride,
   ScheduleOverridePutBody,
@@ -32,12 +37,20 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { clientsService, type ClientGeocodeResult } from '../../services/clientsService';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
 // section 2). 4 tabs: Clients / Route / Operating days / Roster.
 // Name + Description + Book-immediately + Route + Operating days are editable
 // in place; Save PUTs a ScheduleGroupUpsertBody via
-// scheduleService.upsert with the current scheduleId. Clients tab
+// schedulesV2Service.update, or create when there is no scheduleId yet.
+//
+// This said scheduleService.upsert, the v1 endpoint, until 2026-10-13. It
+// had been wrong since the v2 write path landed, and it cost real time:
+// Garry mapped the Routed Ops feature switches from it and keyed the v1
+// Schedules upsert to this page, which would have put the wrong switch in
+// front of the save. Schedules NEW calls v1 for lookups, client search and
+// the auto-book toggle, and for nothing else. Clients tab
 // still uses the dedicated /api/v2 attach/detach endpoints so the
 // audit trail on link rows carries "attach"/"detach" verbs; Roster
 // tab is display-only (linehauls are edited on the Route tab as
@@ -47,6 +60,18 @@ import { useToast } from '../../context/ToastContext';
 type ModalTab = 'clients' | 'route' | 'days' | 'coverage' | 'roster';
 
 const DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+
+/**
+ * "Fri 10 Oct" from an ISO date. Weekday first because that is what an
+ * operator checks against the ticked days; no year, because the preview
+ * never reaches more than 60 days out.
+ */
+function formatOccurrence(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
+}
 
 interface DayForm {
   id: number | null;
@@ -125,6 +150,8 @@ type LinehaulUpsertRow = NonNullable<ScheduleGroupUpsertBody['linehauls']>[numbe
 function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   let pickupDepotId: number | null = null;
   let pickupRatingSpeed: number | null = null;
+  let pickupPostcodeGroupId: number | null = null;
+  let pickupZones: number[] = [];
   let regionId = 0;
   let speedId: number | null = null;
   let postcodeGroupId: number | null = null;
@@ -133,8 +160,13 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
   const zones: number[] = [];
   for (const leg of legs) {
     if (leg.type === 'collection') {
-      pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+      // The collection leg no longer carries a depot. Its destination, and
+      // therefore PickupDepotId, is resolved from the first Depot leg after
+      // this loop. It does carry the pickup zone group and zones,
+      // which mirror the Delivery card (spec 3.2).
       pickupRatingSpeed = leg.speedId;
+      pickupPostcodeGroupId = leg.postcodeGroupId;
+      pickupZones = [...leg.zones].sort((a, b) => a - b);
     } else if (leg.type === 'depot') {
       storageState = leg.storageState;
     } else if (leg.type === 'linehaul') {
@@ -150,6 +182,11 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
         departureAdvanceDays: leg.dayOffset,
         fromClientAddress: leg.fromClientAddress, dropOffLocationId: leg.dropOffLocationId,
         speedId: leg.speedId,
+        // Bug 1 (Steve 2026-09-25): persist the leg's position in the chain.
+        // The save path deletes and re-inserts every linehaul row, so without
+        // this the backfilled travel order is wiped and the booking SPs fall
+        // back to Id order, i.e. the bug returns for this schedule.
+        legOrder: linehauls.length + 1,
       });
     } else if (leg.type === 'delivery') {
       regionId = leg.regionId;
@@ -158,8 +195,61 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
       for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
     }
   }
+  // ── Origin resolution (schedule-origin spec, 2026-10-07) ──────────
+  // Origin is expressed by the chain's first Depot leg and stored on the
+  // header as OriginType / OriginRegionId.
+  //
+  //   client origin -> BookPickup = 0, PickupDepotId = NULL,
+  //                    OriginRegionId = the Depot card's picker
+  //   depot  origin -> PickupDepotId from the Depot leg ALWAYS, and
+  //                    BookPickup = whether the chain has a Collection leg
+  //                    (corrected for F24; it used to gate both on the
+  //                    Collection leg, which wiped the depot on save)
+  //
+  // Region is NOT touched here. It keeps coming from the Delivery leg and
+  // names the delivery branch; OriginRegionId names the branch that owns the
+  // start of the chain. That is the same split a collection schedule already
+  // has between PickupDepotId and Region, which is why first-leg jobs and
+  // delivery jobs can sit under different teams.
+  //
+  // PickupDepotId is no longer picked on the Collection card; deriving it
+  // from the Depot leg is an identity round-trip, because seedLegsFromDto
+  // seeds that leg from PickupDepotId in the first place. That is what keeps
+  // existing LHP + DEL schedules behaving exactly as before.
+  //
+  // Three-way since 2026-10-08 (Direct). The three-way resolution itself
+  // lives in ChainBuilder's deriveOriginFromLegs so this modal and
+  // NewScheduleModal cannot disagree about it.
+  //
+  //   direct origin -> BookPickup = 0, PickupDepotId = NULL,
+  //                    OriginRegionId = NULL. No Collection leg and no
+  //                    linehaul legs, both blocked in the chooser and
+  //                    rejected server-side.
+  const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
+  const hasCollection = legs.some((l) => l.type === 'collection');
+  const { originType, originRegionId } = deriveOriginFromLegs(legs);
+  let bookPickup = false;
+  if (originType === 'depot') {
+    // F24 (BLOCKER, Anisah's 14 to 16 Oct staging smoke test). The depot has
+    // to be carried whenever the origin IS a depot, not only when the chain
+    // also happens to have a Collection leg. Gating it on hasCollection meant
+    // a plain rename-and-save on a cross-depot schedule with BookPickup = 0
+    // nulled PickupDepotId on every day row: Client Manager then showed
+    // "Client Address" and #1591 ROSED dropped off the booking page
+    // altogether. The same gate is why "add Depot leg" did not persist.
+    //
+    // Measured on Urgent production 2026-10-19: 5,211 day rows across 1,531
+    // schedules sit in exactly the state this destroys (PickupDepotId set,
+    // BookPickup 0), 5,127 of them on live headers. Any one save on any of
+    // them would have done it.
+    pickupDepotId = firstDepot?.depotId ?? null;
+    // BookPickup answers "does this schedule book a collection job", which is
+    // exactly whether the chain has a Collection leg. It is not a statement
+    // about where the chain starts, and conflating the two is what caused F24.
+    bookPickup = hasCollection;
+  }
   zones.sort((a, b) => a - b);
-  return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
+  return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
 }
 
 // ─── Override-mode helpers (Kevin 2026-09-25) ──────────────────────
@@ -206,14 +296,47 @@ function nzOrNull(v: string | null | undefined): string | null {
 
 function seedLegsFromDto(d: ScheduleGroup): Leg[] {
   const legs: Leg[] = [];
-  legs.push({
-    type: 'collection',
-    pickupSource: d.pickupDepotId ? 'depot' : 'client_address',
-    pickupDepotId: d.pickupDepotId ?? null,
-    speedId: d.pickupRatingSpeed ?? null,
-  });
-  if (d.pickupDepotName) {
-    legs.push({ type: 'depot', depotId: d.pickupDepotId ?? null, storageState: d.storageState });
+  // Client origin is a stored fact on the header, never derived here. The
+  // section 5.2 derivation is read-side only; using it to seed the editor
+  // would let an unflagged schedule be saved back as client origin.
+  const clientOrigin = d.originType === 'client';
+  // Same rule for Direct (2026-10-08): seeded from the stored OriginType so
+  // the Depot card's dropdown reopens on the value that was saved.
+  const directOrigin = d.originType === 'direct';
+  // A Collection leg only when the schedule actually books a collection.
+  // This used to be unconditional, which is why a delivery-only schedule
+  // rendered as "Collect from Auckland" (F6).
+  if (d.bookPickup === true && d.pickupDepotId) {
+    legs.push({
+      type: 'collection',
+      speedId: d.pickupRatingSpeed ?? null,
+      postcodeGroupId: d.pickupPostcodeGroupId ?? null,
+      zones: (d.pickupZones ?? [])
+        .filter((z) => z.active !== false)
+        .map((z) => z.zone)
+        .sort((a, b) => a - b),
+    });
+  }
+  if (directOrigin) {
+    // Direct carries no depot and no origin region. The Depot card still
+    // exists because it is where the origin is expressed; it names the
+    // Delivery leg's region as the dispatch branch, read live rather than
+    // stored here.
+    legs.push({
+      type: 'depot', depotId: null, clientAddress: false, directOrigin: true,
+      originRegionId: null, storageState: d.storageState,
+    });
+  } else if (clientOrigin) {
+    legs.push({
+      type: 'depot', depotId: null, clientAddress: true, directOrigin: false,
+      originRegionId: d.originRegionId ?? null, storageState: d.storageState,
+    });
+  } else if (d.pickupDepotName) {
+    legs.push({
+      type: 'depot', depotId: d.pickupDepotId ?? null, clientAddress: false,
+      directOrigin: false,
+      originRegionId: null, storageState: d.storageState,
+    });
   }
   for (const lh of d.linehauls) {
     legs.push({
@@ -326,7 +449,8 @@ export function ScheduleDetailModal({
   // list and the "Edit override" / "Configure override" buttons on the
   // Clients tab of a BASE schedule now re-open this same modal in
   // override-edit mode (see `overrideMode` prop + `onOpenOverride`
-  // callback above). The ClientOverrideEditor.tsx file is left on disk
+  // callback above). ClientOverrideEditor.tsx was deleted on 2026-10-13;
+  // see the note at the top of this file. It used to be left on disk
   // untouched; nothing renders it.
 
   const [formName, setFormName] = useState('');
@@ -337,13 +461,33 @@ export function ScheduleDetailModal({
   // AutoBook gates book-immediately vs stage. Default true so freshly
   // seeded schedules with no explicit value stay bookable.
   const [formIsActive, setFormIsActive] = useState(true);
+  // Spec 6.1 rule 5: "Who can book this schedule" is a real control now. It
+  // was a disabled radio pair whose checked state was derived from
+  // clientIds.length, so it both lied on a default that had a client
+  // configured and could not be changed. State lives here rather than in
+  // ClientsTab because it ships in the Save body with everything else.
+  const [formIsDefault, setFormIsDefault] = useState(true);
   // F13 (Steve 2026-09-20): client-facing display copy. Empty string is
   // saved as NULL so the backend can distinguish "cleared" from "unset".
   const [formDisplayName, setFormDisplayName] = useState('');
+  // Occurrences ahead. Kept as a string so an empty box means "leave it
+  // alone", which is different from any number the operator could type.
+  const [formOccurrencesAhead, setFormOccurrencesAhead] = useState('');
+  // The preview follows the box, but a request per keystroke would be
+  // three wasted round trips on the way from 5 to 12. 350ms is long enough
+  // to finish typing a two-digit number and short enough to feel live.
+  const [debouncedOccurrences, setDebouncedOccurrences] = useState<string>('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedOccurrences(formOccurrencesAhead), 350);
+    return () => clearTimeout(t);
+  }, [formOccurrencesAhead]);
   const [formDisplayDescription, setFormDisplayDescription] = useState('');
   const [formLegs, setFormLegs] = useState<Leg[]>([]);
   const [formDays, setFormDays] = useState<DayForm[]>(() => seedDaysFromDto([]));
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Not an error: the save succeeded, the schedule just stayed on one row
+  // per day. Held so the modal can say so instead of closing silently.
+  const [convertNotice, setConvertNotice] = useState<string | null>(null);
   const [seededForId, setSeededForId] = useState<number | null>(null);
   // Tier 2 - Collection zone group + individual postcodes + coverage
   // polygons. Editable on the detail modal write-side, mirroring the
@@ -355,7 +499,6 @@ export function ScheduleDetailModal({
   const [formDropOffLocationId, setFormDropOffLocationId] = useState<number | null>(null);
   const [formApplyPickupCutoff, setFormApplyPickupCutoff] = useState(false);
   const [formPickupCutoff, setFormPickupCutoff] = useState<number | null>(null);
-  const [formBookPickup, setFormBookPickup] = useState(false);
   const [formPostcodeIds, setFormPostcodeIds] = useState<number[]>([]);
   const [formPolygonIds, setFormPolygonIds] = useState<number[]>([]);
   // ─── Override-mode state (Kevin 2026-09-25) ──────────────────────
@@ -369,6 +512,12 @@ export function ScheduleDetailModal({
   // back to the base). See computeOverridePutBody() below.
   const [ovIsActive, setOvIsActive] = useState<boolean | null>(null);
   const [ovDisplayName, setOvDisplayName] = useState<string>('');
+  // Not edited here, carried so a save does not drop it. See the comment
+  // where it goes back into scheduleScope.
+  // A string, not a number, because blank has to stay tellable apart from
+  // every number the operator could type: blank means this client inherits
+  // the schedule, and 1 is a real and very different answer.
+  const [ovOccurrencesAhead, setOvOccurrencesAhead] = useState<string>('');
   const [ovDisplayDescription, setOvDisplayDescription] = useState<string>('');
   // WeekDays override lives as a set of ISO day numbers (1=Mon..7=Sun);
   // converted to the 7-char mask on save via daysToMask().
@@ -413,7 +562,9 @@ export function ScheduleDetailModal({
     () => JSON.stringify({
       name: formName, description: formDescription, autoBook: formAutoBook,
       isActive: formIsActive,
+      isDefault: formIsDefault,
       displayName: formDisplayName, displayDescription: formDisplayDescription,
+      occurrencesAhead: formOccurrencesAhead,
       legs: formLegs, days: formDays,
       pickupPostcodeGroupId: formPickupPostcodeGroupId,
       parentSpeedId: formParentSpeedId,
@@ -422,17 +573,46 @@ export function ScheduleDetailModal({
       dropOffLocationId: formDropOffLocationId,
       applyPickupCutoff: formApplyPickupCutoff,
       pickupCutoff: formPickupCutoff,
-      bookPickup: formBookPickup,
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
-    [formName, formDescription, formAutoBook, formIsActive,
-     formDisplayName, formDisplayDescription, formLegs, formDays,
+    [formName, formDescription, formAutoBook, formIsActive, formIsDefault,
+     formDisplayName, formDisplayDescription, formOccurrencesAhead,
+     formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
      formPickupBoxDiscount, formDropOffLocationId, formApplyPickupCutoff,
-     formPickupCutoff, formBookPickup, formPostcodeIds, formPolygonIds],
+     formPickupCutoff, formPostcodeIds, formPolygonIds],
   );
   const isDirty = initialSnapshot !== '' && currentSnapshot !== initialSnapshot;
+
+  // Only ask for a preview once the typed value is usable. An out-of-range
+  // number has no answer worth showing, and blank means "the schedule's own
+  // value", which the server resolves.
+  const previewN = (() => {
+    const t = debouncedOccurrences.trim();
+    if (t === '') return null;
+    const v = Number.parseInt(t, 10);
+    return Number.isNaN(v) || v < 1 || v > 60 ? null : v;
+  })();
+  // Both shapes, deliberately. Storing a per-schedule N needs the detail
+  // row, so the FIELD is collapsed-only, but "which dates does this offer"
+  // is a fair question about any schedule and the server answers it the
+  // same way for both: an old-shape schedule falls back to one week's
+  // worth, which is what the booking page uses for it today. Gating the
+  // preview on isCollapsed would have hidden it from almost every schedule
+  // on the tenant, which is most of the value.
+  const occurrencesQuery = useScheduleOccurrences(scheduleId, previewN);
+
+  // 1 to 60, matching the CHECK on the column. Blank is valid and means
+  // leave it alone, so only a typed value is range-checked.
+  const occurrencesAheadError = (() => {
+    const t = formOccurrencesAhead.trim();
+    if (t === '') return null;
+    const n = Number.parseInt(t, 10);
+    return Number.isNaN(n) || n < 1 || n > 60
+      ? 'Enter a number from 1 to 60, or leave blank.'
+      : null;
+  })();
 
   // Seed form state once per scheduleId. Deliberately NOT keyed on
   // `data` reference: React Query invalidations after attach/detach
@@ -446,6 +626,11 @@ export function ScheduleDetailModal({
     const seedDescription = data.description ?? '';
     const seedAutoBook = data.autoBook ?? true;
     const seedIsActive = data.isActive ?? true;
+    // Spec 6.1: the header's own flag. The fallback is the pre-6.1
+    // derivation, kept only for a cached payload that pre-dates the field;
+    // once the API ships it, data.isDefault is always present.
+    const seedIsDefault = data.isDefault
+      ?? (data.legacyClientId == null && data.clientIds.length === 0);
     const seedDisplayName = data.displayName ?? '';
     const seedDisplayDescription = data.displayDescription ?? '';
     const seedLegs = seedLegsFromDto(data);
@@ -462,15 +647,20 @@ export function ScheduleDetailModal({
     const seedDropOffLocationId = data.dropOffLocationId ?? null;
     const seedApplyPickupCutoff = data.applyPickupCutoff === true;
     const seedPickupCutoff = data.pickupCutoff ?? null;
-    const seedBookPickup = data.bookPickup === true;
+    // Blank on an old-shape schedule: it has no detail row, so there is no
+    // value to show and nothing the box could usefully say.
+    const seedOccurrencesAhead = data.occurrencesAhead != null
+      ? String(data.occurrencesAhead) : '';
     const seedPostcodeIds = [...(data.postcodeIds ?? [])];
     const seedPolygonIds = [...(data.polygonIds ?? [])];
     setFormName(seedName);
     setFormDescription(seedDescription);
     setFormAutoBook(seedAutoBook);
     setFormIsActive(seedIsActive);
+    setFormIsDefault(seedIsDefault);
     setFormDisplayName(seedDisplayName);
     setFormDisplayDescription(seedDisplayDescription);
+    setFormOccurrencesAhead(seedOccurrencesAhead);
     setFormLegs(seedLegs);
     setFormDays(seedDays);
     setFormPickupPostcodeGroupId(seedPickupPostcodeGroupId);
@@ -480,7 +670,6 @@ export function ScheduleDetailModal({
     setFormDropOffLocationId(seedDropOffLocationId);
     setFormApplyPickupCutoff(seedApplyPickupCutoff);
     setFormPickupCutoff(seedPickupCutoff);
-    setFormBookPickup(seedBookPickup);
     setFormPostcodeIds(seedPostcodeIds);
     setFormPolygonIds(seedPolygonIds);
     setSaveError(null);
@@ -492,7 +681,9 @@ export function ScheduleDetailModal({
     setInitialSnapshot(JSON.stringify({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
       isActive: seedIsActive,
+      isDefault: seedIsDefault,
       displayName: seedDisplayName, displayDescription: seedDisplayDescription,
+      occurrencesAhead: seedOccurrencesAhead,
       legs: seedLegs, days: seedDays,
       pickupPostcodeGroupId: seedPickupPostcodeGroupId,
       parentSpeedId: seedParentSpeedId,
@@ -501,7 +692,6 @@ export function ScheduleDetailModal({
       dropOffLocationId: seedDropOffLocationId,
       applyPickupCutoff: seedApplyPickupCutoff,
       pickupCutoff: seedPickupCutoff,
-      bookPickup: seedBookPickup,
       postcodeIds: seedPostcodeIds,
       polygonIds: seedPolygonIds,
     }));
@@ -545,6 +735,7 @@ export function ScheduleDetailModal({
         id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
       })),
       zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+      zones: lookupsQuery.data?.zones ?? [],
       dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
     }),
     [lookupsQuery.data],
@@ -562,12 +753,27 @@ export function ScheduleDetailModal({
   // the one for our client, if any. No single-client GET endpoint
   // exists yet, so we filter the list response. Cheap because the
   // Clients tab already fetches this under the same query key.
+  //
+  // F25: enabled in BASE mode too, not just override mode. The occurrences
+  // field needs to know whether any linked client holds an override, because
+  // a schedule-level change does not reach those clients and without the
+  // hint that reads as the field being broken. Same query key as the Clients
+  // tab, so in practice this is a cache hit rather than a second fetch.
   const ovListQuery = useQuery({
     queryKey: schedulesV2Keys.overrides(tenantId, scheduleId ?? 0),
     queryFn: () => schedulesV2Service.listOverrides(scheduleId!),
-    enabled: isOverride && scheduleId != null,
+    enabled: scheduleId != null,
     staleTime: 30_000,
   });
+
+  // F25: how many linked clients hold their OWN occurrences number. Only the
+  // schedule scope carries it, so a client with a delivery-speed override and
+  // no occurrences override is not counted: the question being answered is
+  // "will my edit to this field reach everyone", not "who has any override".
+  const clientsOverridingOccurrences = useMemo(
+    () => (ovListQuery.data ?? []).filter(
+      (o) => o.schedule?.occurrencesAhead != null).length,
+    [ovListQuery.data]);
   const ovExisting = useMemo<ScheduleOverride | null>(() => {
     if (!isOverride || !overrideMode || !ovListQuery.data) return null;
     return ovListQuery.data.find((o) => o.clientId === overrideMode.clientId) ?? null;
@@ -587,6 +793,9 @@ export function ScheduleDetailModal({
     // Schedule scope.
     setOvIsActive(ex?.schedule?.isActive ?? data.isActive);
     setOvDisplayName(ex?.schedule?.displayName ?? data.displayName ?? '');
+    setOvOccurrencesAhead(
+      ex?.schedule?.occurrencesAhead != null ? String(ex.schedule.occurrencesAhead) : '',
+    );
     setOvDisplayDescription(ex?.schedule?.displayDescription ?? data.displayDescription ?? '');
     const maskDays = ex?.schedule?.weekDays
       ? parseMaskToDays(ex.schedule.weekDays)
@@ -642,10 +851,19 @@ export function ScheduleDetailModal({
       body.scheduleId != null && body.scheduleId > 0
         ? schedulesV2Service.update(body.scheduleId, body)
         : schedulesV2Service.create(body),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       if (data?.scheduleId != null) {
         qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+      }
+      // The save worked either way. When the schedule could not be
+      // collapsed onto one row the backend says why, and closing the modal
+      // here would throw that away: the operator would see a successful
+      // save and no hint that the occurrences field is still unavailable,
+      // or that two of their days disagree. So stay open and show it.
+      if (saved?.convertRefusalReasons) {
+        setConvertNotice(saved.convertRefusalReasons);
+        return;
       }
       onClose();
     },
@@ -703,6 +921,25 @@ export function ScheduleDetailModal({
       isActive: isActiveDiffers ? ovIsActive : null,
       displayName: displayNameDiffers ? nzOrNull(ovDisplayName) : null,
       displayDescription: displayDescDiffers ? nzOrNull(ovDisplayDescription) : null,
+      // Carried through unchanged, NOT diffed against the base.
+      //
+      // This panel has no input for occurrences ahead: it works by
+      // comparing the client's value against the base schedule's, and the
+      // schedule's own N lives on tblBulkRunScheduleDetail, which this app
+      // does not read yet. The per-client value is edited in this same
+      // modal in override mode, by the field below.
+      //
+      // Sending null would NOT mean "leave it alone". The PUT replaces the
+      // client's delta rows wholesale (ScheduleOverrideService removes the
+      // existing rows before inserting), and null means "clear this field",
+      // so a null here would wipe whatever the other editor, or the
+      // 20261009179000 seed, had set. Round-tripping the loaded value is
+      // what keeps this panel from silently undoing that.
+      // Blank clears the client's own number so it inherits the schedule
+      // again, which is what a null on this field means to the API.
+      occurrencesAhead: ovOccurrencesAhead.trim() === ''
+        ? null
+        : Number.parseInt(ovOccurrencesAhead, 10),
     };
     const scheduleHasValues =
       scheduleScope.cutoffDay != null
@@ -710,7 +947,8 @@ export function ScheduleDetailModal({
       || scheduleScope.weekDays != null
       || scheduleScope.isActive != null
       || scheduleScope.displayName != null
-      || scheduleScope.displayDescription != null;
+      || scheduleScope.displayDescription != null
+      || scheduleScope.occurrencesAhead != null;
     // Collection scope.
     const collSpeedDiffers = ovCollSpeedId !== (data.pickupRatingSpeed ?? null);
     const collZoneDiffers = ovCollZoneGroupId !== (data.pickupPostcodeGroupId ?? null);
@@ -772,6 +1010,17 @@ export function ScheduleDetailModal({
     }
     const enabledDays = formDays.filter((d) => d.enabled);
     if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
+    // Spec 6.1 rule 3, operator-facing half. The backend refuses this too;
+    // catching it here names the fix in the operator's own terms instead of
+    // surfacing a server error after a round trip. legacyClientId counts as
+    // configured, same as the server-side test, so a pre-junction per-client
+    // schedule stays saveable.
+    if (!formIsDefault && data.clientIds.length === 0 && data.legacyClientId == null) {
+      setSaveError(
+        'Configure at least one client on the Clients tab, or choose "All clients".',
+      );
+      return;
+    }
     setSaveError(null);
 
     const body: ScheduleGroupUpsertBody = {
@@ -785,16 +1034,40 @@ export function ScheduleDetailModal({
       displayDescription: formDisplayDescription.trim() || null,
       // F21: header-level bookable flag.
       isActive: formIsActive,
+      // Spec 6.1: the "Who can book this schedule" radio pair. An explicit
+      // boolean every save, not omit-to-leave-alone: the operator can see
+      // which one is selected, so the save should mean it.
+      isDefault: formIsDefault,
+      // Blank means leave it alone. Only applies once the schedule has
+      // collapsed, because the value lives on the detail row; the backend
+      // ignores it on an old-shape schedule rather than failing, and the
+      // did-not-collapse notice is what tells the operator why.
+      occurrencesAhead: formOccurrencesAhead.trim() === ''
+        ? null
+        : Number.parseInt(formOccurrencesAhead, 10),
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
       parentSpeedId: formParentSpeedId,
       autoBook: formAutoBook,
-      bookPickup: formBookPickup,
+      // Derived from the chain, not a loose checkbox (spec 2.3).
+      bookPickup: derived.bookPickup,
+      originType: derived.originType,
+      originRegionId: derived.originRegionId,
+      // The Collection card owns these only when there IS a collection leg.
+      // 115 day rows on urgent-prod have a PickupPostcodeGroupId with
+      // BookPickup = 0; without this guard, saving one of those through the
+      // rebuilt card would clear it. Null pickupZones means "leave alone",
+      // the same contract Zones has.
       applyPickupCutoff: formApplyPickupCutoff,
       pickupCutoff: formApplyPickupCutoff ? formPickupCutoff : null,
       postcodeGroupId: derived.postcodeGroupId,
-      pickupPostcodeGroupId: formPickupPostcodeGroupId,
+      pickupPostcodeGroupId: derived.hasCollection
+        ? derived.pickupPostcodeGroupId
+        : formPickupPostcodeGroupId,
+      pickupZones: derived.hasCollection
+        ? derived.pickupZones.map((z) => ({ zone: z, active: true }))
+        : null,
       pickupRatingSpeed: derived.pickupRatingSpeed,
       storageState: derived.storageState,
       deliveryState: formDeliveryState,
@@ -851,18 +1124,34 @@ export function ScheduleDetailModal({
   //    (semantically equivalent to Delete). Operators expect Save to
   //    persist that intent even without a "change", so no dirty gate.
   const savePending = isOverride ? ovSaveMut.isPending : saveMut.isPending;
+  // 1 to 60, the same range the CHECK on the column enforces. Was 1 to 14
+  // under decision D2 until Steve raised it on 2026-10-14. Blank is valid
+  // and means inherit, so only a typed value is checked.
+  const ovOccurrencesError = (() => {
+    const t = ovOccurrencesAhead.trim();
+    if (t === '') return null;
+    const v = Number.parseInt(t, 10);
+    return Number.isNaN(v) || v < 1 || v > 60
+      ? 'Enter a number from 1 to 60, or leave blank to inherit.'
+      : null;
+  })();
+
   const saveDisabled = isOverride
-    ? !data || ovSaveMut.isPending || !ovSeeded
-    : !data || saveMut.isPending || !isDirty;
+    ? !data || ovSaveMut.isPending || !ovSeeded || ovOccurrencesError != null
+    : !data || saveMut.isPending || !isDirty || occurrencesAheadError != null;
   const saveTitle = isOverride
     ? !data
       ? 'Loading schedule...'
-      : 'Save this client override.'
+      : ovOccurrencesError != null
+        ? ovOccurrencesError
+        : 'Save this client override.'
     : !data
       ? 'Loading schedule...'
-      : !isDirty
-        ? 'No changes to save.'
-        : 'Save changes.';
+      : occurrencesAheadError != null
+        ? occurrencesAheadError
+        : !isDirty
+          ? 'No changes to save.'
+          : 'Save changes.';
 
   return (
     <>
@@ -877,6 +1166,15 @@ export function ScheduleDetailModal({
         <div className="flex items-center justify-end gap-2 w-full">
           {saveError && (
             <span className="text-xs text-error mr-auto">{saveError}</span>
+          )}
+          {!saveError && convertNotice && (
+            <span
+              className="text-xs text-amber-600 mr-auto"
+              data-testid="schedule-convert-notice"
+            >
+              Saved. This schedule still runs on one row per day:
+              {' '}{convertNotice}
+            </span>
           )}
           <button
             type="button"
@@ -1066,6 +1364,164 @@ export function ScheduleDetailModal({
                 data-testid="schedule-display-description-input"
               />
             </label>
+            {/* Occurrences ahead. Only meaningful on a collapsed schedule,
+                because the value lives on its detail row, so an old-shape
+                schedule gets the explanation instead of an input it cannot
+                save. */}
+            <label className="block">
+              <span className="text-xs uppercase tracking-wide text-text-muted">
+                Occurrences ahead
+                <span className="ml-2 text-text-muted normal-case">
+                  (upcoming runs the booking page offers)
+                </span>
+              </span>
+              {data.isCollapsed ? (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={formOccurrencesAhead}
+                    onChange={(e) => setFormOccurrencesAhead(e.target.value)}
+                    disabled={isOverride}
+                    className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40 disabled:bg-surface-muted"
+                    placeholder={String(formDays.filter((d) => d.enabled).length || 1)}
+                    data-testid="schedule-occurrences-ahead-input"
+                  />
+                  <span
+                    className={`mt-1 block text-xs ${occurrencesAheadError ? 'text-rose-600' : 'text-text-muted'}`}
+                    data-testid="schedule-occurrences-ahead-help"
+                  >
+                    {occurrencesAheadError
+                      ?? (isOverride
+                        /* Said "set per-client values in the client override
+                           editor" until 2026-10-13, naming a component
+                           retired on 2026-09-25: override mode IS the
+                           override editor now. A per-client value for this
+                           field is not wired yet, and saying so is better
+                           than sending the operator somewhere that does not
+                           exist. */
+                        /* Said a per-client value was not editable yet until
+                           the override field below landed in the same release.
+                           It is editable now, so point at it rather than deny
+                           it exists. */
+                        ? "This is the schedule's own number. Set this client's below."
+                        : 'Blank uses one week of runs, which is the number of days ticked.')}
+                  </span>
+                  {/* F25: a schedule-level change does not reach a client that
+                      holds its own number, and the function resolves the
+                      client first. On #1173 HARBT that made a correct edit
+                      look like a broken field: the booking page kept offering
+                      four dates because the client had a seeded override of
+                      four. Say so here rather than let it be discovered. */}
+                  {!isOverride && clientsOverridingOccurrences > 0 && (
+                    <span
+                      className="mt-1 block text-xs text-warning"
+                      data-testid="schedule-occurrences-override-count"
+                    >
+                      {clientsOverridingOccurrences === 1
+                        ? '1 client overrides this, so a change here will not reach them.'
+                        : `${clientsOverridingOccurrences} clients override this, so a change here will not reach them.`}
+                      {' '}Their numbers are on the Clients tab.
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span
+                  className="mt-1 block text-xs text-text-muted"
+                  data-testid="schedule-occurrences-ahead-unavailable"
+                >
+                  Available once this schedule runs on one row. Save it to
+                  collapse; if it cannot, the reason is shown on save.
+                </span>
+              )}
+              {/* What the number actually means, in dates, for BOTH shapes.
+                  A bare "3" does not say whether that is this week or next,
+                  and the mask, the cut-off and the holiday calendar all move
+                  the answer. An old-shape schedule has no field to edit but
+                  the question is just as fair about it, and the server
+                  answers it the same way. Tracks the box rather than the
+                  saved value, so the effect of an edit shows before saving. */}
+              {!occurrencesAheadError && (
+                <div className="mt-1.5" data-testid="schedule-occurrences-preview">
+                  {occurrencesQuery.isLoading ? (
+                    <span className="text-xs text-text-muted">Working out the dates...</span>
+                  ) : occurrencesQuery.isError ? (
+                    <span className="text-xs text-text-muted">
+                      Could not work out the dates just now.
+                    </span>
+                  ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
+                    <span className="text-xs text-text-muted">
+                      No runs in the next 60 days. Every date is either a holiday or
+                      already past its cut-off.
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-xs text-text-muted">
+                        {/* Keyed on scheduleId and the schedule's own number, so
+                            in override mode these are the schedule's dates, not
+                            this client's. Whether it should follow the override
+                            is open with Steve; until then it says which it is. */}
+                        {/* F23: the list is only true as at a moment, and the
+                            moment is the TENANT's, not the browser's. Saying
+                            which is the point: the defect was the server
+                            testing the cutoff against its own clock, and an
+                            operator in another timezone cannot tell the
+                            difference without this. */}
+                        {isOverride ? 'Next runs offered (schedule default)' : 'Next runs offered'}
+                        {occurrencesQuery.data![0]?.asAt
+                          ? `, as the booking page will offer them at ${occurrencesQuery.data![0].asAt}:`
+                          : ':'}
+                      </span>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {occurrencesQuery.data!.map((o) => (
+                          <span
+                            key={o.date}
+                            title={`Order by ${o.cutoffAt}`}
+                            className="px-1.5 py-0.5 rounded text-[11px] bg-surface-light border border-border text-text-secondary whitespace-nowrap"
+                          >
+                            {formatOccurrence(o.date)}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </label>
+            {/* Per-client occurrences ahead. Override mode only: this is the
+                client's own number, and the schedule's own belongs with the
+                schedule. It was built into ClientOverrideEditor.tsx first,
+                which had been retired as an entry point three weeks earlier
+                and rendered nowhere, so the field shipped invisible. It
+                lives here now because override mode IS the override editor. */}
+            {isOverride && (
+              <label className="block">
+                <span className="text-xs uppercase tracking-wide text-text-muted">
+                  Occurrences ahead
+                  <span className="ml-2 text-text-muted normal-case">
+                    (override for this client)
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={ovOccurrencesAhead}
+                  onChange={(e) => setOvOccurrencesAhead(e.target.value)}
+                  placeholder="Inherit"
+                  className="mt-1 w-full px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                  data-testid="override-occurrences-ahead"
+                />
+                <span
+                  className={`mt-1 block text-xs ${ovOccurrencesError ? 'text-rose-600' : 'text-text-muted'}`}
+                  data-testid="override-occurrences-ahead-help"
+                >
+                  {ovOccurrencesError
+                    ?? 'How many upcoming runs the booking page offers this client. Blank inherits the schedule.'}
+                </span>
+              </label>
+            )}
           </div>
 
           <nav
@@ -1096,6 +1552,8 @@ export function ScheduleDetailModal({
               onOpenSchedule={onOpenSchedule}
               onOpenOverride={onOpenOverride}
               overrideMode={overrideMode}
+              isDefault={formIsDefault}
+              onIsDefaultChange={setFormIsDefault}
             />
           )}
           {tab === 'route' && (
@@ -1120,10 +1578,10 @@ export function ScheduleDetailModal({
                 pickupBoxDiscount: formPickupBoxDiscount, onPickupBoxDiscountChange: setFormPickupBoxDiscount,
                 dropOffLocationId: formDropOffLocationId, onDropOffLocationIdChange: setFormDropOffLocationId,
                 pickupPostcodeGroupId: formPickupPostcodeGroupId, onPickupPostcodeGroupIdChange: setFormPickupPostcodeGroupId,
-                bookPickup: formBookPickup, onBookPickupChange: setFormBookPickup,
                 applyPickupCutoff: formApplyPickupCutoff, onApplyPickupCutoffChange: setFormApplyPickupCutoff,
                 pickupCutoff: formPickupCutoff, onPickupCutoffChange: setFormPickupCutoff,
                 pickupDepotId: derived.pickupDepotId,
+                bookPickupDerived: derived.bookPickup,
               }}
             />
           )}
@@ -1192,14 +1650,27 @@ interface ClientsTabProps {
    *  session. Renders a stripped view: only the override client, no
    *  radios, no attach button, no client-overrides list. */
   overrideMode: OverrideEditContext | null;
+  /** Spec 6.1 rule 5. The "Who can book this schedule" radio pair now
+   *  edits the parent's form state and ships on Save, instead of showing a
+   *  disabled reading derived from how many clients were configured. */
+  isDefault: boolean;
+  onIsDefaultChange: (next: boolean) => void;
 }
 
-function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode }: ClientsTabProps) {
+function ClientsTab({
+  data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode,
+  isDefault, onIsDefaultChange,
+}: ClientsTabProps) {
   const qc = useQueryClient();
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
   const toast = useToast();
-  const isDefault = data.legacyClientId == null && data.clientIds.length === 0;
+  // 6.1: isDefault arrives as a prop from the parent's form state. It used
+  // to be derived here as "legacyClientId == null && clientIds.length === 0",
+  // which is the bug: configuring a client on a default schedule flipped the
+  // radio pair to "Specific clients" although the header still said every
+  // client could book it, and nothing the operator clicked could change the
+  // header either way.
   const detachMut = useMutation({
     mutationFn: (clientId: number) =>
       schedulesV2Service.detachClient(data.scheduleId, clientId),
@@ -1210,6 +1681,30 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
     onError: (e: Error) => {
       // Audit finding: this mutation previously swallowed errors silently.
       toast.show(`Detach failed: ${e.message}`, 'error');
+    },
+  });
+
+  // F25: the Remove-override button was lost with the dead
+  // ClientOverrideEditor on 2026-09-25 and schedulesV2Service.deleteOverride
+  // has had no caller since, so a per-client override could be created and
+  // seen but never removed from this screen. That is half of why #1173 HARBT
+  // looked like the schedule-level field did not work: the client held a
+  // seeded override of 4, the field edits the detail row, and there was no
+  // way to clear the override that was winning.
+  const removeOverrideMut = useMutation({
+    mutationFn: (clientId: number) =>
+      schedulesV2Service.deleteOverride(data.scheduleId, clientId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.overrides(tenantId, data.scheduleId) });
+      qc.invalidateQueries({ queryKey: schedulesV2Keys.detail(tenantId, data.scheduleId) });
+      // The booking page's dates change the moment the override goes, and
+      // the preview is the thing the operator is looking at while they do
+      // this, so it has to be refetched rather than left stale.
+      qc.invalidateQueries({ queryKey: ['schedules-v2-occurrences', tenantId, data.scheduleId] });
+      toast.show('Override removed. This client now follows the schedule.', 'success');
+    },
+    onError: (e: Error) => {
+      toast.show(`Could not remove the override: ${e.message}`, 'error');
     },
   });
 
@@ -1301,15 +1796,26 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
         <div className="space-y-2">
           <RadioRow
             checked={isDefault}
-            label="All clients (default)"
-            hint="Available to every client with no schedule of its own for this run. No link rows."
+            onSelect={() => onIsDefaultChange(true)}
+            label="All clients"
+            hint={'Every client can book this schedule. Clients configured '
+              + 'below get their own settings and are ranked first for them, '
+              + 'which changes what they see rather than who is allowed.'}
+            testId="who-can-book-all-clients"
           />
           <RadioRow
             checked={!isDefault}
+            onSelect={() => onIsDefaultChange(false)}
             label="Specific clients"
-            hint="Only the clients attached below. Each is a row in the schedule/client link table."
+            hint={'Only the clients configured below can book it. At least one '
+              + 'is required: a schedule that is neither for all clients nor '
+              + 'configured for anybody cannot be booked at all.'}
+            testId="who-can-book-specific-clients"
           />
         </div>
+        <p className="mt-2 text-xs text-text-muted">
+          Takes effect on Save, with the rest of the schedule.
+        </p>
 
         {/* Client overrides section per Steve F1 (2026-09-20). Deltas
             live in tblBulkRunScheduleOverride; the base schedule is
@@ -1374,7 +1880,7 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
           )}
           <p className="mt-3 text-xs text-text-muted">
             An override records only the fields this client differs on. The base schedule
-            stays untouched and the client stays attached to it.
+            stays untouched and the client keeps booking it.
           </p>
           {/* "Create override" is per-client. Rendered inline on each
               attached client row below (see Attached clients column).
@@ -1384,14 +1890,22 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
 
       <section>
         <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
-          Attached clients
+          Configured clients
           <span className="text-xs text-text-muted font-normal">
-            {data.clientCodes.length} linked
+            {data.clientCodes.length} configured
           </span>
         </h3>
+        {/* Spec 6.1 rule 2: a link row means "this schedule is configured for
+            this client", which is not the same as "only this client may book
+            it". The old copy read "No clients attached. This is a default
+            schedule.", which stated the consequence backwards: whether the
+            schedule is a default is the setting above, and an empty list says
+            nothing about it. */}
         {data.clientCodes.length === 0 && data.legacyClientCode == null && (
           <p className="text-xs text-text-muted italic">
-            No clients attached. This is a default schedule.
+            {isDefault
+              ? 'No client is configured on this schedule. Every client books it as it stands.'
+              : 'No client is configured yet. This schedule cannot be booked until one is, or until you choose "All clients" above.'}
           </p>
         )}
         {data.legacyClientCode && (
@@ -1426,6 +1940,38 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
                       override
                     </span>
                   )}
+                  {/* F25: the effective occurrences for THIS client and where
+                      the number comes from. Invisible until now, which made a
+                      correct schedule-level value look broken: on #1173 HARBT
+                      the booking page offered four dates while the schedule
+                      said five, because the client held a seeded override of
+                      four and the function resolves the client first. */}
+                  {(() => {
+                    const ovN = existingOverride?.schedule?.occurrencesAhead ?? null;
+                    const schedN = data.occurrencesAhead;
+                    if (ovN != null) {
+                      return (
+                        <span
+                          className="text-xs text-warning"
+                          title="This client's own number. It wins over the schedule's."
+                          data-testid={`client-occurrences-${clientId}`}
+                        >
+                          · occurrences: override {ovN}
+                        </span>
+                      );
+                    }
+                    return (
+                      <span
+                        className="text-xs text-text-muted"
+                        title="This client follows the schedule's number."
+                        data-testid={`client-occurrences-${clientId}`}
+                      >
+                        · occurrences: schedule{' '}
+                        {schedN ?? (data.dayWindows.length || 1)}
+                        {schedN == null && ' (one week)'}
+                      </span>
+                    );
+                  })()}
                 </span>
                 {sinceLabel && (
                   <span className="text-xs text-text-muted mr-3">since {sinceLabel}</span>
@@ -1448,6 +1994,20 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
                 >
                   {existingOverride ? 'Edit override' : 'Configure override'}
                 </button>
+                {existingOverride && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (clientId) removeOverrideMut.mutate(clientId);
+                    }}
+                    disabled={removeOverrideMut.isPending}
+                    className="text-xs text-warning hover:underline mr-3 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Delete this client's override so it follows the schedule again. The client stays attached."
+                    data-testid={`remove-override-${clientId}`}
+                  >
+                    {removeOverrideMut.isPending ? 'Removing...' : 'Remove override'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -1467,14 +2027,14 @@ function ClientsTab({ data, onAttachClients, onOpenSchedule, onOpenOverride, ove
           type="button"
           onClick={() => onAttachClients(data.scheduleId)}
           className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded border border-border hover:bg-surface-light text-text-primary"
-          title="Open the Attach Clients modal"
+          title="Configure this schedule for one or more clients"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="8" r="4" />
             <path d="M4 21c0-4 4-7 8-7s8 3 8 7" />
             <path d="M18 4v6M15 7h6" />
           </svg>
-          Attach clients
+          Configure for client
         </button>
       </section>
     </div>
@@ -1506,6 +2066,7 @@ interface RouteTabProps {
     dropOffLocations: { id: number; name: string; depotId: number }[];
     linehaulRuns: { id: number; runName: string; fromDepotId: number | null; toDepotId: number | null }[];
     zoneNumbers: number[];
+    zones: { zone: number; label: string; depotId: number; zipCount: number; groupLabel: string }[];
   };
   advanced: {
     parentSpeedId: number | null;
@@ -1518,8 +2079,9 @@ interface RouteTabProps {
     onDropOffLocationIdChange: (v: number | null) => void;
     pickupPostcodeGroupId: number | null;
     onPickupPostcodeGroupIdChange: (v: number | null) => void;
-    bookPickup: boolean;
-    onBookPickupChange: (v: boolean) => void;
+    /** Read-only mirror of the derived BookPickup, shown so the Advanced
+     *  tab still tells the truth about what will be saved. */
+    bookPickupDerived: boolean;
     applyPickupCutoff: boolean;
     onApplyPickupCutoffChange: (v: boolean) => void;
     pickupCutoff: number | null;
@@ -1560,6 +2122,15 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
             : 'Dane\'s vertical leg builder - edit inline; Save persists via /api/schedules'}
         </span>
       </div>
+      {/* Reads the LIVE chain, not data.originType: the warning should appear
+          the moment the operator switches the Depot leg to Client address,
+          not only after a save. */}
+      <ClientGeocodeWarning
+        clients={data?.clientsMissingGeocode ?? []}
+        isClientOrigin={
+          (legs.find((l) => l.type === 'depot') as DepotLeg | undefined)?.clientAddress === true
+        }
+      />
       <div className={readOnly ? 'pointer-events-none opacity-60' : undefined}>
         <ChainBuilder
           legs={legs}
@@ -1568,6 +2139,8 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
           readOnly={readOnly}
           pickupBoxDiscount={advanced.pickupBoxDiscount}
           onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
+          dropOffLocationId={advanced.dropOffLocationId}
+          onDropOffLocationIdChange={advanced.onDropOffLocationIdChange}
         />
       </div>
 
@@ -1720,19 +2293,25 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                 {lookups.deliveryStates.map((s) => (<option key={s.id} value={s.id}>{s.label}</option>))}
               </select>
             </label>
-            <label className="block text-xs">
+            {/* F22. The select moved to the Collection card, where whoever
+                sets up a collection actually looks. A trace stays here
+                because this panel is where people have been finding it,
+                and a field that silently vanishes reads as a regression. */}
+            <div className="block text-xs" data-testid="advanced-drop-off-moved">
               Drop-off location (schedule)
-              <select
-                value={advanced.dropOffLocationId ?? ''}
-                onChange={(e) => advanced.onDropOffLocationIdChange(e.target.value ? Number(e.target.value) : null)}
-                className="mt-1 w-full px-2 py-1 border border-border rounded"
-              >
-                <option value="">- default -</option>
-                {lookups.dropOffLocations
-                  .filter((d) => !advanced.pickupDepotId || d.depotId === advanced.pickupDepotId)
-                  .map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
-              </select>
-            </label>
+              <p className="mt-1 text-text-muted">
+                Set on the Collection card.
+                {advanced.dropOffLocationId != null && (
+                  <>
+                    {' '}Currently{' '}
+                    <span className="text-text-primary">
+                      {lookups.dropOffLocations.find((d) => d.id === advanced.dropOffLocationId)?.name
+                        ?? `#${advanced.dropOffLocationId}`}
+                    </span>.
+                  </>
+                )}
+              </p>
+            </div>
             <label className="block text-xs">
               Collection zone group
               <select
@@ -1746,14 +2325,9 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                   .map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
               </select>
             </label>
-            <label className="col-span-2 flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={advanced.bookPickup}
-                onChange={(e) => advanced.onBookPickupChange(e.target.checked)}
-                className="accent-brand-cyan"
-              />
-              Book collection job (creates a separate collection job at booking time)
+            <label className="col-span-2 flex items-center gap-2 text-xs opacity-60">
+              <input type="checkbox" checked={advanced.bookPickupDerived} disabled className="accent-brand-cyan" />
+              Book collection job (derived: set by adding a Collection leg to the route)
             </label>
             <label className="col-span-2 flex items-center gap-2 text-xs">
               <input
@@ -1821,11 +2395,39 @@ function CoverageTab({
         <h3 className="text-xs uppercase tracking-wider font-semibold text-text-muted mb-2">
           Postcodes
         </h3>
+        {/* Ticket 296 / pricing spec 6.3, M2. This copy said the postcodes
+            "render on the map", which was true and was the whole problem: for
+            a speed that is not zone-rated the availability function never
+            consulted the zones at all, so the Coverage tab was a picture
+            rather than a gate and Hyper's two-hour service could be booked to
+            Silverdale, Pukekohe and Piha. It is a gate for every speed now,
+            so the tab has to say so. */}
         <p className="text-xs text-text-muted mb-3">
           Individual postcodes bound to this schedule (on top of the postcode group
           dropdown above). Resolver union: schedule covers a postcode if it's in the
           bound group OR in this list.
         </p>
+        {/* Tenant-split on 27 Oct. The NZ sentence was shown on both tenants
+            and is false on US: nothing there reads the ticks or the bound
+            ZIPs today, and the US coverage spec puts the rule behind
+            tblSetting.ScheduleCoverageEnabled, off by default. Saying "this
+            limits where the schedule can be booked" on a US tenant with the
+            setting off is the tab making the same promise it already broke
+            once for Hyper, in the other direction. */}
+        {isUsTenant ? (
+          <p className="text-xs text-text-muted mb-3">
+            On this tenant active zones and bound zips are <strong>saved but not yet
+            enforced</strong>. They start limiting where the schedule can be booked
+            once schedule coverage is switched on for the tenant, and a schedule with
+            neither stays open to its whole depot area either way.
+          </p>
+        ) : (
+          <p className="text-xs text-text-muted mb-3">
+            <strong>Active zones and bound postcodes limit where this schedule can be
+            booked, for every speed</strong>, not only zone-rated ones. A schedule with
+            no active zones and no bound postcodes stays open to its whole depot area.
+          </p>
+        )}
         <PostcodeLookupInput
           selected={postcodeIds}
           onChange={onPostcodeIdsChange}
@@ -2545,23 +3147,39 @@ function TabButton({
   );
 }
 
+/** Spec 6.1 rule 5. `onSelect` omitted keeps the old read-only rendering,
+ *  which override mode still wants: an override cannot change who can book
+ *  the base schedule. */
 function RadioRow({
   checked,
   label,
   hint,
+  onSelect,
+  testId,
 }: {
   checked: boolean;
   label: string;
   hint: string;
+  onSelect?: () => void;
+  testId?: string;
 }) {
+  const editable = onSelect != null;
   return (
     <label
-      className={`block px-4 py-3 border rounded cursor-not-allowed ${
-        checked ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border'
-      }`}
+      className={`block px-4 py-3 border rounded ${
+        editable ? 'cursor-pointer hover:bg-surface-light' : 'cursor-not-allowed'
+      } ${checked ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border'}`}
     >
       <div className="flex items-center gap-2">
-        <input type="radio" checked={checked} readOnly disabled className="accent-brand-cyan" />
+        <input
+          type="radio"
+          checked={checked}
+          onChange={editable ? () => onSelect!() : undefined}
+          readOnly={!editable}
+          disabled={!editable}
+          className="accent-brand-cyan"
+          data-testid={testId}
+        />
         <span className="text-sm font-medium text-text-primary">{label}</span>
       </div>
       <div className="text-xs text-text-muted ml-6 mt-0.5">{hint}</div>
@@ -2616,4 +3234,151 @@ function ProdRow({ label, value }: { label: string; value: string }) {
 function temperatureLabel(v: number | null | undefined): string | null {
   if (v == null) return null;
   return v === 1 ? 'Frozen' : v === 2 ? 'Chilled' : v === 3 ? 'Ambient' : `#${v}`;
+}
+
+/**
+ * Warns when a client-origin schedule is linked to clients whose site has no
+ * coordinates (schedule-origin spec 4.5). Those runs would start at whatever
+ * the booking happened to carry rather than the client's warehouse, and the
+ * Bulk Import path refuses the batch outright.
+ *
+ * Warns, never blocks: the booking path still works from the per-booking
+ * address, so this is a "your runs will start in the wrong place" caution,
+ * not a validation error.
+ *
+ * This is the surface Steve asked for the geocode action to hang off. It is
+ * two-step by design: the first click previews the candidate, a second
+ * confirms the write, so nobody overwrites a client's coordinates on one
+ * unseen lookup.
+ */
+function ClientGeocodeWarning({
+  clients,
+  isClientOrigin,
+}: {
+  clients: Array<{ clientId: number; clientName: string }>;
+  isClientOrigin: boolean;
+}) {
+  const [preview, setPreview] = useState<Record<number, ClientGeocodeResult>>({});
+  const [busy, setBusy] = useState<number | null>(null);
+  const [done, setDone] = useState<Record<number, string>>({});
+  const [error, setError] = useState<Record<number, string>>({});
+  // Address override, shown only after a lookup fails. Many client records
+  // hold a street line with no suburb or city ("Unit 6 - 50-56 Acheron
+  // Drive"), which HERE cannot resolve; without this the operator hits a
+  // dead end on the one screen that told them to fix it.
+  const [override, setOverride] = useState<Record<number, string>>({});
+
+  if (!isClientOrigin || clients.length === 0) return null;
+
+  const run = async (clientId: number, confirm: boolean) => {
+    setBusy(clientId);
+    setError((e) => ({ ...e, [clientId]: '' }));
+    try {
+      const typed = override[clientId]?.trim();
+      const res = await clientsService.geocodeSite(clientId, {
+        confirm,
+        address: typed ? typed : null,
+      });
+      if (res.written) {
+        setDone((d) => ({ ...d, [clientId]: res.message }));
+        setPreview((p) => {
+          const next = { ...p };
+          delete next[clientId];
+          return next;
+        });
+      } else if (res.latitude == null) {
+        setError((e) => ({ ...e, [clientId]: res.message }));
+      } else {
+        setPreview((p) => ({ ...p, [clientId]: res }));
+      }
+    } catch (err) {
+      setError((e) => ({
+        ...e,
+        [clientId]: err instanceof Error ? err.message : 'Geocode failed.',
+      }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-warning/40 bg-warning-bg/40 px-3 py-2">
+      <div className="text-xs font-semibold text-text-primary">
+        {clients.length === 1 ? 'A linked client has' : `${clients.length} linked clients have`}
+        {' '}no geocoded site address
+      </div>
+      <p className="text-[11px] text-text-muted mt-0.5">
+        This schedule starts at the client&apos;s address, so runs will not start in the
+        right place until the site is geocoded. Bookings still work; a routed Bulk
+        Import on this schedule will be refused.
+      </p>
+      <div className="mt-1.5 flex flex-col gap-1.5">
+        {clients.map((c) => {
+          const p = preview[c.clientId];
+          return (
+            <div key={c.clientId} className="text-[11px]">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-text-primary">{c.clientName}</span>
+                {done[c.clientId] ? (
+                  <span className="text-success">{done[c.clientId]}</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy === c.clientId}
+                    onClick={() => void run(c.clientId, false)}
+                    className="px-2 py-0.5 rounded border border-border text-text-muted hover:text-text-primary disabled:opacity-40"
+                  >
+                    {busy === c.clientId ? 'Looking up...' : p ? 'Look up again' : 'Geocode site address'}
+                  </button>
+                )}
+              </div>
+              {p && (
+                <div className="mt-0.5 ml-1 flex items-center gap-2 flex-wrap">
+                  <span className="text-text-muted">
+                    {p.formattedAddress} ({p.latitude}, {p.longitude})
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy === c.clientId}
+                    onClick={() => void run(c.clientId, true)}
+                    className="px-2 py-0.5 rounded bg-brand-cyan text-white disabled:opacity-40"
+                  >
+                    Save these coordinates
+                  </button>
+                </div>
+              )}
+              {error[c.clientId] && (
+                <div className="mt-0.5 ml-1">
+                  <div className="text-error">{error[c.clientId]}</div>
+                  {/* The stored address could not be resolved. Let the
+                      operator supply a fuller one rather than sending them
+                      to another app to fix the client record first. The
+                      typed value is used for the lookup only; what gets
+                      saved is still just the coordinates. */}
+                  <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <input
+                      type="text"
+                      value={override[c.clientId] ?? ''}
+                      onChange={(e) =>
+                        setOverride((o) => ({ ...o, [c.clientId]: e.target.value }))}
+                      placeholder="Try a fuller address, e.g. add the suburb and city"
+                      className="px-1.5 py-0.5 border border-border rounded text-[11px] w-80"
+                    />
+                    <button
+                      type="button"
+                      disabled={busy === c.clientId || !(override[c.clientId] ?? '').trim()}
+                      onClick={() => void run(c.clientId, false)}
+                      className="px-2 py-0.5 rounded border border-border text-text-muted hover:text-text-primary disabled:opacity-40"
+                    >
+                      Try this address
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

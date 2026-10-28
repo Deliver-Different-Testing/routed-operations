@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react';
+﻿import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
-import { ChainBuilder, type Leg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
@@ -114,7 +114,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const [dropOffLocationId, setDropOffLocationId] = useState<number | null>(null);
   const [applyPickupCutoff, setApplyPickupCutoff] = useState(false);
   const [pickupCutoff, setPickupCutoff] = useState<number | null>(null);
-  const [bookPickup, setBookPickup] = useState(false);
   // Tier 2 - Collection zone group + individual postcodes + coverage
   // polygons. Legacy /schedules has all three; parity requires them.
   const [pickupPostcodeGroupId, setPickupPostcodeGroupId] = useState<number | null>(null);
@@ -166,7 +165,6 @@ export function NewScheduleModal({ open, onClose }: Props) {
     setDropOffLocationId(null);
     setApplyPickupCutoff(false);
     setPickupCutoff(null);
-    setBookPickup(false);
     setPickupPostcodeGroupId(null);
     setPostcodeIds([]);
     setPolygonIds([]);
@@ -200,6 +198,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
   const derived = useMemo(() => {
     let pickupDepotId: number | null = null;
     let pickupRatingSpeed: number | null = null;
+    let pickupPostcodeGroupId: number | null = null;
+    let pickupZones: number[] = [];
     let regionId = 0;
     let speedId: number | null = null;
     let postcodeGroupId: number | null = null;
@@ -212,12 +212,18 @@ export function NewScheduleModal({ open, onClose }: Props) {
       applyAddOnPercentage: boolean | null; weekDay: number[];
       departureAdvanceDays: number | null; fromClientAddress: boolean | null;
       dropOffLocationId: number | null; speedId: number | null;
+      legOrder: number | null;
     }> = [];
     const zones: number[] = [];
     for (const leg of legs) {
       if (leg.type === 'collection') {
-        pickupDepotId = leg.pickupSource === 'depot' ? leg.pickupDepotId : null;
+        // The collection leg no longer carries a depot. Its destination, and
+        // therefore PickupDepotId, is resolved from the first Depot leg after
+        // this loop. It does carry the pickup zone group and zones,
+        // which mirror the Delivery card (spec 3.2).
         pickupRatingSpeed = leg.speedId;
+        pickupPostcodeGroupId = leg.postcodeGroupId;
+        pickupZones = [...leg.zones].sort((a, b) => a - b);
       } else if (leg.type === 'depot') {
         storageState = leg.storageState;
       } else if (leg.type === 'linehaul') {
@@ -240,6 +246,10 @@ export function NewScheduleModal({ open, onClose }: Props) {
           fromClientAddress: leg.fromClientAddress,
           dropOffLocationId: leg.dropOffLocationId,
           speedId: leg.speedId,
+          // Bug 1 (Steve 2026-09-25): persist the leg's position in the chain
+          // so the booking SPs number and time legs in travel order instead of
+          // falling back to tblBulkScheduleLinehaul.Id order.
+          legOrder: linehauls.length + 1,
         });
       } else if (leg.type === 'delivery') {
         regionId = leg.regionId;
@@ -248,8 +258,59 @@ export function NewScheduleModal({ open, onClose }: Props) {
         for (const z of leg.zones) if (!zones.includes(z)) zones.push(z);
       }
     }
+    // ── Origin resolution (schedule-origin spec, 2026-10-07) ──────────
+    // Origin is expressed by the chain's first Depot leg and stored on the
+    // header as OriginType / OriginRegionId.
+    //
+    //   client origin -> BookPickup = 0, PickupDepotId = NULL,
+    //                    OriginRegionId = the Depot card's picker
+    //   depot  origin -> PickupDepotId from the Depot leg, BookPickup = 1
+    //                    only when the chain actually has a Collection leg
+    //
+    // Region is NOT touched here. It keeps coming from the Delivery leg and
+    // names the delivery branch; OriginRegionId names the branch that owns the
+    // start of the chain. That is the same split a collection schedule already
+    // has between PickupDepotId and Region, which is why first-leg jobs and
+    // delivery jobs can sit under different teams.
+    //
+    // PickupDepotId is no longer picked on the Collection card; deriving it
+    // from the Depot leg is an identity round-trip, because seedLegsFromDto
+    // seeds that leg from PickupDepotId in the first place. That is what keeps
+    // existing LHP + DEL schedules behaving exactly as before.
+    //
+    // Three-way since 2026-10-08 (Direct). The three-way resolution itself
+    // lives in ChainBuilder's deriveOriginFromLegs so this modal and
+    // ScheduleDetailModal cannot disagree about it.
+    //
+    //   direct origin -> BookPickup = 0, PickupDepotId = NULL,
+    //                    OriginRegionId = NULL. No Collection leg and no
+    //                    linehaul legs, both blocked in the chooser and
+    //                    rejected server-side.
+    const firstDepot = legs.find((l) => l.type === 'depot') as DepotLeg | undefined;
+    const hasCollection = legs.some((l) => l.type === 'collection');
+    const { originType, originRegionId } = deriveOriginFromLegs(legs);
+    let bookPickup = false;
+    if (originType === 'depot') {
+      // F24 (BLOCKER, Anisah's 14 to 16 Oct staging smoke test). The depot has
+      // to be carried whenever the origin IS a depot, not only when the chain
+      // also happens to have a Collection leg. Gating it on hasCollection meant
+      // a plain rename-and-save on a cross-depot schedule with BookPickup = 0
+      // nulled PickupDepotId on every day row: Client Manager then showed
+      // "Client Address" and #1591 ROSED dropped off the booking page
+      // altogether. The same gate is why "add Depot leg" did not persist.
+      //
+      // Measured on Urgent production 2026-10-19: 5,211 day rows across 1,531
+      // schedules sit in exactly the state this destroys (PickupDepotId set,
+      // BookPickup 0), 5,127 of them on live headers. Any one save on any of
+      // them would have done it.
+      pickupDepotId = firstDepot?.depotId ?? null;
+      // BookPickup answers "does this schedule book a collection job", which is
+      // exactly whether the chain has a Collection leg. It is not a statement
+      // about where the chain starts, and conflating the two is what caused F24.
+      bookPickup = hasCollection;
+    }
     zones.sort((a, b) => a - b);
-    return { pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
+    return { bookPickup, originType, originRegionId, hasCollection, pickupPostcodeGroupId, pickupZones, pickupDepotId, pickupRatingSpeed, regionId, speedId, postcodeGroupId, storageState, linehauls, zones };
   }, [legs, days]);
 
   const submit = () => {
@@ -274,16 +335,33 @@ export function NewScheduleModal({ open, onClose }: Props) {
       displayDescription: displayDescription.trim() || null,
       // F21: header-level bookable flag.
       isActive: isActive,
+      // Spec 6.1 rule 1. The Clients radio pair below already asked this
+      // question and already sent the link rows, but the header was created
+      // IsDefault = 1 regardless, so "Specific clients" produced a schedule
+      // every client could book that also had link rows on it. That is the
+      // stray-default shape Anisah hit on 20 Oct, and the create path was
+      // making it on purpose.
+      isDefault: clientMode === 'all',
       regionId: derived.regionId,
       pickupDepotId: derived.pickupDepotId,
       speedId: derived.speedId,
       parentSpeedId: parentSpeedId,
       autoBook: autoBook,
-      bookPickup: bookPickup,
+      // Derived from the chain, not a loose checkbox (spec 2.3).
+      bookPickup: derived.bookPickup,
+      originType: derived.originType,
+      originRegionId: derived.originRegionId,
+      pickupZones: derived.hasCollection
+        ? derived.pickupZones.map((z) => ({ zone: z, active: true }))
+        : null,
       applyPickupCutoff: applyPickupCutoff,
       pickupCutoff: applyPickupCutoff ? pickupCutoff : null,
       postcodeGroupId: derived.postcodeGroupId,
-      pickupPostcodeGroupId: pickupPostcodeGroupId,
+      // Owned by the Collection card when the chain has a collection leg;
+      // otherwise the Advanced value stands (spec 3.2).
+      pickupPostcodeGroupId: derived.hasCollection
+        ? derived.pickupPostcodeGroupId
+        : pickupPostcodeGroupId,
       pickupRatingSpeed: derived.pickupRatingSpeed,
       storageState: derived.storageState,
       deliveryState: deliveryState,
@@ -499,11 +577,14 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   id: r.id, runName: r.runName, fromDepotId: r.fromDepotId, toDepotId: r.toDepotId,
                 })),
                 zoneNumbers: lookupsQuery.data?.zoneNumbers ?? [],
+                zones: lookupsQuery.data?.zones ?? [],
                 dropOffLocations: lookupsQuery.data?.dropOffLocations ?? [],
                 pickupBoxDiscounts: lookupsQuery.data?.pickupBoxDiscounts ?? [],
               }}
               pickupBoxDiscount={pickupBoxDiscount}
               onPickupBoxDiscountChange={setPickupBoxDiscount}
+              dropOffLocationId={dropOffLocationId}
+              onDropOffLocationIdChange={setDropOffLocationId}
             />
           </div>
         </div>
@@ -613,21 +694,25 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   ))}
                 </select>
               </label>
-              <label className="block text-xs">
+              {/* F22. Moved to the Collection card, same as the detail
+                  modal. The trace stays so the field does not read as
+                  deleted to anyone who has been setting it here. */}
+              <div className="block text-xs" data-testid="advanced-drop-off-moved">
                 Drop-off location (schedule)
-                <select
-                  value={dropOffLocationId ?? ''}
-                  onChange={(e) => setDropOffLocationId(e.target.value ? Number(e.target.value) : null)}
-                  className="mt-1 w-full px-2 py-1 border border-border rounded"
-                >
-                  <option value="">- default -</option>
-                  {(lookupsQuery.data?.dropOffLocations ?? [])
-                    .filter((d) => !derived.pickupDepotId || d.depotId === derived.pickupDepotId)
-                    .map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                </select>
-              </label>
+                <p className="mt-1 text-text-muted">
+                  Set on the Collection card.
+                  {dropOffLocationId != null && (
+                    <>
+                      {' '}Currently{' '}
+                      <span className="text-text-primary">
+                        {(lookupsQuery.data?.dropOffLocations ?? [])
+                          .find((d) => d.id === dropOffLocationId)?.name
+                          ?? `#${dropOffLocationId}`}
+                      </span>.
+                    </>
+                  )}
+                </p>
+              </div>
               <label className="block text-xs">
                 Collection zone group
                 <select
@@ -643,14 +728,9 @@ export function NewScheduleModal({ open, onClose }: Props) {
                     ))}
                 </select>
               </label>
-              <label className="col-span-2 flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={bookPickup}
-                  onChange={(e) => setBookPickup(e.target.checked)}
-                  className="accent-brand-cyan"
-                />
-                Book collection job (creates a separate collection job at booking time)
+              <label className="col-span-2 flex items-center gap-2 text-xs opacity-60">
+                <input type="checkbox" checked={derived.bookPickup} disabled className="accent-brand-cyan" />
+                Book collection job (derived: set by adding a Collection leg to the route)
               </label>
               <label className="col-span-2 flex items-center gap-2 text-xs">
                 <input
@@ -771,7 +851,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                 onChange={() => setClientMode('all')}
                 className="accent-brand-cyan"
               />
-              All clients (default)
+              All clients
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input

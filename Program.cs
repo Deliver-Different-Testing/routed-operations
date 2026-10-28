@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.AccessControl;
 using System.Threading.Tasks;
 using FluentValidation;
@@ -14,6 +14,8 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
+using DeliverDifferent.AccessControl;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Application.Services.Courier;
 using RoutedOperations.Core.Application.Services.Job;
@@ -38,6 +40,25 @@ using StackExchange.Redis;
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
+
+// QuestPDF refuses to render until the host declares a license type, and it is
+// a process-wide static, so this must run once at startup before any label is
+// generated. Missing it fails EVERY label in Route Viewer identically, on every
+// tenant and every run: Print Run, single-job, LHP, bulk, by-speed and linehaul
+// all end in AlertLabelDocument.GeneratePdf(). The throw happens in
+// QuestPDF.Drawing.DocumentGenerator.ValidateLicense(), which is a plain
+// System.Exception, so it is not caught by the NpLabelScopeException or
+// InvalidOperationException arms in RunViewerLabelController and surfaced as a
+// bare HTTP 500 - ticket #855.
+//
+// This was missed when 2026-09-18 (cb4644e) moved rendering off the legacy
+// /Home/Labels proxy and in-process: the legacy RunViewer sets it in its own
+// Program.cs, and that line did not come across with the body. WebAPI,
+// AdminManager, booking, Configurator and DespatchWeb all declare Community
+// the same way.
+// Fully qualified rather than a using, because QuestPDF.Infrastructure carries
+// common names (Size, IDocument) that would collide in this file.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -252,46 +273,36 @@ builder.Services.AddRequestTimeouts(options =>
     };
 });
 
+// Policy rules live in RouteBuilderPolicies / RouteViewerPolicies (on top of
+// CallerLane) so they can be unit tested against a ClaimsPrincipal. Inline
+// lambdas here could only be tested by restating them, which proves nothing.
+//
+// RouteBuilder.* = tenant staff only (ClientTypeId 4/5, not a partner or
+// courier). RouteViewer.* = tenant staff or a network partner; partner rows
+// are cut down by INpScopeGuard and the @NpAgentId SP parameter. Customers are
+// admitted by neither until the customer view is scoped (Routed Ops switches
+// spec section 5a). See the class comments for what changed and why.
+
 // Authorization policies matching the parity build plan.
 builder.Services.AddAuthorization(options =>
 {
-    // Read - any authenticated tenant user can see the cockpit.
     options.AddPolicy("RouteBuilder.Read", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            return !string.IsNullOrEmpty(tenantId);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanRead(context.User)));
 
-    // Build - author runs. Same admit rule as Read for Stage 1; matrix will refine later.
+    // Build - author runs.
     options.AddPolicy("RouteBuilder.Build", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanBuild(context.User)));
 
     // Admin - dispatch + destructive ops.
     options.AddPolicy("RouteBuilder.Admin", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var userGroupId = context.User.FindFirst("UserGroupID")?.Value;
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            if (string.Equals(userGroupId, "1", StringComparison.Ordinal)) return true;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanAdmin(context.User)));
 
-    // Placeholder policies for the deferred modules so controller scaffolds compile.
+    // Quote returns CostPerJob / TotalCost / MarginPct / RecommendedQuote, and
+    // Polygon guards AutoAssignLogController and ZonesController.
     options.AddPolicy("RouteBuilder.Quote", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanUsePlaceholderModule(context.User)));
     options.AddPolicy("RouteBuilder.Polygon", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteBuilderPolicies.CanUsePlaceholderModule(context.User)));
 
     // Route Viewer P0 policies (2026-08-07). Parallel to the RouteBuilder
     // set so downstream policy changes on RouteBuilder cannot silently
@@ -299,21 +310,11 @@ builder.Services.AddAuthorization(options =>
     // to run under NP-aware guard rails; the actual row-level enforcement
     // is done via INpScopeGuard.
     options.AddPolicy("RouteViewer.Read", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanRead(context.User)));
     options.AddPolicy("RouteViewer.Admin", policy =>
-        policy.RequireAssertion(context =>
-        {
-            var userGroupId = context.User.FindFirst("UserGroupID")?.Value;
-            var tenantId = context.User.FindFirst("CurrentTenantID")?.Value;
-            var isCourier = context.User.FindFirst("IsCourier")?.Value;
-            if (string.Equals(userGroupId, "1", StringComparison.Ordinal)) return true;
-            return !string.IsNullOrEmpty(tenantId)
-                && !string.Equals(isCourier, "True", StringComparison.OrdinalIgnoreCase);
-        }));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanAdmin(context.User)));
     options.AddPolicy("RouteViewer.NpScope", policy =>
-        policy.RequireAssertion(context =>
-            !string.IsNullOrEmpty(context.User.FindFirst("CurrentTenantID")?.Value)));
+        policy.RequireAssertion(context => RouteViewerPolicies.CanUseNpScope(context.User)));
 });
 
 builder.Services.AddHttpClient();
@@ -357,6 +358,12 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkPolygo
 // Polygon Builder VIEW Zones drawer + resolver diagnostic page.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Zone.ZoneLookupService>();
 // Schedules module (nightly booking templates + territory maintenance).
+// Collapses a schedule onto its detail row by calling
+// dbo.uspScheduleConvert. Behind an interface so service tests, which run on
+// the in-memory provider, can substitute it; the derivation itself must stay
+// in the procedure so there is only one implementation of the rule.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.IScheduleConverter,
+    RoutedOperations.Core.Application.Services.Schedule.SqlScheduleConverter>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Schedule.ScheduleOverrideService>();
 // Steve F19b (2026-09-24) next-available-collection resolver. Interface
@@ -471,6 +478,20 @@ builder.Services.AddScoped<IDbContextFactory<DynamicDespatchDbContext>>(sp =>
 {
     var inner = sp.GetRequiredService<IDbContextFactory<DespatchContext>>();
     return new DynamicDespatchDbContextFactoryAdapter(inner);
+});
+
+// Access Control switches (DeliverDifferent.AccessControl, Routed Ops switches
+// spec section 3). The resolver reads dbo.Feature x dbo.ClientTypeFeature from
+// the caller's tenant DB over its own short-lived connection, built from the
+// same per-tenant connection string the EF factory resolves. Defaults: DF Admin
+// (ClientTypeId 5) bypasses every switch; the client type comes from the
+// ClientTypeId claim.
+builder.Services.AddAccessControlFeatures();
+builder.Services.AddSqlFeatureCatalogueStore(async (sp, ct) =>
+{
+    var factory = sp.GetRequiredService<IDbContextFactory<DynamicDespatchDbContext>>();
+    await using var ctx = await factory.CreateDbContextAsync(ct);
+    return new Microsoft.Data.SqlClient.SqlConnection(ctx.Database.GetConnectionString());
 });
 
 // Warm the large EF model at startup so first-request latency stays low.

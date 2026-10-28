@@ -99,7 +99,7 @@ public class AutoAssignLogService(IDbContextFactory<DynamicDespatchDbContext> co
             r.ResolvedNpAgentId,
             r.ResolvedNpAgentId.HasValue ? agentNames.GetValueOrDefault(r.ResolvedNpAgentId.Value) : null,
             r.Outcome, r.TriggerSource,
-            r.PriorRouteId, r.Side)).ToList();
+            r.PriorRouteId, r.Side, r.MatchStrategy)).ToList();
 
         return new RouteAutoAssignLogPageDto(total, page, pageSize, entries);
     }

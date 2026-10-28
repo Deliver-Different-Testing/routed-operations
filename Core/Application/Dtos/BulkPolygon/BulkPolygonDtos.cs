@@ -21,6 +21,10 @@ public record BulkPolygonAttachedRouteDto(int RouteId, string RouteName);
 public record BulkPolygonDto(
     int PolygonId,
     string Name,
+    /// <summary>The shape's own colour. Carried so a coverage chip can be
+    /// drawn in it and read as a polygon rather than a postcode (polygons
+    /// spec part 1).</summary>
+    string? ColorHex,
     byte SourceType,
     string? SourceCode,
     decimal CentroidLatitude,
@@ -29,6 +33,10 @@ public record BulkPolygonDto(
     List<PolygonPointDto> Points,
     int AttachedRouteCount,
     List<BulkPolygonAttachedRouteDto> AttachedRoutes,
+    /// <summary>Zone memberships (custom-polygons spec 3.1). Which zone
+    /// number this shape is in, in which zone group. Empty until ops places
+    /// it with "Add to zone".</summary>
+    List<BulkPolygonZoneMembershipDto> ZoneMemberships,
     string? PartiallyIncludedZips,
     DateTime CreatedUtc,
     string CreatedBy,
@@ -38,7 +46,7 @@ public record BulkPolygonDto(
     int? ZoneNameId = null,
     /// <summary>PostcodeGroup this polygon is bound to (Phase-5 tblBulkRunPolygon.PostcodeGroupId). Null when unbound.</summary>
     int? PostcodeGroupId = null,
-    /// <summary>Schedule groups bound via tblSchedulePolygon. Empty when unbound.</summary>
+    /// <summary>Always empty: the tblSchedulePolygon junction that populated this was retired (custom-polygons spec 3.4) and the table dropped by migration 20261007180000.</summary>
     List<string>? AttachedScheduleNames = null,
     /// <summary>Resolved ZoneName.ZoneName1 for the ZoneNameId binding. Null when unbound or the row was deleted.</summary>
     string? ZoneNameName = null,
@@ -62,3 +70,19 @@ public record UpdateBulkPolygonShapeRequest(
     decimal CentroidLatitude,
     decimal CentroidLongitude,
     List<PolygonPointDto> Points);
+
+/// <summary>One row of a polygon's zone membership list.</summary>
+public record BulkPolygonZoneMembershipDto(
+    int Id,
+    int PostcodeGroupId,
+    string PostcodeGroupName,
+    int DepotId,
+    string DepotName,
+    int Zone);
+
+/// <summary>Body for POST /api/bulk-polygons/{polygonId}/zones.</summary>
+public class BulkPolygonAddToZoneRequest
+{
+    public int PostcodeGroupId { get; set; }
+    public int Zone { get; set; }
+}

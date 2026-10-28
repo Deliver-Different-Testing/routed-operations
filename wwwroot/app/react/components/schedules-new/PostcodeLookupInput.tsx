@@ -133,6 +133,42 @@ export function PostcodeLookupInput({ selected, onChange, enabled }: Props) {
 
   const sorted = useMemo(() => [...selected].sort((a, b) => a - b), [selected]);
 
+  // ─── Paste (US coverage spec 5.2) ─────────────────────────────────────
+  //
+  // One at a time is 602 entries for Cheetah's Hub Group file. The three-way
+  // result matters more than the count: an unknown code is the one an
+  // operator has to act on, and it is NOT added by default, because a code
+  // that is in no zone can never be offered. The depot rule runs before any
+  // coverage test, so binding it would look like a configured schedule that
+  // silently serves nothing.
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [pasteResult, setPasteResult] = useState<{
+    added: number[];
+    alreadyBound: number[];
+    unknown: number[];
+    padded: number[];
+    ignored: string[];
+  } | null>(null);
+
+  const applyPaste = () => {
+    const result = classifyPaste(pasteText, selected, validSet, digitCount);
+    if (result.added.length > 0) {
+      onChange([...selected, ...result.added].sort((a, b) => a - b));
+    }
+    setPasteResult(result);
+    setPasteText('');
+    setError(null);
+  };
+
+  const addUnknownAnyway = () => {
+    if (!pasteResult || pasteResult.unknown.length === 0) return;
+    onChange([...selected, ...pasteResult.unknown].sort((a, b) => a - b));
+    setPasteResult({ ...pasteResult, added: [...pasteResult.added, ...pasteResult.unknown], unknown: [] });
+  };
+
+  const list = (ns: number[]) => ns.map((n) => pad(n, isUs)).join(', ');
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
@@ -163,7 +199,77 @@ export function PostcodeLookupInput({ selected, onChange, enabled }: Props) {
         >
           Add
         </button>
+        <button
+          type="button"
+          onClick={() => { setPasteOpen((v) => !v); setPasteResult(null); }}
+          disabled={!enabled || lookupQuery.isLoading}
+          className="px-3 py-1.5 text-sm rounded border border-border hover:bg-surface-light disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {pasteOpen ? 'Cancel paste' : '+ paste'}
+        </button>
       </div>
+      {pasteOpen && (
+        <div className="mb-2">
+          <textarea
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            placeholder={isUs ? '64030, 65201\n63501 64429' : '1010, 1011\n3010 3011'}
+            className="w-full h-24 px-3 py-1.5 text-sm font-mono border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+          />
+          <div className="flex items-center justify-between mt-1">
+            <p className="text-[11px] text-text-muted">
+              Commas, spaces, semicolons or new lines. Duplicates are dropped.
+              {isUs && ` Short entries are read as ${digitCount}-digit zips.`}
+            </p>
+            <button
+              type="button"
+              onClick={applyPaste}
+              disabled={pasteText.trim().length === 0}
+              className="px-3 py-1.5 text-sm rounded border border-border hover:bg-surface-light disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Add {pluralLower}
+            </button>
+          </div>
+        </div>
+      )}
+      {pasteResult && (
+        <div className="rounded border border-border p-2 mb-2 text-[11px] space-y-1">
+          <div>
+            Bound: {pasteResult.added.length === 0 ? 'none' : list(pasteResult.added)}
+          </div>
+          {pasteResult.alreadyBound.length > 0 && (
+            <div className="text-text-muted">
+              Already bound: {list(pasteResult.alreadyBound)}
+            </div>
+          )}
+          {pasteResult.padded.length > 0 && (
+            <div className="text-text-muted">
+              Read as {digitCount} digits: {list(pasteResult.padded)}
+            </div>
+          )}
+          {pasteResult.unknown.length > 0 && (
+            <div className="text-warning">
+              <div>
+                In no zone on this tenant, so not bound: {list(pasteResult.unknown)}.
+                A {singularLower} in no zone can never be offered, because the depot
+                is resolved from its zone before any coverage test runs.
+              </div>
+              <button
+                type="button"
+                onClick={addUnknownAnyway}
+                className="mt-1 px-2 py-0.5 rounded border border-border hover:bg-surface-light"
+              >
+                Add anyway
+              </button>
+            </div>
+          )}
+          {pasteResult.ignored.length > 0 && (
+            <div className="text-warning">
+              Not a {singularLower}, so skipped: {pasteResult.ignored.join(', ')}
+            </div>
+          )}
+        </div>
+      )}
       {error && (
         <div className="text-[11px] text-error mb-2">{error}</div>
       )}
@@ -203,4 +309,72 @@ function pad(n: number, isUs: boolean): string {
   // NZ postcodes are 4 digits, US zips are 5. Zero-pad for display so
   // "1050" reads correctly instead of the raw int.
   return String(n).padStart(isUs ? 5 : 4, '0');
+}
+
+export interface PasteClassification {
+  /** Valid, known and not already bound. These are bound immediately. */
+  added: number[];
+  /** Already bound, so not written again. Not an error. */
+  alreadyBound: number[];
+  /** Parses as a code but is in no zone on this tenant. NOT bound by
+   *  default: the depot is resolved from a code's zone before any coverage
+   *  test runs, so a code in no zone can never be offered, and binding it
+   *  would look like a configured schedule that silently serves nothing.
+   *  The operator can still force it. */
+  unknown: number[];
+  /** Entries shorter than the tenant's code length, listed because the
+   *  reading is a guess worth showing: "7030" means 07030, not 70300. */
+  padded: number[];
+  /** Could not be read as a code at all, returned verbatim so the operator
+   *  can see what was in their paste. Dane's Cheetah file carries 116
+   *  "DOS NOT ON FILE" rows. */
+  ignored: string[];
+}
+
+/**
+ * Sort a pasted blob into what was bound, what was already there, and what
+ * needs a decision.
+ *
+ * Pure so it can be tested without standing up the lookup fetch. The three
+ * buckets are the point: a count of "97 added" hides the three codes the
+ * operator actually has to do something about.
+ *
+ * `validSet` undefined means the lookup did not load, in which case entries
+ * are accepted as typed rather than all being called unknown, matching what
+ * the single-entry Add button does.
+ */
+export function classifyPaste(
+  text: string,
+  selected: number[],
+  validSet: Set<number> | undefined,
+  digitCount: number,
+): PasteClassification {
+  const added: number[] = [];
+  const alreadyBound: number[] = [];
+  const unknown: number[] = [];
+  const padded: number[] = [];
+  const ignored: string[] = [];
+  const seen = new Set<number>();
+  const maxValue = Math.pow(10, digitCount) - 1;
+
+  for (const raw of text.split(/[\s,;]+/)) {
+    const entry = raw.trim();
+    if (entry.length === 0) continue;
+
+    const digits = entry.replace(/\D/g, '');
+    const n = digits.length === 0 ? NaN : Number(digits.slice(0, digitCount));
+    if (!Number.isInteger(n) || n <= 0 || n > maxValue) {
+      if (!ignored.includes(entry)) ignored.push(entry);
+      continue;
+    }
+    if (seen.has(n)) continue;
+    seen.add(n);
+
+    if (digits.length < digitCount) padded.push(n);
+    if (selected.includes(n)) { alreadyBound.push(n); continue; }
+    if (validSet && !validSet.has(n)) { unknown.push(n); continue; }
+    added.push(n);
+  }
+
+  return { added, alreadyBound, unknown, padded, ignored };
 }

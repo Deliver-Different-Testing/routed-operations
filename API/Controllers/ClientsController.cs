@@ -1,10 +1,12 @@
 using System.Security.Claims;
+using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Clients;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
 using RoutedOperations.Core.Application.Services.BulkImport;
+using RoutedOperations.Core.Application.Services.Routing;
 using Serilog;
 
 namespace RoutedOperations.API.Controllers;
@@ -22,6 +24,9 @@ namespace RoutedOperations.API.Controllers;
 [ApiController]
 [Route("api/clients")]
 [Authorize(Policy = "RouteBuilder.Admin")]
+// Access Control switch: Bulk Import (client picker, search, settings). GeocodeSite
+// below declares its own, which replaces this one (spec step 3b).
+[RequireFeature("ro-bulk-import")]
 public class ClientsController(
     ClientService clientService,
     ILogger<ClientsController> logger) : BaseController
@@ -58,6 +63,50 @@ public class ClientsController(
         Log.Warning("Response ({MessageId})({ContactId}): {Response}",
             response.MessageId, GetCurrentContactId(), JsonConvert.SerializeObject(response));
         return BadRequest(response);
+    }
+
+    // POST /api/clients/{clientId}/geocode - resolve the client's site
+    // address to coordinates (schedule-origin spec 4.5).
+    //
+    // This is the app's FIRST client write path; every other endpoint on this
+    // controller is a GET. The write exists because a client-origin schedule
+    // starts its runs at the client's site, and until now only AdminManager
+    // could set those coordinates. AdminManager is being retired.
+    //
+    // Two-step by design: the default call previews the candidate and the
+    // caller repeats it with confirm = true to save. The response always
+    // carries the previous coordinates so nothing is overwritten unseen.
+    [HttpPost("{clientId:int}/geocode")]
+    // Only ScheduleDetailModal calls this, on Schedules (NEW) and Client Overrides.
+    [RequireFeature("ro-schedules-new", "ro-client-overrides")]
+    public async Task<IActionResult> GeocodeSite(
+        int clientId,
+        [FromBody] ClientGeocodeRequest request,
+        [FromServices] HereGeocodeService geocoder)
+    {
+        try
+        {
+            var messageId = Guid.NewGuid();
+            LogRequestStart(messageId);
+            var actor = User?.FindFirstValue(ClaimTypes.Name)
+                        ?? User?.FindFirstValue("ContactID")
+                        ?? "unknown";
+            var result = await clientService.GeocodeSiteAsync(clientId, request, geocoder, actor);
+            logger.LogInformation(
+                "Clients.GeocodeSite {MessageId}: clientId={ClientId} confirm={Confirm} written={Written}",
+                messageId, clientId, request?.Confirm ?? false, result.Written);
+            return Ok(result);
+        }
+        catch (InvalidOperationException e)
+        {
+            logger.LogWarning(e, "Clients.GeocodeSite rejected for client {ClientId}", clientId);
+            return BadRequest(new { message = e.Message });
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Clients.GeocodeSite failed");
+            throw;
+        }
     }
 
     // GET /api/clients - clients the current contact is assigned to.

@@ -76,7 +76,14 @@ export function Modal({
       onClick={onClose}
       data-modal-open="true"
     >
+      {/* role/aria-modal/aria-label: the panel had none, so assistive tech
+          announced it as a plain div and nothing tied it to its title.
+          Surfaced by an E2E that could not scope to the open modal at all
+          (getByRole('dialog') matched nothing anywhere in the app). */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={`relative bg-surface-white rounded-lg shadow-lg ${SIZE_CLASS[size]} w-full mx-4 max-h-[90vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >

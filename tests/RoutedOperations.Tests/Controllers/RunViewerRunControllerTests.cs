@@ -30,7 +30,8 @@ public class RunViewerRunControllerTests
         var tz = new SqlTimeZoneNormalizer(factory);
         var accessor = Substitute.For<IHttpContextAccessor>();
         accessor.HttpContext.Returns(new DefaultHttpContext());
-        var svc = new RouteViewerRunService(factory, resolver, tz, accessor,
+        var svc = new RouteViewerRunService(factory, resolver,
+            Substitute.For<INpScopeGuard>(), tz, accessor,
             NullLogger<RouteViewerRunService>.Instance);
         var controller = new RunViewerRunController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

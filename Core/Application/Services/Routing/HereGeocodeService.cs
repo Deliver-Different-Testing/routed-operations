@@ -42,9 +42,7 @@ public class HereGeocodeService(HttpClient httpClient, AppSettings appSettings)
         // "in=countryCode:USA,NZL" is HERE's ISO-3166-1 alpha-3 country
         // narrowing. Pass through only when the caller has a specific bias -
         // omitting it lets HERE guess from the address text itself.
-        var country = string.IsNullOrWhiteSpace(countryCode)
-            ? ""
-            : $"&in=countryCode:{Uri.EscapeDataString(countryCode.Trim())}";
+        var country = BuildCountryFilter(countryCode);
         var url = $"https://geocode.search.hereapi.com/v1/geocode?q={q}{country}&limit=1&apiKey={appSettings.HereMapsApiKey}";
 
         try
@@ -96,6 +94,46 @@ public class HereGeocodeService(HttpClient httpClient, AppSettings appSettings)
     /// boundary. The lat/lng already implies the country, so we let HERE pick
     /// the natural match and cross-check afterwards if needed.
     /// </summary>
+
+    /// <summary>
+    /// HERE's "in=countryCode:" filter takes ISO-3166-1 ALPHA-3 codes and
+    /// rejects the whole request with a 400 when given anything else:
+    ///
+    ///   Illegal input for parameter 'in' ... Actual parameter value:
+    ///   'countryCode:NZ' ... must contain all uppercase ISO-3 country codes
+    ///
+    /// Callers naturally reach for the tenant's CountryCode claim, which is
+    /// alpha-2 ("NZ" / "US"), so normalising here rather than at each call
+    /// site is what stops this recurring. Found by the first caller to pass
+    /// the claim through: every lookup failed, and the failure surfaced as
+    /// "no match for that address" rather than as a bad request.
+    ///
+    /// Anything unrecognised is dropped rather than forwarded: no filter
+    /// still geocodes (HERE infers the country from the address text), while
+    /// a malformed one fails the call outright.
+    /// </summary>
+    private static string BuildCountryFilter(string? countryCode)
+    {
+        var code = countryCode?.Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) return "";
+
+        var alpha3 = code switch
+        {
+            "NZ" => "NZL",
+            "US" => "USA",
+            "AU" => "AUS",
+            _ when code.Length == 3 => code,
+            _ => null,
+        };
+        if (alpha3 == null)
+        {
+            Log.Warning("Ignoring unrecognised country code '{CountryCode}' for HERE geocode; "
+                + "the filter needs ISO-3 and a bad one fails the whole request", countryCode);
+            return "";
+        }
+        return $"&in=countryCode:{Uri.EscapeDataString(alpha3)}";
+    }
+
     public async Task<HereGeocodeResult?> ReverseGeocodeAsync(double lat, double lng, string? countryCode = null)
     {
         _ = countryCode; // parameter reserved for future use, see summary

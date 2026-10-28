@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -18,7 +18,7 @@ import {
   scheduleService,
   type ScheduleGroupSummary,
 } from '../services/scheduleService';
-import { recurringRouteService, type RecurringRoute } from '../services/recurringRouteService';
+import { recurringRouteService, RouteDirection, type RecurringRoute } from '../services/recurringRouteService';
 import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
 import { ScheduleDetailModal, type OverrideEditContext } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
@@ -26,6 +26,18 @@ import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
 import { AttachClientsModal } from '../components/schedules-new/AttachClientsModal';
 import { NewScheduleModal } from '../components/schedules-new/NewScheduleModal';
 import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal';
+import { BundleModal } from '../components/schedules-new/BundleModal';
+import { depotLabel, postcodeGroupLabel } from '../lib/tenantLabels';
+// Territory maintenance, reused verbatim from the legacy /schedules page.
+// Those three tabs are the ONLY surface that maintains the zone / zip /
+// zone-group / depot rows themselves (BulkZonePostcode, ZoneZip, ZoneName,
+// ZoneGroup, tblBulkRegion), and they lived on a page scheduled for
+// retirement once ops sign off on this one. Picking a schedule's active
+// zones is a different thing and already lives in the detail modal's
+// Coverage tab; this is the data those ticks choose from.
+import { ZonesTab } from './schedules/ZonesTab';
+import { ZoneGroupsTab } from './schedules/ZoneGroupsTab';
+import { DepotsTab } from './schedules/DepotsTab';
 
 // Schedules NEW - Steve's 2026-09-08 id-keyed multi-client schedules
 // view (KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08). Uses the
@@ -44,7 +56,37 @@ import { CopyScheduleModal } from '../components/schedules-new/CopyScheduleModal
 //    the error immediately instead of blocking the spinner for the
 //    full retry backoff.
 
-type Tab = 'schedules' | 'bundles' | 'routes';
+// Pricing spec 3.1. 'pricing' and 'linehaul' join these later; the tab bar
+// is built so adding them is two more TabButtons.
+type Tab = 'schedules' | 'bundles' | 'routes' | 'zonegroups';
+
+const TABS: Tab[] = ['schedules', 'bundles', 'routes', 'zonegroups'];
+
+function isTab(v: string | null): v is Tab {
+  return v != null && (TABS as string[]).includes(v);
+}
+
+/** Sub-views inside the Zone groups tab (pricing spec 3.2: ZoneGroupsTab,
+ *  ZonesTab and DepotsTab are re-homed as sub-views, not as sibling tabs). */
+type ZoneGroupsView = 'groups' | 'zones' | 'depots';
+
+const ZONE_GROUP_VIEWS: ZoneGroupsView[] = ['groups', 'zones', 'depots'];
+
+/** Sub-view labels. Depots are the same DB entity on both tenants under
+ *  different operator words, so that one reads from tenantLabels;
+ *  "Zones" is the same word on both.
+ *
+ *  The first view is NOT symmetric. On NZ it holds postcode groups. On US
+ *  the postcode-group section is hidden (Steve 23 Oct: US resolves
+ *  zip -> ZoneName -> LocationId and never reads BulkZonePostcodeGroup),
+ *  so what remains there is the US ZoneGroup and ZoneName grids. Labelling
+ *  that pill "Zip Groups" would point at the one thing the view no longer
+ *  shows, so it reads "Zone Groups" on US. */
+function zoneGroupsViewLabel(v: ZoneGroupsView, isUs: boolean): string {
+  if (v === 'groups') return isUs ? 'Zone Groups' : postcodeGroupLabel(false, true);
+  if (v === 'depots') return depotLabel(isUs, true);
+  return 'Zones';
+}
 
 const DAY_LABELS: Array<{ n: number; label: string }> = [
   { n: 1, label: 'M' },
@@ -59,8 +101,39 @@ const DAY_LABELS: Array<{ n: number; label: string }> = [
 const PAGE_SIZE = 50;
 
 export default function SchedulesNew() {
-  const [tab, setTab] = useState<Tab>('schedules');
+  const user = useAuth();
+  const isUs = user.isUsTenant;
   const [searchParams, setSearchParams] = useSearchParams();
+  // Pricing spec 3.1: "Tabs are local state, not routes; keep that, but add
+  // ?tab= so a pricing link can be shared." So the tab stays out of the route
+  // table and is read from / written to the query string instead. An unknown
+  // or absent ?tab= falls back to Schedules rather than rendering nothing.
+  const tab: Tab = isTab(searchParams.get('tab')) ? (searchParams.get('tab') as Tab) : 'schedules';
+  const setTab = (next: Tab) => {
+    setSearchParams(
+      (prev) => {
+        const nextParams = new URLSearchParams(prev);
+        if (next === 'schedules') nextParams.delete('tab');
+        else nextParams.set('tab', next);
+        return nextParams;
+      },
+      { replace: true },
+    );
+  };
+  // Sub-view inside the Zone groups tab. Local state only: the spec asks for
+  // ?tab= on the tab, not on the sub-view.
+  const [zoneGroupsView, setZoneGroupsView] = useState<ZoneGroupsView>('groups');
+  // Keep-alive for the territory sub-views. ZoneGroupsTab and ZonesTab each
+  // bootstrap the whole territory payload on mount, which on a NZ tenant is
+  // every BulkZonePostcode row; unmounting on every sub-view switch would
+  // refetch it each time. The schedule tabs stay conditionally rendered -
+  // they are React Query backed, so their cache already survives a switch.
+  const [mountedViews, setMountedViews] = useState<Set<ZoneGroupsView>>(() => new Set(['groups']));
+  const selectZoneGroupsView = (next: ZoneGroupsView) => {
+    setZoneGroupsView(next);
+    setMountedViews((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+  };
+  const viewHidden = (v: ZoneGroupsView) => (zoneGroupsView === v ? '' : 'hidden');
   // Sync openScheduleId with the ?edit=<id> query param so schedule
   // detail modals get sharable URLs and survive page reload.
   const openScheduleId = useMemo(() => {
@@ -136,16 +209,23 @@ export default function SchedulesNew() {
             One schedule, many clients. Each schedule has its own id; clients
             are attached to it, overrides stay linked to their base, and the
             recurring routes and linehaul runs that deliver it sit alongside
-            instead of on a separate page.
+            instead of on a separate page. Zone groups maintains the{' '}
+            {postcodeGroupLabel(isUs, true).toLowerCase()}, zones and{' '}
+            {depotLabel(isUs, true).toLowerCase()} that schedules point at.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setNewScheduleOpen(true)}
-          className="shrink-0 px-4 py-2 text-sm font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
-        >
-          + New Schedule
-        </button>
+        {/* New Schedule belongs to the schedule tabs only. Under Zone groups
+            the primary action is "+ Add group / postcode", which each
+            sub-view renders itself. */}
+        {tab !== 'zonegroups' && (
+          <button
+            type="button"
+            onClick={() => setNewScheduleOpen(true)}
+            className="shrink-0 px-4 py-2 text-sm font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
+          >
+            + New Schedule
+          </button>
+        )}
       </header>
 
       <div className="border-b border-border">
@@ -159,6 +239,14 @@ export default function SchedulesNew() {
           <TabButton active={tab === 'routes'} onClick={() => setTab('routes')} count={routesCount}>
             Recurring Routes
           </TabButton>
+          {/* Territory maintenance (pricing spec 3.1). No count pill: the
+              sub-views own their own fetch rather than a React Query cache
+              this component can read, and prefetching the territory payload
+              on mount just to render a number is exactly the fan-out the
+              note at the top of this file warns about. */}
+          <TabButton active={tab === 'zonegroups'} onClick={() => setTab('zonegroups')}>
+            Zone groups
+          </TabButton>
         </nav>
       </div>
 
@@ -171,6 +259,40 @@ export default function SchedulesNew() {
       )}
       {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={openBase} />}
       {tab === 'routes' && <RecurringRoutesTab />}
+
+      {tab === 'zonegroups' && (
+        <div className="space-y-3">
+          {/* Sub-view switcher. Deliberately a different control from the
+              tab bar above (pills, not underlined tabs) so the nesting is
+              visible: these three sit INSIDE Zone groups. */}
+          <div className="flex gap-0.5 rounded-xl border border-border bg-white p-0.5 shadow-sm w-fit">
+            {ZONE_GROUP_VIEWS.map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => selectZoneGroupsView(v)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  zoneGroupsView === v
+                    ? 'bg-[#0d0c2c] text-white shadow-sm'
+                    : 'text-text-secondary hover:bg-slate-50'
+                }`}
+              >
+                {zoneGroupsViewLabel(v, isUs)}
+              </button>
+            ))}
+          </div>
+
+          {mountedViews.has('groups') && (
+            <div className={viewHidden('groups')}><ZoneGroupsTab /></div>
+          )}
+          {mountedViews.has('zones') && (
+            <div className={viewHidden('zones')}><ZonesTab /></div>
+          )}
+          {mountedViews.has('depots') && (
+            <div className={viewHidden('depots')}><DepotsTab /></div>
+          )}
+        </div>
+      )}
 
       <ScheduleDetailModal
         scheduleId={openScheduleId}
@@ -714,6 +836,24 @@ function ScheduleRow({
           {sourceTag && <SourceTag source={sourceTag} />}
         </div>
         <div className="text-[11px] mt-0.5 leading-tight text-text-muted">
+          {/* Shape indicator (collapse plan 4.2). It rides on the name
+              cell's metadata line rather than beside the day pills: that
+              cell is sized for five pills and the chip either wrapped,
+              losing its first characters, or overflowed into the Origin
+              column. Deliberately quiet either way, because an old-shape
+              schedule is not broken, it has just not been saved since the
+              collapse shipped. */}
+          {s.isCollapsed && (
+            <span
+              title={s.occurrencesAhead != null
+                ? `One row for the whole schedule. Offers ${s.occurrencesAhead} upcoming runs.`
+                : 'One row for the whole schedule.'}
+              className="mr-1 px-1 rounded text-[9px] uppercase tracking-wide bg-surface-light border border-border"
+              data-testid="schedule-collapsed-chip"
+            >
+              1-row
+            </span>
+          )}
           {`#${s.scheduleId}${s.description ? ` · ${s.description}` : ''}`}
         </div>
       </td>
@@ -721,7 +861,11 @@ function ScheduleRow({
         <DayPills active={s.activeDays} />
       </td>
       <td className="py-1.5 pr-2 text-text-secondary">
-        {s.pickupDepotName ?? 'Client address'}
+        {/* pickupDepotName is null for client AND direct origin, so the
+            stored originType decides which of the two labels to show
+            (2026-10-08). A depot name still wins when there is one. */}
+        {s.pickupDepotName
+          ?? (s.originType === 'direct' ? 'Direct' : 'Client address')}
       </td>
       <td className="py-1.5 pr-2 text-text-secondary">{s.regionName ?? <span className="text-text-muted">-</span>}</td>
       <td className="py-1.5 pr-2 text-text-secondary font-mono text-[11px]">{window}</td>
@@ -751,7 +895,7 @@ function ScheduleRow({
       <td className="py-1.5 pr-2">
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <ActionIcon
-            label="Attach clients"
+            label="Configure for client"
             icon="user"
             onClick={() => onAttachClients(s.scheduleId)}
           />
@@ -877,7 +1021,7 @@ function OverrideNestedRow({
       <td className="py-1.5 pr-2">
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <ActionIcon
-            label="Attach clients to base schedule"
+            label="Configure base schedule for client"
             icon="user"
             onClick={() => onAttachClients(baseScheduleId)}
           />
@@ -942,11 +1086,35 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
 }
 
 function ClientChips({ row }: { row: ScheduleGroupSummary }) {
-  if (row.clientCount === 0 && row.legacyClientId == null) {
+  // Spec 6.1 rule 4. This used to read "clientCount === 0 && legacyClientId
+  // == null", which is the same inference the modal made and is wrong for a
+  // default that has clients configured on it: the row dropped the "All
+  // clients" chip and showed the client codes instead, so the list said the
+  // schedule was client-specific when the header says every client can book
+  // it. The flag is the answer; the count is a separate fact about the same
+  // schedule and now renders alongside it.
+  //
+  // `isDefault` is optional on the DTO for legacy payloads, where absent
+  // means true, so the fallback keeps the old reading for a cached response
+  // that pre-dates the field.
+  const isDefault = row.isDefault ?? (row.clientCount === 0 && row.legacyClientId == null);
+  if (isDefault) {
     return (
-      <span className="text-[10px] bg-success-bg text-success border border-success/30 px-1.5 py-px rounded font-medium">
-        All clients
-      </span>
+      <div className="flex gap-1 flex-wrap items-center">
+        <span className="text-[10px] bg-success-bg text-success border border-success/30 px-1.5 py-px rounded font-medium">
+          All clients
+        </span>
+        {row.clientCount > 0 && (
+          <span
+            className="text-[10px] text-text-muted"
+            title={`Every client can book this schedule. ${row.clientCount} `
+              + `${row.clientCount === 1 ? 'client has' : 'clients have'} it `
+              + `configured, which does not restrict who else can book it.`}
+          >
+            +{row.clientCount} configured
+          </span>
+        )}
+      </div>
     );
   }
   const codes = row.linkedClientCodes.length > 0
@@ -1148,102 +1316,24 @@ function SegmentPill({
 }
 
 // ─── Schedule Bundles tab ───────────────────────────────────────────
+//
+// Steve 2026-10-16 (SCHEDULE-BUNDLES-UI-2026-10-16): the overview stays a
+// list; everything else happens in BundleModal (schedules on the left,
+// clients on the right, searchable pickers, no ids typed). The previous
+// expand-in-place card + window.prompt flows are gone.
 
 function ScheduleBundlesTab({ onScheduleClick }: { onScheduleClick: (id: number) => void }) {
-  const user = useAuth();
-  const tenantId = user.currentTenantId ?? 0;
   const query = useSchedulesV2Bundles();
-  const qc = useQueryClient();
-  const toast = useToast();
-  const confirm = useConfirm();
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
-  const [attachBundleId, setAttachBundleId] = useState<number | null>(null);
-  const toggle = (id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const invalidateBundles = () =>
-    qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
-
-  const deleteMut = useMutation({
-    mutationFn: (bundleId: number) => schedulesV2Service.deleteBundle(bundleId),
-    onSuccess: () => { invalidateBundles(); toast.show('Bundle deleted.', 'success'); },
-    onError: (e: Error) => toast.show(`Delete failed: ${e.message}`, 'error'),
-  });
-  const renameMut = useMutation({
-    mutationFn: (args: { bundleId: number; name: string; description?: string }) =>
-      schedulesV2Service.updateBundle(args.bundleId, { name: args.name, description: args.description }),
-    onSuccess: () => { invalidateBundles(); toast.show('Bundle updated.', 'success'); },
-    onError: (e: Error) => toast.show(`Rename failed: ${e.message}`, 'error'),
-  });
-  const addMemberMut = useMutation({
-    mutationFn: (args: { bundleId: number; scheduleIds: number[] }) =>
-      schedulesV2Service.addBundleMembers(args.bundleId, args.scheduleIds),
-    onSuccess: () => { invalidateBundles(); toast.show('Member added.', 'success'); },
-    onError: (e: Error) => toast.show(`Add member failed: ${e.message}`, 'error'),
-  });
-  const removeMemberMut = useMutation({
-    mutationFn: (args: { bundleId: number; scheduleId: number }) =>
-      schedulesV2Service.removeBundleMember(args.bundleId, args.scheduleId),
-    onSuccess: () => { invalidateBundles(); toast.show('Member removed.', 'success'); },
-    onError: (e: Error) => toast.show(`Remove failed: ${e.message}`, 'error'),
-  });
-
-  const handleDelete = async (b: ScheduleBundle) => {
-    const ok = await confirm({
-      title: 'Delete bundle?',
-      message: `Delete "${b.name}" (${b.scheduleCount} schedule${b.scheduleCount === 1 ? '' : 's'})? The underlying schedules and their link rows are NOT touched - only the bundle metadata is removed.`,
-      confirmLabel: 'Delete',
-      danger: true,
-    });
-    if (!ok) return;
-    deleteMut.mutate(b.bundleId);
-  };
-
-  const handleRename = (b: ScheduleBundle) => {
-    const next = window.prompt(`Rename "${b.name}":`, b.name);
-    if (!next || next.trim() === b.name) return;
-    renameMut.mutate({ bundleId: b.bundleId, name: next.trim(), description: b.description ?? '' });
-  };
-
-  const handleAddMember = (b: ScheduleBundle) => {
-    const raw = window.prompt(
-      `Add a schedule to "${b.name}". Enter the schedule id (from #ScheduleId in the Schedules tab):`,
-      '',
-    );
-    if (!raw) return;
-    const id = parseInt(raw.trim(), 10);
-    if (!Number.isFinite(id) || id <= 0) {
-      toast.show('Invalid schedule id.', 'error');
-      return;
-    }
-    addMemberMut.mutate({ bundleId: b.bundleId, scheduleIds: [id] });
-  };
-
-  const handleRemoveMember = async (bundleId: number, scheduleId: number) => {
-    const ok = await confirm({
-      title: 'Remove member?',
-      message: `Remove schedule #${scheduleId} from the bundle?`,
-      confirmLabel: 'Remove',
-      danger: true,
-    });
-    if (!ok) return;
-    removeMemberMut.mutate({ bundleId, scheduleId });
-  };
+  const [openBundleId, setOpenBundleId] = useState<number | null>(null);
 
   return (
     <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
       <div className="flex items-center justify-between">
         <p className="text-xs text-text-muted italic max-w-3xl">
-          A bundle is a named collection of schedules. Attaching a client to a bundle
-          writes one link row per non-default member; the link table stays the
-          only record of who uses what.
+          A bundle is a named set of schedules, like a rate card in Settings. Open one to see
+          its schedules and clients; adding a client links it to every client-specific member
+          in one go. The link table stays the only record of who uses what.
         </p>
         <button
           type="button"
@@ -1268,107 +1358,73 @@ function ScheduleBundlesTab({ onScheduleClick }: { onScheduleClick: (id: number)
         </div>
       )}
       {query.data && query.data.length > 0 && (
-        <ul className="space-y-2">
-          {query.data.map((b) => (
-            <BundleCard
-              key={b.bundleId}
-              bundle={b}
-              expanded={expanded.has(b.bundleId)}
-              onToggle={() => toggle(b.bundleId)}
-              onScheduleClick={onScheduleClick}
-              onDelete={() => handleDelete(b)}
-              onRename={() => handleRename(b)}
-              onAttachClients={() => setAttachBundleId(b.bundleId)}
-              onAddMember={() => handleAddMember(b)}
-              onRemoveMember={(id) => handleRemoveMember(b.bundleId, id)}
-            />
-          ))}
-        </ul>
+        <table className="w-full text-sm">
+          <thead className="text-xs text-text-muted bg-surface-cream">
+            <tr>
+              <th className="text-left px-3 py-2 font-medium">Bundle</th>
+              <th className="text-left px-3 py-2 font-medium">Schedules</th>
+              <th className="text-left px-3 py-2 font-medium">Clients</th>
+              <th className="text-left px-3 py-2 font-medium">Status</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {query.data.map((b) => (
+              <tr
+                key={b.bundleId}
+                className="border-t border-border hover:bg-surface-light cursor-pointer"
+                onClick={() => setOpenBundleId(b.bundleId)}
+              >
+                <td className="px-3 py-2">
+                  <div className="font-medium text-text-primary">{b.name}</div>
+                  {b.description && <div className="text-[11px] text-text-muted">{b.description}</div>}
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  <div>{b.scheduleCount}</div>
+                  <div className="text-[11px] text-text-muted truncate max-w-md" title={b.scheduleNames.join(', ')}>
+                    {b.scheduleNames.join(' - ')}
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-xs">{b.clientCount}</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      b.isActive
+                        ? 'bg-success-bg text-success border border-success/30'
+                        : 'bg-surface-light text-text-muted border border-border'
+                    }`}
+                  >
+                    {b.isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setOpenBundleId(b.bundleId); }}
+                    className="px-3 py-1 text-xs rounded border border-border hover:bg-surface-light"
+                  >
+                    Open
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       <CreateBundleModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
-          qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
+        onCreated={(bundleId) => {
           setCreateOpen(false);
-          toast.show('Bundle created.', 'success');
+          setOpenBundleId(bundleId);
         }}
       />
-      <BundleAttachClientsModal
-        bundleId={attachBundleId}
-        onClose={() => setAttachBundleId(null)}
+      <BundleModal
+        bundleId={openBundleId}
+        onClose={() => setOpenBundleId(null)}
+        onScheduleClick={onScheduleClick}
       />
-    </div>
-  );
-}
-
-function BundleAttachClientsModal({
-  bundleId,
-  onClose,
-}: {
-  bundleId: number | null;
-  onClose: () => void;
-}) {
-  const qc = useQueryClient();
-  const auth = useAuth();
-  const tenantId = auth.currentTenantId ?? 0;
-  const toast = useToast();
-  const [selected, setSelected] = useState<number[]>([]);
-  const attachMut = useMutation({
-    mutationFn: (ids: number[]) =>
-      schedulesV2Service.attachClientsToBundle(bundleId!, ids),
-    onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: schedulesV2Keys.bundles(tenantId)});
-      toast.show(`Attached to ${r.added} member link row${r.added === 1 ? '' : 's'}.`, 'success');
-      setSelected([]);
-      onClose();
-    },
-    onError: (e: Error) => toast.show(`Attach failed: ${e.message}`, 'error'),
-  });
-  if (bundleId == null) return null;
-  return (
-    <div className="fixed inset-0 bg-brand-dark/40 flex items-center justify-center z-40" onClick={onClose}>
-      <div className="bg-surface-white rounded-lg shadow-lg max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
-        <div className="px-4 py-3 border-b border-border-light">
-          <h3 className="text-base font-semibold text-text-primary">Attach clients to bundle #{bundleId}</h3>
-          <p className="text-xs text-text-muted mt-1">
-            Each ticked client gets one link row per non-default member schedule.
-            Default members (all-clients schedules) are skipped.
-          </p>
-        </div>
-        <div className="px-4 py-4">
-          <ClientMultiPicker
-            selected={selected}
-            onChange={setSelected}
-            placeholder="Pick clients..."
-            triggerWidth="w-full"
-            panelTitle="Clients to attach"
-          />
-        </div>
-        <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex items-center justify-between">
-          <span className="text-xs text-text-muted">
-            {selected.length === 0 ? 'Nothing selected' : `${selected.length} to attach`}
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm rounded border border-border hover:bg-surface-light"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => attachMut.mutate(selected)}
-              disabled={selected.length === 0 || attachMut.isPending}
-              className="px-4 py-2 text-sm rounded bg-brand-cyan text-brand-dark font-medium disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
-            >
-              {attachMut.isPending ? 'Attaching...' : 'Attach'}
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1380,7 +1436,7 @@ function CreateBundleModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (bundleId: number) => void;
 }) {
   const toast = useToast();
   const [name, setName] = useState('');
@@ -1394,11 +1450,11 @@ function CreateBundleModal({
         description: description.trim() || undefined,
         scheduleIds: [],
       }),
-    onSuccess: () => {
+    onSuccess: (r) => {
       setName('');
       setDescription('');
       setError(null);
-      onCreated();
+      onCreated(r.bundleId);
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -1438,8 +1494,7 @@ function CreateBundleModal({
             />
           </label>
           <p className="text-xs text-text-muted italic">
-            Members can be added via a follow-up "Add schedule" step - or attach clients
-            in bulk from the bundle card once members are linked.
+            The bundle opens straight after it is created so you can add schedules and clients.
           </p>
         </div>
         <div className="px-4 py-3 border-t border-border-light bg-surface-cream flex justify-end gap-2">
@@ -1464,124 +1519,6 @@ function CreateBundleModal({
   );
   // toast import kept for downstream extensions (attach clients etc)
   void toast;
-}
-
-function BundleCard({
-  bundle,
-  expanded,
-  onToggle,
-  onScheduleClick,
-  onDelete,
-  onRename,
-  onAttachClients,
-  onAddMember,
-  onRemoveMember,
-}: {
-  bundle: ScheduleBundle;
-  expanded: boolean;
-  onToggle: () => void;
-  onScheduleClick: (id: number) => void;
-  onDelete: () => void;
-  onRename: () => void;
-  onAttachClients: () => void;
-  onAddMember: () => void;
-  onRemoveMember: (scheduleId: number) => void;
-}) {
-  return (
-    <li className="border border-border rounded">
-      <div className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-light">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="flex-1 flex items-start text-left"
-        >
-          <div>
-            <div className="text-sm font-medium text-text-primary flex items-center gap-2">
-              <span className={`text-xs transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
-              {bundle.name}
-            </div>
-            {bundle.description && (
-              <div className="text-xs text-text-muted mt-0.5">{bundle.description}</div>
-            )}
-          </div>
-        </button>
-        <div className="flex items-center gap-6 text-xs text-text-muted">
-          <span>{bundle.scheduleCount} schedules</span>
-          <span>{bundle.clientCount} clients</span>
-          <span
-            className={`px-2 py-0.5 rounded ${
-              bundle.isActive
-                ? 'bg-success-bg text-success border border-success/30'
-                : 'bg-surface-light text-text-muted border border-border'
-            }`}
-          >
-            {bundle.isActive ? 'Active' : 'Inactive'}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onRename(); }}
-            title="Rename or redescribe"
-            className="text-text-secondary hover:text-text-primary hover:underline"
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onAttachClients(); }}
-            title="Attach clients to all non-default members"
-            className="text-brand-cyan hover:underline"
-          >
-            Attach clients
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            title="Delete bundle"
-            className="text-error hover:text-error-dark hover:underline"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-      {expanded && (
-        <div className="px-4 pb-3 pt-1 border-t border-border-light space-y-2">
-          <ul className="space-y-1">
-            {bundle.scheduleIds.map((id, i) => (
-              <li key={id} className="flex items-center justify-between text-xs">
-                <button
-                  type="button"
-                  onClick={() => onScheduleClick(id)}
-                  className="text-text-secondary hover:text-brand-cyan text-left"
-                >
-                  #{id} - {bundle.scheduleNames[i] ?? '(unknown)'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onRemoveMember(id)}
-                  title="Remove from bundle"
-                  className="text-error hover:text-error-dark hover:underline"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-            {bundle.scheduleIds.length === 0 && (
-              <li className="text-xs text-text-muted italic">
-                No members yet. Add one below.
-              </li>
-            )}
-          </ul>
-          <button
-            type="button"
-            onClick={onAddMember}
-            className="text-xs text-brand-cyan hover:underline"
-          >
-            + Add schedule
-          </button>
-        </div>
-      )}
-    </li>
-  );
 }
 
 // ─── Recurring Routes tab ───────────────────────────────────────────
@@ -1641,10 +1578,29 @@ function RecurringRoutesTab() {
     return map;
   }, [schedSummary.data]);
 
-  const routeKind = (r: RecurringRoute): 'first' | 'final' => {
-    const name = `${r.name} ${r.area}`.toLowerCase();
-    return /deliver|final|pm\b|home/.test(name) ? 'final' : 'first';
-  };
+  // Feature 5.1: classify from the stored Routes.Direction instead of
+  // guessing at the route's name.
+  //
+  // The name regex it replaces was /deliver|final|pm\b|home/ over
+  // `${name} ${area}`. It happened to classify all 11 live routes on
+  // medical-prod correctly, so this is not fixing a visible misclassification
+  // - it is removing the guess that Feature 5 exists to make unnecessary.
+  //
+  // CONSEQUENCE WORTH KNOWING: Direction is NOT NULL DEFAULT 1, so until an
+  // operator (or the 5.6 data step) marks a route as final mile it now reads
+  // as first mile. Route 15 "Burbank to Lab" on medical-prod is the one that
+  // changes: the regex called it final via its name, and it will show as
+  // first until its Direction is set. Deliberately NOT papering over that
+  // with a name fallback - a fallback would also override an operator who
+  // explicitly chose first mile on a route whose name contains "delivery",
+  // and the stored value has to be the single source of truth or the whole
+  // feature is decorative.
+  //
+  // 'middle' is not reachable here and never was: it belongs to linehaul runs
+  // (tblbulkLinehaulRun), which push their own rows with kind 'middle' below.
+  // Routes.Direction only has 1 and 2 by CK_Routes_Direction.
+  const routeKind = (r: RecurringRoute): 'first' | 'final' =>
+    r.direction === RouteDirection.FinalMile ? 'final' : 'first';
 
   const rows = useMemo<RecurringRow[]>(() => {
     const out: RecurringRow[] = [];
@@ -1664,7 +1620,11 @@ function RecurringRoutesTab() {
         schedules: r.schedules.map((s) => ({ scheduleId: s.scheduleId ?? null, name: s.name })),
         zipCount: r.zipcodes.length,
         active: r.active,
-        masterBookingLabel: null,
+        // Final-mile routes carry a master booking the same way a linehaul
+        // run does, so the Master job column reads for both (Steve, 22 Oct:
+        // Route Viewer has nowhere to put it, this row does). First-mile
+        // routes have no master and render "-" in the column.
+        masterBookingLabel: r.masterBookingLabel ?? null,
         mode: null,
         clientCodes,
       });
@@ -1855,15 +1815,28 @@ function RecurringRoutesTable({ rows }: { rows: RecurringRow[] }) {
                   </div>
                 )}
               </td>
+              {/* Master job. Linehaul runs and FINAL-MILE routes both have
+                  one; first-mile routes do not, so they stay "-" rather
+                  than being flagged as missing something they never need. */}
               <td className="py-2 pr-3">
-                {r.kind !== 'middle' ? (
+                {r.kind === 'first' ? (
                   <span className="text-text-muted">-</span>
                 ) : r.masterBookingLabel ? (
-                  <span className="text-xs font-mono text-brand-cyan" title="Run's master booking (IsLinehaulMaster=1)">
-                    {r.masterBookingLabel}
+                  <span
+                    className="text-xs font-mono text-brand-cyan"
+                    title={r.kind === 'middle'
+                      ? "Run's master booking (IsLinehaulMaster=1)"
+                      : "Route's final-mile master booking (IsLinehaulMaster=1, LinehaulRunId NULL)"}
+                  >
+                    Master: {r.masterBookingLabel}
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-xs text-error" title="Without a master job the driver sees every item as its own job.">
+                  <span
+                    className="inline-flex items-center gap-1 text-xs text-error"
+                    title={r.kind === 'middle'
+                      ? 'Without a master job the driver sees every item as its own job.'
+                      : 'Without a master job the driver has nothing to scan totes against at the depot.'}
+                  >
                     <span className="w-1.5 h-1.5 rounded-full bg-error inline-block" />
                     <span className="font-medium">Missing</span>
                   </span>

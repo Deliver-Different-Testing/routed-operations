@@ -109,8 +109,6 @@ const SAMPLE_GROUPS = [
     description: 'Nationwide overnight',
     windowStart: '08:00',
     windowEnd: '17:00',
-    monCutoffHours: 2,
-    otherCutoffHours: 13,
     overrideCount: 0,
     routeCount: 0,
     linehaulHint: null,
@@ -281,13 +279,35 @@ test.describe('Schedules module - group-shaped model + junctions', () => {
     await page.getByRole('cell', { name: 'NZ Standard' }).click();
     await expect(page.getByRole('heading', { name: 'Edit "NZ Standard"' })).toBeVisible();
 
-    // Existing group has 5 active weekday windows - Mon-Fri checkboxes
-    // in the day-window table should all be checked.
-    // We just spot-check that the day-window table renders + shows the
-    // seeded cutoff values (13 appears on Tue-Fri per seed data).
-    const monRow = page.getByRole('row').filter({ hasText: 'Mon' });
-    // Mon's cutoff = 2 in seed data.
-    await expect(monRow.getByRole('spinbutton')).toHaveValue('2');
+    // Existing group has 5 active weekday windows - Mon-Fri rows in the
+    // day-window table, each showing its seeded start/end and cutoff.
+    //
+    // F11 Phase C (2026-09-24) replaced the integer cutoffHours input with an
+    // absolute (cutoffDay, cutoffTime) pair, and this legacy modal renders
+    // that pair READ-ONLY - editing moved to the Schedules NEW modal. The
+    // assertion here still looked for the removed number input, so it had
+    // been failing ever since; the seed data at the top of this file was
+    // updated for the new shape at the time but this expectation was not.
+    // Matched on the row's ACCESSIBLE NAME, not hasText. Two things make
+    // the obvious selector wrong: the linehaul table's header row also
+    // contains "Mon" (a column per weekday), so a bare hasText: 'Mon'
+    // trips strict mode; and anchoring with ^ on the row's text content
+    // fails because that content carries leading whitespace from the cell
+    // markup. The accessible name flattens to "Mon 08:00 17:00 Mon 15:00".
+    const monRow = page.getByRole('row', { name: /^Mon 08:00/ });
+    // Seeded Monday window: 08:00-17:00, cutoff Mon 15:00.
+    //
+    // Start/end are <input type="time">, so their values live in the
+    // element value and NOT in the row's text content - the row reads as
+    // "MonMon 15:00". Assert them with toHaveValue; only the read-only
+    // cutoff summary is real text.
+    const monTimes = monRow.locator('input[type="time"]');
+    await expect(monTimes).toHaveCount(2);
+    await expect(monTimes.nth(0)).toHaveValue('08:00');
+    await expect(monTimes.nth(1)).toHaveValue('17:00');
+    await expect(monRow).toContainText('Mon 15:00');
+    // And the cutoff really is read-only now - no editable control here.
+    await expect(monRow.getByRole('spinbutton')).toHaveCount(0);
 
     await page.keyboard.press('Escape');
   });

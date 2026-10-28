@@ -70,9 +70,15 @@ public class RouteViewerJobServiceTests
         // SqlQueryRaw against RVW_stpPrintJobsV2, which the InMemory
         // provider cannot execute. Exception surfacing = the projection
         // + raw row buffer wiring compiles + reaches the SP call.
-        // Guards against a regression where the SP is invoked with the
-        // wrong param set (previously 7 params vs the SP's 4 - would
-        // fail before ever reaching a real DB).
+        //
+        // It does NOT verify the argument list. The InMemory provider throws
+        // before the SQL text is parsed, so any EXEC string passes here - an
+        // earlier version of this comment claimed the opposite, and two calls
+        // in this service shipped broken behind it (RVW_stpPrintJobChildren
+        // with its two args reversed, RVW_stpBulkJobSearchData with 6 args
+        // against a 5-param SP). Argument lists are verified against the live
+        // SP via sys.parameters, not here. Every EXEC in this service should
+        // use named arguments so a signature change cannot shift them.
         var (sut, _, _, _) = NewSvc(new NpScope(true, null));
         await Assert.ThrowsAnyAsync<Exception>(() =>
             sut.GetPrintJobListAsync(new BulkRunListRequest

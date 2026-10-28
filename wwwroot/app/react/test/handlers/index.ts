@@ -4,6 +4,7 @@
 // here as they land.
 import { http, HttpResponse, type RequestHandler } from 'msw';
 import { driverSchedulingHandlers } from './driverScheduling';
+import { RO_FEATURE_KEYS } from '../../lib/accessSwitches';
 
 export const handlers: RequestHandler[] = [
   // AuthProvider mounts a tenant-drift guard that pings /api/session/current
@@ -13,5 +14,9 @@ export const handlers: RequestHandler[] = [
   // Individual tests can override via server.use(...) to simulate drift.
   http.get('/api/session/current', () =>
     HttpResponse.json({ currentTenantId: 1, email: 'test@example.com' })),
+  // Sidebar and the route guard read the caller's Access Control switches.
+  // Default: every Routed Operations switch is on, which is what a tenant sees
+  // today. Tests of the gating itself override this via server.use(...).
+  http.get('/api/me/visible-features', () => HttpResponse.json([...RO_FEATURE_KEYS])),
   ...driverSchedulingHandlers,
 ];

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useAuth } from '../../context/AuthContext';
 import { depotLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
 import {
   territoryService,
+  postcodeGroupScope,
   type TerritoryBootstrap,
   type PostcodeGroup,
   type ZoneNameRow,
@@ -12,12 +13,15 @@ import {
   type PostcodeGroupUpsertBody,
   type ZoneNameUpsertBody,
   type ZoneGroupUpsertBody,
+  type ZoneZipPasteResult,
 } from '../../services/territoryService';
 import { RowActionsMenu } from '../../components/tenant/RowActionsMenu';
 import { Modal } from '../../components/common/Modal';
 import { Button } from '../../components/common/Button';
+import { StatusBadge } from '../../components/common/StatusBadge';
 import { DataTable, type DataTableColumn } from '../../components/common/DataTable';
 import { BindPolygonsModal } from '../../components/territory/BindPolygonsModal';
+import { PostcodeGroupDetailModal, type ScheduleSide } from '../../components/territory/PostcodeGroupDetailModal';
 
 // Zone Groups tab. Three sub-grids. Same shell as SchedulesTab /
 // ZonesTab: white rounded-xl container, surface-cream header row,
@@ -40,6 +44,18 @@ export function ZoneGroupsTab() {
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
   const [editingZn, setEditingZn] = useState<ZoneNameRow | 'new' | null>(null);
   const [editingZg, setEditingZg] = useState<ZoneGroupRow | 'new' | null>(null);
+  // Bulk ZIP add. The Zones tab adds one per request, which is 602 form
+  // submissions for Cheetah's Hub Group file (US coverage spec 5.3).
+  const [pastingZips, setPastingZips] = useState<ZoneNameRow | null>(null);
+  // Row click opens the DETAIL view; the small identity editor stays on
+  // the kebab menu. Clicking a row used to open the 3-field editor, which
+  // told an operator nothing about what the group was actually doing.
+  //
+  // `side` carries which number was clicked, so a Delivery count opens the
+  // delivery list and a Pickup count opens the pickup list (Steve, 22 Oct:
+  // "the count and the list agree"). Clicking the row itself shows both.
+  const [detailPg, setDetailPg] = useState<{ id: number; side: ScheduleSide } | null>(null);
+  const openDetail = (id: number, side: ScheduleSide = 'all') => setDetailPg({ id, side });
 
   const [bindingTarget, setBindingTarget] = useState<
     | { kind: 'zoneName'; id: number; label: string }
@@ -77,7 +93,20 @@ export function ZoneGroupsTab() {
 
   return (
     <div className="space-y-4">
-      {/* ── Postcode / Zip Groups (main content, tenant-labelled) ─────── */}
+      {/* ── Postcode groups (NZ only) ───────────────────────────────────
+             Hidden on US, per Steve 23 Oct. A US schedule resolves
+             zip -> ZoneName -> LocationId and never reads
+             BulkZonePostcodeGroup, so the section manages nothing there
+             and its Add button invites a group that would do nothing.
+
+             Gated on the TENANT, not on the row count, which is the part
+             that matters: a fresh NZ tenant with no groups yet has to
+             keep the section so it can create its first one. Reading
+             `tenantIsUs` (the CountryCode claim, delivered with the page)
+             rather than the bootstrap's countryCode so the section never
+             renders and then vanishes once territory loads. Both derive
+             from the same claim; see HomeController and TerritoryService. */}
+      {!tenantIsUs && (
       <section>
         <div className="flex items-center justify-between mb-2 gap-2">
           <div>
@@ -88,6 +117,7 @@ export function ZoneGroupsTab() {
             </p>
             <p className="text-[11px] text-text-muted mt-0.5">
               Named clusters shared by schedules + rating. Same rows the Zones tab's "{groupSingular}" column references.
+              A schedule can point at a group for its delivery coverage, its pickup coverage, or both, which is why the two are counted apart.
             </p>
           </div>
           <button
@@ -102,20 +132,58 @@ export function ZoneGroupsTab() {
           columns={[
             { key: 'name', label: 'Name', sortable: true, sortValue: (g) => g.name ?? '',
               render: (g) => <span className="font-medium text-text-primary">{g.name}</span> },
+            // Derived, not stored. There is no Type column on the table;
+            // which of client and depot is set is the only distinction the
+            // data carries, and it is the one operators ask about.
+            { key: 'type', label: 'Type', sortable: true, sortValue: (g) => postcodeGroupScope(g),
+              render: (g) => postcodeGroupScope(g) === 'client'
+                ? <StatusBadge label="Client" kind="info" />
+                : <StatusBadge label="Default" kind="default" /> },
             { key: 'depot', label: depotSingular, sortable: true, sortValue: (g) => g.depotName ?? '',
-              render: (g) => <span className="text-text-secondary">{g.depotName ?? '-'}</span> },
+              render: (g) => <span className="text-text-secondary">{g.depotName ?? 'any'}</span> },
             { key: 'client', label: 'Client', sortable: true, sortValue: (g) => g.clientCode ?? '',
               render: (g) => (
                 <span className="text-text-secondary" title={g.clientId ? `Client id ${g.clientId}` : ''}>
-                  {g.clientCode ?? (g.clientId ? `#${g.clientId}` : '(default)')}
+                  {g.clientCode ?? (g.clientId ? `#${g.clientId}` : '-')}
                 </span>
               ) },
+            { key: 'zones', label: 'Zones', sortable: true, align: 'right', sortValue: (g) => g.zoneCount,
+              render: (g) => <span className="text-text-primary">{g.zoneCount}</span> },
             { key: 'codes', label: 'Codes', sortable: true, align: 'right', sortValue: (g) => g.postcodeCount,
               render: (g) => <span className="text-text-primary font-semibold">{g.postcodeCount}</span> },
+            { key: 'polygons', label: 'Polygons', sortable: true, align: 'right', sortValue: (g) => g.polygonCount,
+              render: (g) => (
+                <span className={g.polygonCount === 0 ? 'text-text-muted' : 'text-text-primary'}>
+                  {g.polygonCount}
+                </span>
+              ) },
+            // Two columns, not one total. Plenty of groups are pickup-only
+            // ("PU Regional Tauranga Z1" is 0 delivery / 329 pickup day
+            // rows on Urgent production) and a single figure shows them as
+            // unused, which invites someone to change or delete them.
+            { key: 'delSchedules', label: 'Delivery', sortable: true, align: 'right',
+              sortValue: (g) => g.deliveryScheduleCount,
+              render: (g) => (
+                <CountLink
+                  value={g.deliveryScheduleCount}
+                  title={`Delivery schedules using ${g.name ?? 'this group'}`}
+                  onClick={() => openDetail(g.id, 'delivery')}
+                />
+              ) },
+            { key: 'pickSchedules', label: 'Pickup', sortable: true, align: 'right',
+              sortValue: (g) => g.pickupScheduleCount,
+              render: (g) => (
+                <CountLink
+                  value={g.pickupScheduleCount}
+                  title={`Pickup schedules using ${g.name ?? 'this group'}`}
+                  onClick={() => openDetail(g.id, 'pickup')}
+                />
+              ) },
             { key: 'actions', label: 'Actions', align: 'right',
               render: (g) => (
                 <RowActionsMenu
                   actions={[
+                    { label: 'Open', onClick: () => openDetail(g.id) },
                     { label: 'Edit', onClick: () => setEditingPg(g) },
                     { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'postcodeGroup', id: g.id, label: g.name ?? '' }) },
                     { label: 'Delete', onClick: () => deletePg(g), danger: true },
@@ -124,13 +192,14 @@ export function ZoneGroupsTab() {
               ) },
           ] as DataTableColumn<PostcodeGroup>[]}
           rowKey={(g) => g.id}
-          onRowClick={(g) => setEditingPg(g)}
+          onRowClick={(g) => openDetail(g.id)}
           loading={loading}
           emptyMessage={`No ${groupPlural.toLowerCase()} yet. Click "+ Add ${groupSingular}" to create one.`}
-          minWidth="min-w-[700px]"
+          minWidth="min-w-[1000px]"
           defaultSort={{ key: 'name', dir: 'asc' }}
         />
       </section>
+      )}
 
       {/* ── Zone Groups (US only) - the ZoneGroup entity, different from
              postcode groups above. Groups multiple Zone Names into a
@@ -145,7 +214,9 @@ export function ZoneGroupsTab() {
                 {bootstrap?.zoneGroups.length ?? 0} group{(bootstrap?.zoneGroups.length ?? 0) === 1 ? '' : 's'}
               </p>
               <p className="text-[11px] text-text-muted mt-0.5">
-                US-only. Groups multiple <em>zone names</em> (below) into a rating tier - distinct from postcode groups.
+                US-only, and it does NOT affect booking. Groups <em>zone names</em> (below)
+                for despatch views and clear lists. The groups above are the ones that
+                decide which schedules a client is offered.
               </p>
             </div>
             <button
@@ -222,6 +293,7 @@ export function ZoneGroupsTab() {
                   <RowActionsMenu
                     actions={[
                       { label: 'Edit', onClick: () => setEditingZn(n) },
+                      { label: 'Paste ZIPs', onClick: () => setPastingZips(n) },
                       { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'zoneName', id: n.id, label: n.name ?? '' }) },
                       { label: 'Delete', onClick: () => deleteZn(n), danger: true },
                     ]}
@@ -238,6 +310,23 @@ export function ZoneGroupsTab() {
         </section>
       )}
 
+      {detailPg !== null && (
+        <PostcodeGroupDetailModal
+          groupId={detailPg.id}
+          initialSide={detailPg.side}
+          onClose={() => setDetailPg(null)}
+          onEdit={() => {
+            const row = (bootstrap?.postcodeGroups ?? []).find((g) => g.id === detailPg.id);
+            setDetailPg(null);
+            if (row) setEditingPg(row);
+          }}
+          onBindPolygons={() => {
+            const row = (bootstrap?.postcodeGroups ?? []).find((g) => g.id === detailPg.id);
+            setDetailPg(null);
+            if (row) setBindingTarget({ kind: 'postcodeGroup', id: row.id, label: row.name ?? '' });
+          }}
+        />
+      )}
       {editingPg !== null && (
         <PostcodeGroupEditModal
           row={editingPg === 'new' ? null : editingPg}
@@ -259,6 +348,14 @@ export function ZoneGroupsTab() {
           row={editingZg === 'new' ? null : editingZg}
           onClose={() => setEditingZg(null)}
           onSaved={async () => { setEditingZg(null); await load(); }}
+        />
+      )}
+      {pastingZips !== null && (
+        <ZoneZipPasteModal
+          row={pastingZips}
+          bootstrap={bootstrap}
+          onClose={() => setPastingZips(null)}
+          onSaved={async () => { await load(); }}
         />
       )}
       {bindingTarget !== null && (
@@ -444,6 +541,24 @@ function ZoneGroupEditModal({
   );
 }
 
+/** A schedule count that opens the detail filtered to that side. Zero is
+ *  plain text: there is no list behind it, and a link that opens an empty
+ *  panel is worse than no link. stopPropagation keeps the row's own
+ *  click (which opens BOTH sides) from firing as well. */
+function CountLink({ value, title, onClick }: { value: number; title: string; onClick: () => void }) {
+  if (value === 0) return <span className="text-text-muted">0</span>;
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="text-text-primary underline decoration-dotted underline-offset-2 hover:text-brand-cyan"
+    >
+      {value}
+    </button>
+  );
+}
+
 const INPUT_CLASS =
   'w-full border border-border rounded-lg px-2 py-1.5 text-sm bg-surface-white focus:outline-none focus:ring-1 focus:ring-brand-cyan';
 
@@ -455,5 +570,148 @@ function Fld({ label, required, children }: { label: string; required?: boolean;
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * Bulk ZIP add into one US zone (US coverage spec 5.3).
+ *
+ * The Zones tab adds one ZIP per request, so Ruth's Cheetah file is 602 form
+ * submissions across eight zones. This is the one-sitting path.
+ *
+ * The zone number is required and is not a formality: it is the key a
+ * schedule leg tick resolves by, so a row written without one can never be
+ * reached by a tick. It prefills when the zone's existing rows all agree.
+ */
+function ZoneZipPasteModal({
+  row, bootstrap, onClose, onSaved,
+}: {
+  row: ZoneNameRow;
+  bootstrap: TerritoryBootstrap | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  // Prefill only when every existing row of this zone carries the same
+  // number. Two different numbers on one zone is a finding worth seeing
+  // rather than papering over with a guess.
+  const existingNumbers = Array.from(new Set(
+    (bootstrap?.usZipZones ?? [])
+      .filter((z) => z.zoneNameId === row.id && z.zoneNumber != null)
+      .map((z) => z.zoneNumber as number),
+  ));
+  const [text, setText] = useState('');
+  const [zoneNumber, setZoneNumber] = useState<string>(
+    existingNumbers.length === 1 ? String(existingNumbers[0]) : '',
+  );
+  const [allowShared, setAllowShared] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<ZoneZipPasteResult | null>(null);
+
+  const submit = async () => {
+    const n = Number(zoneNumber);
+    if (!Number.isInteger(n) || n <= 0) {
+      toast.show('A zone number is required.', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      // Sent as typed. The server splits, pads and de-duplicates so the
+      // stored spelling is decided in one place.
+      const res = await territoryService.pasteZoneZips(row.id, {
+        zips: [text],
+        zoneNumber: n,
+        allowSharedNumber: allowShared,
+      });
+      setResult(res.response);
+      toast.show(
+        `${res.response.added.length} zip${res.response.added.length === 1 ? '' : 's'} added`,
+        'success',
+      );
+      onSaved();
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={`Paste ZIPs into "${row.name}"`}
+      size="2xl"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="neutral" onClick={onClose} disabled={saving}>Close</Button>
+          <Button variant="secondary" data-primary="true" onClick={submit} disabled={saving}>
+            {saving ? 'Adding...' : 'Add ZIPs'}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        <Fld label="Zone number" required>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            value={zoneNumber}
+            onChange={(e) => setZoneNumber(e.target.value)}
+            placeholder={existingNumbers.length > 1
+              ? `This zone already uses ${existingNumbers.join(', ')}`
+              : 'The number a schedule leg ticks'}
+          />
+          <p className="text-[11px] text-text-muted mt-1">
+            {existingNumbers.length === 1
+              ? `Prefilled from this zone's existing rows.`
+              : existingNumbers.length > 1
+                ? `This zone's rows carry more than one number (${existingNumbers.join(', ')}), so there is nothing to prefill.`
+                : 'This zone has no numbered rows yet.'}
+          </p>
+        </Fld>
+
+        <Fld label="ZIPs">
+          <textarea
+            className={INPUT_CLASS + ' h-32 font-mono'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={'64030, 65201\n63501 64429'}
+          />
+          <p className="text-[11px] text-text-muted mt-1">
+            Commas, spaces, semicolons or new lines. Four digits are padded to five,
+            duplicates are dropped, and a ZIP already in another zone is added here as
+            well rather than moved.
+          </p>
+        </Fld>
+
+        <label className="flex items-start gap-2 text-[11px] text-text-secondary">
+          <input
+            type="checkbox"
+            checked={allowShared}
+            onChange={(e) => setAllowShared(e.target.checked)}
+            className="mt-0.5 accent-brand-cyan"
+          />
+          <span>
+            Allow a number another zone at this depot already uses. A schedule ticking it
+            would then serve both zones, which is legitimate but widens coverage, so it is
+            off unless you ask for it.
+          </span>
+        </label>
+
+        {result && (
+          <div className="rounded-lg border border-border p-2 text-[11px] space-y-1">
+            <div className="text-text-primary font-semibold">Result</div>
+            <div>Added: {result.added.length === 0 ? 'none' : result.added.join(', ')}</div>
+            <div className="text-text-muted">
+              Already in this zone: {result.alreadyInThisZone.length === 0
+                ? 'none' : result.alreadyInThisZone.join(', ')}
+            </div>
+            {result.ignored.length > 0 && (
+              <div className="text-brand-orange">
+                Not a ZIP, so skipped: {result.ignored.join(', ')}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }

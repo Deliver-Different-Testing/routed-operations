@@ -93,6 +93,15 @@
          GITLAB_NUGET_USERNAME + GITLAB_NUGET_TOKEN - see NuGet.config
          packageSourceCredentials for the gitlab-alertlabel feed. -->
     <PackageReference Include="DeliverDifferent.AlertLabel.Data" Version="1.0.4" />
+    <!-- Declared explicitly although it arrives transitively through
+         AlertLabel.Data -> DeliverDifferentReporting, because Program.cs sets
+         QuestPDF.Settings.License and so compiles against this assembly. Left
+         implicit, a version bump of either package upstream would move the
+         renderer under us without the diff showing it. -->
+    <PackageReference Include="QuestPDF" Version="2024.12.2" />
+    <!-- Access Control switches shared with Hub and the configurator: CallerLane,
+         ClientTypeFeatureResolver, [RequireFeature]. Private feed, see nuget.config. -->
+    <PackageReference Include="DeliverDifferent.AccessControl" Version="1.0.0" />
   </ItemGroup>
 
   <ItemGroup>

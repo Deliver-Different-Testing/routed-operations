@@ -429,5 +429,10 @@ function detailToSummary(g: ScheduleGroup): ScheduleGroupSummary {
     // stays a superset of the wire DTO. Steve nested-override brief
     // (2026-09-24).
     overrides: [],
+    // Carried from the detail the save returned, so the spliced list row
+    // shows the shape the schedule actually ended up in rather than
+    // reverting to "old shape" until the next refetch.
+    isCollapsed: g.isCollapsed,
+    occurrencesAhead: g.occurrencesAhead,
   };
 }

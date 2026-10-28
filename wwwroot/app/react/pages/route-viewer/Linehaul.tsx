@@ -499,6 +499,15 @@ export default function Linehaul() {
           className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white w-40"
         />
 
+        {/* Three whole-day exports, all tenant-wide and all now refused
+            server-side for a network partner: linehaul-manifest and the
+            Mode 6 labels gained EnsureBulkLabelFlowSupportedForNpAsync,
+            and /reports/linehaul was already admin-only. This page
+            already hides the Clients multiselect (:466) and the Region
+            Overview (:569) from partners; the exports sat outside both
+            conditionals. See NP-PAY-PART4-TODO.md T9. */}
+        {!user.isNetworkPartner && (
+        <>
         <button
           type="button"
           onClick={() => {
@@ -557,6 +566,8 @@ export default function Linehaul() {
         >
           Print labels (Mode 6)
         </button>
+        </>
+        )}
         <div className="ml-auto text-xs text-text-muted">
           {runsQ.isLoading
             ? 'Loading...'

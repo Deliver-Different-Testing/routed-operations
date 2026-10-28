@@ -1,4 +1,51 @@
-import { request } from './api';
+﻿import { request } from './api';
+
+/** Feature 5.1 `Routes.Direction`. Numbers, not a string union, because the
+ *  column is tinyint and `CK_Routes_Direction` is the authority on what is
+ *  valid. */
+export const RouteDirection = {
+  /** Collect from the customer. Every route that existed before Feature 5. */
+  FirstMile: 1,
+  /** Fan out from one origin to the drop. */
+  FinalMile: 2,
+} as const;
+export type RouteDirectionValue = (typeof RouteDirection)[keyof typeof RouteDirection];
+
+/** Where a final-mile route fans out from when the origin is an ADDRESS
+ *  rather than a depot. Grouped because the six fields move together:
+ *  a final-mile route needs a depot OR a complete coordinate pair, so
+ *  "has an address origin" is one decision rather than six.
+ *
+ *  `radiusM` is METRES. Null means the resolver applies its own 5000 m
+ *  default. */
+export interface RouteOrigin {
+  name: string | null;
+  address: string | null;
+  zip: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  radiusM: number | null;
+}
+
+/** K6: one suggestion for the final-mile origin address box, built from
+ *  pickup addresses this tenant has actually used in the last 180 days.
+ *
+ *  Coordinates are from the most recent job at that address, not an average:
+ *  the same company + zip carries several distinct points in the data because
+ *  a linehaul child leg stores its own leg's pickup point. Picking a
+ *  suggestion therefore fills the origin AND locates it, with no geocode
+ *  round-trip. */
+export interface PickupAddressSuggestion {
+  label: string;
+  company: string | null;
+  address: string | null;
+  city: string | null;
+  zip: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  usageCount: number;
+  lastUsedUtc: string | null;
+}
 
 export interface RouteZipcode {
   zipPolygonId: number;
@@ -38,6 +85,58 @@ export interface RecurringRoute {
   mappedStopsCount: number;
   createdAt: string;
   updatedAt: string | null;
+  /** Feature 5.1. 1 = first mile, 2 = final mile. Every pre-existing route
+   *  reads 1 because the column defaults to it. */
+  direction: RouteDirectionValue;
+  /** Depot a final-mile route fans out from (tblBulkRegion.BulkRegionId).
+   *  Null on a first-mile route and on a final-mile route with an address
+   *  origin. */
+  depotId: number | null;
+  /** Resolved depot name, empty string when depotId is null. */
+  depotName: string;
+  /** Null when the route carries no address origin at all. */
+  origin: RouteOrigin | null;
+  /** Final-mile tote scanning. The booking whose realised job the driver opens
+   *  to scan totes on and off. Null until a master is set, and only ever set
+   *  on a final-mile route. */
+  masterBookingId?: number | null;
+  /** "P5372BIO - Burbank to Lab" style label for the picker's selected state,
+   *  so the editor does not refetch the booking to render it. */
+  masterBookingLabel?: string | null;
+  /** 1 = the lab accepts sealed totes, 2 = every item is scanned out. Lives on
+   *  the master booking; reads 1 when the route has no master yet. */
+  finalMileDeliveryMode?: FinalMileDeliveryModeValue;
+}
+
+export const FinalMileDeliveryMode = {
+  /** Scan the tote, every shipment inside it is delivered. */
+  SealedTotes: 1,
+  /** Scan the tote, then every item out of it. */
+  ScanEachItem: 2,
+} as const;
+export type FinalMileDeliveryModeValue =
+  (typeof FinalMileDeliveryMode)[keyof typeof FinalMileDeliveryMode];
+
+/** One booking the final-mile master picker can offer.
+ *
+ *  Deliberately NOT the same list as `getBookings`, which returns bookings
+ *  already bound to the route. A master has to be found and promoted before it
+ *  carries a routeId, and on Medical no booking carries route 15 at all, so a
+ *  picker fed from that list would be empty on the one route this exists for. */
+export interface RouteLinkableBooking {
+  bookingId: number;
+  jobNumber: string;
+  jobName: string | null;
+  clientName: string | null;
+  pickupSummary: string | null;
+  deliverySummary: string | null;
+  /** The route this booking is already the final-mile master of, if any. */
+  linkedRouteId: number | null;
+  isMaster: boolean;
+  linkedToThisRoute: boolean;
+  /** True when it is a LINEHAUL master. Promoting it would take it off its
+   *  run, so the server refuses and the picker says so first. */
+  isLinehaulMasterElsewhere: boolean;
 }
 
 /** One live recurring booking bound to a route. Populated by
@@ -62,6 +161,21 @@ export interface UpsertRouteBody {
   zipPolygonIds: number[];
   /** Optional. Omit to keep existing bulk polygons untouched; empty array clears them. */
   bulkPolygonIds?: number[];
+  /** Feature 5.1. Omit to create a first-mile route, which is what every
+   *  caller did before this existed. */
+  direction?: RouteDirectionValue;
+  /** Only meaningful with direction = FinalMile. */
+  depotId?: number | null;
+  /** Only meaningful with direction = FinalMile. The server clears every
+   *  origin field when direction is FirstMile, so a route flipped back to
+   *  first mile cannot silently inherit an old address later. */
+  origin?: RouteOrigin | null;
+  /** Final-mile master. Omit or send null to LEAVE IT ALONE, so an unrelated
+   *  route save cannot demote a master by omission; send 0 to clear it. */
+  masterBookingId?: number | null;
+  /** Omit or send null to leave it alone. Only written when the route has a
+   *  master to write it to, because the column lives on the booking. */
+  finalMileDeliveryMode?: FinalMileDeliveryModeValue | null;
 }
 
 export interface RouteBulkPolygonRef {
@@ -84,6 +198,20 @@ export interface CopyRouteBody {
 export interface ZipcodeLookup {
   zipPolygonId: number;
   zip: string;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+export interface CoverageLookup {
+  /** 'postcode' or 'polygon'. Decides which chip style the modal renders
+   *  and which collection the pick lands in on save. */
+  kind: 'postcode' | 'polygon';
+  /** ZipPolygonId for a postcode, PolygonId for a polygon. */
+  id: number;
+  label: string;
+  /** The polygon's own colour, so a polygon chip is visibly not a postcode.
+   *  Null for postcodes. */
+  colorHex: string | null;
   latitude: number | null;
   longitude: number | null;
 }
@@ -137,6 +265,34 @@ export interface ScheduleLookup {
   days: number[];
 }
 
+/**
+ * Whether to OFFER a permanent delete on this route.
+ *
+ * Read entirely from the row the list already returned - no extra query,
+ * and in particular no probe of tucJob / tucJobBooking / tblBulkJob,
+ * which are the big operational tables and would be scanned once per
+ * route on every page load. tblBulkJob has no index on RouteId at all.
+ *
+ * This is a HINT, deliberately not the authority:
+ *   * Two of the six counts are filtered server-side - BookingCount is
+ *     active-and-not-done, MappedStopsCount is non-void - so a route
+ *     whose only references are cancelled rows reads as clear here.
+ *   * It cannot see tucJob or tblLinehaulTote at all.
+ *
+ * Both gaps fail in the safe direction: the button may be offered on a
+ * route that then refuses. The server re-counts all eight inside the
+ * delete transaction and returns 409 naming what it found, which is what
+ * actually protects the data.
+ */
+export function mayOfferHardDelete(r: RecurringRoute): boolean {
+  return (r.zipcodes?.length ?? 0) === 0
+    && (r.bulkPolygons?.length ?? 0) === 0
+    && (r.schedules?.length ?? 0) === 0
+    && (r.rosterEntryCount ?? 0) === 0
+    && (r.bookingCount ?? 0) === 0
+    && (r.mappedStopsCount ?? 0) === 0;
+}
+
 export const recurringRouteService = {
   list: () => request<{ response: RecurringRoute[] }>('/recurring-routes'),
   get: (id: number) => request<{ response: RecurringRoute }>(`/recurring-routes/${id}`),
@@ -152,11 +308,24 @@ export const recurringRouteService = {
     request<{ response: RecurringRoute }>(`/recurring-routes/${sourceId}/copy`, {
       method: 'POST', body: JSON.stringify(body),
     }),
+  /** Deactivate. The route stays in the table and stops driving prebook. */
   remove: (id: number) =>
     request<{ response: string }>(`/recurring-routes/${id}`, { method: 'DELETE' }),
 
+  /** Remove permanently. Rejects with the server's reason (409) when the
+   *  route picked up a reference since the list was loaded. */
+  hardRemove: (id: number) =>
+    request<{ response: string }>(`/recurring-routes/${id}/hard`, { method: 'DELETE' }),
+
   getBookings: (routeId: number) =>
     request<{ response: RouteBooking[] }>(`/recurring-routes/${routeId}/bookings`),
+
+  /** Text search for a booking to promote to final-mile master. Two characters
+   *  minimum, matching the linehaul picker; the server returns [] below that
+   *  rather than the whole table. */
+  getLinkableBookings: (routeId: number, q: string) =>
+    request<{ response: RouteLinkableBooking[] }>(
+      `/recurring-routes/${routeId}/linkable-bookings?q=${encodeURIComponent(q)}`),
 
   getRoster: (routeId: number) =>
     request<{ response: RouteRosterEntry[] }>(`/recurring-routes/${routeId}/roster`),
@@ -168,6 +337,13 @@ export const recurringRouteService = {
     request<{ response: string }>(`/recurring-routes/${routeId}/roster/${rosterId}`, {
       method: 'DELETE',
     }),
+
+  /** One typeahead over postcodes AND custom polygons (polygons spec part 1).
+   *  The modal used to have a postcode box plus a read-only polygon list,
+   *  which were two inputs for one question: what ground does this route
+   *  cover. */
+  searchCoverage: (q: string, max = 25) =>
+    request<{ response: CoverageLookup[] }>(`/recurring-routes/coverage/lookup?q=${encodeURIComponent(q)}&max=${max}`),
 
   searchZipcodes: (q: string, max = 25) =>
     request<{ response: ZipcodeLookup[] }>(`/recurring-routes/zipcodes/search?q=${encodeURIComponent(q)}&max=${max}`),
@@ -182,6 +358,14 @@ export const recurringRouteService = {
     }),
   getAssignableTargets: () =>
     request<{ response: AssignableTargets }>('/recurring-routes/assignable-targets'),
+
+  /** K6 autocomplete for the final-mile origin address. `q` filters on
+   *  company / city / zip; empty returns the most-used recent addresses. */
+  getPickupAddressSuggestions: (q?: string, max = 15) =>
+    request<{ response: PickupAddressSuggestion[] }>(
+      `/recurring-routes/pickup-address-suggestions?q=${encodeURIComponent(q ?? '')}&max=${max}`,
+    ),
+
   getSchedules: () =>
     request<{ response: ScheduleLookup[] }>('/recurring-routes/schedules/lookup'),
 };

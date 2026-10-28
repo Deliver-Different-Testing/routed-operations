@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 
 namespace RoutedOperations.Core.Application.Dtos.Schedule;
 
@@ -30,6 +30,34 @@ public class ScheduleGroupUpsertRequest
     public string Description { get; set; }
     [Required] public int RegionId { get; set; }
     public int? PickupDepotId { get; set; }
+
+    /// <summary>
+    /// 'depot' (default, every schedule today), 'client' when the chain
+    /// starts at the client's own address, or 'direct' when the goods go
+    /// from the pickup address the BOOKING declares straight to the
+    /// delivery address with no depot touched. Defaulted rather than
+    /// required so the legacy POST /api/schedules contract keeps working: a
+    /// caller that never heard of origin types gets today's behaviour.
+    ///
+    /// 'direct' is 6 characters, so the existing StringLength(6) already
+    /// admits it; the length is left alone deliberately so an unknown
+    /// longer value still fails validation rather than silently folding to
+    /// 'depot'.
+    /// </summary>
+    [StringLength(6)] public string OriginType { get; set; } = "depot";
+
+    /// <summary>
+    /// Origin branch, required when OriginType is 'client' and ignored
+    /// otherwise. Counterpart of PickupDepotId, not of RegionId, which
+    /// stays the delivery branch taken from the Delivery leg.
+    ///
+    /// Forced to NULL for OriginType 'direct': a Direct schedule has no
+    /// origin branch of its own, because the pickup address arrives with
+    /// the booking. Its dispatch/reporting region is RegionId, the same
+    /// Delivery-leg value every other schedule uses.
+    /// </summary>
+    public int? OriginRegionId { get; set; }
+
     public int? SpeedId { get; set; }
     public int? ParentSpeedId { get; set; }
     public bool? AutoBook { get; set; }
@@ -51,6 +79,13 @@ public class ScheduleGroupUpsertRequest
     /// default) coerced absent to [], wiping live zone rows on saves that
     /// did not repopulate them.</summary>
     public List<ScheduleZoneUpsertRequest>? Zones { get; set; }
+
+    /// <summary>
+    /// Zones the collection leg collects from (schedule-origin spec 3.2),
+    /// persisted to BulkPickupZoneSchedule. Same null-means-leave-alone
+    /// contract as Zones: a payload that omits it does not wipe the rows.
+    /// </summary>
+    public List<ScheduleZoneUpsertRequest>? PickupZones { get; set; }
     /// <summary>F7 preservation (Steve 2026-09-20): see Zones. Same
     /// null-vs-empty semantics.</summary>
     public List<ScheduleLinehaulUpsertRequest>? Linehauls { get; set; }
@@ -85,6 +120,39 @@ public class ScheduleGroupUpsertRequest
     /// update paths so callers that don't know about the field keep the
     /// pre-F21 behaviour. Added 2026-09-22 (Steve F21).</summary>
     public bool? IsActive { get; set; }
+
+    /// <summary>
+    /// Whether every client can book this schedule (spec 6.1, Steve
+    /// 2026-10-16). Writes tblBulkRunScheduleHeader.IsDefault, which until
+    /// now no caller could set: create hardcoded true and update never
+    /// touched it, so the modal's "Who can book this schedule" radio pair
+    /// was decoration.
+    ///
+    /// Null means leave it alone on update, and true on create. That keeps
+    /// every pre-6.1 caller on today's behaviour: the legacy POST
+    /// /api/schedules contract still makes a default schedule, and a PUT
+    /// that does not mention the field does not flip it.
+    ///
+    /// IsDefault is deliberately NOT the same thing as "has no client link
+    /// rows". A default schedule may have clients configured on it; that is
+    /// what section 6.1 rule 2 means by "configured for this client". The
+    /// one tie between them is rule 3, enforced in ScheduleService: a
+    /// non-default schedule needs at least one client, because a schedule
+    /// neither default nor configured for anybody is bookable by nobody.
+    /// </summary>
+    public bool? IsDefault { get; set; }
+
+    /// <summary>
+    /// How many upcoming runs the booking page should offer for this
+    /// schedule, 1 to 60. Null leaves it alone: on a schedule that has just
+    /// collapsed the converter has already written one week's worth, which
+    /// is the count of days in the mask, and on an old-shape schedule there
+    /// is nowhere to store it.
+    ///
+    /// Writes the SCHEDULE's value. A client that needs a different number
+    /// gets an override row instead, which this never touches.
+    /// </summary>
+    public byte? OccurrencesAhead { get; set; }
 }
 
 /// <summary>
@@ -111,14 +179,27 @@ public class ScheduleCopyRequest
     public int? SourceLegacyClientId { get; set; }
     [Required, StringLength(200)] public string NewName { get; set; } = string.Empty;
     /// <summary>Client codes for the copy's new client link set. Empty
-    /// AND ClientIds empty = inherit source's junction (per CopyAsync's
-    /// three-tier resolver). Non-empty resolves each code -> id, throws on
-    /// unknown.</summary>
+    /// AND ClientIds empty falls through to CopyClientLinks below. Non-empty
+    /// resolves each code -> id, throws on unknown.</summary>
     public List<string> ClientCodes { get; set; } = new();
-    /// <summary>Client ids for the copy. Empty AND ClientCodes empty =
-    /// inherit source's junction. Non-empty takes priority over the
-    /// inherit branch when ClientCodes is empty.</summary>
+    /// <summary>Client ids for the copy. Empty AND ClientCodes empty falls
+    /// through to CopyClientLinks below. Non-empty takes priority over that
+    /// fall-through when ClientCodes is empty.</summary>
     public List<int> ClientIds { get; set; } = new();
+    /// <summary>
+    /// Only consulted when ClientCodes AND ClientIds are both empty, i.e.
+    /// when the caller named no clients. True (the default) inherits the
+    /// source's junction rows; false gives the copy no client links at all.
+    ///
+    /// The default is true because that is the documented contract of the
+    /// legacy POST /api/schedules/copy endpoint, whose modal seeds the
+    /// picker from the source's clients. POST /api/v2/schedules/{id}/copy
+    /// sets it false: its own modal tells the operator "Client link rows are
+    /// NOT copied", and before 2026-10-05 an empty list silently inherited
+    /// them anyway, so copying a 40-client schedule produced a second
+    /// 40-client schedule.
+    /// </summary>
+    public bool CopyClientLinks { get; set; } = true;
 }
 
 public class DayWindowUpsertRequest
@@ -165,4 +246,13 @@ public class ScheduleLinehaulUpsertRequest
     public int? DropOffLocationId { get; set; }
     /// <summary>Per-leg service class override. Null = inherit from run / schedule.</summary>
     public int? SpeedId { get; set; }
+
+    /// <summary>
+    /// 1-based travel order of this leg within the schedule. The chain editor
+    /// sends the leg's position in the chain. When a caller omits it the
+    /// service falls back to this leg's position in the Linehauls array, so
+    /// any client that sends legs in chain order gets the right answer without
+    /// having to know about this field.
+    /// </summary>
+    public int? LegOrder { get; set; }
 }
