@@ -137,6 +137,12 @@ export interface WizardState {
   kmRatedSourceRows: (number | null)[];
   kmRatedConfirmed: boolean;
   failedImportJobs: BulkImportJobCreateDto[];
+  // Last /import rejection, kept on state so it stays on screen until
+  // the operator changes something. The toast that used to be the only
+  // surface auto-dismisses after 4s, which is not long enough to read
+  // "These job number(s) already exist for this date: ..." or a mapping
+  // complaint, let alone act on it.
+  importError: string | null;
   // Pickup booking (Step 8). pickupJobPayload is the earliest-cutoff pickup
   // job aggregated across per-depot imports (matches
   // homeControl.js:3226-3229). BookPickupModal reads from this to hydrate
@@ -192,6 +198,7 @@ export function initialWizardState(): WizardState {
     kmRatedSourceRows: [],
     kmRatedConfirmed: false,
     failedImportJobs: [],
+    importError: null,
     pickupJobPayload: null,
   };
 }
@@ -236,6 +243,7 @@ export type WizardAction =
   | { type: 'SET_ALL_KMRATED_SELECTED'; selected: boolean }
   | { type: 'SET_KMRATED_CONFIRMED'; value: boolean }
   | { type: 'SET_FAILED_IMPORT_JOBS'; jobs: BulkImportJobCreateDto[] }
+  | { type: 'SET_IMPORT_ERROR'; message: string | null }
   | { type: 'SET_PICKUP_JOB'; payload: PickupJobToCreateResponse | null }
   // Overwrites the current mapping wholesale with the template's mappings.
   // Only urgent fields present in the template appear in the new mapping;
@@ -399,6 +407,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return { ...state, kmRatedConfirmed: action.value };
     case 'SET_FAILED_IMPORT_JOBS':
       return { ...state, failedImportJobs: action.jobs };
+    case 'SET_IMPORT_ERROR':
+      return { ...state, importError: action.message };
     case 'SET_PICKUP_JOB':
       return { ...state, pickupJobPayload: action.payload };
     case 'APPLY_TEMPLATE':
@@ -544,10 +554,19 @@ export function urgentFieldsFor(
   }
 
   // fromContact always shown (MapColumnsModal hides when Override From Contact set).
+  //
+  // Required, because the server requires it: BulkImportRequest validation
+  // rejects the whole batch with "From Contact is required (map a column or
+  // set the Override From Contact batch option)." on EVERY row. Leaving it
+  // optional here let the operator map everything else, walk four more
+  // steps, and only find out at the import. Setting the Override hides this
+  // field from visibleFields, so ticking that satisfies the check the same
+  // way Autogenerate Job Number satisfies jobNumber.
   base.push({
     key: 'fromContact',
     label: 'From Contact',
     aliases: ['Sender', 'Shipper', 'Origin Contact', 'Pickup Contact'],
+    required: true,
     showFor: 'both',
   });
 

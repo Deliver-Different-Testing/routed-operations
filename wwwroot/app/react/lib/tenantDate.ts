@@ -142,3 +142,41 @@ export function tenantTodayYmd(opts: TenantDateOptions): string {
   const day = parts.find((p) => p.type === 'day')?.value ?? '01';
   return `${year}-${month}-${day}`;
 }
+
+/**
+ * Tenant-local "now" as a Date carrying the tenant's wall-clock fields.
+ *
+ * This is NOT an instant. The returned Date's Y/M/D/H/m are the tenant's
+ * wall clock, expressed in the browser's own timezone, so it can only be
+ * compared against other Dates built the same way from tenant-local parts
+ * (e.g. `new Date(y, m - 1, d, hh, mm)` for a schedule start time). That is
+ * exactly the comparison the server makes: BulkImportJobFactory compares
+ * TimeZoneUtility.GetTenantNow() against BookDate + StartTime - CutoffHours,
+ * both as tenant wall clock. Using `new Date()` here instead would compare
+ * the operator's clock against the tenant's, which only agrees when the two
+ * are in the same timezone.
+ */
+export function tenantNowWallClock(opts: TenantDateOptions): Date {
+  const timeZone = normaliseTz(opts.timeZone);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone,
+  }).formatToParts(new Date());
+  const part = (type: string, fallback: number) => {
+    const raw = parts.find((p) => p.type === type)?.value;
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isNaN(n) ? fallback : n;
+  };
+  return new Date(
+    part('year', 1970),
+    part('month', 1) - 1,
+    part('day', 1),
+    part('hour', 0),
+    part('minute', 0),
+  );
+}

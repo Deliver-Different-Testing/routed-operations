@@ -4,6 +4,7 @@ import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { downloadCsv } from '../../lib/csvExport';
 import type { BulkImportJobCreateDto } from '../../services/bulkImportService';
+import { includedDepotBuckets } from './wizardState';
 import type { WizardAction, WizardState } from './wizardState';
 import {
   KM_RATED_DISCLAIMER,
@@ -52,6 +53,15 @@ export function KmRatedReviewModal({
   const selectedCount = state.kmRatedSelected.size;
   const total = rows.length;
   const allSelected = total > 0 && selectedCount === total;
+
+  // How many rows of this depot already went to the server on the first
+  // pass. perDepotResults carries it because fireImportForCurrentDepot
+  // records the first-pass count before detouring here.
+  const currentBucket = includedDepotBuckets(state)[state.currentDepotIndex] ?? null;
+  const depotName = currentBucket?.depotName ?? '';
+  const alreadyImported = state.perDepotResults
+    .filter((r) => !currentBucket || r.depotId === currentBucket.depotId)
+    .reduce((sum, r) => sum + r.imported, 0);
 
   // Currency formatter for the Amount column. NZ = NZD, US = USD.
   const fmtAmount = useMemo(() => {
@@ -135,6 +145,22 @@ export function KmRatedReviewModal({
       }
     >
       <div className="space-y-3">
+        {/* Say what already landed. The operator arrives here straight after
+            a successful import and sees only the handful of rows that need a
+            decision, which reads as "nothing imported" unless the rest is
+            spelled out. Kevin 2026-10-29. */}
+        {alreadyImported > 0 && (
+          <div
+            data-testid="km-already-imported"
+            className="text-xs text-success border border-success/40 bg-success/[0.06] rounded px-2 py-1.5"
+          >
+            {alreadyImported} of {alreadyImported + total} job
+            {alreadyImported + total === 1 ? '' : 's'}
+            {depotName ? ` for ${depotName}` : ''} imported successfully. The {total} below
+            {total === 1 ? ' is' : ' are'} rated by distance and still need{total === 1 ? 's' : ''} your
+            confirmation.
+          </div>
+        )}
         <div className="text-xs text-text-secondary">
           The rows below did not match a fixed-zone rate for this client. They will
           be booked at the km-rated price shown. Untick any rows you do not want

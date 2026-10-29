@@ -258,4 +258,53 @@ describe('KmRatedReviewModal', () => {
     );
     expect(screen.getByRole('button', { name: /Export CSV/ })).toBeDisabled();
   });
+  // Kevin 2026-10-29: arriving here straight after a successful import and
+  // seeing only the three rows that need a decision reads as "nothing
+  // imported". Say what already landed.
+  describe('already-imported banner', () => {
+    const withProgress = (imported: number, rowCount: number) =>
+      seed({
+        kmRatedRows: Array.from({ length: rowCount }, (_, i) => kmRow(i)),
+        kmRatedSelected: new Set(Array.from({ length: rowCount }, (_, i) => i)),
+        depots: [{ depotId: 7, depotName: 'Napier', jobIndexes: [0, 1, 2] }],
+        selectedRegions: new Set(['7']),
+        currentDepotIndex: 0,
+        perDepotResults: [{ depotId: 7, imported, failed: 0 }],
+      });
+
+    function render(state: WizardState) {
+      renderWithProviders(
+        <KmRatedReviewModal
+          open
+          state={state}
+          dispatch={noop}
+          onUploadSelected={noop}
+          onSkip={noop}
+          onCancel={noop}
+          importing={false}
+        />
+      );
+    }
+
+    it('names the depot and the counts that already went to the server', () => {
+      render(withProgress(20, 3));
+      const banner = screen.getByTestId('km-already-imported');
+      expect(banner.textContent).toContain('20 of 23 jobs');
+      expect(banner.textContent).toContain('Napier');
+      expect(banner.textContent).toContain('imported successfully');
+      expect(banner.textContent).toContain('3 below');
+    });
+
+    it('reads correctly for a single remaining row', () => {
+      render(withProgress(20, 1));
+      const banner = screen.getByTestId('km-already-imported');
+      expect(banner.textContent).toContain('20 of 21 jobs');
+      expect(banner.textContent).toContain('is rated by distance');
+    });
+
+    it('stays hidden when nothing has imported yet', () => {
+      render(withProgress(0, 3));
+      expect(screen.queryByTestId('km-already-imported')).not.toBeInTheDocument();
+    });
+  });
 });

@@ -2,6 +2,8 @@ import { useEffect, useMemo } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
+import { tenantNowWallClock } from '../../lib/tenantDate';
+import { formatCutoff, isPastCutoff, latestCutoff } from './scheduleCutoff';
 import type { ScheduleDto } from '../../services/clientsService';
 import {
   includedDepotBuckets,
@@ -82,6 +84,62 @@ export function SchedulePickerModal({
     return dow === 0 ? 7 : dow;
   }, [state.bookDate]);
 
+  // Book date as a plain Date, and tenant "now". Both are wall-clock values
+  // compared against each other only; see scheduleCutoff.ts for why the
+  // tenant clock rather than the operator's.
+  const bookDateOnly = useMemo(() => {
+    const [y, m, d] = (state.bookDate || '').split('-').map(Number);
+    return y && m && d ? new Date(y, m - 1, d) : null;
+  }, [state.bookDate]);
+
+  const tenantNow = useMemo(
+    () => tenantNowWallClock({ isUsTenant: isUs, timeZone: auth.timeZone }),
+    // Re-read the clock whenever the operator moves the date or the depot
+    // cursor, so a modal left open does not keep judging against a stale now.
+    [isUs, auth.timeZone, state.bookDate, currentDepot]
+  );
+
+  // Every schedule for this depot + weekday, split by whether booking has
+  // already closed. Both the Service and Schedule pickers are built from
+  // `open` only: the server refuses a closed one with "Schedule cutoff
+  // exceeded.", so offering it just walks the operator into a failure.
+  // `closed` is kept to explain the absence rather than silently shrink the
+  // lists.
+  const { openSchedules, closedSchedules } = useMemo(() => {
+    const empty = { openSchedules: [] as ScheduleDto[], closedSchedules: [] as ScheduleDto[] };
+    if (!isRouted || dayOfWeek == null) return empty;
+    const forDepotDay = schedules.filter(
+      (s) => (currentDepot ? s.depotId === currentDepot.depotId : true) && s.dayOfWeek === dayOfWeek
+    );
+    const open: ScheduleDto[] = [];
+    const closed: ScheduleDto[] = [];
+    for (const s of forDepotDay) {
+      (isPastCutoff(s, bookDateOnly, tenantNow) ? closed : open).push(s);
+    }
+    return { openSchedules: open, closedSchedules: closed };
+  }, [isRouted, currentDepot, dayOfWeek, schedules, bookDateOnly, tenantNow]);
+
+  // Tell the operator what the cutoff removed. Without this a service they
+  // booked yesterday just vanishes from the dropdown with no explanation.
+  const cutoffNotice = useMemo(() => {
+    if (!isRouted || closedSchedules.length === 0) return null;
+    const missed = latestCutoff(closedSchedules, bookDateOnly);
+    if (missed == null) return null;
+    const when = formatCutoff(missed, isUs);
+    const where = currentDepot?.depotName ?? 'this depot';
+    if (openSchedules.length === 0) {
+      return {
+        blocking: true,
+        text: `Booking for ${where} on this date closed at ${when}. Choose a later book date.`,
+      };
+    }
+    const n = closedSchedules.length;
+    return {
+      blocking: false,
+      text: `${n} service${n === 1 ? '' : 's'} for this date closed at ${when} and ${n === 1 ? 'is' : 'are'} not listed.`,
+    };
+  }, [isRouted, closedSchedules, openSchedules, bookDateOnly, isUs, currentDepot]);
+
   // Service list. Legacy `onJobTypeChanged()` at homeControl.js:559-598 does
   // NOT filter `client.speeds`. It walks the schedules matching the current
   // (depot, dayOfWeek) and PUSHES each schedule's speed onto a dedup set.
@@ -109,9 +167,10 @@ export function SchedulePickerModal({
     // where the coverage-only Step 6 offered `client.speeds` unfiltered.
     if (currentDepot.depotId === -1) return allSpeeds;
     const byId = new Map<number, { id: number; name: string }>();
-    for (const s of schedules) {
-      if (s.depotId !== currentDepot.depotId) continue;
-      if (s.dayOfWeek !== dayOfWeek) continue;
+    // Only schedules still open for booking. A service whose every schedule
+    // is past its cutoff is not bookable today, so listing it would hand the
+    // operator a choice the server will reject (cutoffNotice says why).
+    for (const s of openSchedules) {
       if (s.speed?.id == null) continue;
       if (byId.has(s.speed.id)) continue;
       // Prefer the schedule's speed name; fall back to allSpeeds if the
@@ -127,7 +186,7 @@ export function SchedulePickerModal({
     // Show nothing so the operator picks a different day rather than picking
     // a service that will yield "No schedules for this date + service."
     return list;
-  }, [isOnDemand, currentDepot, dayOfWeek, schedules, allSpeeds]);
+  }, [isOnDemand, currentDepot, dayOfWeek, openSchedules, allSpeeds]);
 
   // Filtered schedule list for Routed. Depot iteration hasn't landed yet
   // (see spec Section 3 post-MVP), so when the wizard doesn't have a
@@ -137,44 +196,25 @@ export function SchedulePickerModal({
   //
   // Also filter out schedules whose cutoff has already passed for the
   // chosen BookDate. The server-side check at BulkImportJobFactory.cs
-  // rejects with "Schedule cutoff exceeded" so pre-filtering here saves
-  // the operator a round-trip. Cutoff = startTime - cutoffHours.
+  // rejects with "Schedule cutoff exceeded", so a schedule that would be
+  // rejected must not be offered at all. Cutoff = startTime - cutoffHours.
+  //
+  // This used to apply the cutoff only when BookDate was today ("future
+  // dates always available"), which is wrong as soon as cutoffHours is big
+  // enough to reach back past midnight: a 12:00 schedule with
+  // cutoffHours 22 closes at 14:00 the PREVIOUS day, so booking it for
+  // tomorrow was offered all day today and then refused by the server.
+  // Found on Urgent staging 2026-10-29 with "Hawkes Bay Afternoons (Parcel
+  // Only)" (schedule 4333), six minutes after its cutoff. The server has no
+  // same-day shortcut, so neither can this.
   const filteredSchedules = useMemo<ScheduleDto[]>(() => {
     if (!isRouted) return [];
     if (dayOfWeek == null || state.speedId === 0) return [];
-    const [y, m, d] = (state.bookDate || '').split('-').map(Number);
-    const bookDateOnly = y && m && d ? new Date(y, m - 1, d) : null;
-    const now = new Date();
-    const isSameDay = bookDateOnly != null
-      && bookDateOnly.getFullYear() === now.getFullYear()
-      && bookDateOnly.getMonth() === now.getMonth()
-      && bookDateOnly.getDate() === now.getDate();
-    return schedules
-      // Include depotId filter when a real depot is in play (per-depot
-      // iteration). Ports homeControl.js:750-758 `depotId === depot.id`
-      // clause. When no depot is available (edge case: legacy state or
-      // unmatched bucket) fall back to day+speed only.
-      .filter((s) => s.dayOfWeek === dayOfWeek && s.speed?.id === state.speedId)
-      .filter((s) => (currentDepot ? s.depotId === currentDepot.depotId : true))
-      .filter((s) => {
-        // Cutoff only applies to today. Future dates always available.
-        if (!isSameDay || bookDateOnly == null) return true;
-        if (!s.startTime) return true;
-        const [sh, sm] = s.startTime.split(':').map(Number);
-        if (Number.isNaN(sh) || Number.isNaN(sm)) return true;
-        const scheduleStart = new Date(
-          bookDateOnly.getFullYear(),
-          bookDateOnly.getMonth(),
-          bookDateOnly.getDate(),
-          sh,
-          sm
-        );
-        const cutoffMs = (s.cutoffHours || 0) * 3600 * 1000;
-        const cutoffMoment = new Date(scheduleStart.getTime() - cutoffMs);
-        return now <= cutoffMoment;
-      })
+    // openSchedules has already applied depot, weekday and booking cutoff.
+    return openSchedules
+      .filter((s) => s.speed?.id === state.speedId)
       .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
-  }, [isRouted, schedules, dayOfWeek, state.speedId, state.bookDate, currentDepot]);
+  }, [isRouted, dayOfWeek, state.speedId, openSchedules]);
 
   // Per-depot picks (speed, schedule, book time) are cleared by the reducer
   // in the same update that moves the cursor (SET_CURRENT_DEPOT /
@@ -427,7 +467,9 @@ export function SchedulePickerModal({
           >
             <option value="">
               {isRouted && speeds.length === 0
-                ? 'No services for this date + depot.'
+                ? cutoffNotice?.blocking
+                  ? 'Booking has closed for this date.'
+                  : 'No services for this date + depot.'
                 : 'Select a service...'}
             </option>
             {speeds.map((s) => (
@@ -436,6 +478,32 @@ export function SchedulePickerModal({
               </option>
             ))}
           </select>
+          {/* The server's reason for refusing the last import, kept on
+              screen. The toast that used to carry this alone is gone in four
+              seconds, which is not enough to read a list of clashing job
+              numbers, let alone act on it. */}
+          {state.importError && (
+            <p
+              data-testid="sp-import-error"
+              role="alert"
+              className="mt-2 text-xs text-error border border-error/40 bg-error/[0.06] rounded px-2 py-1.5"
+            >
+              Import failed: {state.importError}
+            </p>
+          )}
+          {/* Name the reason a service is missing. A silently shorter
+              dropdown is the thing that sent the operator into the server's
+              "Schedule cutoff exceeded." rejection in the first place. */}
+          {cutoffNotice && (
+            <p
+              data-testid="sp-cutoff-notice"
+              className={`mt-1 text-xs ${
+                cutoffNotice.blocking ? 'text-danger' : 'text-text-secondary'
+              }`}
+            >
+              {cutoffNotice.text}
+            </p>
+          )}
         </div>
 
         {isRouted && !isCoverageOnly && (

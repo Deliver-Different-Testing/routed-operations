@@ -282,7 +282,12 @@ public class ClientServiceTests
     [Fact]
     public async Task GetSettings_ExcludesRetiredInactiveAndClientDisabledSchedules()
     {
-        var svc = NewSvc(out var seed, countryCode: "NZ", internalClaim: "True");
+        // Staff caller so client 5 resolves without a contact link. Written
+        // on the 22 Sep branch as internalClaim: "True"; develop has since
+        // moved staff identity off the "Internal" billing flag onto
+        // ClientTypeId 4/5 (Steve 2026-10-08), which is what CallerLane
+        // reads now.
+        var svc = NewSvc(out var seed, countryCode: "NZ", clientTypeId: "4");
         seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "AB", UcclName = "X", UcclActive = true, JobPrefix = "P" });
         seed.BulkRunScheduleHeaders.AddRange(
             new BulkRunScheduleHeader { ScheduleId = 100, Name = "Live", IsActive = true },

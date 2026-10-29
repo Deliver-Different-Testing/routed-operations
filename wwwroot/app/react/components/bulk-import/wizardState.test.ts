@@ -569,3 +569,33 @@ describe('wizardReducer - per-depot loop', () => {
     expect(s.completedDepotIds.size).toBe(0);
   });
 });
+
+// The server rejects the whole batch with "From Contact is required (map a
+// column or set the Override From Contact batch option)." on every row, so
+// the wizard has to stop the operator at the mapping step rather than four
+// steps later at the import. Urgent staging 2026-10-29.
+describe('From Contact is required', () => {
+  it('marks fromContact required on both tenants and both import types', () => {
+    for (const isUs of [false, true]) {
+      for (const jobType of ['routed', 'onDemand'] as const) {
+        const field = urgentFieldsFor(isUs, jobType, false).find((f) => f.key === 'fromContact');
+        expect(field, `${isUs ? 'US' : 'NZ'} / ${jobType}`).toBeDefined();
+        expect(field!.required, `${isUs ? 'US' : 'NZ'} / ${jobType}`).toBe(true);
+      }
+    }
+  });
+});
+
+describe('importError', () => {
+  it('starts clear, holds the server reason, and can be cleared again', () => {
+    let s = initialWizardState();
+    expect(s.importError).toBeNull();
+    s = wizardReducer(s, {
+      type: 'SET_IMPORT_ERROR',
+      message: 'These job number(s) already exist for this date: WN1,WN2',
+    });
+    expect(s.importError).toContain('already exist');
+    s = wizardReducer(s, { type: 'SET_IMPORT_ERROR', message: null });
+    expect(s.importError).toBeNull();
+  });
+});

@@ -272,11 +272,17 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       return;
     }
     setImporting(true);
+    // Clear the previous rejection so a retry does not sit under a stale one.
+    dispatch({ type: 'SET_IMPORT_ERROR', message: null });
     try {
       const { response } = await bulkImportService.import(payload);
       if (!response.success) {
         const firstMsg = response.messages?.[0]?.message;
-        toast.show(`Import failed: ${firstMsg ?? 'unknown error'}`, 'error');
+        const text = firstMsg ?? 'unknown error';
+        toast.show(`Import failed: ${text}`, 'error');
+        // The toast is gone in 4 seconds; the operator needs this one to
+        // stay until they have acted on it.
+        dispatch({ type: 'SET_IMPORT_ERROR', message: text });
         return;
       }
       // Rows for this depot are now on the server (km-rated rows aside,
@@ -307,6 +313,20 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
               response.jobs,
               buildJobs(state, isUs).map((job, rowIndex) => ({ rowIndex, job }))
             );
+        // Record what DID import on this pass before detouring. The rows the
+        // server accepted are already on it (judgement call 2 in the
+        // handover: the depot counts as done even though km-rated rows still
+        // need confirming), so skipping this left the depot showing only the
+        // second pass. Urgent staging 2026-10-29: 23 Napier rows, 20 landed
+        // and 3 went to review, and Select Depots then read
+        // "Napier ( 3 of 23 jobs imported )" once the operator went Back.
+        const firstPassResult = {
+          depotId: bucket?.depotId ?? 0,
+          imported: payload.jobs.length - response.jobs.length,
+          failed: 0,
+        };
+        dispatch({ type: 'ADD_PER_DEPOT_RESULT', result: firstPassResult });
+        perDepotResultsRef.current = [...perDepotResultsRef.current, firstPassResult];
         dispatch({ type: 'SET_KMRATED', rows: response.jobs, sourceRows });
         dispatch({ type: 'GOTO', step: 'kmRatedReview' });
         return;
@@ -335,7 +355,9 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       }
       await advanceOrFinish(state.currentDepotIndex + 1, result, effectivePickup);
     } catch (e) {
-      toast.show(`Import failed: ${(e as Error).message}`, 'error');
+      const text = (e as Error).message;
+      toast.show(`Import failed: ${text}`, 'error');
+      dispatch({ type: 'SET_IMPORT_ERROR', message: text });
     } finally {
       setImporting(false);
     }

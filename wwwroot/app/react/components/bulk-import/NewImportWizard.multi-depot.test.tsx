@@ -35,6 +35,7 @@ function seedTwoDepotNzHandlers(opts: { importJobs?: any[] } = {}) {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             ToAddress: '1 A St',
             ToSuburb: 'Newton',
             ToPostCode: '1010',
@@ -43,6 +44,7 @@ function seedTwoDepotNzHandlers(opts: { importJobs?: any[] } = {}) {
           },
           {
             JobNumber: 'J2',
+            Sender: 'Warehouse',
             ToAddress: '2 B St',
             ToSuburb: 'Wgtn',
             ToPostCode: '6011',

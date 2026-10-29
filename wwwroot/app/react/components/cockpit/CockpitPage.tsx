@@ -357,7 +357,12 @@ export function CockpitPage() {
   };
 
   // ---- run actions ----------------------------------------------------------
-  const handleCreateRun = async (name: string) => {
+  // Wrapped in withBusy like the other mutations. It was the one create
+  // path left bare, so the named-run create flashed nothing while the other
+  // one ("Create run from these N jobs") showed the overlay - the exact
+  // inconsistency the 22 Sep report called out as "Loading status too
+  // small". Found while verifying C3 on 2026-10-29.
+  const handleCreateRun = async (name: string) => withBusy(async () => {
     try {
       const body: InsertOrUpdateRunBody = {
         id: null,
@@ -383,7 +388,7 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
-  };
+  });
 
   const handleRenameRun = async (runId: number, name: string) => {
     const run = state.runs.find((r) => r.id === runId);
