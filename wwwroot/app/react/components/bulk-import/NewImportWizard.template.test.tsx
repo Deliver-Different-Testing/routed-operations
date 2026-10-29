@@ -33,6 +33,7 @@ function seedNzHandlersWithTemplateEndpoint(templatePost: () => Response) {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             ToAddress: '1 Main St',
             ToSuburb: 'Newton',
             ToPostCode: '1010',

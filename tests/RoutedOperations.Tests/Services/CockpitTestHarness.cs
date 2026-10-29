@@ -23,19 +23,45 @@ internal static class CockpitTestHarness
 
     internal static (DbContextOptions<DespatchContext> Options, DbConnection Connection) NewSqliteOptions()
     {
-        var connection = new SqliteConnection("Filename=:memory:");
-        connection.Open();
+        // A uniquely-named shared-cache in-memory database rather than
+        // `Filename=:memory:` pinned to one DbConnection.
+        //
+        // `:memory:` gives each CONNECTION its own private database, so the
+        // harness had to hand that single connection to EF via
+        // UseSqlite(connection) and every context then shared it. Services
+        // that fan out with Task.WhenAll - ScheduleService.ListSummaryAsync
+        // and GetAsync both do - then had several contexts initialising and
+        // querying one connection at the same moment, and EF registers its
+        // aggregate functions (SqliteConnection.CreateAggregate) as part of
+        // initialising a connection. SQLite refuses that while another
+        // statement is active, so the run failed with
+        // "SQLite Error 5: database is locked" depending purely on thread
+        // timing: measured 3 failures in 6 runs of ScheduleServiceTests on
+        // 2026-10-29, always
+        // ListSummary_reports_IsDefault_from_the_header_not_from_the_client_count.
+        //
+        // Naming the database and giving EF the CONNECTION STRING lets it
+        // open and close a connection per context, the way it does against
+        // SQL Server, so concurrent contexts no longer contend. The name is
+        // unique per call so parallel test classes stay isolated.
+        var name = $"routedops-tests-{Guid.NewGuid():N}";
         // Foreign-key enforcement OFF: the auto-scaffolded model has FKs to
         // reference tables (tucClient, tucCourier, tucAgent, tblBulkRegion,
         // etc.) that the SUTs under test don't need populated. Turning it off
         // matches InMemory semantics and lets tests focus on business logic.
-        using (var pragma = connection.CreateCommand())
-        {
-            pragma.CommandText = "PRAGMA foreign_keys = OFF;";
-            pragma.ExecuteNonQuery();
-        }
+        // It has to be in the connection string now rather than a PRAGMA on
+        // one connection: Microsoft.Data.Sqlite issues PRAGMA foreign_keys=ON
+        // on every connection it opens unless told otherwise, and EF is
+        // opening its own.
+        var connectionString =
+            $"Data Source={name};Mode=Memory;Cache=Shared;Foreign Keys=False";
+        // A shared-cache in-memory database exists only while at least one
+        // connection to it is open. This keeper holds it up for the life of
+        // the test; callers already dispose what this method returns.
+        var connection = new SqliteConnection(connectionString);
+        connection.Open();
         var options = new DbContextOptionsBuilder<DespatchContext>()
-            .UseSqlite(connection)
+            .UseSqlite(connectionString)
             .Options;
         using (var ctx = new DynamicDespatchDbContext(options))
         {

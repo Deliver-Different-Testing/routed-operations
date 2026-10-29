@@ -37,6 +37,7 @@ function seedUsRichRowHandlers(importCapture: (body: any) => void) {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             FromAddress: '100 Beacon St, Boston, MA 02110-1234',
             Address: '1 Main St',
             City: 'Cambridge',

@@ -549,7 +549,21 @@ public class AddressService(
             Longitude = null,
         };
 
-    public async Task<SortPostcodesByRegionResponse> GetPostcodesByDepotAsync(Guid messageId)
+    // Postcode -> depot map for Bulk Import Step 5 (NZ). BulkZonePostcode is
+    // a rating table (zone rows per depot), so one postcode can carry rows
+    // for several depots - e.g. airline depots set up for air-freight
+    // rating cover postcodes that a delivery depot also covers. Each
+    // postcode is resolved to ONE depot here so the wizard's grouping no
+    // longer depends on SQL row order:
+    //   1. depots with a bookable schedule for the client (when clientId
+    //      is supplied),
+    //   2. then the lowest Zone (closest rating zone),
+    //   3. then the lowest depot id.
+    // Inactive depots are excluded. Depots that end up owning postcodes
+    // but have no bookable schedule for the client come back with
+    // HasSchedules = false so the wizard shows their rows as a warning
+    // instead of an importable depot (tester report 2026-09-22).
+    public async Task<SortPostcodesByRegionResponse> GetPostcodesByDepotAsync(Guid messageId, int? clientId = null)
     {
         var response = new SortPostcodesByRegionResponse(messageId);
 
@@ -563,22 +577,46 @@ public class AddressService(
 
         // Use defaults for now and ignore groupings
         var postcodeDepots = await Context.BulkZonePostcodes
-            .Where(p => !p.PostcodeGroupId.HasValue && p.DepotId.HasValue)
+            .Where(p => !p.PostcodeGroupId.HasValue && p.DepotId.HasValue && p.Depot.Active != false)
             .Select(p => new {
                 p.PostCode,
-                p.DepotId,
+                p.Zone,
+                DepotId = p.DepotId.Value,
                 p.Depot.Name
             })
             .ToListAsync();
 
-        response.Depots = postcodeDepots
+        // Null clientId keeps the old behaviour: every depot counts as
+        // serviced, only the deterministic de-duplication applies.
+        HashSet<int> scheduledDepotIds = null;
+        if (clientId.HasValue)
+        {
+            scheduledDepotIds = (await BookableSchedules.LoadAsync(Context, clientId.Value))
+                .Where(s => s.Region.HasValue)
+                .Select(s => s.Region.Value)
+                .ToHashSet();
+        }
+        bool HasSchedules(int depotId) => scheduledDepotIds == null || scheduledDepotIds.Contains(depotId);
+
+        var owners = postcodeDepots
+            .GroupBy(p => p.PostCode)
+            .Select(g => g
+                .OrderByDescending(p => HasSchedules(p.DepotId))
+                .ThenBy(p => p.Zone)
+                .ThenBy(p => p.DepotId)
+                .First());
+
+        response.Depots = owners
             .GroupBy(p => new { p.DepotId, p.Name })
+            .OrderBy(x => x.Key.DepotId)
             .Select(x => new RegionPostcodesDto()
             {
-                Id = x.Key.DepotId.Value,
+                Id = x.Key.DepotId,
                 Name = x.Key.Name,
+                HasSchedules = HasSchedules(x.Key.DepotId),
                 Postcodes = x
                     .Select(p => p.PostCode.ToString().PadLeft(4, '0'))
+                    .OrderBy(p => p)
                     .ToList()
             })
             .ToList();

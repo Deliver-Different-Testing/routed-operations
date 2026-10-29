@@ -41,6 +41,25 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .CreateBootstrapLogger();
 
+// QuestPDF refuses to render until the host declares a license type, and it is
+// a process-wide static, so this must run once at startup before any label is
+// generated. Missing it fails EVERY label in Route Viewer identically, on every
+// tenant and every run: Print Run, single-job, LHP, bulk, by-speed and linehaul
+// all end in AlertLabelDocument.GeneratePdf(). The throw happens in
+// QuestPDF.Drawing.DocumentGenerator.ValidateLicense(), which is a plain
+// System.Exception, so it is not caught by the NpLabelScopeException or
+// InvalidOperationException arms in RunViewerLabelController and surfaced as a
+// bare HTTP 500 - ticket #855.
+//
+// This was missed when 2026-09-18 (cb4644e) moved rendering off the legacy
+// /Home/Labels proxy and in-process: the legacy RunViewer sets it in its own
+// Program.cs, and that line did not come across with the body. WebAPI,
+// AdminManager, booking, Configurator and DespatchWeb all declare Community
+// the same way.
+// Fully qualified rather than a using, because QuestPDF.Infrastructure carries
+// common names (Size, IDocument) that would collide in this file.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Forwarded headers (proxy / K8s ingress).

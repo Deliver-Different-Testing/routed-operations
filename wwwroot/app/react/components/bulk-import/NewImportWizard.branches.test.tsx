@@ -40,6 +40,7 @@ function seedUsCoverageOnlyHandlers(opts: { importResponse?: any } = {}) {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             Address: '1 Main St',
             City: 'Boston',
             State: 'MA',
@@ -213,6 +214,7 @@ function seedNzHandlers(opts: {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             ToAddress: '1 Main St',
             ToSuburb: 'Newton',
             ToPostCode: '1010',

@@ -55,6 +55,10 @@ export interface RegionPostcodesDto {
   id: number;
   name: string;
   postcodes: string[];
+  // False when the request carried a clientId and this depot has no
+  // bookable schedule for that client (e.g. an airline depot that only
+  // exists for air-freight rating). Absent on older servers.
+  hasSchedules?: boolean;
 }
 
 // Matches server SortPostcodesByRegionResponse { Depots, Locations } - the
@@ -138,8 +142,12 @@ export const addressService = {
   getRegions: () =>
     request<RegionsResponse>('/address/regions').then((raw) => ({ response: raw })),
 
-  getDepots: () =>
-    request<DepotPostcodesResponse>('/address/depots/postcodes').then((raw) => ({
+  getDepots: (clientId?: number) =>
+    request<DepotPostcodesResponse>(
+      clientId != null
+        ? `/address/depots/postcodes?clientId=${encodeURIComponent(clientId)}`
+        : '/address/depots/postcodes'
+    ).then((raw) => ({
       response: raw,
     })),
 
