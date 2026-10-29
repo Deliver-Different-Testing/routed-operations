@@ -41,4 +41,13 @@ public partial class TblBulkScheduleLinehaul
     /// backfilled values and the schedule would silently regress.
     /// </summary>
     public int? LegOrder { get; set; }
+
+    /// <summary>
+    /// "Cartons once": when true, the rating functions charge pallet-class
+    /// items per unit but all cartons together as one (migration
+    /// 20261029100000_BulkZoneRate_ChargePerConsignment.sql). NOT NULL in the
+    /// DB; must round-trip through the upsert (remove-and-re-add) or a save
+    /// would silently switch it off.
+    /// </summary>
+    public bool ChargePerConsignment { get; set; }
 }

@@ -439,7 +439,9 @@ public record ScheduleLinehaulDto(
     /// fall back to Id order. The list is returned in this order, so the
     /// chain editor renders legs in travel order.
     /// </summary>
-    int? LegOrder);
+    int? LegOrder,
+    /// <summary>Cartons once (see TblBulkScheduleLinehaul.ChargePerConsignment).</summary>
+    bool ChargePerConsignment = false);
 
 /// <summary>
 /// Bundled lookup payload for the schedule edit modal. One roundtrip
