@@ -309,4 +309,55 @@ describe('MapColumnsModal', () => {
     );
     await waitFor(() => expect(screen.getByText(/Failed to load client settings/i)).toBeInTheDocument());
   });
+  // Urgent staging 2026-10-29: the sheet has no sender column, From Contact
+  // showed as "( Optional )", and the batch was only refused four steps
+  // later at /import, once per row, with nothing on screen naming the cause.
+  describe('From Contact gate', () => {
+    const fullMapping = {
+      jobNumber: 'JobNumber',
+      toAddress: 'ToAddress',
+      toSuburb: 'ToSuburb',
+      toContact: 'ToContact',
+      toContactPhone: 'Phone',
+    };
+
+    it('blocks Next and names the Override when From Contact is unmapped', async () => {
+      const onNext = vi.fn();
+      renderWithProviders(
+        <MapColumnsModal
+          open
+          state={seedState({ mapping: { ...fullMapping } })}
+          dispatch={vi.fn()}
+          onBack={noop}
+          onNext={onNext}
+          onCancel={noop}
+        />
+      );
+      await waitFor(() => expect(screen.getByText(/Required Columns/)).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      expect(onNext).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(screen.getByText(/Please map required column\(s\):.*From Contact/)).toBeInTheDocument()
+      );
+    });
+
+    it('lets Next through once Override From Contact supplies it', async () => {
+      const onNext = vi.fn();
+      const state = seedState({ mapping: { ...fullMapping } });
+      state.options = { ...state.options, overrideFromContact: 'Bob Roy' };
+      renderWithProviders(
+        <MapColumnsModal
+          open
+          state={state}
+          dispatch={vi.fn()}
+          onBack={noop}
+          onNext={onNext}
+          onCancel={noop}
+        />
+      );
+      await waitFor(() => expect(screen.getByText(/Required Columns/)).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      await waitFor(() => expect(onNext).toHaveBeenCalled());
+    });
+  });
 });

@@ -17,7 +17,15 @@ import { RateByDistanceModal } from './RateByDistanceModal';
 import { KmRatedReviewModal } from './KmRatedReviewModal';
 import { BookPickupModal } from './BookPickupModal';
 import { ImportSummaryModal } from './ImportSummaryModal';
-import { initialWizardState, wizardReducer, type WizardState } from './wizardState';
+import {
+  includedDepotBuckets,
+  initialWizardState,
+  nextPendingDepotIndex,
+  wizardReducer,
+  type DepotBucket,
+  type WizardState,
+} from './wizardState';
+import { matchKmRatedToSourceRows } from './sourceRowExport';
 
 interface Props {
   open: boolean;
@@ -117,10 +125,9 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
 
   function includedBuckets() {
     // Real depots (id > 0) + US coverage-only bucket (id === -1) both
-    // participate in the per-depot loop. Unmatched (id === 0) is excluded.
-    return state.depots.filter(
-      (d) => d.depotId !== 0 && state.selectedRegions.has(String(d.depotId))
-    );
+    // participate in the per-depot loop. Unmatched (id === 0) and
+    // no-service depots are excluded.
+    return includedDepotBuckets(state);
   }
 
   async function saveTemplateIfRequested() {
@@ -143,6 +150,19 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     }
   }
 
+  // The jobs built from one bucket's source rows, paired with their row
+  // index. Rows the depot grouping placed by the geocoder's suggested
+  // postcode are sent with that postcode (see DepotBucket.postCodeOverrides).
+  function bucketJobs(bucket: DepotBucket): { rowIndex: number; job: BulkImportJobCreateDto }[] {
+    const all = buildJobs(state, isUs);
+    return bucket.jobIndexes
+      .filter((i) => all[i] !== undefined)
+      .map((i) => {
+        const override = bucket.postCodeOverrides?.[i];
+        return { rowIndex: i, job: override ? { ...all[i], toPostCode: override } : all[i] };
+      });
+  }
+
   // Build the /import payload for a specific depot cursor. When
   // isKmRatedSecondPass is true, we ship state.kmRatedRows filtered by the
   // operator's selection (matches BulkImportHyper's re-fire path).
@@ -158,9 +178,7 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       jobs = state.kmRatedRows.filter((_, i) => state.kmRatedSelected.has(i));
     } else if (bucket) {
       // Project only the rows belonging to this bucket.
-      const all = buildJobs(state, isUs);
-      const set = new Set(bucket.jobIndexes);
-      jobs = all.filter((_, i) => set.has(i));
+      jobs = bucketJobs(bucket).map((c) => c.job);
     } else {
       // No bucket iteration (edge case: everything went to unmatched / empty).
       jobs = buildJobs(state, isUs);
@@ -198,9 +216,12 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     justAddedResult?: { imported: number; failed: number },
     justAddedPickup?: WizardState['pickupJobPayload']
   ) {
-    const included = includedBuckets();
-    if (nextIndex < included.length) {
-      dispatch({ type: 'SET_CURRENT_DEPOT', index: nextIndex });
+    // Skip depots already imported on an earlier pass (Back then Next).
+    // The bucket that just finished is before nextIndex, so the stale
+    // completedDepotIds in this closure cannot select it again.
+    const pendingIndex = nextPendingDepotIndex(state, nextIndex);
+    if (pendingIndex >= 0) {
+      dispatch({ type: 'SET_CURRENT_DEPOT', index: pendingIndex });
       // Reset km-rated state between buckets so the review modal doesn't
       // stick.
       dispatch({ type: 'SET_KMRATED', rows: [] });
@@ -243,14 +264,31 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     if (!payload) return;
     const included = includedBuckets();
     const bucket = included[state.currentDepotIndex];
+    // Belt and braces for the Back / Next double-import: never re-send a
+    // depot whose rows already went to /import. The km-rated second pass
+    // is the one legitimate repeat for the same depot.
+    if (!isKmRatedSecondPass && bucket && state.completedDepotIds.has(bucket.depotId)) {
+      toast.show(`${bucket.depotName} has already been imported.`, 'warning');
+      return;
+    }
     setImporting(true);
+    // Clear the previous rejection so a retry does not sit under a stale one.
+    dispatch({ type: 'SET_IMPORT_ERROR', message: null });
     try {
       const { response } = await bulkImportService.import(payload);
       if (!response.success) {
         const firstMsg = response.messages?.[0]?.message;
-        toast.show(`Import failed: ${firstMsg ?? 'unknown error'}`, 'error');
+        const text = firstMsg ?? 'unknown error';
+        toast.show(`Import failed: ${text}`, 'error');
+        // The toast is gone in 4 seconds; the operator needs this one to
+        // stay until they have acted on it.
+        dispatch({ type: 'SET_IMPORT_ERROR', message: text });
         return;
       }
+      // Rows for this depot are now on the server (km-rated rows aside,
+      // which only go through the dedicated second pass). Mark it done so
+      // navigating Back and Next again cannot import it a second time.
+      if (bucket) dispatch({ type: 'MARK_DEPOT_DONE', depotId: bucket.depotId });
       // Accumulate earliest-cutoff pickup across depots (matches
       // homeControl.js:3226-3229 collapse).
       let effectivePickup = state.pickupJobPayload;
@@ -267,7 +305,29 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       }
       // Km-rated review branch: server returned rows to confirm.
       if (!isKmRatedSecondPass && response.jobs && response.jobs.length > 0) {
-        dispatch({ type: 'SET_KMRATED', rows: response.jobs });
+        // Trace each km-rated row back to its source row so the review
+        // step can export the client's original columns.
+        const sourceRows = bucket
+          ? matchKmRatedToSourceRows(response.jobs, bucketJobs(bucket))
+          : matchKmRatedToSourceRows(
+              response.jobs,
+              buildJobs(state, isUs).map((job, rowIndex) => ({ rowIndex, job }))
+            );
+        // Record what DID import on this pass before detouring. The rows the
+        // server accepted are already on it (judgement call 2 in the
+        // handover: the depot counts as done even though km-rated rows still
+        // need confirming), so skipping this left the depot showing only the
+        // second pass. Urgent staging 2026-10-29: 23 Napier rows, 20 landed
+        // and 3 went to review, and Select Depots then read
+        // "Napier ( 3 of 23 jobs imported )" once the operator went Back.
+        const firstPassResult = {
+          depotId: bucket?.depotId ?? 0,
+          imported: payload.jobs.length - response.jobs.length,
+          failed: 0,
+        };
+        dispatch({ type: 'ADD_PER_DEPOT_RESULT', result: firstPassResult });
+        perDepotResultsRef.current = [...perDepotResultsRef.current, firstPassResult];
+        dispatch({ type: 'SET_KMRATED', rows: response.jobs, sourceRows });
         dispatch({ type: 'GOTO', step: 'kmRatedReview' });
         return;
       }
@@ -295,7 +355,9 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       }
       await advanceOrFinish(state.currentDepotIndex + 1, result, effectivePickup);
     } catch (e) {
-      toast.show(`Import failed: ${(e as Error).message}`, 'error');
+      const text = (e as Error).message;
+      toast.show(`Import failed: ${text}`, 'error');
+      dispatch({ type: 'SET_IMPORT_ERROR', message: text });
     } finally {
       setImporting(false);
     }
@@ -397,7 +459,10 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         state={state}
         dispatch={dispatch}
         onBack={() => dispatch({ type: 'GOTO', step: 'fixAddresses' })}
-        onNext={() => dispatch({ type: 'GOTO', step: 'schedulePicker' })}
+        onNext={() => {
+          dispatch({ type: 'START_PENDING_DEPOT' });
+          dispatch({ type: 'GOTO', step: 'schedulePicker' });
+        }}
         onCancel={handleClose}
       />
       <SchedulePickerModal

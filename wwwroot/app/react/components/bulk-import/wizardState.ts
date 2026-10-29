@@ -36,6 +36,16 @@ export interface DepotBucket {
   depotId: number;
   depotName: string;
   jobIndexes: number[];
+  // True when the depot has no schedules for this client (routed only), e.g.
+  // an airline depot that only exists for air-freight rating. Rows land in
+  // the bucket so the operator can see them, but it cannot be ticked or
+  // imported.
+  noService?: boolean;
+  // NZ: source row index -> postcode to send instead of the raw one. Set
+  // only for rows the raw postcode left unmatched but the geocoder's
+  // suggested postcode (fixedPostCodes) placed in this depot, so the job is
+  // booked against the postcode it was grouped by.
+  postCodeOverrides?: Record<number, string>;
 }
 
 export interface PerDepotResult {
@@ -76,6 +86,10 @@ export interface WizardState {
   options: WizardOptions;
   fixedZips: Record<string, string>;                   // bad zip -> corrected
   fixedAddresses: Record<number, { lat: number; lng: number }>;
+  // NZ geocoder-suggested destination postcode keyed on rowIndex, recorded
+  // by FixAddressesModal when it differs from the row's own postcode. Depot
+  // grouping falls back to it when the raw postcode matches no depot.
+  fixedPostCodes: Record<number, string>;
   // Fixed FROM (pickup) coordinates keyed on rowIndex. On-demand batches
   // need accurate pickup coords for immediate dispatch; the FixAddresses
   // step lets the operator pin-correct any flagged row's origin the same
@@ -94,6 +108,10 @@ export interface WizardState {
   depots: DepotBucket[];
   currentDepotIndex: number;
   perDepotResults: PerDepotResult[];
+  // Depot ids whose rows have already been sent to /import. Legacy kept a
+  // per-bucket `done` flag (ROUTED-WIZARD-SPEC.md:1273-1276); navigating
+  // Back and Next again must skip these so a depot is never imported twice.
+  completedDepotIds: Set<number>;
   // Cached client settings loaded once in MapColumnsModal. Downstream picker
   // steps read schedules / speeds / stockSizes from here to avoid re-fetching.
   clientSettings: ClientSettingsDto | null;
@@ -114,8 +132,17 @@ export interface WizardState {
   // deselected on the km-rated round for the "Unimported" list.
   kmRatedRows: BulkImportJobCreateDto[];
   kmRatedSelected: Set<number>;
+  // Source row index (into parsed.rows) per kmRatedRows entry, or null when
+  // the row could not be traced back. Drives the full-source-row export.
+  kmRatedSourceRows: (number | null)[];
   kmRatedConfirmed: boolean;
   failedImportJobs: BulkImportJobCreateDto[];
+  // Last /import rejection, kept on state so it stays on screen until
+  // the operator changes something. The toast that used to be the only
+  // surface auto-dismisses after 4s, which is not long enough to read
+  // "These job number(s) already exist for this date: ..." or a mapping
+  // complaint, let alone act on it.
+  importError: string | null;
   // Pickup booking (Step 8). pickupJobPayload is the earliest-cutoff pickup
   // job aggregated across per-depot imports (matches
   // homeControl.js:3226-3229). BookPickupModal reads from this to hydrate
@@ -153,12 +180,14 @@ export function initialWizardState(): WizardState {
     },
     fixedZips: {},
     fixedAddresses: {},
+    fixedPostCodes: {},
     fixedFromAddresses: {},
     selectedRegions: new Set(),
     rateByDistanceDate: null,
     depots: [],
     currentDepotIndex: 0,
     perDepotResults: [],
+    completedDepotIds: new Set(),
     clientSettings: null,
     bookDate: defaultBookDate(),
     bookTime: '',
@@ -166,8 +195,10 @@ export function initialWizardState(): WizardState {
     scheduleId: null,
     kmRatedRows: [],
     kmRatedSelected: new Set(),
+    kmRatedSourceRows: [],
     kmRatedConfirmed: false,
     failedImportJobs: [],
+    importError: null,
     pickupJobPayload: null,
   };
 }
@@ -184,6 +215,7 @@ export type WizardAction =
   | { type: 'SET_OPTIONS'; options: Partial<WizardOptions> }
   | { type: 'SET_FIXED_ZIP'; badZip: string; corrected: string }
   | { type: 'SET_FIXED_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
+  | { type: 'SET_FIXED_POSTCODE'; rowIndex: number; postCode: string }
   | { type: 'SET_FIXED_FROM_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
   | { type: 'SET_SELECTED_REGIONS'; regions: Set<string> }
   | { type: 'TOGGLE_REGION'; region: string }
@@ -196,14 +228,22 @@ export type WizardAction =
   | { type: 'SET_ON_HOLD'; value: boolean }
   | { type: 'SET_NATIONWIDE_DOC'; value: boolean }
   | { type: 'SET_DEPOTS'; depots: DepotBucket[] }
+  // Store freshly computed buckets and reconcile the tick selection against
+  // them without discarding the operator's earlier unticks. See
+  // seedDepotSelection.
+  | { type: 'SEED_DEPOTS'; depots: DepotBucket[] }
   | { type: 'SET_CURRENT_DEPOT'; index: number }
+  // Point the cursor at the first ticked depot that has not been imported.
+  | { type: 'START_PENDING_DEPOT' }
+  | { type: 'MARK_DEPOT_DONE'; depotId: number }
   | { type: 'ADD_PER_DEPOT_RESULT'; result: PerDepotResult }
   | { type: 'RESET_PER_DEPOT_RESULTS' }
-  | { type: 'SET_KMRATED'; rows: BulkImportJobCreateDto[] }
+  | { type: 'SET_KMRATED'; rows: BulkImportJobCreateDto[]; sourceRows?: (number | null)[] }
   | { type: 'TOGGLE_KMRATED_ROW'; index: number }
   | { type: 'SET_ALL_KMRATED_SELECTED'; selected: boolean }
   | { type: 'SET_KMRATED_CONFIRMED'; value: boolean }
   | { type: 'SET_FAILED_IMPORT_JOBS'; jobs: BulkImportJobCreateDto[] }
+  | { type: 'SET_IMPORT_ERROR'; message: string | null }
   | { type: 'SET_PICKUP_JOB'; payload: PickupJobToCreateResponse | null }
   // Overwrites the current mapping wholesale with the template's mappings.
   // Only urgent fields present in the template appear in the new mapping;
@@ -255,6 +295,11 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
         ...state,
         fixedAddresses: { ...state.fixedAddresses, [action.rowIndex]: action.coords },
       };
+    case 'SET_FIXED_POSTCODE':
+      return {
+        ...state,
+        fixedPostCodes: { ...state.fixedPostCodes, [action.rowIndex]: action.postCode },
+      };
     case 'SET_FIXED_FROM_ADDRESS':
       return {
         ...state,
@@ -295,8 +340,41 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       };
     case 'SET_DEPOTS':
       return { ...state, depots: action.depots };
+    case 'SEED_DEPOTS':
+      return {
+        ...state,
+        depots: action.depots,
+        selectedRegions: seedDepotSelection(state, action.depots),
+      };
     case 'SET_CURRENT_DEPOT':
-      return { ...state, currentDepotIndex: action.index };
+      // Service / schedule / book time are per depot (legacy
+      // resetDepotOptions at homeControl.js:488-531). Clearing them in the
+      // same update as the cursor move means no render ever sees the new
+      // depot paired with the previous depot's picks. bookDate carries
+      // over on purpose, matching legacy.
+      return {
+        ...state,
+        currentDepotIndex: action.index,
+        speedId: 0,
+        scheduleId: null,
+        bookTime: '',
+      };
+    case 'START_PENDING_DEPOT': {
+      const index = nextPendingDepotIndex(state, 0);
+      return {
+        ...state,
+        currentDepotIndex: index < 0 ? 0 : index,
+        speedId: 0,
+        scheduleId: null,
+        bookTime: '',
+      };
+    }
+    case 'MARK_DEPOT_DONE': {
+      if (state.completedDepotIds.has(action.depotId)) return state;
+      const next = new Set(state.completedDepotIds);
+      next.add(action.depotId);
+      return { ...state, completedDepotIds: next };
+    }
     case 'ADD_PER_DEPOT_RESULT':
       return { ...state, perDepotResults: [...state.perDepotResults, action.result] };
     case 'RESET_PER_DEPOT_RESULTS':
@@ -306,7 +384,12 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       // checkUncheckAll behaviour at load time).
       const all = new Set<number>();
       for (let i = 0; i < action.rows.length; i++) all.add(i);
-      return { ...state, kmRatedRows: action.rows, kmRatedSelected: all };
+      return {
+        ...state,
+        kmRatedRows: action.rows,
+        kmRatedSelected: all,
+        kmRatedSourceRows: action.sourceRows ?? action.rows.map(() => null),
+      };
     }
     case 'TOGGLE_KMRATED_ROW': {
       const next = new Set(state.kmRatedSelected);
@@ -324,6 +407,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return { ...state, kmRatedConfirmed: action.value };
     case 'SET_FAILED_IMPORT_JOBS':
       return { ...state, failedImportJobs: action.jobs };
+    case 'SET_IMPORT_ERROR':
+      return { ...state, importError: action.message };
     case 'SET_PICKUP_JOB':
       return { ...state, pickupJobPayload: action.payload };
     case 'APPLY_TEMPLATE':
@@ -335,6 +420,69 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     default:
       return state;
   }
+}
+
+function isSelectableBucket(b: DepotBucket): boolean {
+  // Unmatched (0) and no-service buckets can never be ticked. Real depots
+  // (> 0) and the US coverage-only bucket (-1) can.
+  return b.depotId !== 0 && !b.noService && b.jobIndexes.length > 0;
+}
+
+/**
+ * Reconcile the tick selection against a freshly computed bucket list.
+ *
+ * - A selectable depot that was not in the previous list is new, so it is
+ *   pre-ticked (legacy pre-selects every real bucket).
+ * - A depot that was already listed keeps whatever the operator chose, so
+ *   Back / Next round trips do not re-tick depots they unticked.
+ * - Completed depots stay ticked so the per-depot cursor still sees them.
+ * - Ids no longer in the list (or now unselectable) are pruned.
+ * - Non-numeric synthetic keys ('valid' / 'unmatched') pass through.
+ */
+export function seedDepotSelection(state: WizardState, depots: DepotBucket[]): Set<string> {
+  const previouslyListed = new Set(
+    state.depots.filter(isSelectableBucket).map((b) => String(b.depotId))
+  );
+  const next = new Set<string>();
+  for (const key of state.selectedRegions) {
+    if (!/^-?\d+$/.test(key)) next.add(key);
+  }
+  for (const b of depots) {
+    if (!isSelectableBucket(b)) continue;
+    const key = String(b.depotId);
+    if (
+      !previouslyListed.has(key)
+      || state.selectedRegions.has(key)
+      || state.completedDepotIds.has(b.depotId)
+    ) {
+      next.add(key);
+    }
+  }
+  return next;
+}
+
+/**
+ * Buckets that take part in the per-depot import loop: ticked, selectable
+ * buckets in display order. currentDepotIndex indexes into this list.
+ * Completed depots stay in the list (so "2 of 3" labels stay stable) and
+ * are skipped via nextPendingDepotIndex.
+ */
+export function includedDepotBuckets(state: WizardState): DepotBucket[] {
+  return state.depots.filter(
+    (d) => isSelectableBucket(d) && state.selectedRegions.has(String(d.depotId))
+  );
+}
+
+/**
+ * Index (into includedDepotBuckets) of the first depot at or after `from`
+ * that has not been imported yet, or -1 when none remain.
+ */
+export function nextPendingDepotIndex(state: WizardState, from: number): number {
+  const included = includedDepotBuckets(state);
+  for (let i = Math.max(0, from); i < included.length; i++) {
+    if (!state.completedDepotIds.has(included[i].depotId)) return i;
+  }
+  return -1;
 }
 
 // -----------------------------------------------------------------------------
@@ -406,10 +554,19 @@ export function urgentFieldsFor(
   }
 
   // fromContact always shown (MapColumnsModal hides when Override From Contact set).
+  //
+  // Required, because the server requires it: BulkImportRequest validation
+  // rejects the whole batch with "From Contact is required (map a column or
+  // set the Override From Contact batch option)." on EVERY row. Leaving it
+  // optional here let the operator map everything else, walk four more
+  // steps, and only find out at the import. Setting the Override hides this
+  // field from visibleFields, so ticking that satisfies the check the same
+  // way Autogenerate Job Number satisfies jobNumber.
   base.push({
     key: 'fromContact',
     label: 'From Contact',
     aliases: ['Sender', 'Shipper', 'Origin Contact', 'Pickup Contact'],
+    required: true,
     showFor: 'both',
   });
 

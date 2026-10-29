@@ -23,6 +23,7 @@ import { DEFAULT_LAYOUT, deleteLayout, loadLayouts, saveLayouts, upsertLayout, t
 import { deleteFilterPreset, loadFilterPresets, saveFilterPresets, upsertFilterPreset, type FilterPreset } from '../../lib/filterPresets';
 import { jobService } from '../../services/jobService';
 import { runService, type InsertOrUpdateRunBody } from '../../services/runService';
+import { routeViewerService } from '../../services/routeViewerService';
 import { regionService } from '../../services/regionService';
 import { speedService } from '../../services/speedService';
 import { courierService } from '../../services/courierService';
@@ -143,6 +144,21 @@ export function CockpitPage() {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
   }, [dispatch, toast]);
+
+  /**
+   * Runs a mutation under the busy overlay. The 2026-09-22 report found the
+   * old bottom-left "Loading..." strip too easy to miss during 6-8s saves,
+   * so users thought the page had frozen. Counter-based, so nested calls
+   * (e.g. an assign that reloads) keep the overlay up until all settle.
+   */
+  const withBusy = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    dispatch({ type: 'BUSY_START' });
+    try {
+      return await fn();
+    } finally {
+      dispatch({ type: 'BUSY_END' });
+    }
+  }, [dispatch]);
 
   useEffect(() => {
     void loadLookups(state.filters.date);
@@ -341,7 +357,12 @@ export function CockpitPage() {
   };
 
   // ---- run actions ----------------------------------------------------------
-  const handleCreateRun = async (name: string) => {
+  // Wrapped in withBusy like the other mutations. It was the one create
+  // path left bare, so the named-run create flashed nothing while the other
+  // one ("Create run from these N jobs") showed the overlay - the exact
+  // inconsistency the 22 Sep report called out as "Loading status too
+  // small". Found while verifying C3 on 2026-10-29.
+  const handleCreateRun = async (name: string) => withBusy(async () => {
     try {
       const body: InsertOrUpdateRunBody = {
         id: null,
@@ -367,7 +388,7 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
-  };
+  });
 
   const handleRenameRun = async (runId: number, name: string) => {
     const run = state.runs.find((r) => r.id === runId);
@@ -386,7 +407,7 @@ export function CockpitPage() {
     }
   };
 
-  const handleDeleteRun = async (runId: number) => {
+  const handleDeleteRun = (runId: number) => withBusy(async () => {
     try {
       const res = await runService.remove(runId);
       if (res.response.result === 'Success') {
@@ -399,9 +420,9 @@ export function CockpitPage() {
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
-  };
+  });
 
-  const handleAssignCourier = async (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => {
+  const handleAssignCourier =async (runId: number, courierId: number | null, opts?: { preassign?: boolean }) => {
     const run = state.runs.find((r) => r.id === runId);
     if (!run) return;
     const courier = courierId ? allCouriers.find((c) => c.courierId === courierId) : null;
@@ -448,29 +469,41 @@ export function CockpitPage() {
     }
   };
 
-  const assignJobsToRun = useCallback(async (runId: number, jobIds: number[]) => {
+  /**
+   * Assigns jobs to a run in ONE server transaction (POST assign-many).
+   * Replaces N parallel POST /assign calls, which could deadlock and leave
+   * jobs half-moved with a success toast (2026-09-22 report). Pass
+   * `deleteRunId` to merge: the source run is only deleted if every job
+   * moved. Always reloads so the screen reflects what the server committed.
+   * Resolves true only on real success.
+   */
+  const assignJobsToRun = useCallback(async (
+    runId: number,
+    jobIds: number[],
+    opts: { deleteRunId?: number; silent?: boolean } = {},
+  ): Promise<boolean> => withBusy(async () => {
     try {
       // Expand multibox families so assigning a parent takes its children too.
-      const expanded = expandMultiboxSiblings(jobIds, state.jobs);
-      const results = await Promise.all(
-        expanded.map((jobId) => {
-          const currentJob = state.jobs.find((j) => j.bulkJobId === jobId);
-          const fromRunId = currentJob?.bulkRunId ?? null;
-          return runService.assignJob(runId, jobId, fromRunId);
-        })
-      );
-      const failures = results.filter((r) => r.response.result !== 'Success').length;
-      if (failures === 0) {
-        toast.show(`Assigned ${expanded.length} job(s)`, 'success');
-      } else {
-        toast.show(`${failures} of ${expanded.length} assignments failed`, 'warning');
+      const expanded = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
+      const jobs = expanded.map((jobId) => ({
+        jobId,
+        fromRunId: state.jobs.find((j) => j.bulkJobId === jobId)?.bulkRunId ?? null,
+      }));
+      const res = await runService.assignJobs(runId, jobs, opts.deleteRunId ?? null);
+      if (res.response.result !== 'Success') {
+        toast.show(res.response.message ?? 'Assign failed - no jobs were moved', 'error');
+        return false;
       }
+      if (!opts.silent) toast.show(`Assigned ${expanded.length} job(s)`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
-      await loadJobsAndRuns(state.filters);
+      return true;
     } catch (e) {
-      toast.show((e as Error).message, 'error');
+      toast.show(`Assign failed - no jobs were moved. ${(e as Error).message}`, 'error');
+      return false;
+    } finally {
+      await loadJobsAndRuns(state.filters);
     }
-  }, [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast]);
+  }), [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast, withBusy]);
 
   const handleAssignSelectedJobs = (runId: number) => assignJobsToRun(runId, state.selectedJobIds);
   const handleDropJobs = (runId: number, jobIds: number[]) => assignJobsToRun(runId, jobIds);
@@ -1375,37 +1408,41 @@ export function CockpitPage() {
 
   /**
    * P1.5 helper. Creates a new run named after the group label (postcode)
-   * and immediately assigns the group's jobs to it. Uses the existing
-   * POST /api/runs + assign path so the flow matches manual create + drag.
+   * with the group's jobs in one server transaction (POST /api/runs/with-jobs),
+   * so a failure leaves neither an orphan run nor half-moved jobs.
    */
   const createRunFromGroup = async (groupLabel: string, jobIds: number[]) => {
-    if (jobIds.length === 0) return;
-    try {
-      const body: InsertOrUpdateRunBody = {
-        id: null,
-        name: groupLabel,
-        mins: 0,
-        kms: 0,
-        status: 0,
-        revenue: null,
-        payout: null,
-        courier: null,
-        courierPercent: null,
-        googleRouteResponse: null,
-        jobs: [],
-        despatchDateTime: state.filters.date,
-      };
-      const created = await runService.insertOrUpdate(body);
-      if (created.response.result !== 'Success') {
-        toast.show(created.response.message ?? 'Create run failed', 'error');
-        return;
+    const ids = [...new Set(expandMultiboxSiblings(jobIds, state.jobs))];
+    if (ids.length === 0) return;
+    await withBusy(async () => {
+      try {
+        const body: InsertOrUpdateRunBody = {
+          id: null,
+          name: groupLabel,
+          mins: 0,
+          kms: 0,
+          status: 0,
+          revenue: null,
+          payout: null,
+          courier: null,
+          courierPercent: null,
+          googleRouteResponse: null,
+          jobs: ids.map((bulkJobId) => ({ bulkJobId, builderIndex: null, jobNumber: null })),
+          despatchDateTime: state.filters.date,
+        };
+        const created = await runService.createWithJobs(body);
+        if (created.response.result !== 'Success') {
+          toast.show(created.response.message ?? 'Create run failed - no jobs were moved', 'error');
+          return;
+        }
+        dispatch({ type: 'CLEAR_MULTISELECT' });
+        toast.show(`Created run "${groupLabel}" with ${ids.length} job(s)`, 'success');
+      } catch (e) {
+        toast.show(`Create run failed - no jobs were moved. ${(e as Error).message}`, 'error');
+      } finally {
+        await loadJobsAndRuns(state.filters);
       }
-      const runId = Number(created.response.message);
-      await assignJobsToRun(runId, jobIds);
-      toast.show(`Created run "${groupLabel}" with ${jobIds.length} job(s)`, 'success');
-    } catch (e) {
-      toast.show((e as Error).message, 'error');
-    }
+    });
   };
 
   const runContextMenu = (run: Run, helpers: { startRename: () => void }): ContextMenuItem[] => {
@@ -1446,18 +1483,30 @@ export function CockpitPage() {
   const doMergeRun = async (source: Run, targetId: number) => {
     const target = state.runs.find((r) => r.id === targetId);
     if (!target) return;
-    try {
-      const jobIds = source.jobs.map((j) => j.bulkJobId);
-      await assignJobsToRun(target.id, jobIds);
-      await runService.remove(source.id);
-      toast.show(`Merged ${jobIds.length} job(s) from "${source.name}" into "${target.name}"`, 'success');
-      if (state.selectedRunId === source.id) dispatch({ type: 'SELECT_RUN', payload: target.id });
-      setMergeSource(null);
-      await loadJobsAndRuns(state.filters);
-    } catch (e) {
-      toast.show((e as Error).message, 'error');
-    }
+    // Move + source-run delete happen in one server transaction, so the
+    // source run survives if any job fails to move.
+    const jobIds = source.jobs.map((j) => j.bulkJobId);
+    const ok = await assignJobsToRun(target.id, jobIds, { deleteRunId: source.id, silent: true });
+    if (!ok) return;
+    toast.show(`Merged ${jobIds.length} job(s) from "${source.name}" into "${target.name}"`, 'success');
+    if (state.selectedRunId === source.id) dispatch({ type: 'SELECT_RUN', payload: target.id });
+    setMergeSource(null);
   };
+
+  /**
+   * Job Details Print button. Route Builder jobs have no tucJob id yet, so
+   * this prints the bulk-job label (Mode 2). The template is the server
+   * default (speed LabelId, then tblSetting.DefaultBulkLabelId); a label
+   * size picker is a separate follow-up.
+   */
+  const handlePrintJobLabel = (job: BulkJob) => withBusy(async () => {
+    try {
+      const blob = await routeViewerService.printBulkJobLabelPdf(job.bulkJobId);
+      window.open(URL.createObjectURL(blob), '_blank');
+    } catch (e) {
+      toast.show(`Print label failed: ${(e as Error).message}`, 'error');
+    }
+  });
 
   // ---- hotkeys --------------------------------------------------------------
   // Ctrl+D dispatches (locked runs or selected jobs), Ctrl+A selects all
@@ -1568,7 +1617,7 @@ export function CockpitPage() {
   ];
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="relative h-full flex flex-col">
       <FiltersBar
         filters={state.filters}
         regions={state.regions}
@@ -1695,6 +1744,7 @@ export function CockpitPage() {
                   speeds={state.speeds}
                   onUpdateField={handleUpdateJobField}
                   onOpenGpsFix={(j, leg) => setGpsFixJob({ job: j, leg })}
+                  onPrint={(j) => { void handlePrintJobLabel(j); }}
                 />
               </Panel>
             </PanelGroup>
@@ -1906,16 +1956,34 @@ export function CockpitPage() {
         }}
       />
 
-      {state.loading && (
-        <div className="px-3 py-1 text-xs text-text-muted bg-surface-cream border-t border-border-light">
-          Loading...
-        </div>
+      {(state.loading || state.busyCount > 0) && (
+        <BusyOverlay label={state.busyCount > 0 ? 'Working...' : 'Loading...'} />
       )}
       {state.error && (
         <div className="px-3 py-1 text-xs text-error bg-error-bg border-t border-error/30">
           {state.error}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cockpit-wide busy indicator: a ring spinner (same style as Modal's
+ * loading state) centred over the panels on a light backdrop. It swallows
+ * clicks while shown so a slow save can't be double-submitted.
+ */
+function BusyOverlay({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="absolute inset-0 z-40 flex items-center justify-center bg-white/50"
+    >
+      <div className="flex flex-col items-center gap-2 rounded-lg bg-surface-white px-6 py-4 shadow-lg border border-border-light">
+        <div className="w-10 h-10 border-4 border-brand-cyan/30 border-t-brand-cyan rounded-full animate-spin" />
+        <p className="text-sm text-text-primary">{label}</p>
+      </div>
     </div>
   );
 }

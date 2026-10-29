@@ -31,6 +31,36 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Collapse an ASP.NET Core ValidationProblemDetails body into one readable
+ * line. A model-state failure comes back as
+ * `{ errors: { "jobs[0].FromContact": ["From Contact is required..."], ... } }`
+ * with one entry PER ROW, so a 23-row import produced 23 identical strings
+ * and none of the existing fields `request` looks at. The operator then saw
+ * "HTTP 400 at /api/bulk-import/import" and had no idea a column was
+ * unmapped. Dedupe the messages and say how many fields each one covers.
+ */
+export function modelStateMessage(body: unknown): string | undefined {
+  const errors = (body as { errors?: Record<string, unknown> } | null)?.errors;
+  if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return undefined;
+  const counts = new Map<string, number>();
+  for (const value of Object.values(errors)) {
+    const list = Array.isArray(value) ? value : [value];
+    for (const entry of list) {
+      if (typeof entry !== 'string' || entry.trim() === '') continue;
+      counts.set(entry, (counts.get(entry) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return undefined;
+  // Two distinct problems is already a lot to read in one line; name those
+  // and say how many more there are.
+  const shown = [...counts.entries()]
+    .slice(0, 2)
+    .map(([msg, n]) => (n > 1 ? `${msg} (${n} rows)` : msg));
+  const remaining = counts.size - shown.length;
+  return remaining > 0 ? `${shown.join(' ')} ...and ${remaining} more` : shown.join(' ');
+}
+
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${url}`, {
     credentials: 'same-origin',
@@ -52,7 +82,8 @@ export async function request<T>(url: string, options?: RequestInit): Promise<T>
     // Prefer a server-provided message; when the server gave us nothing
     // (bare 500) append the endpoint so the operator can report which
     // call failed instead of just "HTTP 500".
-    const serverMsg = err?.messages?.[0]?.message ?? err?.error ?? err?.message;
+    const serverMsg =
+      err?.messages?.[0]?.message ?? err?.error ?? err?.message ?? modelStateMessage(err);
     const message = serverMsg ?? `HTTP ${res.status} at ${path}`;
     throw new ApiError(message, res.status, err, err?.hint, path);
   }

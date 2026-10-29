@@ -31,6 +31,9 @@ export interface CockpitState {
   fleetSearch: string;
   groupMode: 'postcode' | 'time';
   loading: boolean;
+  // In-flight mutation count (create run, assign, merge, delete, print).
+  // A counter, not a flag, so overlapping calls don't clear each other.
+  busyCount: number;
   error: string | null;
 }
 
@@ -58,6 +61,8 @@ type Action =
   | { type: 'SET_FLEET_SEARCH'; payload: string }
   | { type: 'SET_GROUP_MODE'; payload: 'postcode' | 'time' }
   | { type: 'SET_LOADING'; payload: boolean }
+  | { type: 'BUSY_START' }
+  | { type: 'BUSY_END' }
   | { type: 'SET_ERROR'; payload: string | null };
 
 const initialState: CockpitState = {
@@ -86,6 +91,7 @@ const initialState: CockpitState = {
   fleetSearch: '',
   groupMode: 'postcode',
   loading: false,
+  busyCount: 0,
   error: null,
 };
 
@@ -151,6 +157,10 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       return { ...state, groupMode: action.payload };
     case 'SET_LOADING':
       return { ...state, loading: action.payload };
+    case 'BUSY_START':
+      return { ...state, busyCount: state.busyCount + 1 };
+    case 'BUSY_END':
+      return { ...state, busyCount: Math.max(0, state.busyCount - 1) };
     case 'SET_ERROR':
       return { ...state, error: action.payload };
     default:

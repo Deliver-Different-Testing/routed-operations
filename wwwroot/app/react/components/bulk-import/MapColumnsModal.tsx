@@ -161,9 +161,15 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
   function handleNext() {
     if (missingRequired.length > 0) {
       const jobNumberBlocked = missingRequired.includes('Job Number');
+      // From Contact has a second, non-obvious way to satisfy it, so name it
+      // rather than telling the operator to map a column this sheet may not
+      // have. Same wording as the server's own rejection.
+      const fromContactBlocked = missingRequired.includes('From Contact');
       const msg = jobNumberBlocked
         ? `Job Number is empty in one or more rows. Map a column with values or tick 'Autogenerate Job Number'.`
-        : `Please map: ${missingRequired.join(', ')}`;
+        : fromContactBlocked && missingRequired.length === 1
+          ? `From Contact is required. Map a column, or pick someone under 'Override From Contact' to use for every row.`
+          : `Please map: ${missingRequired.join(', ')}`;
       toast.show(msg, 'warning');
       return;
     }

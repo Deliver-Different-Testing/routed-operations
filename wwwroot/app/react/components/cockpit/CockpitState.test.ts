@@ -156,6 +156,18 @@ describe('CockpitState reducer', () => {
     expect(result.current[0].error).toBeNull();
   });
 
+  it('BUSY_START / BUSY_END count overlapping mutations and never go negative', () => {
+    const { result } = renderHook(() => useCockpitState());
+    expect(result.current[0].busyCount).toBe(0);
+    act(() => result.current[1]({ type: 'BUSY_START' }));
+    act(() => result.current[1]({ type: 'BUSY_START' }));
+    act(() => result.current[1]({ type: 'BUSY_END' }));
+    expect(result.current[0].busyCount).toBe(1);
+    act(() => result.current[1]({ type: 'BUSY_END' }));
+    act(() => result.current[1]({ type: 'BUSY_END' }));
+    expect(result.current[0].busyCount).toBe(0);
+  });
+
   it('unknown action types return state unchanged (default branch)', () => {
     const { result } = renderHook(() => useCockpitState());
     const before = result.current[0];
