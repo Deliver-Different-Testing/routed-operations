@@ -308,14 +308,23 @@ describe('SchedulePickerModal', () => {
       vi.useRealTimers();
     });
 
+  // The clock is set as a UTC instant, deliberately. The picker reads "now"
+  // in the TENANT's timezone (Pacific/Auckland in these tests), not the
+  // machine's, so a time built from local parts means something different on
+  // a UTC runner than on an NZ laptop. These margins are whole days wide so
+  // no offset can flip them; the exact minute either side of the cutoff is
+  // pinned in scheduleCutoff.test.ts, which depends on no environment at all.
+  // 2026-06-14T06:00Z is 18:00 in Auckland: past the 14:00 cutoff of the
+  // 12:00 schedule but well before the 07:00-next-day cutoff of the 08:00
+  // one, which is what makes the partial-close case partial.
     it('offers the schedule while the cutoff is still ahead', () => {
-      // Cutoff is 2026-06-14 14:00 for a 2026-06-15 12:00 run.
-      const sch = renderAt(new Date(2026, 5, 14, 13, 59));
+      // Cutoff is 2026-06-14 14:00 tenant time for a 2026-06-15 12:00 run.
+      const sch = renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)));
       expect([...sch.options].map((o) => o.text)).toContain('Hawkes Bay Afternoons');
     });
 
     it('hides the schedule once the cutoff has passed, even though the book date is tomorrow', () => {
-      const sch = renderAt(new Date(2026, 5, 14, 14, 1));
+      const sch = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)));
       expect([...sch.options].map((o) => o.text)).not.toContain('Hawkes Bay Afternoons');
     });
   });
@@ -360,26 +369,26 @@ describe('SchedulePickerModal', () => {
     });
 
     it('drops a service once every schedule behind it has closed', () => {
-      const service = renderAt(new Date(2026, 5, 14, 14, 1), [closing, stayingOpen]);
+      const service = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing, stayingOpen]);
       const names = [...service.options].map((o) => o.text);
       expect(names).not.toContain('Afternoon');
       expect(names).toContain('Standard');
     });
 
     it('still offers that service while its cutoff is ahead', () => {
-      const service = renderAt(new Date(2026, 5, 14, 13, 59), [closing, stayingOpen]);
+      const service = renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)), [closing, stayingOpen]);
       expect([...service.options].map((o) => o.text)).toContain('Afternoon');
     });
 
     it('names the cutoff that removed it instead of silently shrinking the list', () => {
-      renderAt(new Date(2026, 5, 14, 14, 1), [closing, stayingOpen]);
+      renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing, stayingOpen]);
       const notice = screen.getByTestId('sp-cutoff-notice');
       expect(notice.textContent).toContain('14/06 14:00');
       expect(notice.textContent).toContain('not listed');
     });
 
     it('says booking has closed and tells the operator what to do when nothing is left', () => {
-      const service = renderAt(new Date(2026, 5, 14, 14, 1), [closing]);
+      const service = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing]);
       expect(service.options[0].text).toBe('Booking has closed for this date.');
       const notice = screen.getByTestId('sp-cutoff-notice');
       expect(notice.textContent).toContain('closed at 14/06 14:00');
@@ -387,7 +396,7 @@ describe('SchedulePickerModal', () => {
     });
 
     it('shows no notice at all when nothing was removed', () => {
-      renderAt(new Date(2026, 5, 14, 13, 59), [stayingOpen]);
+      renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)), [stayingOpen]);
       expect(screen.queryByTestId('sp-cutoff-notice')).not.toBeInTheDocument();
     });
   });
