@@ -58,7 +58,7 @@ describe('NewImportWizard', () => {
       ),
       http.post('/api/bulk-import/upload', () =>
         HttpResponse.text(
-          JSON.stringify([{ JobNumber: '1', ToAddress: '1 St', ToSuburb: 'Newton', ToContact: 'Bob', Phone: '021' }])
+          JSON.stringify([{ JobNumber: '1', Sender: 'Warehouse', ToAddress: '1 St', ToSuburb: 'Newton', ToContact: 'Bob', Phone: '021' }])
         )
       ),
       http.get('/api/clients/:id/settings', () =>
@@ -154,6 +154,7 @@ describe('NewImportWizard', () => {
           JSON.stringify([
             {
               JobNumber: '1',
+              Sender: 'Warehouse',
               ToAddress: '1 St',
               ToSuburb: 'Newton',
               ToContact: 'Bob',
@@ -286,6 +287,7 @@ describe('NewImportWizard', () => {
           JSON.stringify([
             {
               JobNumber: '1',
+              Sender: 'Warehouse',
               ToAddress: '1 St',
               ToSuburb: 'Newton',
               ToContact: 'Bob',

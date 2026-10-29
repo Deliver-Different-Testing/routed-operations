@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import { SchedulePickerModal } from './SchedulePickerModal';
@@ -52,6 +52,20 @@ function withSettings(overrides?: Partial<WizardState>): WizardState {
 
 describe('SchedulePickerModal', () => {
   const noop = vi.fn();
+
+  // Pin the clock to the Wednesday before MONDAY so the fixture schedules
+  // are genuinely still open for booking. Without this the suite runs
+  // against the real date, MONDAY is long past, and every schedule is
+  // correctly filtered out by the booking cutoff - which is what these
+  // tests used to rely on NOT happening.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 10, 9, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it('renders nothing when open=false', () => {
     renderWithProviders(
@@ -254,5 +268,174 @@ describe('SchedulePickerModal', () => {
       />
     );
     expect(screen.queryByText(/Nationwide Doc/)).not.toBeInTheDocument();
+  });
+  // Regression, Urgent staging 2026-10-29: "Hawkes Bay Afternoons (Parcel
+  // Only)" starts at 12:00 with cutoffHours 22, so booking it for tomorrow
+  // closes at 14:00 TODAY. The picker used to apply the cutoff only when the
+  // book date was today, offered the schedule anyway, and the operator got a
+  // bare HTTP 500-shaped failure from the server's "Schedule cutoff
+  // exceeded." check. A schedule the server will refuse must not be listed.
+  describe('cutoff that reaches back past midnight', () => {
+    const lateSchedule = {
+      id: 7,
+      name: 'Hawkes Bay Afternoons',
+      dayOfWeek: 1,
+      startTime: '12:00:00',
+      cutoffHours: 22,
+      speed: speedA,
+      depotId: 1,
+    };
+
+    function renderAt(localNow: Date) {
+      vi.useFakeTimers();
+      vi.setSystemTime(localNow);
+      const state = withSettings({ speedId: speedA.id });
+      (state.clientSettings as any).schedules = [lateSchedule];
+      renderWithProviders(
+        <SchedulePickerModal
+          open
+          state={state}
+          dispatch={noop}
+          onBack={noop}
+          onNext={noop}
+          onCancel={noop}
+        />
+      );
+      return screen.getByLabelText('Schedule') as HTMLSelectElement;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+  // The clock is set as a UTC instant, deliberately. The picker reads "now"
+  // in the TENANT's timezone (Pacific/Auckland in these tests), not the
+  // machine's, so a time built from local parts means something different on
+  // a UTC runner than on an NZ laptop. These margins are whole days wide so
+  // no offset can flip them; the exact minute either side of the cutoff is
+  // pinned in scheduleCutoff.test.ts, which depends on no environment at all.
+  // 2026-06-14T06:00Z is 18:00 in Auckland: past the 14:00 cutoff of the
+  // 12:00 schedule but well before the 07:00-next-day cutoff of the 08:00
+  // one, which is what makes the partial-close case partial.
+    it('offers the schedule while the cutoff is still ahead', () => {
+      // Cutoff is 2026-06-14 14:00 tenant time for a 2026-06-15 12:00 run.
+      const sch = renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)));
+      expect([...sch.options].map((o) => o.text)).toContain('Hawkes Bay Afternoons');
+    });
+
+    it('hides the schedule once the cutoff has passed, even though the book date is tomorrow', () => {
+      const sch = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)));
+      expect([...sch.options].map((o) => o.text)).not.toContain('Hawkes Bay Afternoons');
+    });
+  });
+  // Kevin 2026-10-29: a service whose schedules have all closed must not be
+  // offered either, and the operator has to be told why the list shrank
+  // rather than being left to guess.
+  describe('cutoff applied to the Service list, with an on-screen reason', () => {
+    const speedC = { id: 30, name: 'Afternoon', code: null };
+
+    // Both start 12:00 with 22 hours notice, so booking MONDAY closes
+    // 2026-06-14 14:00. speedA's other schedule starts 08:00 with 1 hour
+    // notice, so it closes 2026-06-15 07:00 and stays open far longer.
+    const closing = {
+      id: 7, name: 'Afternoon run', dayOfWeek: 1, startTime: '12:00:00',
+      cutoffHours: 22, speed: speedC, depotId: 1,
+    };
+    const stayingOpen = {
+      id: 8, name: 'Morning run', dayOfWeek: 1, startTime: '08:00:00',
+      cutoffHours: 1, speed: speedA, depotId: 1,
+    };
+
+    function renderAt(localNow: Date, scheduleRows: unknown[]) {
+      vi.useFakeTimers();
+      vi.setSystemTime(localNow);
+      const state = withSettings();
+      (state.clientSettings as any).schedules = scheduleRows;
+      renderWithProviders(
+        <SchedulePickerModal
+          open
+          state={state}
+          dispatch={noop}
+          onBack={noop}
+          onNext={noop}
+          onCancel={noop}
+        />
+      );
+      return screen.getByLabelText('Service') as HTMLSelectElement;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('drops a service once every schedule behind it has closed', () => {
+      const service = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing, stayingOpen]);
+      const names = [...service.options].map((o) => o.text);
+      expect(names).not.toContain('Afternoon');
+      expect(names).toContain('Standard');
+    });
+
+    it('still offers that service while its cutoff is ahead', () => {
+      const service = renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)), [closing, stayingOpen]);
+      expect([...service.options].map((o) => o.text)).toContain('Afternoon');
+    });
+
+    it('names the cutoff that removed it instead of silently shrinking the list', () => {
+      renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing, stayingOpen]);
+      const notice = screen.getByTestId('sp-cutoff-notice');
+      expect(notice.textContent).toContain('14/06 14:00');
+      expect(notice.textContent).toContain('not listed');
+    });
+
+    it('says booking has closed and tells the operator what to do when nothing is left', () => {
+      const service = renderAt(new Date(Date.UTC(2026, 5, 14, 6, 0)), [closing]);
+      expect(service.options[0].text).toBe('Booking has closed for this date.');
+      const notice = screen.getByTestId('sp-cutoff-notice');
+      expect(notice.textContent).toContain('closed at 14/06 14:00');
+      expect(notice.textContent).toContain('Choose a later book date');
+    });
+
+    it('shows no notice at all when nothing was removed', () => {
+      renderAt(new Date(Date.UTC(2026, 5, 12, 0, 0)), [stayingOpen]);
+      expect(screen.queryByTestId('sp-cutoff-notice')).not.toBeInTheDocument();
+    });
+  });
+  // Kevin 2026-10-29: every error has to be visible. The toast carrying the
+  // server's reason auto-dismisses after 4s, which is not long enough to
+  // read a list of clashing job numbers, so the reason also lives on the
+  // step the operator is still looking at.
+  describe('last import rejection', () => {
+    it('shows the server reason and keeps it on screen', () => {
+      renderWithProviders(
+        <SchedulePickerModal
+          open
+          state={withSettings({
+            importError: 'These job number(s) already exist for this date: WN5730330,WN5730380',
+          })}
+          dispatch={noop}
+          onBack={noop}
+          onNext={noop}
+          onCancel={noop}
+        />
+      );
+      const err = screen.getByTestId('sp-import-error');
+      expect(err.textContent).toContain('Import failed:');
+      expect(err.textContent).toContain('already exist for this date');
+      expect(err.getAttribute('role')).toBe('alert');
+    });
+
+    it('shows nothing when the last attempt did not fail', () => {
+      renderWithProviders(
+        <SchedulePickerModal
+          open
+          state={withSettings()}
+          dispatch={noop}
+          onBack={noop}
+          onNext={noop}
+          onCancel={noop}
+        />
+      );
+      expect(screen.queryByTestId('sp-import-error')).not.toBeInTheDocument();
+    });
   });
 });

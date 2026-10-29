@@ -59,6 +59,25 @@ export const runService = {
       body: JSON.stringify({ jobId, fromRunId, runId }),
     }),
 
+  /** Create a run and assign its jobs in one server transaction. */
+  createWithJobs: (body: InsertOrUpdateRunBody) =>
+    request<{ response: { result: string; message: string } }>('/runs/with-jobs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Assign many jobs in one server transaction. `deleteRunId` makes it a
+   *  merge: the source run is only deleted if every job moved. */
+  assignJobs: (
+    runId: number,
+    jobs: { jobId: number; fromRunId: number | null }[],
+    deleteRunId: number | null = null,
+  ) =>
+    request<{ response: { result: string; message: string } }>(`/runs/${runId}/assign-many`, {
+      method: 'POST',
+      body: JSON.stringify({ jobs, deleteRunId }),
+    }),
+
   removeJob: (jobId: number) =>
     request<{ response: { result: string; message: string } }>(`/runs/jobs/${jobId}`, {
       method: 'DELETE',

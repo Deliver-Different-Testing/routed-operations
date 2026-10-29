@@ -138,6 +138,17 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
               corrected: g.suggestedZipCode,
             });
           }
+          // NZ: keep the geocoder's corrected postcode per row so depot
+          // grouping can rescue rows whose own postcode matches no depot.
+          const rawPostCode = (toAddresses[i]?.postCode ?? '').trim();
+          if (
+            !isUs
+            && g.suggestedPostCode
+            && digitsOnly(g.suggestedPostCode) !== digitsOnly(rawPostCode)
+            && state.fixedPostCodes[i] == null
+          ) {
+            dispatch({ type: 'SET_FIXED_POSTCODE', rowIndex: i, postCode: g.suggestedPostCode });
+          }
           if (!isUs && g.suggestedPostCode && g.suburb) {
             const key = `${g.suburb.toLowerCase()}|${g.postCode ?? ''}`;
             if (!state.fixedZips[key]) {
@@ -366,6 +377,11 @@ interface MapPaneProps {
  * only loads when the modal actually renders a flagged address. Falls back
  * to a lat/lng input pair when the API key or the package is missing.
  */
+// "612" and "0612" are the same NZ postcode once Excel strips the zero.
+function digitsOnly(v: string | null | undefined): string {
+  return String(v ?? '').replace(/[^0-9]/g, '').replace(/^0+/, '');
+}
+
 function MapPane({ apiKey, isUsTenant, lat, lng, address, onMove }: MapPaneProps) {
   const [MapModule, setMapModule] = useState<any | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);

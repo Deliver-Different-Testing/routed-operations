@@ -81,6 +81,28 @@ public class RunServiceTests
     }
 
     [Fact]
+    public async Task GetBulkRunsAsync_JobFilterHidesDraftRunsWithNoMatchingJobs()
+    {
+        // 2026-09-22: a region filter listed every other region's draft runs
+        // as 0-job rows. With any job-level filter set, only runs holding a
+        // matching job come back.
+        var svc = NewSvc(out var seed);
+        var date = new DateTime(2026, 8, 13);
+        seed.TblBulkRuns.AddRange(
+            new TblBulkRun { Id = 10, Name = "Other region draft", Status = 0, DespatchDateTime = date },
+            new TblBulkRun { Id = 11, Name = "Matching draft", Status = 0, DespatchDateTime = date });
+        seed.TblBulkJobs.AddRange(
+            NewJob(1, date, clientId: 7, bulkRunId: 11),
+            NewJob(2, date, clientId: 8, bulkRunId: 10));
+        await seed.SaveChangesAsync();
+
+        var runs = await svc.GetBulkRunsAsync(date, "7", null, null, null);
+
+        var run = Assert.Single(runs);
+        Assert.Equal(11, run.Id);
+    }
+
+    [Fact]
     public async Task GetBulkRunsAsync_ExcludesDispatchedRunWithNoJobs()
     {
         var svc = NewSvc(out var seed);

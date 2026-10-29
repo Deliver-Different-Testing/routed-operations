@@ -78,6 +78,7 @@ function seedNzHandlers(options: {
         JSON.stringify([
           {
             JobNumber: 'J1',
+            Sender: 'Warehouse',
             ToAddress: '1 Main St',
             ToSuburb: 'Newton',
             ToPostCode: '1010',
