@@ -2347,6 +2347,7 @@ public class ScheduleService(
                     // Carrying it is a behaviour change to the copy path, made on
                     // Kevin's explicit call 2026-09-28.
                         SpeedId = l.SpeedId,
+                        ChargePerConsignment = l.ChargePerConsignment,
                     });
             }
             await Context.SaveChangesAsync();
@@ -2768,7 +2769,7 @@ public class ScheduleService(
                 l.InsertToBulk, l.ApplyDiscount, l.ApplyAddOnPercentage,
                 ParseWeekday(l.WeekDay), l.DepartureAdvanceDays,
                 l.FromClientAddress, l.DropOffLocationId,
-                l.SpeedId, LookupSpeed(l.SpeedId), l.LegOrder))
+                l.SpeedId, LookupSpeed(l.SpeedId), l.LegOrder, l.ChargePerConsignment))
             .ToList();
 
         return new ScheduleGroupDto(
@@ -2877,6 +2878,7 @@ public class ScheduleService(
             DropOffLocationId = l.DropOffLocationId,
             SpeedId = l.SpeedId,
             LegOrder = l.LegOrder ?? ordinal,
+            ChargePerConsignment = l.ChargePerConsignment,
         };
 
     private static TimeSpan ParseTime(string hhmm)

@@ -98,6 +98,8 @@ export interface LinehaulLeg {
   insertToBulk: boolean | null;
   applyDiscount: boolean | null;
   applyAddOnPercentage: boolean | null;
+  /** Cartons once: pallets per unit, all cartons charged as one. */
+  chargePerConsignment?: boolean;
   /** Human-readable leg name (surfaces in the roster chip strip).
    *  Falls back to `Linehaul run #{linehaulRunId}` when null. */
   name: string | null;
@@ -1272,6 +1274,15 @@ function LegEditor({
             className="accent-brand-cyan"
           />
           Apply add-on percentage
+        </label>
+        <label className="col-span-2 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={leg.chargePerConsignment === true}
+            onChange={(e) => onPatch({ chargePerConsignment: e.target.checked } as Partial<Leg>)}
+            className="accent-brand-cyan"
+          />
+          Cartons once (pallets per unit, all cartons charged as one)
         </label>
         <label className="col-span-2 flex items-center gap-2 text-xs">
           <input

@@ -212,7 +212,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
       applyAddOnPercentage: boolean | null; weekDay: number[];
       departureAdvanceDays: number | null; fromClientAddress: boolean | null;
       dropOffLocationId: number | null; speedId: number | null;
-      legOrder: number | null;
+      legOrder: number | null; chargePerConsignment: boolean;
     }> = [];
     const zones: number[] = [];
     for (const leg of legs) {
@@ -250,6 +250,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
           // so the booking SPs number and time legs in travel order instead of
           // falling back to tblBulkScheduleLinehaul.Id order.
           legOrder: linehauls.length + 1,
+          chargePerConsignment: leg.chargePerConsignment === true,
         });
       } else if (leg.type === 'delivery') {
         regionId = leg.regionId;
