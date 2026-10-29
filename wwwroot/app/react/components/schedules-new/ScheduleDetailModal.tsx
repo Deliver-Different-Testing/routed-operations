@@ -1450,6 +1450,15 @@ export function ScheduleDetailModal({
                     <span className="text-xs text-text-muted">
                       Could not work out the dates just now.
                     </span>
+                  ) : !(isOverride ? (ovIsActive ?? data.isActive) : formIsActive) ? (
+                    <span className="text-xs text-text-muted" data-testid="schedule-occurrences-inactive">
+                      {/* Reads the box, not the saved value, like the rest of
+                          the preview: unticking Active shows the effect before
+                          Save. The server returns no dates for an inactive
+                          header too, so the two cannot disagree after Save. */}
+                      Switched off. The booking page will not offer this schedule
+                      {isOverride ? ' to this client' : ''} until Active is ticked again.
+                    </span>
                   ) : (occurrencesQuery.data?.length ?? 0) === 0 ? (
                     <span className="text-xs text-text-muted">
                       No runs in the next 60 days. Every date is either a holiday or

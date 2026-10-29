@@ -2000,6 +2000,12 @@ public class ScheduleService(
             .FirstOrDefaultAsync(h => h.ScheduleId == scheduleId && h.RetiredUtc == null)
             ?? throw new InvalidOperationException($"Schedule id {scheduleId} not found or retired.");
 
+        // Switched off (F21 header flag). The booking page offers nothing,
+        // so the preview offers nothing; the modal says why from the box
+        // state rather than guessing from an empty list. Raised by Anisah
+        // 29 Oct 2026: 899 previewed three dates with Active unticked.
+        if (!header.IsActive) return new List<ScheduleOccurrenceDto>();
+
         // Through the view, so a collapsed schedule hands over the payload
         // synthesised from its detail row and an old-shape one its day rows.
         // One code path for both shapes, which is the whole point of the view.
