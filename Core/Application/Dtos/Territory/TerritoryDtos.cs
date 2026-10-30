@@ -63,10 +63,67 @@ public record ZoneZipPasteResultDto(
     List<string> AlreadyInThisZone,
     List<string> Ignored);
 
+/// <summary>One code inside a zone, for the chips in the group drawer.
+///
+/// <paramref name="Code"/> is the display spelling, padded: NZ stores
+/// BulkZonePostcode.PostCode as an int so 0110 Whangarei lives as 110, and
+/// 673 of Urgent's 3,025 rows are that shape. The raw int is in
+/// <paramref name="Value"/> for callers that need to match on it.
+/// </summary>
+public record PostcodeGroupMemberDto(
+    int Id,
+    string Code,
+    int Value,
+    /// <summary>Suburb or zone label. NZ reads BulkZonePostcode.Name, which
+    /// already carries it on 2,909 of 3,025 rows; US reads the ZoneName.
+    /// Blank where the tenant never set one.</summary>
+    string Suburb);
+
 public record PostcodeGroupZoneDto(
     int Zone,
     string Label,
-    int MemberCount);
+    int MemberCount,
+    /// <summary>The codes themselves, so the drawer can list a zone's
+    /// postcodes before its polygons (spec 3.2) rather than only count them.</summary>
+    List<PostcodeGroupMemberDto> Members);
+
+/// <param name="Added">Codes written, in the padded display spelling.</param>
+/// <param name="SkippedInOtherZone">
+/// Codes already in a DIFFERENT zone of this same group, with that zone's
+/// number, and deliberately not moved. On Urgent production no postcode sits
+/// in two zones of one group, so silently moving one would break an invariant
+/// the rating function relies on.
+/// </param>
+/// <param name="AlreadyInThisZone">Codes that were already here. A no-op, reported so a
+/// re-paste reads as "nothing to do" rather than as a failure.</param>
+/// <param name="Ignored">Entries that could not be read as an NZ postcode,
+/// returned verbatim so the operator can see what was in their paste.</param>
+public record NzPostcodePasteResultDto(
+    List<string> Added,
+    List<PostcodeInOtherZoneDto> SkippedInOtherZone,
+    List<string> AlreadyInThisZone,
+    List<string> Ignored);
+
+public record PostcodeInOtherZoneDto(string Code, int Zone, string ZoneLabel);
+
+/// <param name="Group">The copy, in the same shape the list returns.</param>
+/// <param name="MembersCopied">Postcode rows (NZ) or zip rows (US) written.</param>
+/// <param name="ZonesCopied">Distinct zone numbers carried over.</param>
+/// <param name="PolygonsNotCopied">
+/// Polygons bound to the original that the copy did not get, with the reason in
+/// <paramref name="PolygonNote"/>. Reported rather than skipped silently,
+/// because spec 3.2 says duplicate copies polygons and this is the one part it
+/// cannot: tblBulkRunPolygon.PostcodeGroupId is a single column, so a polygon
+/// belongs to at most one group and the binding cannot be shared. Copying it
+/// would mean cloning the geometry, which nobody has asked for. No group on
+/// Urgent staging has a polygon today (0 of 58), so this reads 0 in practice.
+/// </param>
+public record PostcodeGroupDuplicateResultDto(
+    PostcodeGroupDto Group,
+    int MembersCopied,
+    int ZonesCopied,
+    int PolygonsNotCopied,
+    string PolygonNote);
 
 /// <summary>A schedule that references this group, and on which side.
 /// A schedule can use the same group for both pickup and delivery, so the

@@ -127,26 +127,46 @@ public class TerritoryService(
             var zips = await Context.ZoneZips.AsNoTracking()
                 .Include(z => z.ZoneName)
                 .Where(z => z.ZoneZipGroupId == id)
-                .Select(z => new { Zone = z.ZoneNumber ?? 0, Label = z.ZoneName != null ? z.ZoneName.ZoneName1 : null })
+                .Select(z => new
+                {
+                    z.ZoneZipId,
+                    z.Zip,
+                    Zone = z.ZoneNumber ?? 0,
+                    Label = z.ZoneName != null ? z.ZoneName.ZoneName1 : null,
+                })
                 .ToListAsync();
             zones = zips.GroupBy(z => z.Zone)
                 .Select(grp => new PostcodeGroupZoneDto(
                     grp.Key,
                     grp.Select(x => x.Label).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)),
-                    grp.Count()))
+                    grp.Count(),
+                    grp.OrderBy(x => x.Zip)
+                       .Select(x => new PostcodeGroupMemberDto(
+                           x.ZoneZipId,
+                           x.Zip,
+                           int.TryParse(x.Zip, out var zv) ? zv : 0,
+                           x.Label))
+                       .ToList()))
                 .OrderBy(z => z.Zone).ToList();
         }
         else
         {
             var pcs = await Context.BulkZonePostcodes.AsNoTracking()
                 .Where(p => p.PostcodeGroupId == id)
-                .Select(p => new { p.Zone, p.Name })
+                .Select(p => new { p.Id, p.PostCode, p.Zone, p.Name })
                 .ToListAsync();
             zones = pcs.GroupBy(p => p.Zone)
                 .Select(grp => new PostcodeGroupZoneDto(
                     grp.Key,
                     grp.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)),
-                    grp.Count()))
+                    grp.Count(),
+                    grp.OrderBy(x => x.PostCode)
+                       // D4 restores the leading zero the int column drops:
+                       // 110 is Whangarei's 0110, and 673 of Urgent's 3,025
+                       // rows are that shape.
+                       .Select(x => new PostcodeGroupMemberDto(
+                           x.Id, x.PostCode.ToString("D4"), x.PostCode, x.Name))
+                       .ToList()))
                 .OrderBy(z => z.Zone).ToList();
         }
 
@@ -391,6 +411,119 @@ public class TerritoryService(
     }
 
     /// <summary>
+    /// Copy a group and its zone membership (spec 3.2).
+    ///
+    /// The membership is the whole point: a group row on its own carries no
+    /// force, it is the postcodes, the schedules pointing at it and the rates
+    /// hanging off it that do. Schedules are deliberately NOT copied, because a
+    /// duplicate is a new territory and attaching it to the original's
+    /// schedules would change what those schedules serve. Rates are not copied
+    /// either; that checkbox lands with the Pricing tab.
+    /// </summary>
+    public async Task<PostcodeGroupDuplicateResultDto> DuplicatePostcodeGroupAsync(
+        int id, PostcodeGroupDuplicateRequest req)
+    {
+        RequireName(req.Name);
+
+        var source = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.Id == id)
+            ?? throw new InvalidOperationException("Postcode group not found.");
+
+        var name = req.Name.Trim();
+
+        // Retarget only where asked. An empty-string ClientCode is an explicit
+        // "make this one client-agnostic", which is different from omitting it.
+        var clientId = source.ClientId;
+        if (req.ClientCode != null || req.ClientId.HasValue)
+            clientId = req.ClientCode is { Length: 0 } ? null : await ResolveClientAsync(req.ClientCode, req.ClientId);
+
+        var depotId = req.DepotId ?? source.DepotId;
+
+        // The same name on another depot is the normal shape here, not a
+        // mistake: 10 of Urgent's 58 groups share a name, HelloFresh across
+        // seven depots and Chilled Zones across three, and carrying a group to
+        // a new depot under its own name is the main thing Duplicate is for.
+        // So only an exact name + depot + client collision is refused, which
+        // is the one case no screen could tell the two rows apart.
+        if (await Context.BulkZonePostcodeGroups.AsNoTracking()
+                .AnyAsync(g => g.Name == name && g.DepotId == depotId && g.ClientId == clientId))
+            throw new InvalidOperationException(
+                $"A postcode group called \"{name}\" already sits on this depot for the same client, "
+                + "and nothing on screen would tell the two apart. Change the name, the depot or the client.");
+
+        var copy = new Domain.Despatch.BulkZonePostcodeGroup
+        {
+            Name = name,
+            DepotId = depotId,
+            ClientId = clientId,
+        };
+        Context.BulkZonePostcodeGroups.Add(copy);
+        await Context.SaveChangesAsync();
+
+        var now = DateTime.UtcNow;
+        int membersCopied;
+        int zonesCopied;
+
+        if (IsUsTenant())
+        {
+            var rows = await Context.ZoneZips.AsNoTracking()
+                .Where(z => z.ZoneZipGroupId == id)
+                .ToListAsync();
+            Context.ZoneZips.AddRange(rows.Select(z => new Domain.Despatch.ZoneZip
+            {
+                ZoneNameId = z.ZoneNameId,
+                Zip = z.Zip,
+                ZoneNumber = z.ZoneNumber,
+                ApplyCongestion = z.ApplyCongestion,
+                ClientId = z.ClientId,
+                ZoneZipGroupId = copy.Id,
+                Created = now,
+                CreatedBy = CurrentUser(),
+            }));
+            membersCopied = rows.Count;
+            zonesCopied = rows.Select(z => z.ZoneNumber ?? 0).Distinct().Count();
+        }
+        else
+        {
+            var rows = await Context.BulkZonePostcodes.AsNoTracking()
+                .Where(p => p.PostcodeGroupId == id)
+                .ToListAsync();
+            Context.BulkZonePostcodes.AddRange(rows.Select(p => new Domain.Despatch.BulkZonePostcode
+            {
+                PostCode = p.PostCode,
+                Zone = p.Zone,
+                // The copy's depot wins when it was retargeted, so a group
+                // duplicated onto another depot does not keep rows pointing at
+                // the old one.
+                DepotId = req.DepotId ?? p.DepotId,
+                PostcodeGroupId = copy.Id,
+                FromSiteId = p.FromSiteId,
+                Name = p.Name,
+                FromLatLng = p.FromLatLng,
+                Created = now,
+            }));
+            membersCopied = rows.Count;
+            zonesCopied = rows.Select(p => p.Zone).Distinct().Count();
+        }
+
+        if (membersCopied > 0) await Context.SaveChangesAsync();
+
+        var polygons = await Context.BulkRunPolygons.AsNoTracking()
+            .CountAsync(p => p.Active && p.PostcodeGroupId == id);
+
+        return new PostcodeGroupDuplicateResultDto(
+            await GetPostcodeGroupAsync(copy.Id),
+            membersCopied,
+            zonesCopied,
+            polygons,
+            polygons == 0
+                ? null
+                : "A polygon belongs to one group at a time, so its binding cannot be shared with "
+                  + "the copy. Re-bind the ones the copy should own, or raise it and we add a "
+                  + "junction so a polygon can serve both.");
+    }
+
+    /// <summary>
     /// Preferred path: caller provides ClientCode. Falls back to
     /// ClientId when code is empty. Empty on both -> null (client-agnostic
     /// group). Unknown code -> throws with a clear message.
@@ -484,6 +617,108 @@ public class TerritoryService(
         return new NzPostcodeDto(
             p.Id, p.PostCode, p.Zone, p.DepotId, p.Depot?.Name,
             p.PostcodeGroupId, p.PostcodeGroup?.Name, p.FromSiteId, p.Name, p.FromLatLng);
+    }
+
+    /// <summary>
+    /// Add many NZ postcodes to one zone of one group in a single call
+    /// (spec 11.8).
+    ///
+    /// The rule that matters: a postcode already sitting in a DIFFERENT zone of
+    /// the same group is reported, never moved. On Urgent production no
+    /// postcode is in two zones of one group, and the rating function picks a
+    /// zone by (group, postcode), so quietly moving one would reprice every
+    /// schedule that ticks either zone.
+    /// </summary>
+    public async Task<NzPostcodePasteResultDto> PasteNzPostcodesAsync(
+        int groupId, int zone, NzPostcodePasteRequest req)
+    {
+        var group = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.Id == groupId)
+            ?? throw new InvalidOperationException("Postcode group not found.");
+
+        if (zone <= 0)
+            throw new InvalidOperationException(
+                "A zone number is required. A row with no zone cannot be reached by a schedule tick.");
+
+        // Same separators as the US paste and the postcode pickers, so the two
+        // behave identically to whoever is pasting.
+        var ignored = new List<string>();
+        var wanted = new List<int>();
+        foreach (var raw in (req.Postcodes ?? new List<string>())
+                     .SelectMany(s => (s ?? "").Split(
+                         new[] { ',', ' ', ';', '\t', '\n', '\r' },
+                         StringSplitOptions.RemoveEmptyEntries)))
+        {
+            var text = raw.Trim();
+            // NZ codes are four digits and the column is an int, so 0110 is
+            // stored as 110. Anything longer than four digits is not a
+            // postcode and anything non-numeric never was.
+            if (text.Length is > 0 and <= 4 && text.All(char.IsDigit) && int.TryParse(text, out var code) && code > 0)
+            {
+                if (!wanted.Contains(code)) wanted.Add(code);
+            }
+            else if (!ignored.Contains(text))
+            {
+                ignored.Add(text);
+            }
+        }
+
+        var inGroup = await Context.BulkZonePostcodes.AsNoTracking()
+            .Where(p => p.PostcodeGroupId == groupId && wanted.Contains(p.PostCode))
+            .Select(p => new { p.PostCode, p.Zone, p.Name })
+            .ToListAsync();
+
+        var alreadyHere = inGroup.Where(p => p.Zone == zone)
+            .Select(p => p.PostCode).Distinct().ToList();
+        var elsewhere = inGroup.Where(p => p.Zone != zone)
+            .GroupBy(p => p.PostCode)
+            .Select(grp => new PostcodeInOtherZoneDto(
+                grp.Key.ToString("D4"),
+                grp.First().Zone,
+                grp.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))))
+            .OrderBy(x => x.Code)
+            .ToList();
+
+        var blocked = elsewhere.Select(x => int.Parse(x.Code)).ToHashSet();
+        var toAdd = wanted.Where(c => !alreadyHere.Contains(c) && !blocked.Contains(c)).ToList();
+
+        if (toAdd.Count > 0)
+        {
+            // Inherit the suburb label from the same postcode elsewhere in the
+            // tenant when the caller did not supply one. BulkZonePostcode.Name
+            // already carries it on 2,909 of Urgent's 3,025 rows, which is why
+            // this needs no suburb lookup table. The other 116 rows carry an
+            // empty string, not NULL, because the column is NOT NULL on the
+            // live table, so an unknown suburb has to fall back to "" here.
+            var supplied = string.IsNullOrWhiteSpace(req.Name) ? null : req.Name.Trim();
+            var inherited = supplied != null
+                ? new Dictionary<int, string>()
+                : (await Context.BulkZonePostcodes.AsNoTracking()
+                        .Where(p => toAdd.Contains(p.PostCode) && p.Name != null && p.Name != "")
+                        .Select(p => new { p.PostCode, p.Name })
+                        .ToListAsync())
+                    .GroupBy(p => p.PostCode)
+                    .ToDictionary(grp => grp.Key, grp => grp.First().Name);
+
+            var now = DateTime.UtcNow;
+            Context.BulkZonePostcodes.AddRange(toAdd.Select(code => new Domain.Despatch.BulkZonePostcode
+            {
+                PostCode = code,
+                Zone = zone,
+                DepotId = req.DepotId ?? group.DepotId,
+                PostcodeGroupId = groupId,
+                FromSiteId = 0,
+                Name = supplied ?? (inherited.TryGetValue(code, out var n) ? n : string.Empty),
+                Created = now,
+            }));
+            await Context.SaveChangesAsync();
+        }
+
+        return new NzPostcodePasteResultDto(
+            toAdd.OrderBy(c => c).Select(c => c.ToString("D4")).ToList(),
+            elsewhere,
+            alreadyHere.OrderBy(c => c).Select(c => c.ToString("D4")).ToList(),
+            ignored);
     }
 
     // ─── US ZIP ZONE WRITES ────────────────────────────────────────────────
