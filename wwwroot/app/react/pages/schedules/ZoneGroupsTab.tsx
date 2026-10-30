@@ -11,6 +11,7 @@ import {
   type ZoneNameRow,
   type ZoneGroupRow,
   type PostcodeGroupUpsertBody,
+  type PostcodeGroupDuplicateBody,
   type ZoneNameUpsertBody,
   type ZoneGroupUpsertBody,
   type ZoneZipPasteResult,
@@ -42,6 +43,7 @@ export function ZoneGroupsTab() {
   const [loading, setLoading] = useState(false);
 
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
+  const [duplicatingPg, setDuplicatingPg] = useState<PostcodeGroup | null>(null);
   const [editingZn, setEditingZn] = useState<ZoneNameRow | 'new' | null>(null);
   const [editingZg, setEditingZg] = useState<ZoneGroupRow | 'new' | null>(null);
   // Bulk ZIP add. The Zones tab adds one per request, which is 602 form
@@ -185,6 +187,7 @@ export function ZoneGroupsTab() {
                   actions={[
                     { label: 'Open', onClick: () => openDetail(g.id) },
                     { label: 'Edit', onClick: () => setEditingPg(g) },
+                    { label: 'Duplicate', onClick: () => setDuplicatingPg(g) },
                     { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'postcodeGroup', id: g.id, label: g.name ?? '' }) },
                     { label: 'Delete', onClick: () => deletePg(g), danger: true },
                   ]}
@@ -335,6 +338,14 @@ export function ZoneGroupsTab() {
           onSaved={async () => { setEditingPg(null); await load(); }}
         />
       )}
+      {duplicatingPg !== null && (
+        <PostcodeGroupDuplicateModal
+          row={duplicatingPg}
+          bootstrap={bootstrap}
+          onClose={() => setDuplicatingPg(null)}
+          onSaved={async () => { setDuplicatingPg(null); await load(); }}
+        />
+      )}
       {editingZn !== null && (
         <ZoneNameEditModal
           row={editingZn === 'new' ? null : editingZn}
@@ -370,6 +381,97 @@ export function ZoneGroupsTab() {
 }
 
 // ─── Edit modals (small) ────────────────────────────────────────────────
+
+/**
+ * Duplicate a group (spec 3.2).
+ *
+ * The copy takes the original's zone membership, which is the thing that makes
+ * a group a territory. It deliberately does NOT take the original's schedules:
+ * a duplicate is a new area, and inheriting the references would silently
+ * widen what those schedules serve. Rates are not copied either; that checkbox
+ * arrives with the Pricing tab.
+ */
+function PostcodeGroupDuplicateModal({
+  row, bootstrap, onClose, onSaved,
+}: { row: PostcodeGroup; bootstrap: TerritoryBootstrap | null; onClose: () => void; onSaved: () => void; }) {
+  const toast = useToast();
+  const user = useAuth();
+  const groupSingular = postcodeGroupLabel(user.isUsTenant, false);
+  const depotSingular = depotLabel(user.isUsTenant, false);
+  const memberWord = user.isUsTenant ? 'zip' : 'postcode';
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<PostcodeGroupDuplicateBody>(() => ({
+    name: `${row.name ?? ''} (copy)`,
+    depotId: row.depotId ?? null,
+    clientCode: row.clientCode ?? undefined,
+  }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await territoryService.duplicatePostcodeGroup(row.id, form);
+      const r = res.response;
+      toast.show(
+        `Copied ${r.membersCopied} ${memberWord}${r.membersCopied === 1 ? '' : 's'} `
+        + `across ${r.zonesCopied} zone${r.zonesCopied === 1 ? '' : 's'} into "${r.group.name}".`,
+        'success');
+      // Only surfaced when there is something to say. A polygon belongs to one
+      // group at a time, so the copy cannot share the binding.
+      if (r.polygonsNotCopied > 0 && r.polygonNote) {
+        toast.show(`${r.polygonsNotCopied} polygon(s) not copied. ${r.polygonNote}`, 'info');
+      }
+      onSaved();
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={`Duplicate "${row.name}"`}
+      size="md"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="neutral" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button
+            variant="secondary"
+            data-primary="true"
+            data-testid="pg-duplicate-save"
+            onClick={save}
+            disabled={saving || !form.name.trim()}
+          >
+            {saving ? 'Copying...' : 'Duplicate'}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        <p className="text-xs text-text-muted">
+          The copy gets this {groupSingular.toLowerCase()}&apos;s zones and {memberWord}s. It does not get
+          its schedules, so nothing starts serving a new area until you link it, and it does not get
+          its rates.
+        </p>
+        <Fld label="Name" required>
+          <input className={INPUT_CLASS} value={form.name} data-testid="pg-duplicate-name"
+            onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        </Fld>
+        <Fld label={depotSingular}>
+          <select className={INPUT_CLASS} value={form.depotId ?? ''}
+            onChange={(e) => setForm({ ...form, depotId: e.target.value ? Number(e.target.value) : null })}>
+            <option value="">-</option>
+            {(bootstrap?.depots ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Fld>
+        <Fld label="Client Code (optional)">
+          <input type="text" className={INPUT_CLASS + ' uppercase'} value={form.clientCode ?? ''}
+            placeholder="blank = shared across all clients"
+            onChange={(e) => setForm({ ...form, clientCode: e.target.value })} />
+        </Fld>
+      </div>
+    </Modal>
+  );
+}
 
 function PostcodeGroupEditModal({
   row, bootstrap, onClose, onSaved,

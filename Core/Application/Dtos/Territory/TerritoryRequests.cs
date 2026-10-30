@@ -68,6 +68,59 @@ public class ZoneZipPasteRequest
     public bool AllowSharedNumber { get; set; }
 }
 
+/// <summary>
+/// Copy a postcode group and everything that makes it a territory: its zone
+/// membership (NZ postcodes or US zips) and its bound polygons.
+///
+/// Spec 3.2 lists duplicate alongside create and rename, because a new client
+/// on an existing lane is nearly always "the same area as that one". The
+/// rate-sheet copy is deliberately NOT here: it lands with the Pricing tab
+/// (M8), so a duplicate today never moves a price.
+/// </summary>
+public class PostcodeGroupDuplicateRequest
+{
+    /// <summary>Name for the copy. Required, because two groups with the same
+    /// name is the one mistake that makes the picker useless.</summary>
+    [Required, StringLength(200)] public string Name { get; set; } = string.Empty;
+
+    /// <summary>Retarget the copy at another depot. Omit to keep the
+    /// original's.</summary>
+    public int? DepotId { get; set; }
+
+    /// <summary>Retarget the copy at a client, by code. Omit to keep the
+    /// original's; send an empty string to make the copy client-agnostic.</summary>
+    public string ClientCode { get; set; }
+
+    /// <summary>Id-based form of the above, for internal callers.</summary>
+    public int? ClientId { get; set; }
+}
+
+/// <summary>
+/// Add many NZ postcodes to one zone of one group in a single call (spec 11.8).
+///
+/// The single-row endpoint means one form submission per postcode, and a
+/// regional group runs to hundreds. Separators and normalisation match the US
+/// zip paste so the two behave the same way to an operator.
+/// </summary>
+public class NzPostcodePasteRequest
+{
+    /// <summary>
+    /// Pasted codes, as typed. Comma, space, semicolon, tab or newline
+    /// separated, in any mixture.
+    /// </summary>
+    [Required] public List<string> Postcodes { get; set; } = new();
+
+    /// <summary>
+    /// Suburb label written onto every row added by this call. Optional: left
+    /// empty, each row takes the label already used by the same postcode
+    /// elsewhere in the tenant, and stays blank when there is none.
+    /// </summary>
+    public string Name { get; set; }
+
+    /// <summary>Depot for the added rows. Omit to inherit the group's.</summary>
+    public int? DepotId { get; set; }
+}
+
 public class ZoneNameUpsertRequest
 {
     [Required, StringLength(200)] public string Name { get; set; } = string.Empty;

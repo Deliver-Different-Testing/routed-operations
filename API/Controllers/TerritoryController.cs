@@ -174,7 +174,28 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     public async Task<IActionResult> DeletePostcodeGroup(int id) =>
         await WrapVoid(() => svc.DeletePostcodeGroupAsync(id));
 
+    /// <summary>
+    /// Copy a group and its zone membership (spec 3.2). Schedules are not
+    /// copied, because the copy is a new territory; rates are not either, that
+    /// checkbox arrives with the Pricing tab.
+    /// </summary>
+    [HttpPost("postcode-groups/{id:int}/duplicate")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> DuplicatePostcodeGroup(
+        int id, [FromBody] PostcodeGroupDuplicateRequest req) =>
+        await Wrap(() => svc.DuplicatePostcodeGroupAsync(id, req));
+
     // ─── NZ POSTCODE WRITES ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Add many NZ postcodes to one zone of one group (spec 11.8). A postcode
+    /// already in another zone of the same group is reported back, never moved.
+    /// </summary>
+    [HttpPost("postcode-groups/{id:int}/zones/{zone:int}/postcodes")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> PasteNzPostcodes(
+        int id, int zone, [FromBody] NzPostcodePasteRequest req) =>
+        await Wrap(() => svc.PasteNzPostcodesAsync(id, zone, req));
 
     [HttpPost("nz/postcodes")]
     [Authorize(Policy = "RouteBuilder.Admin")]

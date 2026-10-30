@@ -35,12 +35,28 @@ export interface PostcodeGroup {
   pickupScheduleCount: number;
 }
 
+/** One code inside a zone. `code` is the display spelling, padded: NZ stores
+ *  the postcode as an int so 0110 Whangarei lives as 110, and 673 of Urgent's
+ *  3,025 rows are that shape. `value` is the raw int for matching. */
+export interface PostcodeGroupMember {
+  id: number;
+  code: string;
+  value: number;
+  /** Suburb or zone label. NZ reads BulkZonePostcode.Name, which already
+   *  carries it on 2,909 of 3,025 rows; US reads the ZoneName. Blank where
+   *  the tenant never set one. */
+  suburb: string | null;
+}
+
 /** One zone inside a group. Label comes from BulkZonePostcode.Name on NZ
  *  and ZoneName.ZoneName1 on US. */
 export interface PostcodeGroupZone {
   zone: number;
   label: string | null;
   memberCount: number;
+  /** The codes themselves, so the drawer can list a zone's postcodes before
+   *  its polygons rather than only count them. */
+  members: PostcodeGroupMember[];
 }
 
 /** A schedule referencing the group. The two flags are not exclusive: a
@@ -58,6 +74,52 @@ export interface PostcodeGroupDetail {
   zones: PostcodeGroupZone[];
   schedules: PostcodeGroupSchedule[];
   polygons: BoundPolygon[];
+}
+
+/** A pasted code already sitting in another zone of the SAME group. Reported
+ *  and deliberately not moved: no postcode on Urgent production is in two
+ *  zones of one group, and the rating function resolves by (group, postcode),
+ *  so a silent move reprices every schedule ticking either zone. */
+export interface PostcodeInOtherZone {
+  code: string;
+  zone: number;
+  zoneLabel: string | null;
+}
+
+export interface NzPostcodePasteBody {
+  postcodes: string[];
+  /** Suburb written onto every added row. Left empty, each row inherits the
+   *  label the same postcode already carries elsewhere in the tenant. */
+  name?: string;
+  /** Omit to inherit the group's depot. */
+  depotId?: number | null;
+}
+
+export interface NzPostcodePasteResult {
+  added: string[];
+  skippedInOtherZone: PostcodeInOtherZone[];
+  alreadyInThisZone: string[];
+  ignored: string[];
+}
+
+export interface PostcodeGroupDuplicateBody {
+  name: string;
+  depotId?: number | null;
+  /** Omit to keep the original's client. Send an empty string to make the
+   *  copy client-agnostic. */
+  clientCode?: string;
+  clientId?: number | null;
+}
+
+export interface PostcodeGroupDuplicateResult {
+  group: PostcodeGroup;
+  membersCopied: number;
+  zonesCopied: number;
+  /** Polygons the copy did not get. A polygon belongs to one group at a time,
+   *  so the binding cannot be shared; the note says so. Zero on every group
+   *  measured so far. */
+  polygonsNotCopied: number;
+  polygonNote: string | null;
 }
 
 /** Default vs client-specific. Enforced in the service layer, never in
@@ -235,6 +297,16 @@ export const territoryService = {
     write<PostcodeGroup, PostcodeGroupUpsertBody>(`/territory/postcode-groups/${id}`, 'PUT', b),
   removePostcodeGroup: (id: number) =>
     write<string, undefined>(`/territory/postcode-groups/${id}`, 'DELETE'),
+  /** Copy a group and its zone membership. Schedules are not copied, because
+   *  the copy is a new territory; rates arrive with the Pricing tab. */
+  duplicatePostcodeGroup: (id: number, b: PostcodeGroupDuplicateBody) =>
+    write<PostcodeGroupDuplicateResult, PostcodeGroupDuplicateBody>(
+      `/territory/postcode-groups/${id}/duplicate`, 'POST', b),
+  /** Add many NZ postcodes to one zone of one group. A code already in
+   *  another zone of the same group comes back reported, never moved. */
+  pasteNzPostcodes: (groupId: number, zone: number, b: NzPostcodePasteBody) =>
+    write<NzPostcodePasteResult, NzPostcodePasteBody>(
+      `/territory/postcode-groups/${groupId}/zones/${zone}/postcodes`, 'POST', b),
 
   createNzPostcode: (b: NzPostcodeUpsertBody) =>
     write<NzPostcode, NzPostcodeUpsertBody>('/territory/nz/postcodes', 'POST', b),
