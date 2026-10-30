@@ -636,6 +636,11 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                       onChange={(e) => updateLinehaul(i, { applyAddOnPercentage: e.target.checked })} />
                     Apply Add-on %
                   </label>
+                  <label className="inline-flex items-center gap-2 text-xs">
+                    <input type="checkbox" checked={l.chargePerConsignment ?? false}
+                      onChange={(e) => updateLinehaul(i, { chargePerConsignment: e.target.checked })} />
+                    Cartons once
+                  </label>
                 </div>
               </div>
             </div>
@@ -776,6 +781,7 @@ function toForm(g: ScheduleGroup | null): ScheduleGroupUpsertBody {
       weekDay: l.weekDay, departureAdvanceDays: l.departureAdvanceDays,
       fromClientAddress: l.fromClientAddress, dropOffLocationId: l.dropOffLocationId,
       speedId: l.speedId,
+      chargePerConsignment: l.chargePerConsignment ?? false,
     })),
     // On write we prefer clientCodes (operator-facing). Ids kept for
     // internal consistency but the picker toggles by code.

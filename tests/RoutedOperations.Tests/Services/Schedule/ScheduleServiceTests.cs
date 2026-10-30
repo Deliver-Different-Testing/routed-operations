@@ -875,6 +875,38 @@ public class ScheduleServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpsertAsync_resave_and_copy_preserve_ChargePerConsignment()
+    {
+        // Cartons-once is a pricing flag set per leg. The save path removes and
+        // re-adds every leg, so a leg that does not carry it back switches the
+        // rule off without anyone noticing.
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls.Add(Leg("Flagged leg", 1, 2));
+        req.Linehauls.Add(Leg("Plain leg", 2, 3));
+        req.Linehauls[0].ChargePerConsignment = true;
+        var created = await svc.UpsertAsync(req);
+        Assert.Equal(new[] { true, false }, created.Linehauls.Select(l => l.ChargePerConsignment).ToArray());
+
+        var second = ValidRequest();
+        foreach (var l in created.Linehauls)
+        {
+            var leg = Leg(l.Name, l.FromDepotId ?? 0, l.ToDepotId ?? 0, l.LegOrder);
+            leg.ChargePerConsignment = l.ChargePerConsignment;
+            second.Linehauls.Add(leg);
+        }
+        var resaved = await svc.UpsertAsync(second);
+        Assert.Equal(new[] { true, false }, resaved.Linehauls.Select(l => l.ChargePerConsignment).ToArray());
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = resaved.ScheduleId,
+            NewName = "Copied Flagged",
+        });
+        Assert.Equal(new[] { true, false }, copy.Linehauls.Select(l => l.ChargePerConsignment).ToArray());
+    }
+
+    [Fact]
     public async Task CopyAsync_carries_LegOrder_and_SpeedId_onto_the_copy()
     {
         // SpeedId was missing from the copy initialiser since the per-leg

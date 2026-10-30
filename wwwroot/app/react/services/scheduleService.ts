@@ -56,6 +56,9 @@ export interface ScheduleLinehaul {
    *  Null means the chain was never ordered (or was ambiguous at backfill
    *  time) and the booking SPs fall back to Id order. */
   legOrder: number | null;
+  /** Cartons once: pallets charged per unit, all cartons as one. Optional so
+   *  fixtures predating the field still type-check; absent = false. */
+  chargePerConsignment?: boolean;
 }
 
 /** Slim projection returned by GET /schedules for the list table.
@@ -381,6 +384,9 @@ export interface ScheduleGroupUpsertBody {
      *  to this row's position in the array, which is the same thing as long
      *  as the caller sends legs in chain order. */
     legOrder?: number | null;
+    /** Cartons once. Must be sent back on every save: the upsert deletes and
+     *  re-inserts legs, so omitting it switches the rule off. */
+    chargePerConsignment?: boolean;
   }> | null;
   /** Legacy id-based fallback. Consulted only when `clientCodes` is
    *  null in the request body. The NewScheduleModal + `ClientMultiPicker`
