@@ -135,6 +135,7 @@ function canonicalLinehaul(l: LinehaulUpsertRow): string {
     fromClientAddress: l.fromClientAddress ?? null,
     dropOffLocationId: l.dropOffLocationId ?? null,
     speedId: l.speedId ?? null,
+    chargePerConsignment: l.chargePerConsignment ?? false,
   });
 }
 
@@ -187,6 +188,8 @@ function deriveFromLegs(legs: Leg[], days: DayForm[]) {
         // this the backfilled travel order is wiped and the booking SPs fall
         // back to Id order, i.e. the bug returns for this schedule.
         legOrder: linehauls.length + 1,
+        // Same delete-and-re-insert: must be sent back or a save switches it off.
+        chargePerConsignment: leg.chargePerConsignment === true,
       });
     } else if (leg.type === 'delivery') {
       regionId = leg.regionId;
@@ -357,6 +360,7 @@ function seedLegsFromDto(d: ScheduleGroup): Leg[] {
       weekDay: Array.isArray(lh.weekDay) && lh.weekDay.length === 7 ? lh.weekDay : null,
       dropOffLocationId: lh.dropOffLocationId ?? null,
       fromClientAddress: lh.fromClientAddress ?? null,
+      chargePerConsignment: lh.chargePerConsignment === true,
     });
   }
   legs.push({

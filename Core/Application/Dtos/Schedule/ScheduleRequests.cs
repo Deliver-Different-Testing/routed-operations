@@ -255,4 +255,7 @@ public class ScheduleLinehaulUpsertRequest
     /// having to know about this field.
     /// </summary>
     public int? LegOrder { get; set; }
+
+    /// <summary>Cartons once: pallets per unit, all cartons charged as one.</summary>
+    public bool ChargePerConsignment { get; set; }
 }
