@@ -253,6 +253,161 @@ public class NzPostcodePasteAndDuplicateTests
         Assert.Equal(1, await db.TblBulkRunScheduleDays.CountAsync(d => d.PostcodeGroupId == 1));
     }
 
+    // ─── MAP PANEL ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task The_map_joins_postcodes_to_boundaries_on_the_padded_spelling()
+    {
+        // BulkZonePostcode.PostCode is an int so 0110 is stored as 110, while
+        // ZipPolygon.Zip is the padded text. Joining on the raw int finds
+        // nothing and the map comes back empty with no error.
+        var opts = Seed();
+        await using (var pre = new DynamicDespatchDbContext(opts))
+        {
+            pre.TblBulkRegions.Add(new TblBulkRegion
+            { BulkRegionId = 4, Name = "Hamilton", Active = true, PickupLatitude = -37.78m, PickupLongitude = 175.28m });
+            pre.ZipPolygons.AddRange(
+                new ZipPolygon { ZipPolygonId = 1, Zip = "0110", Latitude = -35.72m, Longitude = 174.32m, Wkt = "POLYGON((174.3 -35.7, 174.4 -35.7, 174.4 -35.8, 174.3 -35.8, 174.3 -35.7))" },
+                new ZipPolygon { ZipPolygonId = 2, Zip = "3110", Latitude = -37.68m, Longitude = 176.17m, Wkt = "POLYGON((176.1 -37.6, 176.2 -37.6, 176.2 -37.7, 176.1 -37.7, 176.1 -37.6))" });
+            await pre.SaveChangesAsync();
+        }
+
+        var map = await Svc(opts).GetZoneMapAsync(1);
+
+        Assert.Equal("Hamilton", map.DepotName);
+        Assert.Equal(-37.78m, map.DepotLatitude);
+        Assert.Equal(2, map.Shapes.Count);
+        Assert.Equal(new[] { "0110", "3110" }, map.Shapes.Select(x => x.Code).OrderBy(x => x).ToArray());
+        // The zone travels with the shape, which is what the map shades by.
+        Assert.Equal(1, map.Shapes.Single(x => x.Code == "0110").Zone);
+    }
+
+    [Fact]
+    public async Task A_postcode_with_no_boundary_is_named_rather_than_dropped()
+    {
+        // A map quietly missing two of a group's zones reads as broken. Named,
+        // it reads as data yet to load, which is what it is: the boundaries
+        // arrive with the yearly Census refresh.
+        var opts = Seed();
+        await using (var pre = new DynamicDespatchDbContext(opts))
+        {
+            pre.ZipPolygons.Add(new ZipPolygon
+            { ZipPolygonId = 1, Zip = "0110", Latitude = -35.72m, Longitude = 174.32m, Wkt = "POLYGON((174.3 -35.7, 174.4 -35.7, 174.4 -35.8, 174.3 -35.8, 174.3 -35.7))" });
+            await pre.SaveChangesAsync();
+        }
+
+        var map = await Svc(opts).GetZoneMapAsync(1);
+
+        Assert.Single(map.Shapes);
+        Assert.Equal(new[] { "3110", "3200" }, map.CodesWithNoShape.ToArray());
+    }
+
+    [Fact]
+    public async Task A_group_with_no_members_gives_an_empty_map_rather_than_throwing()
+    {
+        var opts = Seed();
+        var map = await Svc(opts).GetZoneMapAsync(2);
+        Assert.Empty(map.Shapes);
+        Assert.Empty(map.CodesWithNoShape);
+    }
+
+    [Fact]
+    public async Task Duplicate_copies_polygon_memberships_and_the_original_keeps_them()
+    {
+        // Steve, 2026-10-31: a shape is a MEMBER of a zone in a group, not
+        // owned by one. BulkZonePolygon is unique on (PostcodeGroupId,
+        // PolygonId), so the same shape may be zone 4 in Auckland's group and
+        // zone 2 in a client's group. The first cut read the superseded single
+        // column tblBulkRunPolygon.PostcodeGroupId as ownership and refused to
+        // copy anything, which is what this pins down.
+        var opts = Seed();
+        await using (var pre = new DynamicDespatchDbContext(opts))
+        {
+            pre.BulkRunPolygons.AddRange(
+                new BulkRunPolygon { PolygonId = 41, Name = "Mount Coast", Active = true, CreatedBy = "seed" },
+                new BulkRunPolygon { PolygonId = 42, Name = "Papamoa East", Active = true, CreatedBy = "seed" });
+            pre.BulkZonePolygons.AddRange(
+                new BulkZonePolygon { Id = 1, PostcodeGroupId = 1, PolygonId = 41, Zone = 1, Active = true, CreatedBy = "seed" },
+                new BulkZonePolygon { Id = 2, PostcodeGroupId = 1, PolygonId = 42, Zone = 2, Active = true, CreatedBy = "seed" });
+            await pre.SaveChangesAsync();
+        }
+
+        var result = await Svc(opts).DuplicatePostcodeGroupAsync(1,
+            new PostcodeGroupDuplicateRequest { Name = "BOP Regional (shapes)" });
+
+        Assert.Equal(2, result.PolygonsCopied);
+
+        await using var db = new DynamicDespatchDbContext(opts);
+        var copied = await db.BulkZonePolygons
+            .Where(z => z.PostcodeGroupId == result.Group.Id)
+            .OrderBy(z => z.PolygonId).ToListAsync();
+        // Same shapes, same zones. The shape itself is not cloned, so the id
+        // is carried across rather than replaced.
+        Assert.Equal(new[] { 41, 42 }, copied.Select(z => z.PolygonId).ToArray());
+        Assert.Equal(new[] { 1, 2 }, copied.Select(z => z.Zone).ToArray());
+        Assert.All(copied, z => Assert.True(z.Active));
+        // No polygon rows were created or moved: the shapes are shared.
+        Assert.Equal(2, await db.BulkRunPolygons.CountAsync());
+        Assert.Equal(2, await db.BulkZonePolygons.CountAsync(z => z.PostcodeGroupId == 1));
+    }
+
+    [Fact]
+    public async Task An_inactive_polygon_membership_is_not_carried_into_the_copy()
+    {
+        // Removing a shape from a zone deactivates the membership rather than
+        // deleting the shape, so copying it back would resurrect a placement
+        // somebody deliberately took out.
+        var opts = Seed();
+        await using (var pre = new DynamicDespatchDbContext(opts))
+        {
+            pre.BulkRunPolygons.Add(
+                new BulkRunPolygon { PolygonId = 41, Name = "Mount Coast", Active = true, CreatedBy = "seed" });
+            pre.BulkZonePolygons.Add(
+                new BulkZonePolygon { Id = 1, PostcodeGroupId = 1, PolygonId = 41, Zone = 1, Active = false, CreatedBy = "seed" });
+            await pre.SaveChangesAsync();
+        }
+
+        var result = await Svc(opts).DuplicatePostcodeGroupAsync(1,
+            new PostcodeGroupDuplicateRequest { Name = "BOP Regional (no shapes)" });
+
+        Assert.Equal(0, result.PolygonsCopied);
+
+        await using var db = new DynamicDespatchDbContext(opts);
+        Assert.Equal(0, await db.BulkZonePolygons.CountAsync(z => z.PostcodeGroupId == result.Group.Id));
+    }
+
+    [Fact]
+    public async Task The_drawer_lists_a_groups_shapes_with_the_zone_each_one_joined()
+    {
+        // The chip has to say which zone, because the same shape appears in
+        // another group under a different zone and the two lists would
+        // otherwise look identical.
+        var opts = Seed();
+        await using (var pre = new DynamicDespatchDbContext(opts))
+        {
+            pre.BulkRunPolygons.Add(
+                new BulkRunPolygon { PolygonId = 41, Name = "Mount Coast", Active = true, CreatedBy = "seed" });
+            pre.BulkZonePolygons.AddRange(
+                new BulkZonePolygon { Id = 1, PostcodeGroupId = 1, PolygonId = 41, Zone = 4, Active = true, CreatedBy = "seed" },
+                new BulkZonePolygon { Id = 2, PostcodeGroupId = 2, PolygonId = 41, Zone = 2, Active = true, CreatedBy = "seed" });
+            await pre.SaveChangesAsync();
+        }
+
+        var svc = Svc(opts);
+        var first = await svc.GetPostcodeGroupDetailAsync(1);
+        var second = await svc.GetPostcodeGroupDetailAsync(2);
+
+        var a = Assert.Single(first.Polygons);
+        Assert.Equal(41, a.PolygonId);
+        Assert.Equal(4, a.Zone);
+        Assert.Equal(1, a.MembershipId);
+
+        var b = Assert.Single(second.Polygons);
+        Assert.Equal(41, b.PolygonId);
+        Assert.Equal(2, b.Zone);
+        Assert.Equal(2, b.MembershipId);
+    }
+
     [Fact]
     public async Task Duplicate_refuses_a_name_already_taken_on_the_same_depot_and_client()
     {

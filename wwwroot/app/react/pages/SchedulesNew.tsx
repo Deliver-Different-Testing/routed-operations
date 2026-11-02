@@ -38,6 +38,8 @@ import { depotLabel, postcodeGroupLabel } from '../lib/tenantLabels';
 import { ZonesTab } from './schedules/ZonesTab';
 import { ZoneGroupsTab } from './schedules/ZoneGroupsTab';
 import { DepotsTab } from './schedules/DepotsTab';
+import { PricingTab } from './schedules/PricingTab';
+import { LinehaulTab } from './schedules/LinehaulTab';
 
 // Schedules NEW - Steve's 2026-09-08 id-keyed multi-client schedules
 // view (KEVIN-NEW-SCHEDULES-VIEW-MULTI-CLIENT-2026-09-08). Uses the
@@ -56,11 +58,12 @@ import { DepotsTab } from './schedules/DepotsTab';
 //    the error immediately instead of blocking the spinner for the
 //    full retry backoff.
 
-// Pricing spec 3.1. 'pricing' and 'linehaul' join these later; the tab bar
-// is built so adding them is two more TabButtons.
-type Tab = 'schedules' | 'bundles' | 'routes' | 'zonegroups';
+// Pricing spec 3.1. Linehaul is its own tab rather than a Pricing sub-view
+// because a run is a depot-to-depot leg with no zone group, which is the
+// point Marcus made on 15 Oct; the zone group banner must not show above it.
+type Tab = 'schedules' | 'bundles' | 'routes' | 'zonegroups' | 'pricing' | 'linehaul';
 
-const TABS: Tab[] = ['schedules', 'bundles', 'routes', 'zonegroups'];
+const TABS: Tab[] = ['schedules', 'bundles', 'routes', 'zonegroups', 'pricing', 'linehaul'];
 
 function isTab(v: string | null): v is Tab {
   return v != null && (TABS as string[]).includes(v);
@@ -217,7 +220,7 @@ export default function SchedulesNew() {
         {/* New Schedule belongs to the schedule tabs only. Under Zone groups
             the primary action is "+ Add group / postcode", which each
             sub-view renders itself. */}
-        {tab !== 'zonegroups' && (
+        {tab !== 'zonegroups' && tab !== 'linehaul' && tab !== 'pricing' && (
           <button
             type="button"
             onClick={() => setNewScheduleOpen(true)}
@@ -247,6 +250,12 @@ export default function SchedulesNew() {
           <TabButton active={tab === 'zonegroups'} onClick={() => setTab('zonegroups')}>
             Zone groups
           </TabButton>
+          <TabButton active={tab === 'pricing'} onClick={() => setTab('pricing')}>
+            Pricing
+          </TabButton>
+          <TabButton active={tab === 'linehaul'} onClick={() => setTab('linehaul')}>
+            Linehaul
+          </TabButton>
         </nav>
       </div>
 
@@ -259,6 +268,8 @@ export default function SchedulesNew() {
       )}
       {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={openBase} />}
       {tab === 'routes' && <RecurringRoutesTab />}
+      {tab === 'pricing' && <PricingTab />}
+      {tab === 'linehaul' && <LinehaulTab />}
 
       {tab === 'zonegroups' && (
         <div className="space-y-3">

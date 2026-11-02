@@ -5,6 +5,7 @@ import { StatusBadge } from '../common/StatusBadge';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { depotLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
+import { ZoneGroupMapPanel } from './ZoneGroupMapPanel';
 import {
   territoryService,
   postcodeGroupScope,
@@ -108,6 +109,9 @@ export function PostcodeGroupDetailModal({
     })();
     return () => { alive = false; };
   }, [groupId]);
+
+  // Hovering a zone row brings that zone forward on the map (spec 11.8).
+  const [hoverZone, setHoverZone] = useState<number | null>(null);
 
   const toggleZone = (zone: number) => setExpanded((prev) => {
     const next = new Set(prev);
@@ -271,7 +275,11 @@ export function PostcodeGroupDetailModal({
                       const open = expanded.has(z.zone);
                       return (
                         <Fragment key={z.zone}>
-                          <tr className="border-t border-border-light">
+                          <tr
+                            className="border-t border-border-light"
+                            onMouseEnter={() => setHoverZone(z.zone)}
+                            onMouseLeave={() => setHoverZone((cur) => cur === z.zone ? null : cur)}
+                          >
                             <td className="px-3 py-1.5 font-medium text-text-primary">
                               <button
                                 type="button"
@@ -466,23 +474,43 @@ export function PostcodeGroupDetailModal({
             )}
           </section>
 
-          {/* Polygons */}
+          {/* Map (spec 11.8). Below the zones rather than beside them: the
+              drawer is a single column at this width, and the hover
+              highlight makes the pairing obvious without a side-by-side. */}
+          <section>
+            <h4 className="text-sm font-semibold text-text-primary mb-1">Map</h4>
+            <ZoneGroupMapPanel
+              postcodeGroupId={groupId}
+              highlightZone={hoverZone}
+              memberWord={memberWord}
+            />
+          </section>
+
+          {/* Polygons. A shape is a member of a ZONE of this group, the same
+              way a postcode is, so the zone it joined is shown on the chip.
+              The same shape may sit in another zone of another group. */}
           <section>
             <h4 className="text-sm font-semibold text-text-primary mb-1">
-              Polygons bound <span className="font-normal text-text-muted">- {detail.polygons.length}</span>
+              Polygons in this group{' '}
+              <span className="font-normal text-text-muted">- {detail.polygons.length}</span>
             </h4>
             {detail.polygons.length === 0 ? (
               <p className="text-xs text-text-muted italic">
-                None bound. Polygon coverage is only consulted when a {memberWord} resolves
-                to no zone, and only while polygon zone resolution is switched on.
+                No shapes in any zone of this group. Polygon coverage is only consulted
+                when a {memberWord} resolves to no zone, and only while polygon zone
+                resolution is switched on.
               </p>
             ) : (
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1" data-testid="pg-polygon-chips">
                 {detail.polygons.map((p) => (
                   <span
-                    key={p.polygonId}
-                    className="px-2 py-0.5 rounded-full border border-border bg-surface-light text-xs text-text-primary"
+                    key={p.membershipId ?? p.polygonId}
+                    data-testid={`pg-polygon-${p.polygonId}`}
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-border bg-surface-light text-xs text-text-primary"
                   >
+                    {p.zone != null && (
+                      <span className="font-semibold text-text-muted">Zone {p.zone}</span>
+                    )}
                     {p.name}
                   </span>
                 ))}

@@ -139,7 +139,15 @@ public class ZoneGroupUpsertRequest
 public class PolygonBindRequest
 {
     public int? ZoneNameId { get; set; }
-    public int? PostcodeGroupId { get; set; }
+}
+
+/// <summary>Switch one depot off for one client, or back on. Off true writes
+/// the limit row, false removes it.</summary>
+public class DepotClientLimitRequest
+{
+    [Required]
+    public int ClientId { get; set; }
+    public bool Off { get; set; }
 }
 
 /// <summary>Resolve which ZipPolygon rows the Schedule editor map should

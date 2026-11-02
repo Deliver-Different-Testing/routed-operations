@@ -8,6 +8,42 @@ namespace RoutedOperations.Core.Application.Dtos.Territory;
 /// </summary>
 public record DepotDto(int Id, string Name, bool Active);
 
+/// <summary>A depot as the per-client limit editor sees it: every depot in the
+/// tenant, with whether it is switched off for the client being edited.
+/// <paramref name="Active"/> is the global on/off; <paramref name="OffForClient"/>
+/// is the separate per-client one, and a depot that is globally inactive is
+/// unavailable to every client regardless.</summary>
+public record DepotClientLimitDto(int Id, string Name, bool Active, bool OffForClient);
+
+/// <summary>One postcode outline for the zone-group map, with the zone it is
+/// in so the map can shade by zone. Wkt is the stored boundary; Latitude and
+/// Longitude are the centroid, used to label and to fit the map when a code
+/// has no outline.</summary>
+public record ZoneMapShapeDto(
+    int Zone,
+    string Code,
+    int ZipPolygonId,
+    decimal? Latitude,
+    decimal? Longitude,
+    string Wkt);
+
+/// <summary>
+/// Everything the map panel beside a zone group needs. Codes that have no
+/// ZipPolygon row are reported rather than dropped: the map showing eight of
+/// a group's ten zones with no explanation is worse than saying which are
+/// missing.
+/// </summary>
+public record ZoneMapDto(
+    int PostcodeGroupId,
+    string PostcodeGroupName,
+    int? DepotId,
+    string DepotName,
+    decimal? DepotLatitude,
+    decimal? DepotLongitude,
+    List<ZoneMapShapeDto> Shapes,
+    /// <summary>Member codes with no boundary on file, padded for display.</summary>
+    List<string> CodesWithNoShape);
+
 /// <summary>
 /// A postcode / zip group. ONE table (BulkZonePostcodeGroup) serves both
 /// tenants; only the member table differs - BulkZonePostcode on NZ,
@@ -109,21 +145,19 @@ public record PostcodeInOtherZoneDto(string Code, int Zone, string ZoneLabel);
 /// <param name="Group">The copy, in the same shape the list returns.</param>
 /// <param name="MembersCopied">Postcode rows (NZ) or zip rows (US) written.</param>
 /// <param name="ZonesCopied">Distinct zone numbers carried over.</param>
-/// <param name="PolygonsNotCopied">
-/// Polygons bound to the original that the copy did not get, with the reason in
-/// <paramref name="PolygonNote"/>. Reported rather than skipped silently,
-/// because spec 3.2 says duplicate copies polygons and this is the one part it
-/// cannot: tblBulkRunPolygon.PostcodeGroupId is a single column, so a polygon
-/// belongs to at most one group and the binding cannot be shared. Copying it
-/// would mean cloning the geometry, which nobody has asked for. No group on
-/// Urgent staging has a polygon today (0 of 58), so this reads 0 in practice.
+/// <param name="PolygonsCopied">
+/// Polygon memberships the copy got, written the same way the postcodes are:
+/// a new BulkZonePolygon row per shape, same PolygonId, same zone. The shape
+/// itself is neither cloned nor moved, because BulkZonePolygon is unique on
+/// (PostcodeGroupId, PolygonId) rather than on PolygonId alone, so one shape
+/// can be zone 4 here and zone 2 in the copy's group and the original keeps
+/// it. Spec 3.1, migration 20261007170000.
 /// </param>
 public record PostcodeGroupDuplicateResultDto(
     PostcodeGroupDto Group,
     int MembersCopied,
     int ZonesCopied,
-    int PolygonsNotCopied,
-    string PolygonNote);
+    int PolygonsCopied);
 
 /// <summary>A schedule that references this group, and on which side.
 /// A schedule can use the same group for both pickup and delivery, so the
@@ -188,13 +222,21 @@ public record ZoneGroupDto(
 /// <summary>Polygon binding view - the subset of tblBulkRunPolygon
 /// columns the Zone Groups tab needs to list "polygons bound to this
 /// zone" and to render binding state chips.</summary>
+/// <summary>A polygon bound to a US ZoneName, or a member of a zone inside a
+/// postcode group. The two axes are stored differently and that shows here:
+/// ZoneName binding is the single column tblBulkRunPolygon.ZoneNameId, while
+/// group membership is a BulkZonePolygon row, so it carries the zone number it
+/// joined and its own id. Zone and MembershipId are therefore null on the
+/// ZoneName side.</summary>
 public record BoundPolygonDto(
     int PolygonId,
     string Name,
     int? ZoneNameId,
     int? PostcodeGroupId,
     decimal CentroidLatitude,
-    decimal CentroidLongitude);
+    decimal CentroidLongitude,
+    int? Zone = null,
+    int? MembershipId = null);
 
 /// <summary>Envelope returned by /api/territory/bootstrap so the React
 /// side can populate all three tabs from one roundtrip.</summary>

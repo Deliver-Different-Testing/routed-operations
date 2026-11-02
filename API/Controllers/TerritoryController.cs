@@ -27,17 +27,19 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     public async Task<IActionResult> GetPolygonsForZoneName(int id) =>
         Ok(new { response = await bindings.GetForZoneNameAsync(id) });
 
-    /// <summary>List polygons currently bound to a PostcodeGroup.</summary>
+    /// <summary>List the shapes that are members of a zone inside this
+    /// PostcodeGroup, each with the zone it joined.</summary>
     [HttpGet("postcode-groups/{id:int}/polygons")]
     public async Task<IActionResult> GetPolygonsForPostcodeGroup(int id) =>
         Ok(new { response = await bindings.GetForPostcodeGroupAsync(id) });
 
-    /// <summary>Bind (or clear) a polygon's zone / postcode-group binding.
-    /// Null on both fields clears every binding on the polygon.</summary>
+    /// <summary>Bind (or clear) a polygon's US ZoneName. Group membership is
+    /// a zone row, written through POST /api/bulk-polygons/{id}/zones, not
+    /// here.</summary>
     [HttpPost("polygons/{polygonId:int}/bind")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> BindPolygon(int polygonId, [FromBody] PolygonBindRequest req) =>
-        await Wrap(() => bindings.BindAsync(polygonId, req.ZoneNameId, req.PostcodeGroupId));
+        await Wrap(() => bindings.BindZoneNameAsync(polygonId, req.ZoneNameId));
 
     // ─── READS ─────────────────────────────────────────────────────────────
 
@@ -103,6 +105,20 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     public async Task<IActionResult> ReactivateDepot(int id) =>
         await Wrap(() => svc.SetDepotActiveAsync(id, true));
 
+    /// <summary>Every depot with whether it is switched off for this client.
+    /// Separate from GET depots?clientId, which filters to the depots the
+    /// client can already reach.</summary>
+    [HttpGet("depots/client-limits")]
+    public async Task<IActionResult> GetDepotClientLimits([FromQuery] int clientId) =>
+        await Wrap(() => svc.GetDepotClientLimitsAsync(clientId));
+
+    /// <summary>Switch one depot off for one client, or back on.</summary>
+    [HttpPost("depots/{id:int}/client-limit")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> SetDepotClientLimit(
+        int id, [FromBody] DepotClientLimitRequest req) =>
+        await Wrap(() => svc.SetDepotClientLimitAsync(id, req.ClientId, req.Off));
+
     /// <summary>
     /// Postcode groups. Filter by client CODE (preferred) or ID.
     /// If both are set, clientCode wins. Matches the legacy
@@ -134,6 +150,12 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     [HttpGet("postcode-groups/{id:int}/detail")]
     public async Task<IActionResult> GetPostcodeGroupDetail(int id) =>
         await Wrap(() => svc.GetPostcodeGroupDetailAsync(id));
+
+    /// <summary>Boundaries for the map panel beside a zone group, shaded by
+    /// zone, plus the depot pin.</summary>
+    [HttpGet("postcode-groups/{id:int}/map")]
+    public async Task<IActionResult> GetZoneMap(int id) =>
+        await Wrap(() => svc.GetZoneMapAsync(id));
 
     [HttpGet("nz/postcodes")]
     // LOAD-BEARING: on the Schedules (NEW) create/edit path. Narrowing this breaks
