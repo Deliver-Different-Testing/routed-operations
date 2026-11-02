@@ -270,8 +270,13 @@ describe('NewImportWizard', () => {
     // Advance through SelectRegions - it auto-ticks depot 1 via effect.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled());
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    // SchedulePickerModal appears; verify title.
-    await waitFor(() => expect(screen.getByText(/Central/)).toBeInTheDocument());
+    // SchedulePickerModal appears; verify title. Matched as the dialog's
+    // heading rather than as loose text: the cutoff notice added on 29 Oct
+    // also names the depot ("Booking for Central on this date closed at
+    // ... "), so a /Central/ text query matches two nodes and the test then
+    // passes or fails depending on the time of day the runner starts.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Central' })).toBeInTheDocument());
   });
 
   it('walks through New Import -> Map Columns -> Fix Zips -> Fix Addresses (multi-step navigation)', async () => {

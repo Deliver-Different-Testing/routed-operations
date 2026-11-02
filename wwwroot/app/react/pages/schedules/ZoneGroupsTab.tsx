@@ -411,15 +411,16 @@ function PostcodeGroupDuplicateModal({
     try {
       const res = await territoryService.duplicatePostcodeGroup(row.id, form);
       const r = res.response;
+      // Polygons are counted in the same sentence rather than in a second
+      // toast: they copy the same way the codes do, so they are not an
+      // exception worth its own line.
+      const shapes = r.polygonsCopied > 0
+        ? ` and ${r.polygonsCopied} polygon${r.polygonsCopied === 1 ? '' : 's'}`
+        : '';
       toast.show(
-        `Copied ${r.membersCopied} ${memberWord}${r.membersCopied === 1 ? '' : 's'} `
+        `Copied ${r.membersCopied} ${memberWord}${r.membersCopied === 1 ? '' : 's'}${shapes} `
         + `across ${r.zonesCopied} zone${r.zonesCopied === 1 ? '' : 's'} into "${r.group.name}".`,
         'success');
-      // Only surfaced when there is something to say. A polygon belongs to one
-      // group at a time, so the copy cannot share the binding.
-      if (r.polygonsNotCopied > 0 && r.polygonNote) {
-        toast.show(`${r.polygonsNotCopied} polygon(s) not copied. ${r.polygonNote}`, 'info');
-      }
       onSaved();
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }

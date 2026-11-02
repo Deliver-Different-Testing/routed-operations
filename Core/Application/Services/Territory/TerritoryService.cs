@@ -72,6 +72,156 @@ public class TerritoryService(
     }
 
     /// <summary>
+    /// Every depot in the tenant with whether it is switched off for this
+    /// client. Deliberately NOT the filtered list GetDepotsAsync returns: the
+    /// editor has to show depots the client cannot currently reach, because
+    /// turning one back on is the whole point of it.
+    /// </summary>
+    public async Task<List<DepotClientLimitDto>> GetDepotClientLimitsAsync(int clientId)
+    {
+        await RequireClientAsync(clientId);
+
+        var off = await Context.TblBulkRegionClientLimits.AsNoTracking()
+            .Where(l => l.ClientId == clientId && l.BulkRegionId != null)
+            .Select(l => l.BulkRegionId!.Value)
+            .ToListAsync();
+        var offSet = off.ToHashSet();
+
+        return (await Context.TblBulkRegions.AsNoTracking()
+                .OrderBy(r => r.Name)
+                .Select(r => new { r.BulkRegionId, r.Name, r.Active })
+                .ToListAsync())
+            .Select(r => new DepotClientLimitDto(
+                r.BulkRegionId, r.Name, r.Active ?? true, offSet.Contains(r.BulkRegionId)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Switch a depot off for one client, or back on. Mirrors ClientManager:
+    /// off INSERTS a row, on DELETES it, so absence is the normal state and
+    /// nothing needs seeding. Idempotent in both directions.
+    /// </summary>
+    public async Task<DepotClientLimitDto> SetDepotClientLimitAsync(
+        int depotId, int clientId, bool off)
+    {
+        var depot = await Context.TblBulkRegions.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.BulkRegionId == depotId)
+            ?? throw new InvalidOperationException(
+                $"{(IsUsTenant() ? "Location" : "Depot")} {depotId} not found.");
+        await RequireClientAsync(clientId);
+
+        // Every row for the pair, not one: nothing stops a duplicate being
+        // written by another surface, and leaving a second row behind would
+        // read as "off" forever once this one is deleted.
+        var rows = await Context.TblBulkRegionClientLimits
+            .Where(l => l.ClientId == clientId && l.BulkRegionId == depotId)
+            .ToListAsync();
+
+        if (off && rows.Count == 0)
+        {
+            Context.TblBulkRegionClientLimits.Add(new Domain.Despatch.TblBulkRegionClientLimit
+            {
+                BulkRegionId = depotId,
+                ClientId = clientId,
+                Deactivated = true,
+            });
+            await Context.SaveChangesAsync();
+        }
+        else if (!off && rows.Count > 0)
+        {
+            Context.TblBulkRegionClientLimits.RemoveRange(rows);
+            await Context.SaveChangesAsync();
+        }
+
+        return new DepotClientLimitDto(depot.BulkRegionId, depot.Name, depot.Active ?? true, off);
+    }
+
+    /// <summary>
+    /// The map panel beside a zone group (spec 11.8): every member postcode's
+    /// boundary, carrying the zone it sits in so the map can shade by zone,
+    /// plus the depot's coordinates for the pin.
+    ///
+    /// NZ postcode boundaries live in the same dbo.ZipPolygon table as US
+    /// zips, which is why one query serves both tenants (Steve, 21 Oct).
+    /// BulkZonePostcode.PostCode is an int so 0600 is stored as 600, while
+    /// ZipPolygon.Zip is the padded four-character text, so the join is on
+    /// the padded spelling. Codes with no row there are returned separately
+    /// rather than dropped: a map quietly missing two of ten zones reads as
+    /// broken, while a map that names them reads as incomplete data.
+    /// </summary>
+    public async Task<ZoneMapDto> GetZoneMapAsync(int postcodeGroupId)
+    {
+        var group = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.Id == postcodeGroupId)
+            ?? throw new InvalidOperationException("Postcode group not found.");
+
+        var depot = group.DepotId == null
+            ? null
+            : await Context.TblBulkRegions.AsNoTracking()
+                .Where(d => d.BulkRegionId == group.DepotId)
+                .Select(d => new { d.Name, d.PickupLatitude, d.PickupLongitude })
+                .FirstOrDefaultAsync();
+
+        // Zone per code. US groups hold their members in ZoneZip, where the
+        // zip is already text.
+        List<(int Zone, string Code)> members;
+        if (IsUsTenant())
+        {
+            members = (await Context.ZoneZips.AsNoTracking()
+                    .Where(z => z.ZoneZipGroupId == postcodeGroupId && z.Zip != null)
+                    .Select(z => new { z.ZoneNumber, z.Zip })
+                    .ToListAsync())
+                .Select(z => (z.ZoneNumber ?? 0, z.Zip.Trim()))
+                .ToList();
+        }
+        else
+        {
+            members = (await Context.BulkZonePostcodes.AsNoTracking()
+                    .Where(p => p.PostcodeGroupId == postcodeGroupId)
+                    .Select(p => new { p.Zone, p.PostCode })
+                    .ToListAsync())
+                .Select(p => (p.Zone, p.PostCode.ToString("D4")))
+                .ToList();
+        }
+
+        var zoneByCode = members
+            .GroupBy(m => m.Code)
+            .ToDictionary(g => g.Key, g => g.First().Zone);
+        var codes = zoneByCode.Keys.ToList();
+        if (codes.Count == 0)
+            return new ZoneMapDto(
+                postcodeGroupId, group.Name, group.DepotId, depot?.Name,
+                depot?.PickupLatitude, depot?.PickupLongitude, [], []);
+
+        var found = await Context.ZipPolygons.AsNoTracking()
+            .Where(z => z.Zip != null && codes.Contains(z.Zip))
+            .Select(z => new { z.ZipPolygonId, z.Zip, z.Latitude, z.Longitude, z.Wkt })
+            .ToListAsync();
+
+        var shapes = found
+            .Where(z => zoneByCode.ContainsKey(z.Zip))
+            .Select(z => new ZoneMapShapeDto(
+                zoneByCode[z.Zip], z.Zip, z.ZipPolygonId, z.Latitude, z.Longitude, z.Wkt))
+            .OrderBy(z => z.Zone).ThenBy(z => z.Code)
+            .ToList();
+
+        var withShape = found.Select(z => z.Zip).ToHashSet();
+        var missing = codes.Where(c => !withShape.Contains(c)).OrderBy(c => c).ToList();
+
+        return new ZoneMapDto(
+            postcodeGroupId, group.Name, group.DepotId, depot?.Name,
+            depot?.PickupLatitude, depot?.PickupLongitude, shapes, missing);
+    }
+
+    /// <summary>Reject an unknown client id loudly rather than silently
+    /// writing a limit row nothing will ever read.</summary>
+    private async Task RequireClientAsync(int clientId)
+    {
+        if (!await Context.TucClients.AsNoTracking().AnyAsync(c => c.UcclId == clientId))
+            throw new InvalidOperationException($"Client {clientId} not found.");
+    }
+
+    /// <summary>
     /// List postcode groups. When clientId is provided, filter to groups
     /// owned by that client OR by no client (client-agnostic defaults).
     /// Matches the legacy /API/BulkZonePostcodeGroups/Clients/{id}
@@ -193,12 +343,19 @@ public class TerritoryService(
             .OrderBy(s => s.Name)
             .ToList();
 
-        var polygons = await Context.BulkRunPolygons.AsNoTracking()
-            .Where(p => p.Active && p.PostcodeGroupId == id)
-            .OrderBy(p => p.Name)
-            .Select(p => new BoundPolygonDto(
-                p.PolygonId, p.Name, p.ZoneNameId, p.PostcodeGroupId,
-                p.CentroidLatitude, p.CentroidLongitude))
+        // Membership, not ownership. A shape is a member of a zone inside this
+        // group exactly the way a postcode is (BulkZonePolygon, unique on
+        // (PostcodeGroupId, PolygonId), migration 20261007170000), so the same
+        // shape can also be a different zone of another group.
+        var polygons = await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join p in Context.BulkRunPolygons.AsNoTracking()
+                    on zp.PolygonId equals p.PolygonId
+                where zp.Active && p.Active && zp.PostcodeGroupId == id
+                orderby zp.Zone, p.Name
+                select new BoundPolygonDto(
+                    p.PolygonId, p.Name, p.ZoneNameId, zp.PostcodeGroupId,
+                    p.CentroidLatitude, p.CentroidLongitude, zp.Zone, zp.Id))
             .ToListAsync();
 
         return new PostcodeGroupDetailDto(ToDto(g, clientCode, counts), zones, schedules, polygons);
@@ -246,9 +403,12 @@ public class TerritoryService(
                 .Select(p => new { GroupId = p.PostcodeGroupId.Value, Zone = p.Zone })
                 .ToListAsync();
 
-        var polygons = await Context.BulkRunPolygons.AsNoTracking()
-            .Where(p => p.Active && p.PostcodeGroupId != null && ids.Contains(p.PostcodeGroupId.Value))
-            .Select(p => new { GroupId = p.PostcodeGroupId.Value })
+        var polygons = await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join p in Context.BulkRunPolygons.AsNoTracking()
+                    on zp.PolygonId equals p.PolygonId
+                where zp.Active && p.Active && ids.Contains(zp.PostcodeGroupId)
+                select new { GroupId = zp.PostcodeGroupId })
             .ToListAsync();
 
         // Both sides in one pass. A day row can reference the same group on
@@ -508,19 +668,38 @@ public class TerritoryService(
 
         if (membersCopied > 0) await Context.SaveChangesAsync();
 
-        var polygons = await Context.BulkRunPolygons.AsNoTracking()
-            .CountAsync(p => p.Active && p.PostcodeGroupId == id);
+        // Polygons copy the same way postcodes do: a new membership row per
+        // shape, same PolygonId, same zone. The shape itself is not cloned and
+        // is not moved, because BulkZonePolygon is unique on
+        // (PostcodeGroupId, PolygonId) rather than on PolygonId alone, so one
+        // shape can be Zone 4 here and Zone 2 in the copy's group without
+        // either group losing it. Spec 3.1, migration 20261007170000.
+        var polygonMembers = await Context.BulkZonePolygons.AsNoTracking()
+            .Where(zp => zp.Active && zp.PostcodeGroupId == id)
+            .Select(zp => new { zp.PolygonId, zp.Zone })
+            .ToListAsync();
+
+        if (polygonMembers.Count > 0)
+        {
+            var actor = CurrentUser();
+            Context.BulkZonePolygons.AddRange(polygonMembers.Select(m =>
+                new Domain.Despatch.BulkZonePolygon
+                {
+                    PostcodeGroupId = copy.Id,
+                    PolygonId = m.PolygonId,
+                    Zone = m.Zone,
+                    Active = true,
+                    CreatedUtc = DateTime.UtcNow,
+                    CreatedBy = actor,
+                }));
+            await Context.SaveChangesAsync();
+        }
 
         return new PostcodeGroupDuplicateResultDto(
             await GetPostcodeGroupAsync(copy.Id),
             membersCopied,
             zonesCopied,
-            polygons,
-            polygons == 0
-                ? null
-                : "A polygon belongs to one group at a time, so its binding cannot be shared with "
-                  + "the copy. Re-bind the ones the copy should own, or raise it and we add a "
-                  + "junction so a polygon can serve both.");
+            polygonMembers.Count);
     }
 
     /// <summary>

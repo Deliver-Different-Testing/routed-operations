@@ -5,13 +5,21 @@ using RoutedOperations.Core.Domain;
 namespace RoutedOperations.Core.Application.Services.Territory;
 
 /// <summary>
-/// Zone-to-polygon binding surface. Sits alongside the existing
-/// BulkPolygonService (which owns polygon CRUD + geography derivation)
-/// so that adding zone binding does not force a large edit of the
-/// polygon service's write-path. Reads + writes only the two
-/// nullable FK columns tblBulkRunPolygon.ZoneNameId +
-/// PostcodeGroupId added in migration
+/// US ZoneName to polygon binding. Reads and writes the single nullable
+/// column tblBulkRunPolygon.ZoneNameId from migration
 /// 20260824170000_AddZoneBindingToBulkRunPolygon.
+///
+/// The postcode-group axis is NOT here any more. A polygon is a MEMBER of a
+/// zone inside a group, recorded in BulkZonePolygon and unique on
+/// (PostcodeGroupId, PolygonId), so the same shape may be Zone 4 in
+/// Auckland's group and Zone 2 in a client's group at the same time
+/// (spec 3.1, migration 20261007170000). The sibling column
+/// tblBulkRunPolygon.PostcodeGroupId can hold only one group and reading it
+/// as ownership is what made Duplicate refuse to copy polygons; writes now go
+/// through BulkPolygonService.AddToZoneAsync / RemoveFromZoneAsync, which also
+/// enforce the one-zone-per-group overlap rule. The column itself is dropped
+/// in a follow-up migration once this is live, app first because the change is
+/// destructive.
 /// </summary>
 public class PolygonBindingService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
     : BaseService(contextFactory)
@@ -26,27 +34,30 @@ public class PolygonBindingService(IDbContextFactory<DynamicDespatchDbContext> c
                 p.CentroidLatitude, p.CentroidLongitude))
             .ToListAsync();
 
-    /// <summary>All (Active) polygons bound to a given PostcodeGroup.</summary>
+    /// <summary>Every shape that is a member of a zone inside this group,
+    /// carrying the zone it joined and its membership id so the caller can
+    /// show and remove it.</summary>
     public async Task<List<BoundPolygonDto>> GetForPostcodeGroupAsync(int postcodeGroupId) =>
-        await Context.BulkRunPolygons.AsNoTracking()
-            .Where(p => p.Active && p.PostcodeGroupId == postcodeGroupId)
-            .OrderBy(p => p.Name)
-            .Select(p => new BoundPolygonDto(
-                p.PolygonId, p.Name, p.ZoneNameId, p.PostcodeGroupId,
-                p.CentroidLatitude, p.CentroidLongitude))
+        await (
+                from zp in Context.BulkZonePolygons.AsNoTracking()
+                join p in Context.BulkRunPolygons.AsNoTracking()
+                    on zp.PolygonId equals p.PolygonId
+                where zp.Active && p.Active && zp.PostcodeGroupId == postcodeGroupId
+                orderby zp.Zone, p.Name
+                select new BoundPolygonDto(
+                    p.PolygonId, p.Name, p.ZoneNameId, zp.PostcodeGroupId,
+                    p.CentroidLatitude, p.CentroidLongitude, zp.Zone, zp.Id))
             .ToListAsync();
 
-    /// <summary>Bind (or re-bind) a polygon to a ZoneName and/or a
-    /// PostcodeGroup. Pass null to a field to clear that binding. Passing
-    /// null to both clears every binding on the polygon (its content is
-    /// unaffected).</summary>
-    public async Task<BoundPolygonDto> BindAsync(int polygonId, int? zoneNameId, int? postcodeGroupId)
+    /// <summary>Bind (or clear) a polygon's US ZoneName. Pass null to clear.
+    /// Group membership is not touched here; it lives in BulkZonePolygon and
+    /// is written through BulkPolygonService.</summary>
+    public async Task<BoundPolygonDto> BindZoneNameAsync(int polygonId, int? zoneNameId)
     {
         var entity = await Context.BulkRunPolygons
             .FirstOrDefaultAsync(p => p.PolygonId == polygonId)
             ?? throw new InvalidOperationException("Polygon not found.");
         entity.ZoneNameId = zoneNameId;
-        entity.PostcodeGroupId = postcodeGroupId;
         entity.LastModifiedUtc = DateTime.UtcNow;
         await Context.SaveChangesAsync();
         return new BoundPolygonDto(

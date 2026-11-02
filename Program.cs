@@ -385,6 +385,8 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverSche
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverScheduling.DriverSchedulingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.TerritoryService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.PolygonBindingService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Linehaul.LinehaulRateService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Pricing.PricingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();
 // Historic Archive Upload (2026-08-19). Writes legacy job-history rows
 // into tucJobArchive with the billing-sentinel recipe. Scoped so the
