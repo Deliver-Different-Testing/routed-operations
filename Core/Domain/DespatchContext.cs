@@ -933,9 +933,14 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.HasKey(e => e.UcctId);
             entity.ToTable("tucClientContact");
 
-            // UcctClient -> TucClient (slim, no back-ref).
+            // UcctClient -> TucClient, with TucClient.TucClientContacts as the
+            // back-ref (ucctClientID), as legacy BulkImportHyper maps it
+            // (FK_tucClientContact_tucClient). Without the back-ref EF gave
+            // TucClientContacts its own shadow FK, TucClientUcclId, a column
+            // tucClientContact does not have, so the Bulk Import "linked
+            // client" rule could never match a tucClientContact link.
             entity.HasOne(e => e.UcctClient)
-                .WithMany()
+                .WithMany(p => p.TucClientContacts)
                 .HasForeignKey(e => e.UcctClientId)
                 .OnDelete(DeleteBehavior.NoAction);
 

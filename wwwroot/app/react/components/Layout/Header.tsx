@@ -3,6 +3,9 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useGlobalSearch } from '../../context/GlobalSearchContext';
 import { routeViewerService } from '../../services/routeViewerService';
+import { usePageAccess } from '../../hooks/queries/useVisibleFeatures';
+import { routeGates } from '../../lib/accessSwitches';
+import { navItems } from './navItems';
 
 /**
  * Layout header. Renders the tenant / user identity strip plus a
@@ -52,6 +55,10 @@ export function Header() {
   const onRoutes = location.pathname === '/routes' || location.pathname.startsWith('/routes/');
   const onRouteViewer = location.pathname === '/route-viewer' || location.pathname.startsWith('/route-viewer/');
   const pageName = resolvePageName(location.pathname);
+  // Same gate FeatureRoute applies to the page body: a caller who gets "This
+  // page isn't available" (e.g. a customer on /routes) gets no search box
+  // either. Hidden while the switches load, as the page body waits too.
+  const pageAccess = usePageAccess(routeGates(location.pathname, navItems));
 
   // Route Viewer search state (kept local - GlobalSearchContext is scoped
   // to Route Builder's in-memory job list, not the Route Viewer backend
@@ -93,7 +100,7 @@ export function Header() {
     setFocused(false);
   };
 
-  const showSearch = onRoutes || onRouteViewer;
+  const showSearch = (onRoutes || onRouteViewer) && pageAccess === 'allowed';
 
   return (
     <header className="h-14 bg-surface-white border-b border-border flex items-center gap-4 px-4">

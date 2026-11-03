@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Templates;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.BulkImport;
 using Serilog;
 
@@ -15,12 +16,14 @@ namespace RoutedOperations.API.Controllers;
 /// Manages per-contact CSV column-mapping templates used by Step 2 of the
 /// Bulk Import wizard. Ownership is enforced inside TemplateService by the
 /// ContactId filter on every read/write; the controller only surfaces the
-/// three CRUD endpoints and gates them behind the same RouteBuilder.Admin
+/// three CRUD endpoints and gates them behind the same interim BulkImport.Use
 /// policy every other bulk-import endpoint uses.
 /// </summary>
 [ApiController]
 [Route("api/templates")]
-[Authorize(Policy = "RouteBuilder.Admin")]
+// Interim BulkImport.Use (staff + customers), pending Garry's agreement; see
+// BulkImportPolicies. Customer rows are cut down by IBulkClientScope.
+[Authorize(Policy = BulkImportPolicies.Use)]
 // Access Control switch: Bulk Import (its column-mapping templates) (Routed Ops switches spec step 3b).
 [RequireFeature("ro-bulk-import")]
 public class TemplatesController(

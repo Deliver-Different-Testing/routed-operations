@@ -92,3 +92,35 @@ export function routeGates(pathname: string, items: readonly KeyedRoute[]): stri
   }
   return best ? (best as { keys: string[] }).keys : [];
 }
+
+/** A nav entry as firstAllowedPath reads it (hidden = routable, no menu entry). */
+export interface HomeRoute extends KeyedRoute {
+  hidden?: boolean;
+  children?: readonly HomeRoute[];
+}
+
+/**
+ * Where "/" (and any unknown URL) should land: the first menu entry the caller
+ * can open, in sidebar order. Same rules as the sidebar: a hidden entry is
+ * skipped, a group needs its own key AND the child's key, and `isDenied` (the
+ * network-partner path denial) removes an entry before its keys are read.
+ *
+ * Returns null when nothing is allowed, so the caller can show the empty
+ * state instead of a page that would only say "not available"
+ * (ro-bulk-import-customer-scope M3: a customer with only Bulk Import used to
+ * land on /dashboard and see an empty menu).
+ */
+export function firstAllowedPath(
+  items: readonly HomeRoute[],
+  allowed: (key?: string) => boolean,
+  isDenied: (to: string) => boolean = () => false,
+): string | null {
+  for (const item of items) {
+    if (item.hidden || isDenied(item.to) || !allowed(item.featureKey)) continue;
+    if (!item.children) return item.to;
+    for (const child of item.children) {
+      if (!child.hidden && !isDenied(child.to) && allowed(child.featureKey)) return child.to;
+    }
+  }
+  return null;
+}

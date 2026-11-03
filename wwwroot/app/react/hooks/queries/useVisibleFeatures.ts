@@ -40,3 +40,23 @@ export function useVisibleFeatures(): VisibleFeatures {
   if (q.isSuccess) return { visibleFeatures: q.data, status: 'ready' };
   return { visibleFeatures: null, status: 'loading' };
 }
+
+export type PageAccess = 'loading' | 'allowed' | 'denied';
+
+/**
+ * Whether the caller may open a page gated by `requiredKeys` (every switch on
+ * its menu chain, from routeGates()). FeatureRoute renders by this, and the
+ * Header reads it to hide page chrome (the job search box) on a page the
+ * caller cannot open. Empty keys or a DF Admin bypass = allowed; loading
+ * waits; a failed fetch fails closed.
+ */
+export function usePageAccess(requiredKeys: readonly string[]): PageAccess {
+  const user = useAuth();
+  const { visibleFeatures, status } = useVisibleFeatures();
+  if (requiredKeys.length === 0 || user.bypassesFeatureSwitches) return 'allowed';
+  if (status === 'loading') return 'loading';
+  if (status === 'ready' && visibleFeatures && requiredKeys.every((k) => visibleFeatures.has(k))) {
+    return 'allowed';
+  }
+  return 'denied';
+}

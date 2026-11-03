@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.BulkImport;
 using Serilog;
 
@@ -24,14 +25,18 @@ namespace RoutedOperations.API.Controllers;
 /// injected. The rate/factory partial's public methods (Import, GetPickupRate,
 /// BookPickup) resolve off the same instance.
 ///
-/// All endpoints gated by RouteBuilder.Admin. StaffImport + Google Drive
+/// All endpoints gated by the interim BulkImport.Use policy (staff +
+/// customers); staff-import and the two Bulk Complete endpoints also need
+/// RouteBuilder.Admin. StaffImport + Google Drive
 /// endpoints are Phase 3 stubs returning 501 until the corresponding
 /// service methods (StaffImport, ImportFromGoogleDrive is present but
 /// intentionally not surfaced here yet).
 /// </summary>
 [ApiController]
 [Route("api/bulk-import")]
-[Authorize(Policy = "RouteBuilder.Admin")]
+// Interim BulkImport.Use (staff + customers), pending Garry's agreement; see
+// BulkImportPolicies. Customer rows are cut down by IBulkClientScope.
+[Authorize(Policy = BulkImportPolicies.Use)]
 // Access Control switch: Bulk Import (Routed Ops switches spec step 3b).
 [RequireFeature("ro-bulk-import")]
 public class BulkImportController(
@@ -152,6 +157,8 @@ public class BulkImportController(
     // rather than 401 (the shared cookie already authenticated the user;
     // they just don't have the internal-staff role). Response body carries
     // the same messageId shape the wizard renders.
+    // Staff only: ANDs with the controller's BulkImport.Use.
+    [Authorize(Policy = "RouteBuilder.Admin")]
     [HttpPost("staff-import")]
     public async Task<IActionResult> StaffImport([FromBody] StaffImportRequest request)
     {
@@ -289,6 +296,9 @@ public class BulkImportController(
 
     // POST /api/bulk-import/search-for-complete - look up existing routed
     // or on-demand jobs by job number for the Bulk Complete flow.
+    // Bulk Complete is a staff tool (hidden in the UI for everyone, as in legacy).
+    // Staff only: ANDs with the controller's BulkImport.Use.
+    [Authorize(Policy = "RouteBuilder.Admin")]
     [HttpPost("search-for-complete")]
     public async Task<IActionResult> SearchJobsForBulkComplete([FromBody] BulkJobSearchRequest request)
     {
@@ -309,6 +319,8 @@ public class BulkImportController(
     // POST /api/bulk-import/bulk-complete - mark the matched jobs complete
     // in one go. Routed jobs go through UTL_stpJob_InsertFromRunBuilder to
     // spawn a shared "BulkImportComplete" run.
+    // Staff only: ANDs with the controller's BulkImport.Use.
+    [Authorize(Policy = "RouteBuilder.Admin")]
     [HttpPost("bulk-complete")]
     public async Task<IActionResult> BulkCompleteJobs([FromBody] BulkJobCompleteRequest request)
     {

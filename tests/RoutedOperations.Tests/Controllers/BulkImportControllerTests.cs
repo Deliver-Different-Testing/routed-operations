@@ -30,10 +30,10 @@ public class BulkImportControllerTests
         var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, clientTypeId: clientTypeId, contactId: "3");
         var cache = ControllerTestHarness.Cache(accessor);
         var here = new HereGeocodeService(new HttpClient(), new AppSettings());
-        var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache);
+        var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache, new BulkClientScope(accessor));
         var httpClientFactory = Substitute.For<IHttpClientFactory>();
         httpClientFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient());
-        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService);
+        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService, new BulkClientScope(accessor));
         var logger = Substitute.For<ILogger<BulkImportController>>();
         var ctl = new BulkImportController(svc, logger);
         ControllerTestHarness.AttachHttpContext(ctl,
