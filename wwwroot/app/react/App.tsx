@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AppLayout } from './components/Layout/AppLayout';
+import { HomeRedirect } from './components/Layout/HomeRedirect';
 import { useAuth } from './context/AuthContext';
 import { isPartnerDeniedPath } from './lib/partnerAccess';
 import Dashboard from './pages/Dashboard';
@@ -55,7 +56,9 @@ function PartnerGuard({ children }: { children: React.ReactNode }) {
   const auth = useAuth();
   const location = useLocation();
   if (auth.isNetworkPartner && isPartnerDeniedPath(location.pathname)) {
-    return <Navigate to="/dashboard" replace />;
+    // To the first page the partner may open (HomeRedirect), not a fixed
+    // /dashboard the partner may not have.
+    return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }
@@ -64,7 +67,8 @@ export default function App() {
   return (
     <Routes>
       <Route element={<PartnerGuard><AppLayout /></PartnerGuard>}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        {/* First page the caller may open, or the empty state (M3). */}
+        <Route path="/" element={<HomeRedirect />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/routes" element={<RoutesPage />} />
         <Route path="/bulk-import" element={<BulkImport />} />
@@ -101,7 +105,7 @@ export default function App() {
         <Route path="/route-viewer/cs" element={<CustomerServices />} />
         <Route path="/route-viewer/linehaul" element={<Linehaul />} />
         <Route path="/route-viewer/mobile" element={<Mobile />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<HomeRedirect />} />
       </Route>
     </Routes>
   );

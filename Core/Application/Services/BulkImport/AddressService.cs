@@ -27,7 +27,8 @@ public class AddressService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     IHttpContextAccessor httpContextAccessor,
     HereGeocodeService hereGeocodeService,
-    TenantScopedCache cache) : BaseService(contextFactory)
+    TenantScopedCache cache,
+    IBulkClientScope scope) : BaseService(contextFactory)
 {
     private readonly IHttpContextAccessor _httpContextAccessor = httpContextAccessor;
     private readonly HereGeocodeService _hereGeocodeService = hereGeocodeService;
@@ -563,7 +564,11 @@ public class AddressService(
     // but have no bookable schedule for the client come back with
     // HasSchedules = false so the wizard shows their rows as a warning
     // instead of an importable depot (tester report 2026-09-22).
-    public async Task<SortPostcodesByRegionResponse> GetPostcodesByDepotAsync(Guid messageId, int? clientId = null)
+    //
+    // contactId is the caller's ContactID claim. A clientId the caller may not
+    // act for is ignored (treated as null) so the response never tells one
+    // customer which depots another client has schedules at.
+    public async Task<SortPostcodesByRegionResponse> GetPostcodesByDepotAsync(Guid messageId, int? clientId = null, int contactId = 0)
     {
         var response = new SortPostcodesByRegionResponse(messageId);
 
@@ -589,6 +594,11 @@ public class AddressService(
         // Null clientId keeps the old behaviour: every depot counts as
         // serviced, only the deterministic de-duplication applies.
         HashSet<int> scheduledDepotIds = null;
+        if (clientId.HasValue && !scope.IsStaff
+            && !await scope.CanActForClientAsync(Context, contactId, clientId.Value))
+        {
+            clientId = null;
+        }
         if (clientId.HasValue)
         {
             scheduledDepotIds = (await BookableSchedules.LoadAsync(Context, clientId.Value))

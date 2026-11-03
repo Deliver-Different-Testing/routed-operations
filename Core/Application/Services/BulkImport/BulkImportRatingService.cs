@@ -31,9 +31,26 @@ public partial class BulkImportServiceV2
 {
     // ---- pickup rate + book ----------------------------------------------
 
+    // Non-staff never set their own pickup price or agent: WS_stpJob_Insert
+    // rates the job itself when these are null. The wizard never sends them
+    // (only a crafted request would), so the customer flow is unchanged.
+    private void StripPickupCommercialFields(PickupJobRequest request)
+    {
+        if (_scope.MaySetCommercialFields) return;
+        request.PickupJob.FixedAmount = null;
+        request.PickupJob.AgentAmount = null;
+        request.PickupJob.AgentCourierID = null;
+        request.PickupJob.FuelSurchargeAmount = null;
+    }
+
     public async Task<PickupJobRateResponse> GetPickupRate(int contactId, PickupJobRequest request)
     {
         PickupJobRateResponse response = new PickupJobRateResponse(request.MessageId);
+
+        // Price only for a client the caller may act for. Before this any
+        // caller could read any client's pickup rates by sending its id.
+        if (!await _scope.CanActForClientAsync(Context, contactId, request.PickupJob.ClientID))
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
 
         if (request.PickupJob.Time.Kind == DateTimeKind.Utc)
         {
@@ -64,6 +81,12 @@ public partial class BulkImportServiceV2
     public async Task<PickupJobResponse> BookPickup(int contactId, PickupJobRequest request)
     {
         PickupJobResponse response = new PickupJobResponse(request.MessageId);
+
+        // Book only for a client the caller may act for (same rule as Import).
+        if (!await _scope.CanActForClientAsync(Context, contactId, request.PickupJob.ClientID))
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
+
+        StripPickupCommercialFields(request);
 
         if (request.PickupJob.Time.Kind == DateTimeKind.Utc)
         {
@@ -186,7 +209,7 @@ public partial class BulkImportServiceV2
 
     // ---- pricing (main entry) ---------------------------------------------
 
-    private async Task<(List<TblBulkJob> zoneRatedJobs, List<TblBulkJob> kmRatedJobs, List<PendingBulkJobItem> pendingJobItems)> PriceAndSplitJobsAndReturnKmRatedJobs(Guid messageId, List<TblBulkJob> jobs, int? scheduleId)
+    private async Task<(List<TblBulkJob> zoneRatedJobs, List<TblBulkJob> kmRatedJobs, List<PendingBulkJobItem> pendingJobItems)> PriceAndSplitJobsAndReturnKmRatedJobs(Guid messageId, List<TblBulkJob> jobs, int? scheduleId, List<PendingBulkJobItem> kmPendingJobItems = null)
     {
         var returnJobs = new List<List<TblBulkJob>>();
         var pendingJobItems = new List<PendingBulkJobItem>();
@@ -477,7 +500,10 @@ public partial class BulkImportServiceV2
                                         .FirstOrDefault(r => (r.JobTypeID == job.Speed || (r.JobTypeID.ToString() == schedule.BulkRunScheduleId.ToString() + job.Speed.ToString().PadLeft(3, '0')))
                                                                 && r.Rate > 0)?.Rate;
 
-                        SplitJobAndApplyAmount(kmJobs, job, selectedRate, null, schedule);
+                        // kmPendingJobItems is null on the first pass (km rows go
+                        // back for review, as before) and set only by the
+                        // non-staff second pass, which saves them straight away.
+                        SplitJobAndApplyAmount(kmJobs, job, selectedRate, null, schedule, pendingJobItems: kmPendingJobItems);
                     }
                 }
 

@@ -18,7 +18,7 @@ public class ClientsControllerTests
         var opts = ControllerTestHarness.NewOptions();
         var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, clientTypeId: clientTypeId);
         var cache = ControllerTestHarness.Cache(accessor);
-        var svc = new ClientService(ControllerTestHarness.Factory(opts), accessor, cache);
+        var svc = new ClientService(ControllerTestHarness.Factory(opts), accessor, cache, new BulkClientScope(accessor));
         var logger = Substitute.For<ILogger<ClientsController>>();
         var ctl = new ClientsController(svc, logger);
         // The controller's own claims come from its ControllerContext, so

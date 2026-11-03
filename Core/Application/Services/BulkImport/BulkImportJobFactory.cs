@@ -46,13 +46,13 @@ public partial class BulkImportServiceV2
                 j.CourierPercentageOverride = Math.Round(j.CourierPercentageOverride.Value, 4, MidpointRounding.AwayFromZero);
             }
 
-        // Staff (ClientTypeId 4/5) may import for any client; anyone else only
-        // for a client they are linked to. Not the "Internal" billing-flag claim.
-        var isInternal = _httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
+        StripImportCommercialFields(request);
 
+        // Staff (ClientTypeId 4/5) may import for any active client; anyone
+        // else only for an active client they are linked to (IBulkClientScope).
         var client = await Context.TucClients
-            .Where(c => c.UcclId == request.ClientId && c.UcclActive
-                && (isInternal || c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active)))
+            .Where(c => c.UcclId == request.ClientId)
+            .Where(_scope.CanActFor(contactId))
             .Select(c => new
             {
                 Id = c.UcclId,
@@ -103,6 +103,41 @@ public partial class BulkImportServiceV2
         else
         {
             return await ProcessRoutedJobs(contactId, request, response, client);
+        }
+    }
+
+    // Non-staff are always rated: their uploaded Amount, courier percentage
+    // and courier are dropped before anything reads them. With Amount null
+    // the routed path rates in PriceAndSplitJobsAndReturnKmRatedJobs, the NZ
+    // on-demand INT_stpJob_BulkInsert rates when @Amount is 0 (its
+    // "IF ISNULL(@Amount,0) = 0" branch), and the US one gets a null
+    // @FixedAmount. The routed km second pass re-rates too (see
+    // ProcessRoutedJobs). Customer pricing = the client's rates, else the
+    // defaults (Steve 2026-09-30).
+    //
+    // The courier on Import as Completed is its own switch
+    // (MayChooseCourierOnCompletedImport) because that decision is still open
+    // with Steve.
+    private void StripImportCommercialFields(BulkImportRequest request)
+    {
+        if (request.Jobs == null) return;
+        var maySetCommercial = _scope.MaySetCommercialFields;
+        var mayChooseCourier = request.ImportAsCompleted
+            ? _scope.MayChooseCourierOnCompletedImport
+            : maySetCommercial;
+
+        foreach (var j in request.Jobs)
+        {
+            if (!maySetCommercial)
+            {
+                j.Amount = null;
+                j.CourierPercentageOverride = null;
+            }
+            if (!mayChooseCourier)
+            {
+                j.CourierCode = null;
+                j.CourierId = null;
+            }
         }
     }
 
@@ -1241,9 +1276,24 @@ public partial class BulkImportServiceV2
         else
         {
             var kmPendingItems = new List<PendingBulkJobItem>();
-            foreach (var job in jobs)
+            if (_scope.MaySetCommercialFields)
             {
-                SplitJobAndApplyAmount(jobs, job, job.Amount, null, pendingJobItems: kmPendingItems);
+                // Staff: the reviewed km-rated amounts are applied as sent.
+                foreach (var job in jobs)
+                {
+                    SplitJobAndApplyAmount(jobs, job, job.Amount, null, pendingJobItems: kmPendingItems);
+                }
+            }
+            else
+            {
+                // Non-staff: this pass used to take the price straight from the
+                // request (a caller could send isKmRatedJobs = true on the first
+                // call and skip rating). Re-rate on the server with the same
+                // pricing the first pass uses; amounts were already stripped.
+                var reRated = await PriceAndSplitJobsAndReturnKmRatedJobs(
+                    request.MessageId, jobs, request.ScheduleId, kmPendingJobItems: kmPendingItems);
+                jobs = reRated.zoneRatedJobs.Concat(reRated.kmRatedJobs).ToList();
+                kmPendingItems.AddRange(reRated.pendingJobItems);
             }
 
             Log.Information($"({request.MessageId})({contactId}) Assigning Import Batch.");

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Address;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.BulkImport;
 using RoutedOperations.Core.Application.Services.Routing;
 using Serilog;
@@ -22,7 +23,11 @@ namespace RoutedOperations.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/address")]
-[Authorize(Policy = "RouteBuilder.Admin")]
+// Interim BulkImport.Use (staff + customers), pending Garry's agreement; see
+// BulkImportPolicies. Customer rows are cut down by IBulkClientScope.
+[Authorize(Policy = BulkImportPolicies.Use)]
+// The Route Builder / Recurring Routes only actions (forward and reverse
+// geocode) keep RouteBuilder.Build, so they stay staff-only.
 // Access Control switch, ANY of: Bulk Import (wizard address fixes), Route Builder (Fix GPS)
 // and Recurring Routes (ScheduledRoutes geocode / regions) all call it (spec step 3b).
 [RequireFeature("ro-bulk-import", "ro-route-builder", "ro-recurring-routes")]
@@ -129,7 +134,7 @@ public class AddressController(
         {
             var messageId = Guid.NewGuid();
             LogRequestStart(messageId);
-            return HandleBulkResponse(await addressService.GetPostcodesByDepotAsync(messageId, clientId));
+            return HandleBulkResponse(await addressService.GetPostcodesByDepotAsync(messageId, clientId, GetCurrentContactId()));
         }
         catch (Exception e)
         {
