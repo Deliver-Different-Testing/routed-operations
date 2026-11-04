@@ -63,6 +63,14 @@ public partial class BulkImportServiceV2
                 .Select(c => c.StaffId)
                 .FirstOrDefaultAsync();
 
+            // NZ truck rows are collected in the loop and inserted after it. Empty
+            // when no row can be a truck row, so a P2P import costs one query.
+            var truckSpeedIds = isNz
+                ? await Context.TucJobTypes.Where(t => t.TruckJobEntry == true).Select(t => t.UcjtId).ToListAsync()
+                : new List<int>();
+            var truckInputs = new List<TruckRowInput>();
+            var truckRowNumbers = new List<(int RowNumber, string JobNumber)>();
+
             foreach (var jobData in request.Jobs)
             {
                 rowNumber++;
@@ -212,6 +220,88 @@ public partial class BulkImportServiceV2
                     if (!speedId.HasValue || speedId == 0)
                     {
                         speedId = 1;
+                    }
+
+                    // A text Speed (TECO) only changes the outcome when it names
+                    // a truck speed. Other text keeps today's default above.
+                    int staffClientId = client.Id;
+                    string rawSpeed = GetStringValue(jobData, "Speed", "SpeedId", "speed", "SpeedID");
+                    List<ClientSpeed> staffSpeeds = null;
+                    if (isNz && !string.IsNullOrWhiteSpace(rawSpeed) && !int.TryParse(rawSpeed, out _))
+                    {
+                        staffSpeeds = await ClientSpeedCatalog.LoadAsync(Context, staffClientId);
+                        var named = ClientSpeedCatalog.Match(staffSpeeds, rawSpeed);
+                        if (named?.TruckJobEntry == true) speedId = named.Id;
+                    }
+
+                    if (truckSpeedIds.Contains(speedId.Value))
+                    {
+                        staffSpeeds ??= await ClientSpeedCatalog.LoadAsync(Context, staffClientId);
+                        var refusal = TruckSpeedRefusal(speedId.Value, staffSpeeds);
+                        if (refusal != null) throw new Exception(refusal);
+
+                        truckInputs.Add(new TruckRowInput
+                        {
+                            Job = new BulkImportJobCreateDto
+                            {
+                                JobNumber = jobNumber,
+                                FromContact = contact,
+                                FromCompany = fromCompany,
+                                FromAddress = fromAddress,
+                                FromSuburb = fromSuburb ?? fromCity,
+                                FromPostCode = fromPostCode?.ToString(),
+                                FromLatitude = pickUpLatitude,
+                                FromLongitude = pickUpLongitude,
+                                FromGeoType = fromGeoType,
+                                ToCompany = toCompany,
+                                ToAddress = toAddress,
+                                ToSuburb = toSuburb ?? toCity,
+                                ToPostCode = toPostCode?.ToString(),
+                                ToLatitude = deliveryLatitude,
+                                ToLongitude = deliveryLongitude,
+                                ToGeoType = toGeoType,
+                                ToContact = toContact,
+                                ToContactPhone = toContactPhone,
+                                Quantity = qty,
+                                Length = GetDecimalValue(jobData, "Length", "length") ?? 0,
+                                Width = GetDecimalValue(jobData, "Width", "width") ?? 0,
+                                Height = GetDecimalValue(jobData, "Height", "height") ?? 0,
+                                Weight = (decimal)(weight ?? 0),
+                                TotalWeight = GetDecimalValue(jobData, "TotalWeight", "Total Weight", "totalweight"),
+                                PalletType = GetStringValue(jobData, "PalletType", "Pallet Type", "pallettype"),
+                                TailLiftPickup = GetBoolValue(jobData, "TailLiftPickup", "Tail Lift PU", "tailliftpickup"),
+                                TailLiftDropoff = GetBoolValue(jobData, "TailLiftDropoff", "Tail Lift DO", "tailliftdropoff"),
+                                Residential = GetBoolValue(jobData, "Residential", "residential"),
+                                DangerousGoods = GetBoolValue(jobData, "DangerousGoods", "Dangerous Goods", "dangerousgoods"),
+                                DgClass = GetIntValue(jobData, "DGClass", "DG Class", "dgclass"),
+                                DgDocument = GetBoolValue(jobData, "DGDocument", "DG Document", "dgdocument"),
+                                TruckStart = GetStringValue(jobData, "TruckStart", "Truck Start", "truckstart"),
+                                TruckHours = GetDoubleValue(jobData, "TruckHours", "Truck Hours", "truckhours"),
+                                ClientRefA = clientRefA,
+                                ClientRefB = clientRefB,
+                                OurRef = ourRef,
+                                Notes = notes,
+                                TrackingEmail = trackingEmail,
+                                TrackingMobile = trackingMobile,
+                                Amount = amount,
+                                OnHold = onHold,
+                                NationwideDoc = nwDocJob,
+                            },
+                            ClientId = staffClientId,
+                            SpeedId = speedId.Value,
+                            BookDateTime = bookDate.Date.Add((bookTime ?? TimeZoneUtility.GetTenantNow(_httpContextAccessor)).TimeOfDay),
+                            Completed = jobDone == true,
+                            PodName = podName,
+                            CompletedTime = complTime,
+                            OpId = opId,
+                            LoggedInContactId = contactId,
+                            CourierId = courierId,
+                            PickupTimeZone = pickupTimeZone,
+                            DeliverByTimeZone = deliverByTimeZone,
+                            RowNo = truckInputs.Count,
+                        });
+                        truckRowNumbers.Add((rowNumber, jobNumber));
+                        continue;
                     }
 
                     // ToAddress includes CompanyName prefix like Despatch_Root does
@@ -466,6 +556,23 @@ public partial class BulkImportServiceV2
                         Error = ex.Message
                     });
                 }
+            }
+
+            if (truckInputs.Count > 0)
+            {
+                var truck = await RunTruckRows(truckInputs, request.MessageId);
+                successCount += truck.Created;
+                foreach (var (rowNo, error) in truck.Failed)
+                {
+                    response.FailedJobs.Add(new FailedJobDto
+                    {
+                        RowNumber = truckRowNumbers[rowNo].RowNumber,
+                        JobNumber = truckRowNumbers[rowNo].JobNumber,
+                        Error = error
+                    });
+                }
+                foreach (var warning in truck.Warnings)
+                    response.Messages.Add(new MessageDto { Message = warning });
             }
 
             response.SuccessCount = successCount;

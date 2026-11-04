@@ -1,0 +1,9 @@
+Job Number,Speed,From Contact,From Company,Pickup Address,Pickup Suburb,Pickup Post Code,Recipient Company,Delivery Address,To Suburb,To Post Code,Delivery Contact,Delivery Phone,Pallets,Pallet Type,Length,Width,Height,Weight,Tail Lift PU,Tail Lift DO,Residential,DG Class,Notes
+BT1001,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Sample Retail Ltd,20 Sample Street,Otahuhu,1062,Test Receiver,000 000 000,1,Half Pallet,120,100,90,250,N,N,N,,Call on arrival
+BT1002,Truck Standard,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Demo Traders Ltd,30 Demo Avenue,Penrose,1061,Test Receiver,000 000 000,2,Full Pallet,120,100,180,500,N,N,N,,
+BT1003,Standard,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Placeholder Stores,40 Placeholder Lane,Newmarket,1023,Test Receiver,000 000 000,1,,40,30,20,5,N,N,N,,
+BT1004,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Fictional Homes,50 Fictional Crescent,Mangere,2022,Test Receiver,000 000 000,1,Half Pallet,120,100,90,200,N,Y,Y,,
+BT1005,TSTD,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Imaginary Chemicals,60 Imaginary Place,East Tamaki,2013,Test Receiver,000 000 000,1,Full Pallet,120,100,150,400,N,N,N,3,Keep upright
+BT1006,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Far Away Ltd,70 Distant Road,Hornby,8042,Test Receiver,000 000 000,1,Half Pallet,120,100,90,250,N,N,N,,
+BT1007,CT,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Cold Chain Example,80 Frosty Way,Onehunga,1061,Test Receiver,000 000 000,1,Full Pallet,120,100,150,300,N,N,N,,
+BT1002,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Repeat Number Ltd,90 Repeat Road,Penrose,1061,Test Receiver,000 000 000,1,Half Pallet,120,100,90,250,N,N,N,,

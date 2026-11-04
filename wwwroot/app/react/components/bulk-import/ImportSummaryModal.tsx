@@ -36,13 +36,15 @@ export function ImportSummaryModal({ open, state, onClose }: Props) {
 
   const perDepot = state.perDepotResults;
   const failedRows = state.failedImportJobs;
+  // A refused truck row (no rate, cross-region and so on) has a reason to show.
+  const showReason = failedRows.some((j) => !!j.errorMessage);
 
   function handleExportFailed() {
     if (failedRows.length === 0) return;
     const suburbHeader = cityLabel(isUs);
     const postHeader = postcodeLabel(isUs);
     const csvRows: (string | number | null | undefined)[][] = [
-      ['Job Number', 'To Address', suburbHeader, postHeader],
+      ['Job Number', 'To Address', suburbHeader, postHeader, ...(showReason ? ['Reason'] : [])],
     ];
     for (const j of failedRows) {
       csvRows.push([
@@ -50,6 +52,7 @@ export function ImportSummaryModal({ open, state, onClose }: Props) {
         j.toAddress ?? '',
         (isUs ? j.toCity : j.toSuburb) ?? '',
         (isUs ? j.toZipCode : j.toPostCode) ?? '',
+        ...(showReason ? [j.errorMessage ?? ''] : []),
       ]);
     }
     downloadCsv(csvRows, `unimported-jobs-${new Date().toISOString().slice(0, 10)}.csv`);
@@ -151,6 +154,7 @@ export function ImportSummaryModal({ open, state, onClose }: Props) {
                     <th className="text-left px-3 py-1.5">To Address</th>
                     <th className="text-left px-3 py-1.5">To Suburb</th>
                     <th className="text-left px-3 py-1.5">{postcodeLabel(isUs)}</th>
+                    {showReason && <th className="text-left px-3 py-1.5">Reason</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -160,6 +164,11 @@ export function ImportSummaryModal({ open, state, onClose }: Props) {
                       <td className="px-3 py-1.5">{j.toAddress ?? ''}</td>
                       <td className="px-3 py-1.5">{j.toSuburb ?? j.toCity ?? ''}</td>
                       <td className="px-3 py-1.5">{j.toPostCode ?? j.toZipCode ?? ''}</td>
+                      {showReason && (
+                        <td className="px-3 py-1.5 text-warning font-medium" data-testid="summary-reason">
+                          {j.errorMessage ?? ''}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

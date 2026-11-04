@@ -84,5 +84,39 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         // Downstream rating/dispatch can read it directly instead of inferring from
         // which side the address ended up on.
         public string? StopType { get; set; }
+
+        // Per-row speed and truck fields. All optional and NZ on-demand only. A
+        // file that sends none of them behaves exactly as before; routed and US
+        // imports ignore them. Speed is the file's raw value (id, TECO, Truck
+        // Economy); the server resolves it into SpeedId.
+        public int? SpeedId { get; set; }
+        public string? Speed { get; set; }
+        public string? PalletType { get; set; }
+        // On a truck row Weight above is per pallet. TotalWeight is divided by the
+        // quantity when Weight is empty; when both are present Weight is used.
+        public decimal? TotalWeight { get; set; }
+        public bool? TailLiftPickup { get; set; }
+        public bool? TailLiftDropoff { get; set; }
+        public bool? Residential { get; set; }
+        public bool? DangerousGoods { get; set; }
+        public int? DgClass { get; set; }
+        public bool? DgDocument { get; set; }
+        public string? TruckStart { get; set; }
+        public double? TruckHours { get; set; }
+        // Set by the server on a truck row it refused. The wizard shows these on
+        // the summary with ErrorMessage instead of offering them for km review.
+        public bool? TruckRejected { get; set; }
+    }
+
+    // Applied to truck rows that leave the matching field empty.
+    public class BulkTruckDefaults
+    {
+        public string? PalletType { get; set; }
+        public bool? TailLiftPickup { get; set; }
+        public bool? TailLiftDropoff { get; set; }
+        public bool? Residential { get; set; }
+        public bool? DangerousGoods { get; set; }
+        public int? DgClass { get; set; }
+        public bool? DgDocument { get; set; }
     }
 }

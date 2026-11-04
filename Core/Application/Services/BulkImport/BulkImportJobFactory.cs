@@ -33,6 +33,22 @@ public partial class BulkImportServiceV2
     {
         var response = new BulkImportResponse(request.MessageId);
 
+        PrepareImportRequest(contactId, request);
+        var client = await LoadImportClient(contactId, request);
+
+        if (string.Equals(request.JobType, "ondemand", StringComparison.OrdinalIgnoreCase))
+        {
+            return await ProcessOnDemandJobs(contactId, request, response, client);
+        }
+        else
+        {
+            return await ProcessRoutedJobs(contactId, request, response, client);
+        }
+    }
+
+    // Shared with PreviewTruckRows, so a preview sees the request /import would.
+    private void PrepareImportRequest(int contactId, BulkImportRequest request)
+    {
         if (request.BookDate.Kind == DateTimeKind.Utc)
         {
             request.BookDate = TimeZoneUtility.ConvertToTenantTime(request.BookDate, _httpContextAccessor);
@@ -47,10 +63,13 @@ public partial class BulkImportServiceV2
             }
 
         StripImportCommercialFields(request);
+    }
 
+    private async Task<dynamic?> LoadImportClient(int contactId, BulkImportRequest request)
+    {
         // Staff (ClientTypeId 4/5) may import for any active client; anyone
         // else only for an active client they are linked to (IBulkClientScope).
-        var client = await Context.TucClients
+        return await Context.TucClients
             .Where(c => c.UcclId == request.ClientId)
             .Where(_scope.CanActFor(contactId))
             .Select(c => new
@@ -95,15 +114,6 @@ public partial class BulkImportServiceV2
                 ContentsUnknownForBulkJobs = c.ContentsUnknownForBulkJobs
             })
             .FirstOrDefaultAsync();
-
-        if (string.Equals(request.JobType, "ondemand", StringComparison.OrdinalIgnoreCase))
-        {
-            return await ProcessOnDemandJobs(contactId, request, response, client);
-        }
-        else
-        {
-            return await ProcessRoutedJobs(contactId, request, response, client);
-        }
     }
 
     // Non-staff are always rated: their uploaded Amount, courier percentage
@@ -141,12 +151,12 @@ public partial class BulkImportServiceV2
         }
     }
 
-    // ---- ProcessOnDemandJobs (all-tenant, per-job SP loop) ----------------
-
-    private async Task<BulkImportResponse> ProcessOnDemandJobs(int contactId, BulkImportRequest request, BulkImportResponse response, dynamic client)
+    // Why an on-demand request cannot run at all, or null. Shared with
+    // PreviewTruckRows so the preview refuses exactly what /import refuses.
+    private string? OnDemandRefusal(int contactId, BulkImportRequest request, dynamic? client)
     {
         if (client == null)
-            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
+            return "Invalid client.";
 
         var tenantNow = TimeZoneUtility.GetTenantNow(_httpContextAccessor);
         Log.Information($"({request.MessageId})({contactId}) [Schedule] Validating BookDate for on-demand job. TenantNow: {tenantNow:yyyy-MM-dd HH:mm:ss}, BookDate: {request.BookDate:yyyy-MM-dd HH:mm:ss}");
@@ -154,7 +164,7 @@ public partial class BulkImportServiceV2
         if (request.BookDate < tenantNow)
         {
             Log.Warning($"({request.MessageId})({contactId}) [Schedule] BookDate is in the past. TenantNow: {tenantNow:yyyy-MM-dd HH:mm:ss}, BookDate: {request.BookDate:yyyy-MM-dd HH:mm:ss}");
-            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Book date must be in the future.");
+            return "Book date must be in the future.";
         }
 
         // MVP: wizard omits SpeedId (sends 0) and defers to the client's default.
@@ -163,7 +173,26 @@ public partial class BulkImportServiceV2
             request.SpeedId = defaultSpeedId;
 
         if (client.Speed?.UcjtId != request.SpeedId)
-            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid speed.");
+            return "Invalid speed.";
+
+        return null;
+    }
+
+    // The same book time the P2P loop rates with.
+    private static DateTime TruckBookTime(BulkImportRequest request, dynamic client)
+    {
+        return request.ScheduleId.HasValue && client.Schedule != null
+            ? DateTime.SpecifyKind(request.BookDate.Date.AddTicks(client.Schedule.StartTime.Ticks), request.BookDate.Kind)
+            : request.BookDate;
+    }
+
+    // ---- ProcessOnDemandJobs (all-tenant, per-job SP loop) ----------------
+
+    private async Task<BulkImportResponse> ProcessOnDemandJobs(int contactId, BulkImportRequest request, BulkImportResponse response, dynamic client)
+    {
+        string? refused = OnDemandRefusal(contactId, request, client);
+        if (refused != null)
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, refused);
 
         string podName = null;
         int? opId = null;
@@ -215,7 +244,26 @@ public partial class BulkImportServiceV2
         List<BulkImportJobCreateDto> failedJobs = new List<BulkImportJobCreateDto>();
         int successfulJobCount = 0;
 
-        foreach (var job in request.Jobs)
+        // NZ truck rows take the direct-insert path; everything else stays in
+        // the loop below. US and files with no truck speed keep every row here.
+        IEnumerable<BulkImportJobCreateDto> p2pJobs = request.Jobs;
+        var truckWarnings = new List<string>();
+        if (IsNzTenant())
+        {
+            var split = await SplitTruckRows(request);
+            p2pJobs = split.P2PRows;
+            failedJobs.AddRange(split.Rejected);
+            if (split.TruckRows.Count > 0)
+            {
+                DateTime truckBookTime = TruckBookTime(request, client);
+                TruckRunResult truck = await RunWizardTruckRows(contactId, request, split.TruckRows, truckBookTime, opId, podName);
+                successfulJobCount += truck.Created;
+                truckWarnings = truck.Warnings;
+                failedJobs.AddRange(split.TruckRows.Where(j => !string.IsNullOrEmpty(j.ErrorMessage)));
+            }
+        }
+
+        foreach (var job in p2pJobs)
         {
             try
             {
@@ -326,7 +374,7 @@ public partial class BulkImportServiceV2
                         clientCode: client.Code,
                         contact: job.FromContact ?? string.Empty,
                         amount: job.Amount ?? 0,
-                        speed: request.SpeedId,
+                        speed: job.SpeedId ?? request.SpeedId,
                         fromAddress: job.FromAddress ?? string.Empty,
                         fromSuburb: job.FromSuburb ?? string.Empty,
                         toAddress: toAddress,
@@ -590,6 +638,9 @@ public partial class BulkImportServiceV2
                 failedJobs.Add(job);
             }
         }
+
+        foreach (var warning in truckWarnings)
+            response.Messages.Add(new MessageDto { Message = warning });
 
         if (successfulJobCount > 0)
         {

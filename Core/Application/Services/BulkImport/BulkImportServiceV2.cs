@@ -69,19 +69,25 @@ public partial class BulkImportServiceV2 : BaseService
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly AddressService _addressService;
     private readonly IBulkClientScope _scope;
+    private readonly IBulkTruckPreflight _truckPreflight;
+    private readonly IBulkTruckInserter _truckInserter;
 
     public BulkImportServiceV2(
         IDbContextFactory<DynamicDespatchDbContext> contextFactory,
         IHttpClientFactory httpClientFactory,
         IHttpContextAccessor httpContextAccessor,
         AddressService addressService,
-        IBulkClientScope scope)
+        IBulkClientScope scope,
+        IBulkTruckPreflight truckPreflight,
+        IBulkTruckInserter truckInserter)
         : base(contextFactory)
     {
         _httpClientFactory = httpClientFactory;
         _httpContextAccessor = httpContextAccessor;
         _addressService = addressService;
         _scope = scope;
+        _truckPreflight = truckPreflight;
+        _truckInserter = truckInserter;
     }
 
     // Per-job result of Steve's 4-step origin precedence chain. Built by

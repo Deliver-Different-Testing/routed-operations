@@ -8,8 +8,13 @@ import { clientsService, type ClientSettingsDto } from '../../services/clientsSe
 import { addressService, type RegionDto } from '../../services/addressService';
 import { templatesService, type TemplateDto } from '../../services/templatesService';
 import {
+  autoMapTruckFields,
   autoMatchColumn,
+  columnHasTruckSpeed,
+  truckFieldsEligible,
+  truckInPlay,
   urgentFieldsFor,
+  type UrgentField,
   type WizardAction,
   type WizardState,
 } from './wizardState';
@@ -47,6 +52,9 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
   // is filtered server-side by ContactID so no client-side scoping is needed.
   const [templates, setTemplates] = useState<TemplateDto[]>([]);
 
+  const truckEligible = truckFieldsEligible(state, isUsTenant);
+  const truckActive = truckInPlay(state, isUsTenant);
+
   const fields = useMemo(
     () => urgentFieldsFor(
       isUsTenant,
@@ -61,7 +69,8 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
             referenceBMessage: settings.referenceBMessage,
           }
         : undefined,
-      !!state.options.overrideDimensions?.trim()
+      !!state.options.overrideDimensions?.trim(),
+      truckActive
     ),
     [
       isUsTenant,
@@ -70,6 +79,7 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
       state.options.routeStartsFromClientSite,
       settings,
       state.options.overrideDimensions,
+      truckActive,
     ]
   );
   const parsedHeaders = state.parsed?.headers ?? [];
@@ -120,6 +130,25 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, state.client?.id, isUsTenant, state.importType, state.options.autogenerateJobNumber]);
+
+  // Spot a Speed column that names a truck speed as soon as settings arrive,
+  // so the truck fields appear without the operator asking. A Speed column with
+  // only P2P values stays unmapped and the step looks as it always has.
+  useEffect(() => {
+    if (!open || !truckEligible || state.mapping.speed) return;
+    const speedField: UrgentField = { key: 'speed', label: 'Speed', aliases: ['Service', 'Service Level', 'Speed Code'], showFor: 'nz' };
+    const column = autoMatchColumn(speedField, parsedHeaders);
+    if (column && columnHasTruckSpeed(state, column)) {
+      dispatch({ type: 'PATCH_MAPPING', field: 'speed', column });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, truckEligible]);
+
+  useEffect(() => {
+    if (!open || !truckActive) return;
+    dispatch({ type: 'SET_MAPPING', mapping: autoMapTruckFields(fields, parsedHeaders, state.mapping) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, truckActive]);
 
   // Visible fields = all urgentFields minus those hidden by option toggles:
   //   - RouteStartsFromClientSite hides every from* row (server sources
@@ -390,6 +419,21 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
                 );
               })}
             </select>
+
+            {truckEligible && (
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  data-testid="truck-jobs-toggle"
+                  checked={truckActive}
+                  disabled={truckActive && !state.options.truckJobs}
+                  onChange={(e) =>
+                    dispatch({ type: 'SET_OPTIONS', options: { truckJobs: e.target.checked } })
+                  }
+                />
+                This file has truck jobs
+              </label>
+            )}
 
             {isUsTenant && (
               <select

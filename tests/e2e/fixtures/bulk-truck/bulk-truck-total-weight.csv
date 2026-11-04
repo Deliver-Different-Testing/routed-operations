@@ -1,0 +1,3 @@
+Job Number,Speed,From Contact,From Company,Pickup Address,Pickup Suburb,Pickup Post Code,Recipient Company,Delivery Address,To Suburb,To Post Code,Delivery Contact,Delivery Phone,Pallets,Pallet Type,Length,Width,Height,Tail Lift PU,Tail Lift DO,Residential,DG Class,Notes,Total Weight
+BT2001,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Sample Retail Ltd,20 Sample Street,Otahuhu,1062,Test Receiver,000 000 000,2,Half Pallet,120,100,90,N,N,N,,,500
+BT2002,Truck Standard,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Demo Traders Ltd,30 Demo Avenue,Penrose,1061,Test Receiver,000 000 000,4,Full Pallet,120,100,150,N,N,N,,,1000
