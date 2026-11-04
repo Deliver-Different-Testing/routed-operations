@@ -239,28 +239,6 @@ namespace RoutedOperations.Core.Application.Validators
                         .Equal((short)1)
                         .When(x => x.Quantity.HasValue && !string.IsNullOrWhiteSpace(x.JobNumber) && x.JobNumber.Contains("-")).WithMessage("Multi-box quantity must be 1.");
 
-                    // Dimensions are only enforced when the row actually
-                    // supplies them. The wizard's Step 2 "Override Dimensions"
-                    // dropdown lets the operator pick a stock size that the
-                    // server applies to every row - in that flow the per-row
-                    // values arrive as 0 and must not be rejected. If a value
-                    // > 0 IS present, the upper cap still applies.
-                    j.RuleFor(x => x.Length)
-                        .InclusiveBetween(0.01m, 240m)
-                        .When(x => x.Length > 0);
-
-                    j.RuleFor(x => x.Width)
-                        .InclusiveBetween(0.01m, 120m)
-                        .When(x => x.Width > 0);
-
-                    j.RuleFor(x => x.Height)
-                        .InclusiveBetween(0.01m, 150m)
-                        .When(x => x.Height > 0);
-
-                    j.RuleFor(x => x.Weight)
-                        .InclusiveBetween(0.001m, 1000m)
-                        .When(x => x.Weight > 0);
-
                     j.RuleFor(x => x.ClientRefA)
                         .MaximumLength(20);
 
@@ -284,6 +262,36 @@ namespace RoutedOperations.Core.Application.Validators
                         .When(x => x.CourierPercentageOverride.HasValue).WithMessage("Invalid courier percentage override.");
 
                 });
+
+            // Truck pallets exceed these caps (prod has 180 cm high), so they do not
+            // run once an on-demand request carries TruckDefaults. BulkImportTruckPath
+            // applies the same caps to any P2P row in such a file.
+            RuleForEach(x => x.Jobs)
+                .ChildRules(j =>
+                {
+                    // Dimensions are only enforced when the row actually
+                    // supplies them. The wizard's Step 2 "Override Dimensions"
+                    // dropdown lets the operator pick a stock size that the
+                    // server applies to every row - in that flow the per-row
+                    // values arrive as 0 and must not be rejected. If a value
+                    // > 0 IS present, the upper cap still applies.
+                    j.RuleFor(x => x.Length)
+                        .InclusiveBetween(0.01m, 240m)
+                        .When(x => x.Length > 0);
+
+                    j.RuleFor(x => x.Width)
+                        .InclusiveBetween(0.01m, 120m)
+                        .When(x => x.Width > 0);
+
+                    j.RuleFor(x => x.Height)
+                        .InclusiveBetween(0.01m, 150m)
+                        .When(x => x.Height > 0);
+
+                    j.RuleFor(x => x.Weight)
+                        .InclusiveBetween(0.001m, 1000m)
+                        .When(x => x.Weight > 0);
+                })
+                .When(x => x.TruckDefaults == null || !string.Equals(x.JobType, "ondemand", StringComparison.OrdinalIgnoreCase));
 
             //RuleForEach(x => x.Jobs)
             //    .ChildRules(j =>

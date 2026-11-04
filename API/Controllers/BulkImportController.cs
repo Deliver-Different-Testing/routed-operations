@@ -151,6 +151,26 @@ public class BulkImportController(
         }
     }
 
+    // POST /api/bulk-import/truck-preview - the same body as /import. Shows what
+    // /import would charge or refuse for each truck row, and writes nothing. It
+    // runs the same client scope and validator, so it refuses what /import refuses.
+    [HttpPost("truck-preview")]
+    public async Task<IActionResult> PreviewTruckRows([FromBody] BulkImportRequest request)
+    {
+        try
+        {
+            LogRequestStart(request.MessageId);
+            if (!ModelState.IsValid)
+                return HandleBulkInvalidModelState(request.MessageId);
+            return HandleBulkResponse(await bulkService.PreviewTruckRows(GetCurrentContactId(), request));
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "PreviewTruckRows failed");
+            throw;
+        }
+    }
+
     // POST /api/bulk-import/staff-import - NZ internal-staff direct tucJob
     // insert. Auth gate mirrors BulkImportHyper's BulkController.StaffImport:
     // requires Internal claim + CountryCode == NZ, otherwise returns 403

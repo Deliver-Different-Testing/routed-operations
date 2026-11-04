@@ -246,34 +246,10 @@ public class ClientService(
                 CutoffHours = s.CutoffHours
             }).ToList();
 
-        // Two-tier speed lookup: first try client-specific speeds, then fall back to default speeds
-        var clientSpeeds = await Context.TblClientAvailableSpeeds
-            .Where(s => s.ClientId == clientId && s.Active && s.WebVisible == true)
-            .OrderBy(s => s.Speed.UcjtName)
-            .Select(s => new SpeedDto()
-            {
-                Id = s.Speed.UcjtId,
-                Name = s.Speed.UcjtName
-            })
-            .ToListAsync();
-
-        if (clientSpeeds.Any())
-        {
-            clientSettings.Speeds = clientSpeeds;
-        }
-        else
-        {
-            // Fallback to default speeds with Name = 'API - Web Integration' and Active = 1
-            clientSettings.Speeds = await Context.TblClientDefaultAvailableSpeeds
-                .Where(s => s.Name == "API - Web Integration" && s.Active)
-                .OrderBy(s => s.Speed.UcjtName)
-                .Select(s => new SpeedDto()
-                {
-                    Id = s.Speed.UcjtId,
-                    Name = s.Speed.UcjtName
-                })
-                .ToListAsync();
-        }
+        // Two-tier speed lookup: client-specific speeds, else the default list.
+        clientSettings.Speeds = (await ClientSpeedCatalog.LoadAsync(Context, clientId))
+            .Select(s => new SpeedDto { Id = s.Id, Name = s.Name, Code = s.ShortName?.Trim(), SystemName = s.SystemName?.Trim(), IsTruck = s.IsBulkTruck })
+            .ToList();
 
         // Backfill Schedule.Speed.Name in a second pass. EF Core LINQ can't
         // navigate s.Speed on the TblBulkRunSchedule stub (no nav property);

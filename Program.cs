@@ -469,6 +469,12 @@ builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteV
 // BulkImport / Clients / Address controllers depend on.
 // One definition of which clients a Bulk Import caller may see / act for.
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkClientScope, RoutedOperations.Core.Application.Services.BulkImport.BulkClientScope>();
+// Truck rows bypass the booking procs: read-only preflight, then direct insert.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkTruckPreflight, RoutedOperations.Core.Application.Services.BulkImport.BulkTruckPreflight>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ITruckBatchSql, RoutedOperations.Core.Application.Services.BulkImport.BulkTruckBatchSql>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkTruckInserter>(sp =>
+    new RoutedOperations.Core.Application.Services.BulkImport.BulkTruckInserter(
+        sp.GetRequiredService<RoutedOperations.Core.Application.Services.BulkImport.ITruckBatchSql>()));
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.BulkImportServiceV2>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.AddressService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ClientService>();
