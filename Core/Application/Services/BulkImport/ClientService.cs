@@ -20,7 +20,8 @@ namespace RoutedOperations.Core.Application.Services.BulkImport;
 public class ClientService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     IHttpContextAccessor httpContextAccessor,
-    TenantScopedCache cache) : BaseService(contextFactory)
+    TenantScopedCache cache,
+    IBulkClientScope scope) : BaseService(contextFactory)
 {
     private readonly IHttpContextAccessor httpContextAccessor = httpContextAccessor;
 
@@ -127,8 +128,7 @@ public class ClientService(
             IsUsTenant = isUsTenant,
             Clients = await Context.TucClients
                 .AsNoTracking()
-                .Where(c => c.UcclActive
-                    && (c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active)))
+                .Where(scope.CanActFor(contactId))
                 .Select(x => new ClientDto
                 {
                     Id = x.UcclId,
@@ -155,9 +155,8 @@ public class ClientService(
             IsInternal = isInternal,
             Clients = await Context.TucClients
                 .AsNoTracking()
-                .Where(c => c.UcclActive
-                    && (isInternal || c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active))
-                    && (c.UcclName.ToLower().Contains(searchLower) || c.UcclCode.ToLower().Contains(searchLower)))
+                .Where(scope.CanActFor(contactId))
+                .Where(c => c.UcclName.ToLower().Contains(searchLower) || c.UcclCode.ToLower().Contains(searchLower))
                 .OrderBy(x => x.UcclName)
                 .Take(20)
                 .Select(x => new ClientDto
@@ -175,7 +174,7 @@ public class ClientService(
     {
         // Staff = ClientTypeId 4/5, not the "Internal" billing-flag claim
         // (Steve 2026-10-08: ucclInternal carries no permission).
-        return httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
+        return scope.IsStaff;
     }
 
     public async Task<ClientSettingsResponse> GetSettings(Guid messageId, int contactId, int clientId, bool isUsTenant = false)
@@ -187,12 +186,11 @@ public class ClientService(
 
         var response = new ClientSettingsResponse(messageId);
 
-        // Check if user is internal staff - internal staff can access any client settings
-        var isInternal = IsInternalUser();
-
+        // Staff may open any active client; anyone else only an active client
+        // they are linked to (IBulkClientScope.CanActFor).
         var clientSettings = await Context.TucClients
-                .Where(c => c.UcclId == clientId && c.UcclActive
-                    && (isInternal || c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active) || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active)))
+                .Where(c => c.UcclId == clientId)
+                .Where(scope.CanActFor(contactId))
                 .Select(x => new ClientSettingsDto
                 {
                     Id = x.UcclId,
@@ -248,34 +246,10 @@ public class ClientService(
                 CutoffHours = s.CutoffHours
             }).ToList();
 
-        // Two-tier speed lookup: first try client-specific speeds, then fall back to default speeds
-        var clientSpeeds = await Context.TblClientAvailableSpeeds
-            .Where(s => s.ClientId == clientId && s.Active && s.WebVisible == true)
-            .OrderBy(s => s.Speed.UcjtName)
-            .Select(s => new SpeedDto()
-            {
-                Id = s.Speed.UcjtId,
-                Name = s.Speed.UcjtName
-            })
-            .ToListAsync();
-
-        if (clientSpeeds.Any())
-        {
-            clientSettings.Speeds = clientSpeeds;
-        }
-        else
-        {
-            // Fallback to default speeds with Name = 'API - Web Integration' and Active = 1
-            clientSettings.Speeds = await Context.TblClientDefaultAvailableSpeeds
-                .Where(s => s.Name == "API - Web Integration" && s.Active)
-                .OrderBy(s => s.Speed.UcjtName)
-                .Select(s => new SpeedDto()
-                {
-                    Id = s.Speed.UcjtId,
-                    Name = s.Speed.UcjtName
-                })
-                .ToListAsync();
-        }
+        // Two-tier speed lookup: client-specific speeds, else the default list.
+        clientSettings.Speeds = (await ClientSpeedCatalog.LoadAsync(Context, clientId))
+            .Select(s => new SpeedDto { Id = s.Id, Name = s.Name, Code = s.ShortName?.Trim(), SystemName = s.SystemName?.Trim(), IsTruck = s.IsBulkTruck })
+            .ToList();
 
         // Backfill Schedule.Speed.Name in a second pass. EF Core LINQ can't
         // navigate s.Speed on the TblBulkRunSchedule stub (no nav property);
@@ -313,9 +287,12 @@ public class ClientService(
             Log.Information($"({request.MessageId})({contactId}) [GetSchedulesByBookDate] Converted BookDate from UTC to tenant timezone: {request.BookDate:yyyy-MM-dd HH:mm:ss}");
         }
 
-        var isInternal = IsInternalUser();
-        if (!isInternal && !await Context.TblClientContacts.AnyAsync(c => c.ContactId == contactId && c.ClientId == request.ClientId && c.Contact.Active && c.Client.UcclActive))
-            BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
+        // Ported from legacy with the result of the check thrown away (no
+        // return), so any caller got any client's schedules, and it only looked
+        // at tblClientContact. Now it stops, using the shared scope rule.
+        // Staff stay unchecked, as before.
+        if (!scope.IsStaff && !await scope.CanActForClientAsync(Context, contactId, request.ClientId))
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid client.");
 
         var dayOfWeekShort = request.BookDate.DayOfWeek == DayOfWeek.Sunday
             ? (short)7

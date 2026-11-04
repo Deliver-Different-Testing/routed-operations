@@ -14,6 +14,7 @@ Reference implementation for the stack + conventions: `C:\Gitlab\Configurator_Ro
 
 **Session handover docs** (start here when resuming, latest first):
 
+0. `C:\Gitlab\.claude\sp-reference\daily-and-weekly-log.md` - **read this first.** Rolling session log: "Pick up here" names the live thread, what is blocked and on whom, and the findings with no owner. A dated entry is added at the end of every working day; every Friday that week's entries are re-summarised into a weekly block for Kevin's Monday meeting.
 1. `C:\Gitlab\.claude\sp-reference\client-override-deltas-2026-09-22.md` - Steve Bucket C (F1/F3/F7/F8/F13/F17/F18/F21) shipped 2026-09-22/23. `tblBulkRunScheduleOverride` delta table + `fnScheduleForClient` inline TVF + Header extensions + Group→Bundle rename + `uspPrebookSet` snapshot. Replaces clone-header `BaseScheduleId` model.
 2. `C:\Gitlab\.claude\sp-reference\driver-scheduling-2026-09-07.md` - CourierManager scheduler port into Routed Operations. 14 endpoints under `api/driver-scheduling`, 5 EF entities, `IPhoneNormaliser` + `IHubUrlProvider` per-tenant abstractions, DB trigger analysis + Day-1 US enablement checklist.
 3. `C:\Gitlab\.claude\sp-reference\routed-operations-handover-2026-07-16.md` - Day 3: feature-parity gap fill (map right-click, JobDetail editing, Fix GPS, multibox expansion, sort/filter, group bulk-move, send-selected, layout save/load). Also carries the explicitly-not-migrated list (prebook + filter-by-time - do not re-add).

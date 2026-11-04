@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Clients;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.BulkImport;
 using RoutedOperations.Core.Application.Services.Routing;
 using Serilog;
@@ -17,13 +18,16 @@ namespace RoutedOperations.API.Controllers;
 /// per-client settings, schedules, and job-number-sequencer endpoints the
 /// downstream steps rely on.
 ///
-/// Every endpoint runs under RouteBuilder.Admin. Row-level scoping to the
+/// Every endpoint runs under the interim BulkImport.Use policy; GeocodeSite
+/// and GetJobNumber also need RouteBuilder.Admin. Row-level scoping to the
 /// caller's tucClientContact assignments happens inside ClientService itself
 /// so the controller stays a thin dispatcher.
 /// </summary>
 [ApiController]
 [Route("api/clients")]
-[Authorize(Policy = "RouteBuilder.Admin")]
+// Interim BulkImport.Use (staff + customers), pending Garry's agreement; see
+// BulkImportPolicies. Customer rows are cut down by IBulkClientScope.
+[Authorize(Policy = BulkImportPolicies.Use)]
 // Access Control switch: Bulk Import (client picker, search, settings). GeocodeSite
 // below declares its own, which replaces this one (spec step 3b).
 [RequireFeature("ro-bulk-import")]
@@ -76,6 +80,9 @@ public class ClientsController(
     // Two-step by design: the default call previews the candidate and the
     // caller repeats it with confirm = true to save. The response always
     // carries the previous coordinates so nothing is overwritten unseen.
+    // Staff only: writes tucClient coordinates for any client id.
+    // Staff only: ANDs with the controller's BulkImport.Use.
+    [Authorize(Policy = "RouteBuilder.Admin")]
     [HttpPost("{clientId:int}/geocode")]
     // Only ScheduleDetailModal calls this, on Schedules (NEW) and Client Overrides.
     [RequireFeature("ro-schedules-new", "ro-client-overrides")]
@@ -194,6 +201,10 @@ public class ClientsController(
     // AFTER the more specific /{id}/settings and /{ClientId}/schedules/...
     // routes above; ASP.NET's attribute routing prefers static prefixes
     // over pure parameter routes when both match.
+    // Staff only: increments a tenant-wide sequence that has no client column.
+    // Nothing in the React app calls it.
+    // Staff only: ANDs with the controller's BulkImport.Use.
+    [Authorize(Policy = "RouteBuilder.Admin")]
     [HttpGet("{jobNumberId}")]
     public async Task<IActionResult> GetJobNumber([FromRoute] JobNumberRequest request)
     {

@@ -315,6 +315,13 @@ builder.Services.AddAuthorization(options =>
         policy.RequireAssertion(context => RouteViewerPolicies.CanAdmin(context.User)));
     options.AddPolicy("RouteViewer.NpScope", policy =>
         policy.RequireAssertion(context => RouteViewerPolicies.CanUseNpScope(context.User)));
+
+    // Bulk Import for customers (ro-bulk-import-customer-scope). INTERIM,
+    // pending Garry's agreement: tenant staff + customers, never couriers or
+    // partners. Rows are cut to the caller's clients by IBulkClientScope, and
+    // staff-only actions keep RouteBuilder.Admin at action level (AND).
+    options.AddPolicy(BulkImportPolicies.Use, policy =>
+        policy.RequireAssertion(context => BulkImportPolicies.CanUse(context.User)));
 });
 
 builder.Services.AddHttpClient();
@@ -385,6 +392,8 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverSche
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.DriverScheduling.DriverSchedulingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.TerritoryService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Territory.PolygonBindingService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Linehaul.LinehaulRateService>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Pricing.PricingService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Diagnostics.AutoAssignLogService>();
 // Historic Archive Upload (2026-08-19). Writes legacy job-history rows
 // into tucJobArchive with the billing-sentinel recipe. Scoped so the
@@ -458,6 +467,14 @@ builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteV
 // - a single Scoped registration covers all three surfaces. The peer
 // services below (Address/Client/Template/Tenant) are what the new
 // BulkImport / Clients / Address controllers depend on.
+// One definition of which clients a Bulk Import caller may see / act for.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkClientScope, RoutedOperations.Core.Application.Services.BulkImport.BulkClientScope>();
+// Truck rows bypass the booking procs: read-only preflight, then direct insert.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkTruckPreflight, RoutedOperations.Core.Application.Services.BulkImport.BulkTruckPreflight>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ITruckBatchSql, RoutedOperations.Core.Application.Services.BulkImport.BulkTruckBatchSql>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkTruckInserter>(sp =>
+    new RoutedOperations.Core.Application.Services.BulkImport.BulkTruckInserter(
+        sp.GetRequiredService<RoutedOperations.Core.Application.Services.BulkImport.ITruckBatchSql>()));
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.BulkImportServiceV2>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.AddressService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ClientService>();

@@ -313,8 +313,11 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
 
     await page.getByRole('button', { name: /New Schedule/ }).click();
 
-    // Add a Linehaul leg via the "Choose first leg" chooser.
-    await page.getByRole('button', { name: 'LINEHAUL' }).first().click();
+    // Add a Linehaul leg via the "Choose first leg" chooser. Scoped to the
+    // dialog: accessible-name matching ignores case, so since the Linehaul
+    // tab was added to the page behind this modal, an unscoped 'LINEHAUL'
+    // also matches that tab, and .first() picks the one under the overlay.
+    await page.getByRole('dialog').getByRole('button', { name: 'LINEHAUL' }).first().click();
 
     // Editor auto-expands. Scope every assertion to a <label> so the
     // footer help copy ("Save picks up ... speed override + amount +

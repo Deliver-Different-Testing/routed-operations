@@ -14,6 +14,7 @@ import { FixAddressesModal } from './FixAddressesModal';
 import { SelectRegionsModal } from './SelectRegionsModal';
 import { SchedulePickerModal } from './SchedulePickerModal';
 import { RateByDistanceModal } from './RateByDistanceModal';
+import { TruckPreviewModal } from './TruckPreviewModal';
 import { KmRatedReviewModal } from './KmRatedReviewModal';
 import { BookPickupModal } from './BookPickupModal';
 import { ImportSummaryModal } from './ImportSummaryModal';
@@ -21,6 +22,9 @@ import {
   includedDepotBuckets,
   initialWizardState,
   nextPendingDepotIndex,
+  applyTruckFields,
+  splitReturnedJobs,
+  truckInPlay,
   wizardReducer,
   type DepotBucket,
   type WizardState,
@@ -63,6 +67,7 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
   const toast = useToast();
   const [state, dispatch] = useReducer(wizardReducer, undefined, initialWizardState);
   const [importing, setImporting] = useState(false);
+  const [checkingPrices, setCheckingPrices] = useState(false);
   const isUs = auth.isUsTenant || state.client?.isUsTenant || false;
   // Authoritative accumulator for per-depot results. React state is stale
   // inside handlers that dispatch mid-flight (P0-5): if a handler dispatches
@@ -201,6 +206,7 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       jobs,
       routeFromClientSite: state.options.routeStartsFromClientSite,
       originLocationId: state.options.originLocation,
+      ...(truckInPlay(state, isUs) ? { truckDefaults: state.options.truckDefaults } : {}),
     };
   }
 
@@ -276,6 +282,21 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
     dispatch({ type: 'SET_IMPORT_ERROR', message: null });
     try {
       const { response } = await bulkImportService.import(payload);
+      const returned = response.jobs ?? [];
+      const { truckRejected, others } = splitReturnedJobs(returned);
+      // Refused truck rows are the outcome, not an import failure: each one is
+      // listed with its reason on the summary, even when nothing else landed.
+      if (!response.success && truckRejected.length > 0) {
+        if (bucket) dispatch({ type: 'MARK_DEPOT_DONE', depotId: bucket.depotId });
+        const result = { depotId: bucket?.depotId ?? 0, imported: 0, failed: returned.length };
+        dispatch({ type: 'ADD_PER_DEPOT_RESULT', result });
+        perDepotResultsRef.current = [...perDepotResultsRef.current, result];
+        const merged = [...failedImportJobsRef.current, ...returned];
+        failedImportJobsRef.current = merged;
+        dispatch({ type: 'SET_FAILED_IMPORT_JOBS', jobs: merged });
+        await advanceOrFinish(state.currentDepotIndex + 1, result, state.pickupJobPayload);
+        return;
+      }
       if (!response.success) {
         const firstMsg = response.messages?.[0]?.message;
         const text = firstMsg ?? 'unknown error';
@@ -304,13 +325,18 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         }
       }
       // Km-rated review branch: server returned rows to confirm.
-      if (!isKmRatedSecondPass && response.jobs && response.jobs.length > 0) {
+      if (!isKmRatedSecondPass && others.length > 0) {
+        if (truckRejected.length > 0) {
+          const merged = [...failedImportJobsRef.current, ...truckRejected];
+          failedImportJobsRef.current = merged;
+          dispatch({ type: 'SET_FAILED_IMPORT_JOBS', jobs: merged });
+        }
         // Trace each km-rated row back to its source row so the review
         // step can export the client's original columns.
         const sourceRows = bucket
-          ? matchKmRatedToSourceRows(response.jobs, bucketJobs(bucket))
+          ? matchKmRatedToSourceRows(others, bucketJobs(bucket))
           : matchKmRatedToSourceRows(
-              response.jobs,
+              others,
               buildJobs(state, isUs).map((job, rowIndex) => ({ rowIndex, job }))
             );
         // Record what DID import on this pass before detouring. The rows the
@@ -322,12 +348,12 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         // "Napier ( 3 of 23 jobs imported )" once the operator went Back.
         const firstPassResult = {
           depotId: bucket?.depotId ?? 0,
-          imported: payload.jobs.length - response.jobs.length,
-          failed: 0,
+          imported: payload.jobs.length - returned.length,
+          failed: truckRejected.length,
         };
         dispatch({ type: 'ADD_PER_DEPOT_RESULT', result: firstPassResult });
         perDepotResultsRef.current = [...perDepotResultsRef.current, firstPassResult];
-        dispatch({ type: 'SET_KMRATED', rows: response.jobs, sourceRows });
+        dispatch({ type: 'SET_KMRATED', rows: others, sourceRows });
         dispatch({ type: 'GOTO', step: 'kmRatedReview' });
         return;
       }
@@ -375,7 +401,39 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       dispatch({ type: 'GOTO', step: 'rateByDistance' });
       return;
     }
+    if (truckInPlay(state, isUs)) {
+      showTruckPrices();
+      return;
+    }
     fireImportForCurrentDepot(false);
+  }
+
+  // The operator sees each truck row's price or refusal before anything is
+  // written. A batch with no truck rows after all goes straight to /import.
+  async function showTruckPrices() {
+    const payload = buildDepotPayload(state.currentDepotIndex, false);
+    if (!payload) return;
+    const bucket = includedBuckets()[state.currentDepotIndex];
+    if (bucket && state.completedDepotIds.has(bucket.depotId)) {
+      fireImportForCurrentDepot(false); // says it has already been imported
+      return;
+    }
+    setCheckingPrices(true);
+    dispatch({ type: 'SET_TRUCK_PREVIEW_ERROR', message: null });
+    dispatch({ type: 'SET_IMPORT_ERROR', message: null });
+    try {
+      const { response } = await bulkImportService.previewTruckRows(payload);
+      if (response.rows.length === 0) {
+        await fireImportForCurrentDepot(false);
+        return;
+      }
+      dispatch({ type: 'SET_TRUCK_PREVIEW', preview: response });
+      dispatch({ type: 'GOTO', step: 'truckPreview' });
+    } catch (e) {
+      dispatch({ type: 'SET_TRUCK_PREVIEW_ERROR', message: (e as Error).message });
+    } finally {
+      setCheckingPrices(false);
+    }
   }
 
   function afterRateByDistance() {
@@ -473,6 +531,15 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
         onNext={afterSchedulePicker}
         onCancel={handleClose}
         importing={importing}
+        checkingPrices={checkingPrices}
+      />
+      <TruckPreviewModal
+        open={open && state.step === 'truckPreview'}
+        state={state}
+        onBack={() => dispatch({ type: 'GOTO', step: 'schedulePicker' })}
+        onImport={() => fireImportForCurrentDepot(false)}
+        onCancel={handleClose}
+        importing={importing}
       />
       <RateByDistanceModal
         open={open && state.step === 'rateByDistance'}
@@ -542,6 +609,7 @@ function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreateDto[] 
   const batchStopType = state.options.stopType;
   // NZ on-demand-only per-job flags (matches homeControl.js:3359-3363).
   const applyNzOnDemandFlags = !isUs && state.importType === 'onDemand';
+  const truckRows = truckInPlay(state, isUs);
   return state.parsed.rows.map((row, idx) => {
     const mappedLength = toFloatOrNull(get(row, 'length'));
     const mappedWidth = toFloatOrNull(get(row, 'width'));
@@ -592,6 +660,9 @@ function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreateDto[] 
     if (applyNzOnDemandFlags) {
       j.onHold = state.options.onHold;
       j.nationwideDoc = state.options.nationwideDoc;
+    }
+    if (truckRows) {
+      applyTruckFields(j, (key) => get(row, key), mappedWeight);
     }
     // Fixed-zip override. Legacy matches on (name + postcode) for NZ so
     // duplicate suburb names across postcodes get independent replacements

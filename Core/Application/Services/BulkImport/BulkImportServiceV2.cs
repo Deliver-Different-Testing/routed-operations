@@ -68,17 +68,26 @@ public partial class BulkImportServiceV2 : BaseService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly AddressService _addressService;
+    private readonly IBulkClientScope _scope;
+    private readonly IBulkTruckPreflight _truckPreflight;
+    private readonly IBulkTruckInserter _truckInserter;
 
     public BulkImportServiceV2(
         IDbContextFactory<DynamicDespatchDbContext> contextFactory,
         IHttpClientFactory httpClientFactory,
         IHttpContextAccessor httpContextAccessor,
-        AddressService addressService)
+        AddressService addressService,
+        IBulkClientScope scope,
+        IBulkTruckPreflight truckPreflight,
+        IBulkTruckInserter truckInserter)
         : base(contextFactory)
     {
         _httpClientFactory = httpClientFactory;
         _httpContextAccessor = httpContextAccessor;
         _addressService = addressService;
+        _scope = scope;
+        _truckPreflight = truckPreflight;
+        _truckInserter = truckInserter;
     }
 
     // Per-job result of Steve's 4-step origin precedence chain. Built by
@@ -141,7 +150,7 @@ public partial class BulkImportServiceV2 : BaseService
             // clients they are explicitly linked to via tucClientContact or
             // tblClientContact.
             // Staff = ClientTypeId 4/5, not the "Internal" billing-flag claim.
-            var isInternal = _httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
+            var isInternal = _scope.IsStaff;
 
             List<int> clientIds;
             if (isInternal)
@@ -159,9 +168,9 @@ public partial class BulkImportServiceV2 : BaseService
             }
             else
             {
+                // "See" rule: any linked client, active or not (unchanged).
                 clientIds = await Context.TucClients
-                               .Where(c => c.TucClientContacts.Any(cc => cc.UcctId == contactId && cc.Active)
-                                           || c.TblClientContacts.Any(tc => tc.ContactId == contactId && tc.Contact.Active))
+                               .Where(_scope.CanSee(contactId))
                                .Select(c => c.UcclId)
                                .ToListAsync();
             }
@@ -715,6 +724,20 @@ public partial class BulkImportServiceV2 : BaseService
         if (!tucJobsToVoid.Any())
         {
             return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "On-demand job not found or cannot be deleted (invalid status).");
+        }
+
+        // Non-staff may void only Bulk Import jobs (SourceId 3) of clients they
+        // can act for, and only when EVERY loaded row qualifies (a parent in
+        // scope with an out-of-scope child is refused whole). Ported from
+        // legacy with no ownership check at all, so any contact could void any
+        // undispatched job in the tenant. "Job not found." either way, so the
+        // reply does not reveal that the job exists; nothing is written.
+        var allowed = await _scope.ActForClientIdsAsync(Context, contactId);
+        if (allowed != null && !tucJobsToVoid.All(j =>
+                j.SourceId == 3 && j.UcjbClientId.HasValue && allowed.Contains(j.UcjbClientId.Value)))
+        {
+            Log.Warning($"({request.MessageId})({contactId}) Refused void of tucJob {request.Id}: out of scope.");
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Job not found.");
         }
 
         var contact = await Context.TucClientContacts

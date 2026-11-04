@@ -60,9 +60,9 @@ public partial class TucClient
     public bool ContentsUnknownAtPickup { get; set; }
 
     // Nav properties consumed by the ported services. Kept as ICollection so
-    // Include() calls compile; the actual join is discovered by FK convention
-    // (BulkImport child tables carry a `ClientID` column) so no extra
-    // ModelBuilder wiring is needed here.
+    // Include() calls compile. TucClientContacts is wired explicitly in
+    // DespatchContext (tucClientContact.ucctClientID); TblClientContacts maps
+    // through TblClientContact.ClientId.
     public virtual ICollection<TucClientContact> TucClientContacts { get; set; } = new List<TucClientContact>();
     public virtual ICollection<TblClientContact> TblClientContacts { get; set; } = new List<TblClientContact>();
 

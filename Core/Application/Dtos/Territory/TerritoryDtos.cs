@@ -8,6 +8,42 @@ namespace RoutedOperations.Core.Application.Dtos.Territory;
 /// </summary>
 public record DepotDto(int Id, string Name, bool Active);
 
+/// <summary>A depot as the per-client limit editor sees it: every depot in the
+/// tenant, with whether it is switched off for the client being edited.
+/// <paramref name="Active"/> is the global on/off; <paramref name="OffForClient"/>
+/// is the separate per-client one, and a depot that is globally inactive is
+/// unavailable to every client regardless.</summary>
+public record DepotClientLimitDto(int Id, string Name, bool Active, bool OffForClient);
+
+/// <summary>One postcode outline for the zone-group map, with the zone it is
+/// in so the map can shade by zone. Wkt is the stored boundary; Latitude and
+/// Longitude are the centroid, used to label and to fit the map when a code
+/// has no outline.</summary>
+public record ZoneMapShapeDto(
+    int Zone,
+    string Code,
+    int ZipPolygonId,
+    decimal? Latitude,
+    decimal? Longitude,
+    string Wkt);
+
+/// <summary>
+/// Everything the map panel beside a zone group needs. Codes that have no
+/// ZipPolygon row are reported rather than dropped: the map showing eight of
+/// a group's ten zones with no explanation is worse than saying which are
+/// missing.
+/// </summary>
+public record ZoneMapDto(
+    int PostcodeGroupId,
+    string PostcodeGroupName,
+    int? DepotId,
+    string DepotName,
+    decimal? DepotLatitude,
+    decimal? DepotLongitude,
+    List<ZoneMapShapeDto> Shapes,
+    /// <summary>Member codes with no boundary on file, padded for display.</summary>
+    List<string> CodesWithNoShape);
+
 /// <summary>
 /// A postcode / zip group. ONE table (BulkZonePostcodeGroup) serves both
 /// tenants; only the member table differs - BulkZonePostcode on NZ,
@@ -63,10 +99,65 @@ public record ZoneZipPasteResultDto(
     List<string> AlreadyInThisZone,
     List<string> Ignored);
 
+/// <summary>One code inside a zone, for the chips in the group drawer.
+///
+/// <paramref name="Code"/> is the display spelling, padded: NZ stores
+/// BulkZonePostcode.PostCode as an int so 0110 Whangarei lives as 110, and
+/// 673 of Urgent's 3,025 rows are that shape. The raw int is in
+/// <paramref name="Value"/> for callers that need to match on it.
+/// </summary>
+public record PostcodeGroupMemberDto(
+    int Id,
+    string Code,
+    int Value,
+    /// <summary>Suburb or zone label. NZ reads BulkZonePostcode.Name, which
+    /// already carries it on 2,909 of 3,025 rows; US reads the ZoneName.
+    /// Blank where the tenant never set one.</summary>
+    string Suburb);
+
 public record PostcodeGroupZoneDto(
     int Zone,
     string Label,
-    int MemberCount);
+    int MemberCount,
+    /// <summary>The codes themselves, so the drawer can list a zone's
+    /// postcodes before its polygons (spec 3.2) rather than only count them.</summary>
+    List<PostcodeGroupMemberDto> Members);
+
+/// <param name="Added">Codes written, in the padded display spelling.</param>
+/// <param name="SkippedInOtherZone">
+/// Codes already in a DIFFERENT zone of this same group, with that zone's
+/// number, and deliberately not moved. On Urgent production no postcode sits
+/// in two zones of one group, so silently moving one would break an invariant
+/// the rating function relies on.
+/// </param>
+/// <param name="AlreadyInThisZone">Codes that were already here. A no-op, reported so a
+/// re-paste reads as "nothing to do" rather than as a failure.</param>
+/// <param name="Ignored">Entries that could not be read as an NZ postcode,
+/// returned verbatim so the operator can see what was in their paste.</param>
+public record NzPostcodePasteResultDto(
+    List<string> Added,
+    List<PostcodeInOtherZoneDto> SkippedInOtherZone,
+    List<string> AlreadyInThisZone,
+    List<string> Ignored);
+
+public record PostcodeInOtherZoneDto(string Code, int Zone, string ZoneLabel);
+
+/// <param name="Group">The copy, in the same shape the list returns.</param>
+/// <param name="MembersCopied">Postcode rows (NZ) or zip rows (US) written.</param>
+/// <param name="ZonesCopied">Distinct zone numbers carried over.</param>
+/// <param name="PolygonsCopied">
+/// Polygon memberships the copy got, written the same way the postcodes are:
+/// a new BulkZonePolygon row per shape, same PolygonId, same zone. The shape
+/// itself is neither cloned nor moved, because BulkZonePolygon is unique on
+/// (PostcodeGroupId, PolygonId) rather than on PolygonId alone, so one shape
+/// can be zone 4 here and zone 2 in the copy's group and the original keeps
+/// it. Spec 3.1, migration 20261007170000.
+/// </param>
+public record PostcodeGroupDuplicateResultDto(
+    PostcodeGroupDto Group,
+    int MembersCopied,
+    int ZonesCopied,
+    int PolygonsCopied);
 
 /// <summary>A schedule that references this group, and on which side.
 /// A schedule can use the same group for both pickup and delivery, so the
@@ -131,13 +222,21 @@ public record ZoneGroupDto(
 /// <summary>Polygon binding view - the subset of tblBulkRunPolygon
 /// columns the Zone Groups tab needs to list "polygons bound to this
 /// zone" and to render binding state chips.</summary>
+/// <summary>A polygon bound to a US ZoneName, or a member of a zone inside a
+/// postcode group. The two axes are stored differently and that shows here:
+/// ZoneName binding is the single column tblBulkRunPolygon.ZoneNameId, while
+/// group membership is a BulkZonePolygon row, so it carries the zone number it
+/// joined and its own id. Zone and MembershipId are therefore null on the
+/// ZoneName side.</summary>
 public record BoundPolygonDto(
     int PolygonId,
     string Name,
     int? ZoneNameId,
     int? PostcodeGroupId,
     decimal CentroidLatitude,
-    decimal CentroidLongitude);
+    decimal CentroidLongitude,
+    int? Zone = null,
+    int? MembershipId = null);
 
 /// <summary>Envelope returned by /api/territory/bootstrap so the React
 /// side can populate all three tabs from one roundtrip.</summary>

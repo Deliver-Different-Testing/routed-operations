@@ -272,7 +272,8 @@ public class BulkImportServiceV2JobFactoryTests
     [Fact]
     public async Task Import_CourierPercentageOverride_RoundedToFourDp()
     {
-        var svc = BulkImportServiceV2CoreTests.NewSvc(out _, out _, countryCode: "US");
+        // Staff only: a customer's override is dropped (BulkImportCustomerScopeTests).
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out _, out _, countryCode: "US", clientTypeId: "4");
         var req = new BulkImportRequest
         {
             ClientId = 999,
