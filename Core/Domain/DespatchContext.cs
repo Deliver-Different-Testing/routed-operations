@@ -13,6 +13,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<TblBulkRun> TblBulkRuns { get; set; }
     public virtual DbSet<TblBulkJobRun> TblBulkJobRuns { get; set; }
     public virtual DbSet<TblBulkRegion> TblBulkRegions { get; set; }
+    public virtual DbSet<TblBulkRegionClientLimit> TblBulkRegionClientLimits { get; set; }
     public virtual DbSet<TucJobType> TucJobTypes { get; set; }
     public virtual DbSet<TucCourier> TucCouriers { get; set; }
     public virtual DbSet<TucCourierFleet> TucCourierFleets { get; set; }
@@ -123,6 +124,10 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<BulkZonePostcode> BulkZonePostcodes { get; set; }
     public virtual DbSet<BulkZonePostcodeGroup> BulkZonePostcodeGroups { get; set; }
     public virtual DbSet<BulkZonePostcodeSurcharge> BulkZonePostcodeSurcharges { get; set; }
+    public virtual DbSet<BulkZoneRate> BulkZoneRates { get; set; }
+    public virtual DbSet<BulkZoneRateSheet> BulkZoneRateSheets { get; set; }
+    public virtual DbSet<BulkZonePackageRate> BulkZonePackageRates { get; set; }
+    public virtual DbSet<BulkZonePackageRateSet> BulkZonePackageRateSets { get; set; }
     public virtual DbSet<BulkZoneSchedule> BulkZoneSchedules { get; set; }
     public virtual DbSet<BulkPickupZoneSchedule> BulkPickupZoneSchedules { get; set; }
     public virtual DbSet<JobDeliveryJourney> JobDeliveryJourneys { get; set; }
@@ -133,6 +138,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<TblGssstockSize> TblGssstockSizes { get; set; }
     public virtual DbSet<TblSite> TblSites { get; set; }
     public virtual DbSet<TblbulkLinehaulRun> TblbulkLinehaulRuns { get; set; }
+    public virtual DbSet<BulkLinehaulRate> BulkLinehaulRates { get; set; }
     public virtual DbSet<TucClientContact> TucClientContacts { get; set; }
     public virtual DbSet<TucJob> TucJobs { get; set; }
     public virtual DbSet<TucJobBooking> TucJobBookings { get; set; }
@@ -199,6 +205,23 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.HasOne(e => e.Run)
                 .WithMany(r => r.TblBulkJobRuns)
                 .HasForeignKey(e => e.RunId);
+        });
+
+        modelBuilder.Entity<TblBulkRegionClientLimit>(entity =>
+        {
+            // Underscore in the physical name, none in the entity name. The
+            // un-underscored spelling does not exist on any tenant; the same
+            // mapping is in ClientManager's DespatchContext.
+            entity.ToTable("tblBulkRegion_ClientLimit");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("ID");
+            entity.Property(e => e.BulkRegionId).HasColumnName("BulkRegionID");
+            entity.Property(e => e.ClientId).HasColumnName("ClientID");
+            entity.Property(e => e.Deactivated).HasDefaultValue(true);
+            entity.HasOne(e => e.BulkRegion)
+                .WithMany()
+                .HasForeignKey(e => e.BulkRegionId)
+                .OnDelete(DeleteBehavior.NoAction);
         });
 
         modelBuilder.Entity<TblBulkRegion>(entity =>
@@ -550,6 +573,38 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.Property(e => e.Name).IsRequired().HasMaxLength(50);
         });
 
+        modelBuilder.Entity<BulkZoneRate>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkZoneRate");
+            entity.Property(e => e.Amount).HasColumnType("money");
+            entity.Property(e => e.CourierPercentage).HasColumnType("decimal(18,2)");
+            entity.Property(e => e.Label).HasMaxLength(200);
+        });
+
+        modelBuilder.Entity<BulkZoneRateSheet>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkZoneRateSheet");
+        });
+
+        modelBuilder.Entity<BulkZonePackageRate>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkZonePackageRate");
+            entity.Property(e => e.CubicRate).HasColumnType("numeric(18,4)");
+            entity.Property(e => e.FromCubic).HasColumnType("decimal(18,4)");
+            entity.Property(e => e.ToCubic).HasColumnType("decimal(18,4)");
+            entity.Property(e => e.FromWeight).HasColumnType("decimal(18,4)");
+            entity.Property(e => e.ToWeight).HasColumnType("decimal(18,4)");
+        });
+
+        modelBuilder.Entity<BulkZonePackageRateSet>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkZonePackageRateSet");
+        });
+
         modelBuilder.Entity<BulkZonePostcodeSurcharge>(entity =>
         {
             entity.HasKey(e => e.Id);
@@ -652,6 +707,21 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         {
             entity.HasKey(e => e.Id);
             entity.ToTable("tblbulkLinehaulRun");
+        });
+
+        modelBuilder.Entity<BulkLinehaulRate>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("BulkLinehaulRate");
+            // money and decimal(5,2) on the table. Left to the provider on
+            // SQL Server; named here so the SQLite and InMemory harnesses
+            // round the same way the database does.
+            entity.Property(e => e.Amount).HasColumnType("money");
+            entity.Property(e => e.AmountPercentage).HasColumnType("decimal(5,2)");
+            entity.HasOne(e => e.LinehaulRun)
+                .WithMany()
+                .HasForeignKey(e => e.LinehaulRunId)
+                .OnDelete(DeleteBehavior.NoAction);
         });
 
         modelBuilder.Entity<TucClientContact>(entity =>
@@ -863,9 +933,14 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
             entity.HasKey(e => e.UcctId);
             entity.ToTable("tucClientContact");
 
-            // UcctClient -> TucClient (slim, no back-ref).
+            // UcctClient -> TucClient, with TucClient.TucClientContacts as the
+            // back-ref (ucctClientID), as legacy BulkImportHyper maps it
+            // (FK_tucClientContact_tucClient). Without the back-ref EF gave
+            // TucClientContacts its own shadow FK, TucClientUcclId, a column
+            // tucClientContact does not have, so the Bulk Import "linked
+            // client" rule could never match a tucClientContact link.
             entity.HasOne(e => e.UcctClient)
-                .WithMany()
+                .WithMany(p => p.TucClientContacts)
                 .HasForeignKey(e => e.UcctClientId)
                 .OnDelete(DeleteBehavior.NoAction);
 

@@ -30,10 +30,10 @@ public class BulkImportControllerTests
         var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, clientTypeId: clientTypeId, contactId: "3");
         var cache = ControllerTestHarness.Cache(accessor);
         var here = new HereGeocodeService(new HttpClient(), new AppSettings());
-        var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache);
+        var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache, new BulkClientScope(accessor));
         var httpClientFactory = Substitute.For<IHttpClientFactory>();
         httpClientFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient());
-        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService);
+        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>());
         var logger = Substitute.For<ILogger<BulkImportController>>();
         var ctl = new BulkImportController(svc, logger);
         ControllerTestHarness.AttachHttpContext(ctl,
@@ -91,6 +91,36 @@ public class BulkImportControllerTests
         ctl.ModelState.AddModelError("ClientId", "required");
         var req = new BulkImportRequest { ClientId = 0, SpeedId = 1, BookDate = DateTime.UtcNow };
         Assert.IsType<BadRequestObjectResult>(await ctl.Import(req));
+    }
+
+    // ── POST /truck-preview ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task PreviewTruckRows_InvalidModelState_ReturnsBadRequest()
+    {
+        var (ctl, _) = NewCtl();
+        ctl.ModelState.AddModelError("ClientId", "required");
+        var req = new BulkImportRequest { ClientId = 0, SpeedId = 1, BookDate = DateTime.UtcNow };
+        Assert.IsType<BadRequestObjectResult>(await ctl.PreviewTruckRows(req));
+    }
+
+    [Fact]
+    public async Task PreviewTruckRows_ClientOutOfScope_ReturnsTheSame400AsImport()
+    {
+        var (ctl, _) = NewCtl(countryCode: "NZ", clientTypeId: "2");
+        BulkImportRequest Req() => new()
+        {
+            ClientId = 999, SpeedId = 52, JobType = "ondemand", BookDate = DateTime.UtcNow.AddDays(1),
+            Jobs = new[] { new BulkImportJobCreateDto { JobNumber = "T1" } },
+        };
+
+        var preview = Assert.IsType<BadRequestObjectResult>(await ctl.PreviewTruckRows(Req()));
+        var import = Assert.IsType<BadRequestObjectResult>(await ctl.Import(Req()));
+
+        var previewBody = Assert.IsType<BulkTruckPreviewResponse>(preview.Value!);
+        var importBody = Assert.IsType<BulkImportResponse>(import.Value!);
+        Assert.Equal("Invalid client.", Assert.Single(previewBody.Messages).Message);
+        Assert.Equal(Assert.Single(importBody.Messages).Message, previewBody.Messages[0].Message);
     }
 
     // ── POST /staff-import ────────────────────────────────────────────────

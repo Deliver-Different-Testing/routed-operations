@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { RO_FEATURE_KEYS, makeFeatureAllowed, routeGates } from './accessSwitches';
+import { RO_FEATURE_KEYS, firstAllowedPath, makeFeatureAllowed, routeGates } from './accessSwitches';
+import { isPartnerDeniedPath } from './partnerAccess';
 import { navItems, type NavItem } from '../components/Layout/navItems';
 
 const flatten = (items: readonly NavItem[]): NavItem[] =>
@@ -87,5 +88,43 @@ describe('makeFeatureAllowed', () => {
     const allowed = makeFeatureAllowed('ready', visible);
     expect(allowed('ro-quoting')).toBe(true);
     expect(allowed('ro-route-builder')).toBe(false);
+  });
+});
+
+// Where "/" lands (ro-bulk-import-customer-scope M3). A customer with only
+// Bulk Import must reach it, not a "not available" Dashboard.
+describe('firstAllowedPath', () => {
+  const only = (...keys: string[]) => makeFeatureAllowed('ready', new Set(keys));
+
+  it('a caller with only Bulk Import lands on /bulk-import', () => {
+    expect(firstAllowedPath(navItems, only('ro-bulk-import'))).toBe('/bulk-import');
+  });
+
+  it('follows sidebar order: Dashboard first when it is on', () => {
+    expect(firstAllowedPath(navItems, only('ro-bulk-import', 'ro-dashboard'))).toBe('/dashboard');
+  });
+
+  it('a group needs its own key and a child key', () => {
+    expect(firstAllowedPath(navItems, only('ro-route-viewer'))).toBeNull();
+    expect(firstAllowedPath(navItems, only('ro-linehaul'))).toBeNull();
+    expect(firstAllowedPath(navItems, only('ro-route-viewer', 'ro-linehaul'))).toBe('/route-viewer/linehaul');
+  });
+
+  it('skips hidden entries (Mobile has a switch but no menu entry)', () => {
+    expect(firstAllowedPath(navItems, only('ro-route-viewer', 'ro-mobile'))).toBeNull();
+  });
+
+  it('returns null when nothing is on, or the switches failed to load', () => {
+    expect(firstAllowedPath(navItems, only())).toBeNull();
+    expect(firstAllowedPath(navItems, makeFeatureAllowed('error', null))).toBeNull();
+  });
+
+  it('DF Admin (everything allowed) lands on /dashboard', () => {
+    expect(firstAllowedPath(navItems, () => true)).toBe('/dashboard');
+  });
+
+  it('a partner never lands on a partner-denied page even when switched on', () => {
+    expect(firstAllowedPath(navItems, only('ro-bulk-import', 'ro-quoting'), isPartnerDeniedPath)).toBeNull();
+    expect(firstAllowedPath(navItems, () => true, isPartnerDeniedPath)).toBe('/dashboard');
   });
 });

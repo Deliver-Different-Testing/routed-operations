@@ -22,7 +22,7 @@ public class AddressControllerTests
         var accessor = ControllerTestHarness.Accessor(countryCode: countryCode, contactId: "3");
         var cache = ControllerTestHarness.Cache(accessor);
         var here = new HereGeocodeService(new HttpClient(), new AppSettings()); // empty API key => geocode returns null
-        var svc = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache);
+        var svc = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache, new BulkClientScope(accessor));
         var logger = Substitute.For<ILogger<AddressController>>();
         var ctl = new AddressController(svc, here, logger);
         ControllerTestHarness.AttachHttpContext(ctl,

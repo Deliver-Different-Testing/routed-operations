@@ -46,14 +46,15 @@ public class AddressServiceTests
     private static AddressService NewSvc(
         out DynamicDespatchDbContext seed,
         string countryCode = "US",
-        HttpStatusCode? hereStatus = null)
+        HttpStatusCode? hereStatus = null,
+        string clientTypeId = null)
     {
         var opts = BulkImportTestHarness.NewOptions();
         seed = BulkImportTestHarness.Context(opts);
-        var accessor = BulkImportTestHarness.Accessor(countryCode);
+        var accessor = BulkImportTestHarness.Accessor(countryCode, clientTypeId);
         var cache = BulkImportTestHarness.Cache(accessor);
         var here = NewHereSvc(hereStatus ?? HttpStatusCode.InternalServerError);
-        return new AddressService(BulkImportTestHarness.Factory(opts), accessor, here, cache);
+        return new AddressService(BulkImportTestHarness.Factory(opts), accessor, here, cache, new BulkClientScope(accessor));
     }
 
     // ---------------- GetSuburbs -----------------
@@ -98,7 +99,7 @@ public class AddressServiceTests
         var opts = BulkImportTestHarness.NewOptions();
         var accessor = BulkImportTestHarness.Accessor("NZ");
         var cache = BulkImportTestHarness.Cache(accessor);
-        var svc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, NewHereSvc(), cache);
+        var svc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, NewHereSvc(), cache, new BulkClientScope(accessor));
 
         var mid = Guid.NewGuid();
         var first = await svc.GetSuburbs(mid);
@@ -316,7 +317,9 @@ public class AddressServiceTests
     [Fact]
     public async Task GetPostcodesByDepotAsync_WithClient_ResolvesDuplicatesToScheduledDepotAndFlagsNoService()
     {
-        var svc = NewSvc(out var seed, countryCode: "NZ");
+        // Staff: may name any client. A customer's clientId is scoped (see
+        // BulkImportCustomerScopeTests).
+        var svc = NewSvc(out var seed, countryCode: "NZ", clientTypeId: "4");
         var chc = new TblBulkRegion { BulkRegionId = 1, Name = "Christchurch", Active = true };
         var air = new TblBulkRegion { BulkRegionId = 2, Name = "Air NZ Cargo", Active = true };
         var old = new TblBulkRegion { BulkRegionId = 3, Name = "Closed Depot", Active = false };

@@ -40,6 +40,9 @@ export interface SpeedDto {
   id: number;
   name: string;
   code: string | null;
+  systemName?: string | null;
+  // A speed bulk import sends down the truck path.
+  isTruck?: boolean;
 }
 
 export interface StockSizeDto {

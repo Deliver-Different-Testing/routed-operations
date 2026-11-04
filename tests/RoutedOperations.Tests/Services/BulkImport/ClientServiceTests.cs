@@ -22,7 +22,7 @@ public class ClientServiceTests
         seed = BulkImportTestHarness.Context(opts);
         var accessor = BulkImportTestHarness.Accessor(countryCode, clientTypeId, timeZone);
         var cache = BulkImportTestHarness.Cache(accessor);
-        return new ClientService(BulkImportTestHarness.Factory(opts), accessor, cache);
+        return new ClientService(BulkImportTestHarness.Factory(opts), accessor, cache, new BulkClientScope(accessor));
     }
 
     // ---------------- Get -----------------

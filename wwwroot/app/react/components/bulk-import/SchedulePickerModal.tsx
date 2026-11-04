@@ -5,9 +5,11 @@ import { useAuth } from '../../context/AuthContext';
 import { tenantNowWallClock } from '../../lib/tenantDate';
 import { formatCutoff, isPastCutoff, latestCutoff } from './scheduleCutoff';
 import type { ScheduleDto } from '../../services/clientsService';
+import type { BulkTruckDefaults } from '../../services/bulkImportService';
 import {
   includedDepotBuckets,
   nextPendingDepotIndex,
+  truckInPlay,
   type WizardAction,
   type WizardState,
 } from './wizardState';
@@ -21,6 +23,8 @@ interface Props {
   onCancel: () => void;
   /** True while the wizard is firing /import for the current bucket. */
   importing?: boolean;
+  /** True while the wizard is fetching truck prices for the next step. */
+  checkingPrices?: boolean;
 }
 
 /**
@@ -41,6 +45,7 @@ export function SchedulePickerModal({
   onNext,
   onCancel,
   importing = false,
+  checkingPrices = false,
 }: Props) {
   const auth = useAuth();
   const isUs = auth.isUsTenant || state.client?.isUsTenant || false;
@@ -372,6 +377,10 @@ export function SchedulePickerModal({
   // P2-7 silent rewind: on-demand bookTime that lands in the past gets
   // bumped to now+15min. Legacy homeControl.js:3273-3289 does the same
   // without complaining to the operator. Only applies when bookDate === today.
+  const truckDefaults = state.options.truckDefaults;
+  const setTruckDefaults = (patch: BulkTruckDefaults) =>
+    dispatch({ type: 'SET_OPTIONS', options: { truckDefaults: { ...truckDefaults, ...patch } } });
+
   const handleNext = () => {
     if (isOnDemand && state.bookDate && state.bookTime) {
       const [y, m, d] = state.bookDate.split('-').map(Number);
@@ -407,8 +416,8 @@ export function SchedulePickerModal({
           : `Book Date, Service & Schedule${depotCountLabel}`
       }
       size="xl"
-      loading={importing}
-      loadingMessage="Importing jobs for this depot..."
+      loading={importing || checkingPrices}
+      loadingMessage={checkingPrices ? 'Checking truck prices...' : 'Importing jobs for this depot...'}
       footer={
         <div className="flex justify-between items-center">
           <Button variant="ghost" onClick={onCancel}>
@@ -491,6 +500,15 @@ export function SchedulePickerModal({
               Import failed: {state.importError}
             </p>
           )}
+          {state.truckPreviewError && (
+            <p
+              data-testid="sp-truck-preview-error"
+              role="alert"
+              className="mt-2 text-xs text-error border border-error/40 bg-error/[0.06] rounded px-2 py-1.5"
+            >
+              Could not check truck prices, so nothing was imported: {state.truckPreviewError}
+            </p>
+          )}
           {/* Name the reason a service is missing. A silently shorter
               dropdown is the thing that sent the operator into the server's
               "Schedule cutoff exceeded." rejection in the first place. */}
@@ -562,6 +580,55 @@ export function SchedulePickerModal({
             </p>
           )}
         </div>
+
+        {truckInPlay(state, isUs) && (
+          <div className="border border-border rounded p-3 space-y-2 bg-surface-cream" data-testid="truck-defaults">
+            <div className="text-xs font-medium text-text-secondary">
+              Truck job defaults (used when a row leaves the column empty)
+            </div>
+            <select
+              aria-label="Default pallet type"
+              value={truckDefaults.palletType ?? ''}
+              onChange={(e) => setTruckDefaults({ palletType: e.target.value || null })}
+              className="w-full text-xs border border-border rounded px-2 py-1.5 bg-surface-white"
+            >
+              <option value="">Pallet type... (Optional)</option>
+              {settings?.stockSizes?.map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            {([
+              ['tailLiftPickup', 'Tail lift at pickup'],
+              ['tailLiftDropoff', 'Tail lift at delivery'],
+              ['residential', 'Residential delivery'],
+              ['dangerousGoods', 'Dangerous goods'],
+              ['dgDocument', 'DG documentation supplied'],
+            ] as const).map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={!!truckDefaults[key]}
+                  onChange={(e) => setTruckDefaults({ [key]: e.target.checked })}
+                />
+                {label}
+              </label>
+            ))}
+            <label className="flex items-center gap-2 text-xs">
+              DG class
+              <input
+                type="number"
+                min={1}
+                max={9}
+                aria-label="Default DG class"
+                value={truckDefaults.dgClass ?? ''}
+                onChange={(e) => setTruckDefaults({ dgClass: e.target.value ? Number(e.target.value) : null })}
+                className="w-16 text-xs border border-border rounded px-2 py-1 bg-surface-white"
+              />
+            </label>
+          </div>
+        )}
 
         {!isUs && isOnDemand && (
           <div className="border border-border rounded p-3 space-y-2 bg-surface-cream">

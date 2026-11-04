@@ -70,9 +70,12 @@ describe('App router wiring', () => {
     expect(screen.getByTestId('app-layout')).toBeInTheDocument();
   });
 
-  it('redirects / to /dashboard and mounts Dashboard', () => {
+  // "/" goes to the first page the caller may open (HomeRedirect, M3). With
+  // every switch on (the default handler) that is the Dashboard. It waits for
+  // the switches to load, hence findByText.
+  it('redirects / to the first allowed page (Dashboard when everything is on)', async () => {
     renderAt('/');
-    expect(screen.getByText('PAGE:Dashboard')).toBeInTheDocument();
+    expect(await screen.findByText('PAGE:Dashboard')).toBeInTheDocument();
   });
 
   it('resolves /routes to RoutesPage', () => {
@@ -135,8 +138,8 @@ describe('App router wiring', () => {
     expect(screen.getByText('PAGE:Mobile')).toBeInTheDocument();
   });
 
-  it('unknown routes fall through to the /dashboard catch-all', () => {
+  it('unknown routes fall through to the same first-allowed landing', async () => {
     renderAt('/no-such-route');
-    expect(screen.getByText('PAGE:Dashboard')).toBeInTheDocument();
+    expect(await screen.findByText('PAGE:Dashboard')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,8 @@
 import type { ClientDto, ClientSettingsDto } from '../../services/clientsService';
 import type {
   BulkImportJobCreateDto,
+  BulkTruckDefaults,
+  BulkTruckPreviewResponse,
   ParsedFile,
   PickupJobToCreateResponse,
 } from '../../services/bulkImportService';
@@ -20,6 +22,7 @@ export type WizardStep =
   | 'selectRegions'
   | 'schedulePicker'
   | 'rateByDistance'
+  | 'truckPreview'
   | 'kmRatedReview'
   | 'bookPickup'
   | 'summary'
@@ -72,6 +75,11 @@ export interface WizardOptions {
   // BulkImportHyper homeControl.js:3359-3363.
   onHold: boolean;
   nationwideDoc: boolean;
+  // NZ On-Demand only. The operator says the file holds truck jobs, for files
+  // with no Speed column. truckDefaults apply to truck rows that leave the
+  // matching column empty.
+  truckJobs: boolean;
+  truckDefaults: BulkTruckDefaults;
 }
 
 export interface WizardState {
@@ -143,6 +151,10 @@ export interface WizardState {
   // "These job number(s) already exist for this date: ..." or a mapping
   // complaint, let alone act on it.
   importError: string | null;
+  // Truck prices for the current depot, fetched each time the operator leaves
+  // the schedule picker, because the book date and service both move the price.
+  truckPreview: BulkTruckPreviewResponse | null;
+  truckPreviewError: string | null;
   // Pickup booking (Step 8). pickupJobPayload is the earliest-cutoff pickup
   // job aggregated across per-depot imports (matches
   // homeControl.js:3226-3229). BookPickupModal reads from this to hydrate
@@ -177,6 +189,8 @@ export function initialWizardState(): WizardState {
       templateName: '',
       onHold: false,
       nationwideDoc: false,
+      truckJobs: false,
+      truckDefaults: {},
     },
     fixedZips: {},
     fixedAddresses: {},
@@ -199,6 +213,8 @@ export function initialWizardState(): WizardState {
     kmRatedConfirmed: false,
     failedImportJobs: [],
     importError: null,
+    truckPreview: null,
+    truckPreviewError: null,
     pickupJobPayload: null,
   };
 }
@@ -244,6 +260,8 @@ export type WizardAction =
   | { type: 'SET_KMRATED_CONFIRMED'; value: boolean }
   | { type: 'SET_FAILED_IMPORT_JOBS'; jobs: BulkImportJobCreateDto[] }
   | { type: 'SET_IMPORT_ERROR'; message: string | null }
+  | { type: 'SET_TRUCK_PREVIEW'; preview: BulkTruckPreviewResponse | null }
+  | { type: 'SET_TRUCK_PREVIEW_ERROR'; message: string | null }
   | { type: 'SET_PICKUP_JOB'; payload: PickupJobToCreateResponse | null }
   // Overwrites the current mapping wholesale with the template's mappings.
   // Only urgent fields present in the template appear in the new mapping;
@@ -358,6 +376,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
         speedId: 0,
         scheduleId: null,
         bookTime: '',
+        truckPreview: null,
+        truckPreviewError: null,
       };
     case 'START_PENDING_DEPOT': {
       const index = nextPendingDepotIndex(state, 0);
@@ -367,6 +387,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
         speedId: 0,
         scheduleId: null,
         bookTime: '',
+        truckPreview: null,
+        truckPreviewError: null,
       };
     }
     case 'MARK_DEPOT_DONE': {
@@ -409,6 +431,10 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return { ...state, failedImportJobs: action.jobs };
     case 'SET_IMPORT_ERROR':
       return { ...state, importError: action.message };
+    case 'SET_TRUCK_PREVIEW':
+      return { ...state, truckPreview: action.preview };
+    case 'SET_TRUCK_PREVIEW_ERROR':
+      return { ...state, truckPreviewError: action.message };
     case 'SET_PICKUP_JOB':
       return { ...state, pickupJobPayload: action.payload };
     case 'APPLY_TEMPLATE':
@@ -518,13 +544,36 @@ export interface UrgentFieldsClientOverrides {
   referenceBMessage: string | null;
 }
 
+// Keys added by urgentFieldsFor when a truck speed is in play.
+export const TRUCK_FIELD_KEYS = [
+  'speed', 'palletType', 'totalWeight', 'tailLiftPickup', 'tailLiftDropoff',
+  'residential', 'dangerousGoods', 'dgClass', 'dgDocument', 'truckStart', 'truckHours',
+];
+
+function truckFields(): UrgentField[] {
+  return [
+    { key: 'speed', label: 'Speed', aliases: ['Service', 'Service Level', 'Speed Code'], showFor: 'nz' },
+    { key: 'palletType', label: 'Pallet Type', aliases: ['PalletType', 'Pallet Size'], showFor: 'nz' },
+    { key: 'totalWeight', label: 'Total Weight', aliases: ['TotalWeight', 'Total Kg', 'Total Kgs', 'Gross Weight'], showFor: 'nz' },
+    { key: 'tailLiftPickup', label: 'Tail Lift PU', aliases: ['TailLift PU', 'Tail Lift Pickup', 'Pickup Tail Lift'], showFor: 'nz' },
+    { key: 'tailLiftDropoff', label: 'Tail Lift DO', aliases: ['TailLift DO', 'Tail Lift Delivery', 'Delivery Tail Lift'], showFor: 'nz' },
+    { key: 'residential', label: 'Residential', aliases: ['Private Address', 'Private Residence'], showFor: 'nz' },
+    { key: 'dangerousGoods', label: 'Dangerous Goods', aliases: ['DangerousGoods', 'DG'], showFor: 'nz' },
+    { key: 'dgClass', label: 'DG Class', aliases: ['DGClass'], showFor: 'nz' },
+    { key: 'dgDocument', label: 'DG Document', aliases: ['DGDocument', 'DG Documentation'], showFor: 'nz' },
+    { key: 'truckStart', label: 'Truck Start', aliases: ['TruckStart', 'Start Time'], showFor: 'nz' },
+    { key: 'truckHours', label: 'Truck Hours', aliases: ['TruckHours'], showFor: 'nz' },
+  ];
+}
+
 export function urgentFieldsFor(
   isUsTenant: boolean,
   jobType: ImportType,
   autogenerateJobNumber: boolean,
   routeFromClientSite: boolean = false,
   clientOverrides?: UrgentFieldsClientOverrides,
-  stockSizeOverridden: boolean = false
+  stockSizeOverridden: boolean = false,
+  truckInPlay: boolean = false
 ): UrgentField[] {
   // Legacy visibility gates (homeControl.js:1141-1156):
   //   fromFieldsActiveAnyTenant = on-demand OR (US routed && routeFromClientSite)
@@ -693,7 +742,8 @@ export function urgentFieldsFor(
     // "Items" is the legacy Despatch column name; homeControl.js quantity
     // aliases include it explicitly. Preserving that so a spreadsheet with
     // an Items column auto-maps to Quantity without operator intervention.
-    aliases: ['Qty', 'Items', 'NumberOfItems', 'ItemCount', 'Pieces', 'Pcs', 'Count', 'Boxes', 'Cartons'],
+    aliases: ['Qty', 'Items', 'NumberOfItems', 'ItemCount', 'Pieces', 'Pcs', 'Count', 'Boxes', 'Cartons',
+      ...(truckInPlay ? ['Pallets', 'Pallet Count', 'Pallet Qty'] : [])],
     showFor: 'both',
   });
 
@@ -729,7 +779,7 @@ export function urgentFieldsFor(
     });
     base.push({
       key: 'weight',
-      label: 'Weight',
+      label: truckInPlay ? 'Weight (per pallet)' : 'Weight',
       aliases: ['Weight', 'Wgt', 'Lbs', 'Pounds', 'Kg', 'Kgs', 'PackageWeight'],
       showFor: 'both',
     });
@@ -786,7 +836,151 @@ export function urgentFieldsFor(
     showFor: 'both',
   });
 
+  if (truckInPlay) base.push(...truckFields());
+
   return base;
+}
+
+// -----------------------------------------------------------------------------
+// Truck jobs (card bulk-insert-truck-and-ai, Part A). NZ on-demand only. A file
+// with no truck speed sends exactly what it sent before.
+// -----------------------------------------------------------------------------
+
+export function truckFieldsEligible(state: WizardState, isUs: boolean): boolean {
+  return !isUs
+    && state.importType === 'onDemand'
+    && !!state.clientSettings?.speeds?.some((s) => s.isTruck);
+}
+
+function isTruckSpeedValue(state: WizardState, value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (!v) return false;
+  return !!state.clientSettings?.speeds?.some(
+    (s) => s.isTruck && [String(s.id), s.code, s.systemName, s.name]
+      .some((candidate) => candidate?.trim().toLowerCase() === v)
+  );
+}
+
+/** Does any row of this column name a truck speed? */
+export function columnHasTruckSpeed(state: WizardState, column: string | undefined): boolean {
+  if (!column) return false;
+  return !!state.parsed?.rows.some((r) => isTruckSpeedValue(state, String(r[column] ?? '')));
+}
+
+/** The operator said so, the mapped Speed column names one, or the batch speed is one. */
+export function truckInPlay(state: WizardState, isUs: boolean): boolean {
+  if (!truckFieldsEligible(state, isUs)) return false;
+  return state.options.truckJobs
+    || columnHasTruckSpeed(state, state.mapping.speed)
+    || !!state.clientSettings?.speeds?.some((s) => s.isTruck && s.id === state.speedId);
+}
+
+/**
+ * The truck fields did not exist when the auto-map ran on open, so match them
+ * once a truck speed comes into play. Total Weight only takes a header that says
+ * so: a plain "Weight" column is per pallet, and the substring match would
+ * otherwise hand it to Total Weight too. The reverse also happens: on open,
+ * Weight claims a lone "Total Weight" column by substring, and has to let go of
+ * it here, or a row total would be read as a per-pallet figure.
+ */
+export function autoMapTruckFields(
+  fields: UrgentField[],
+  headers: string[],
+  mapping: Record<string, string>
+): Record<string, string> {
+  const next = { ...mapping };
+  for (const f of fields) {
+    if ((!TRUCK_FIELD_KEYS.includes(f.key) && f.key !== 'quantity') || next[f.key]) continue;
+    const match = autoMatchColumn(f, headers);
+    if (!match) continue;
+    if (f.key === 'totalWeight' && !/total|gross/i.test(match)) continue;
+    next[f.key] = match;
+  }
+  if (next.totalWeight && next.weight === next.totalWeight) delete next.weight;
+  return next;
+}
+
+/** Y / Yes / True / 1 and N / No / False / 0. Anything else counts as not given. */
+export function parseYesNo(value: string | null): boolean | null {
+  const v = value?.trim().toLowerCase();
+  if (v === 'y' || v === 'yes' || v === 'true' || v === '1') return true;
+  if (v === 'n' || v === 'no' || v === 'false' || v === '0') return false;
+  return null;
+}
+
+/**
+ * Stamps the truck columns onto a job. Only keys with a value are added, and
+ * the caller only runs this when a truck speed is in play, so a P2P payload is
+ * unchanged. A Total Weight on a row with no Weight of its own clears the stock
+ * size's weight: the server uses Weight when present, and the row's figure
+ * should win over a batch default.
+ */
+export function applyTruckFields(
+  job: BulkImportJobCreateDto,
+  get: (key: string) => string | null,
+  mappedWeight: number | null
+): void {
+  const num = (key: string) => {
+    const raw = get(key);
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const speed = get('speed');
+  if (speed) job.speed = speed;
+  const palletType = get('palletType');
+  if (palletType) job.palletType = palletType;
+  const truckStart = get('truckStart');
+  if (truckStart) job.truckStart = truckStart;
+  const totalWeight = num('totalWeight');
+  if (totalWeight != null) {
+    job.totalWeight = totalWeight;
+    if (mappedWeight == null) job.weight = 0;
+  }
+  const dgClass = num('dgClass');
+  if (dgClass != null) job.dgClass = Math.trunc(dgClass);
+  const truckHours = num('truckHours');
+  if (truckHours != null) job.truckHours = truckHours;
+  const flags = {
+    tailLiftPickup: parseYesNo(get('tailLiftPickup')),
+    tailLiftDropoff: parseYesNo(get('tailLiftDropoff')),
+    residential: parseYesNo(get('residential')),
+    dangerousGoods: parseYesNo(get('dangerousGoods')),
+    dgDocument: parseYesNo(get('dgDocument')),
+  };
+  for (const [key, value] of Object.entries(flags)) {
+    if (value != null) (job as Record<string, unknown>)[key] = value;
+  }
+}
+
+/**
+ * Separates what an /import response handed back: rows the server refused from
+ * the truck path go to the summary, the rest keep their existing km-rated route.
+ */
+export function splitReturnedJobs(returned: BulkImportJobCreateDto[]): {
+  truckRejected: BulkImportJobCreateDto[];
+  others: BulkImportJobCreateDto[];
+} {
+  return {
+    truckRejected: returned.filter((j) => j.truckRejected),
+    others: returned.filter((j) => !j.truckRejected),
+  };
+}
+
+/** The counts and price total on the truck price step. */
+export function truckPreviewTotals(preview: BulkTruckPreviewResponse | null): {
+  wouldImport: number;
+  wouldReject: number;
+  totalPrice: number;
+  importCount: number;
+} {
+  const rows = preview?.rows ?? [];
+  const priced = rows.filter((r) => r.wouldImport);
+  return {
+    wouldImport: priced.length,
+    wouldReject: rows.length - priced.length,
+    totalPrice: priced.reduce((sum, r) => sum + (r.amount ?? 0), 0),
+    importCount: priced.length + (preview?.otherRowCount ?? 0),
+  };
 }
 
 /**

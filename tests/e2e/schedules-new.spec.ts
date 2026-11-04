@@ -338,6 +338,39 @@ async function stubApis(page: import('@playwright/test').Page) {
   );
 }
 
+/** BundleModal fetches the bundle on open; the list stub alone is not enough. */
+async function stubBundleDetail(page: import('@playwright/test').Page) {
+  await page.route('**/api/v2/schedule-bundles/1', (route: Route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        response: {
+          bundleId: 1,
+          name: 'AKL medical overnight bundle',
+          description: 'What a new medical client gets on day one.',
+          isActive: true,
+          members: V2_BUNDLES[0].scheduleIds.map((id, i) => ({
+            scheduleId: id,
+            name: V2_BUNDLES[0].scheduleNames[i],
+            isDefault: false,
+            clientCount: 3,
+            regionName: 'Christchurch',
+            speedName: 'Medical',
+            activeDays: [1, 2, 3, 4, 5],
+          })),
+          // Deliberately NOT MedLab Central: a client already on the bundle
+          // is disabled in the picker, and the attach test picks MLC.
+          clients: [
+            { clientId: 200, code: 'PATH', name: 'Pathway Diagnostics', onMembers: 3, ofMembers: 3 },
+          ],
+        },
+      }),
+    });
+  });
+}
+
 test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
   test('sidebar has NEW-badged Schedules entry that opens the page', async ({ page }) => {
     await stubApis(page);
@@ -382,8 +415,10 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await expect(page.getByRole('button', { name: 'Operating days', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Roster', exact: true })).toBeVisible();
 
-    // Attached clients tab is default; shows 9 linked chip count.
-    await expect(page.getByText('9 linked')).toBeVisible();
+    // Clients tab is default. The chip reads "configured", not "linked":
+    // spec 6.1 rule 2 renamed it because a link row means the schedule is
+    // configured FOR that client, not that only they may book it.
+    await expect(page.getByText('9 configured')).toBeVisible();
 
     // Save button is dirty-gated - disabled until form differs from seed.
     // Legacy per-client schedules would otherwise silently migrate on a
@@ -432,19 +467,26 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await expect(page.getByRole('columnheader', { name: 'Clients via schedule' })).toBeVisible();
   });
 
-  test('Schedule Bundles tab renders bundle with expand', async ({ page }) => {
+  test('Schedule Bundles tab lists a bundle and Open shows its members', async ({ page }) => {
+    // The tab became a table whose Open button raises BundleModal; it used to
+    // be a card that expanded in place. The counts are bare numbers in their
+    // own columns now rather than "3 schedules" / "10 clients".
     await stubApis(page);
+    await stubBundleDetail(page);
     await page.goto('/schedules-new');
 
     await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
-    await expect(page.getByText('AKL medical overnight bundle')).toBeVisible();
-    await expect(page.getByText('3 schedules')).toBeVisible();
-    await expect(page.getByText('10 clients')).toBeVisible();
+    const row = page.getByRole('row').filter({ hasText: 'AKL medical overnight bundle' });
+    await expect(row).toBeVisible();
+    await expect(row.getByRole('cell', { name: '10', exact: true })).toBeVisible();
+    // The schedules cell carries the count and the member names beside it.
+    await expect(row).toContainText('AKL > CHCH Pre 8am Medical');
 
-    // Expand the bundle.
-    await page.getByText('AKL medical overnight bundle').click();
-    await expect(page.getByText('#1042 - AKL > CHCH Pre 8am Medical')).toBeVisible();
+    await row.getByRole('button', { name: 'Open' }).click();
+    await expect(page.getByRole('heading', { name: 'AKL medical overnight bundle' })).toBeVisible();
+    await expect(page.getByRole('dialog')
+      .getByRole('button', { name: 'AKL > CHCH Pre 10am Medical' })).toBeVisible();
   });
 
   // ─── Kevin's 2026-09-14 review items ─────────────────────────────
@@ -490,12 +532,13 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // First row's Attach clients icon (aria title "Attach clients").
-    await page.getByTitle('Attach clients').first().click();
+    // Still a row icon; only its title changed, from "Attach clients" to
+    // "Configure for client". The modal was reworded with it (spec 6.1:
+    // configured FOR a client, not attached TO it).
+    await page.getByTitle('Configure for client').first().click();
 
-    // Modal opens with the schedule-specific title.
-    await expect(page.getByRole('heading', { name: /Attach clients to #1042/ })).toBeVisible();
-    await expect(page.getByText(/each client you tick gets a link row/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Configure #1042 for clients/ })).toBeVisible();
+    await expect(page.getByText(/each client you tick has this schedule configured for it/)).toBeVisible();
 
     // Server-side search still fires against /api/schedules/clients.
     const searchBox = page.getByPlaceholder('Search clients by name or code...');
@@ -513,7 +556,7 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
 
     // Cancel closes the modal.
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('heading', { name: /Attach clients to #/ })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /Configure #\d+ for clients/ })).toHaveCount(0);
   });
 
   test('Attach clients wire submits selection + closes modal on success', async ({ page }) => {
@@ -534,8 +577,8 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     });
     await page.goto('/schedules-new');
 
-    await page.getByTitle('Attach clients').first().click();
-    await expect(page.getByRole('heading', { name: /Attach clients to #1042/ })).toBeVisible();
+    await page.getByTitle('Configure for client').first().click();
+    await expect(page.getByRole('heading', { name: /Configure #1042 for clients/ })).toBeVisible();
 
     // Pathway Diagnostics (PATH, id 200) is NOT in the mocked schedule's
     // clientIds so it's tickable. Wait for the initial client list load
@@ -555,7 +598,7 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await attachBtn.click();
 
     // Modal closes on success + the payload includes the tick.
-    await expect(page.getByRole('heading', { name: /Attach clients to #/ })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /Configure #\d+ for clients/ })).toHaveCount(0);
     expect(attachPayload).toMatchObject({ clientIds: [1001] });
   });
 
@@ -666,6 +709,7 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
   test('Bundles Delete confirm + wire hits delete endpoint', async ({ page }) => {
     let deleteHit = false;
     await stubApis(page);
+    await stubBundleDetail(page);
     await page.route('**/api/v2/schedule-bundles/1', async (route) => {
       if (route.request().method() === 'DELETE') {
         deleteHit = true;
@@ -680,11 +724,16 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await page.goto('/schedules-new');
     await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
-    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    // Delete left the row when the tab became a table: it lives inside the
+    // bundle itself now, as "Delete bundle".
+    await page.getByRole('row').filter({ hasText: 'AKL medical overnight bundle' })
+      .getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('button', { name: 'Delete bundle' }).click();
+
     await expect(page.getByRole('heading', { name: 'Delete bundle?' })).toBeVisible();
-    // The confirm modal's danger button reads "Delete" too - danger
-    // variant. Use exact match to pick it out of the row-level button.
-    await page.getByRole('button', { name: 'Delete', exact: true }).nth(1).click();
+    // The confirm's own danger button reads just "Delete", so exact match
+    // keeps it apart from "Delete bundle" behind it.
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect.poll(() => deleteHit, { timeout: 5000 }).toBe(true);
   });
 
@@ -774,6 +823,7 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
   test('Bundle Attach clients modal picks + POSTs to /clients', async ({ page }) => {
     let attachPayload: any = null;
     await stubApis(page);
+    await stubBundleDetail(page);
     await page.route('**/api/v2/schedule-bundles/1/clients', async (route) => {
       if (route.request().method() === 'POST') {
         attachPayload = await route.request().postDataJSON();
@@ -788,18 +838,22 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await page.goto('/schedules-new');
     await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
 
-    // Attach clients link on the seeded bundle card.
-    await page.getByRole('button', { name: 'Attach clients' }).click();
-    await expect(page.getByRole('heading', { name: /Attach clients to bundle #1/ })).toBeVisible();
+    // Adding a client to a bundle moved inside the bundle, next to its member
+    // list, rather than being a link on a card in the list.
+    await page.getByRole('row').filter({ hasText: 'AKL medical overnight bundle' })
+      .getByRole('button', { name: 'Open' }).click();
+    await expect(page.getByRole('heading', { name: 'AKL medical overnight bundle' })).toBeVisible();
 
-    // Open the picker + tick one client.
-    await page.getByRole('button', { name: 'Pick clients...' }).click();
+    const dialog = page.getByRole('dialog');
+    // ClientMultiPicker's placeholder is the TRIGGER BUTTON's label, not an
+    // input placeholder, so getByPlaceholder never matches it.
+    await dialog.getByRole('button', { name: 'Add clients...' }).click();
     const panel = page.getByTestId('client-multi-picker-panel');
     await panel.getByPlaceholder('Search clients...').fill('med');
     await panel.getByText('MedLab Central (MLC)').click();
 
-    // Submit + verify payload.
-    await page.getByRole('button', { name: 'Attach', exact: true }).click();
+    // The submit button carries the count of what is ticked.
+    await dialog.getByRole('button', { name: /^Add 1$/ }).click();
     await expect.poll(() => attachPayload).not.toBeNull();
     expect(attachPayload).toMatchObject({ clientIds: [100] });
   });

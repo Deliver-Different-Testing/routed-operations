@@ -74,8 +74,8 @@ public class BulkImportServiceV2CoreTests
         accessor = BulkImportTestHarness.Accessor(countryCode, clientTypeId, timeZone);
         var factory = new FakeHttpClientFactory(httpHandler ?? new FakeHandler());
         var cache = BulkImportTestHarness.Cache(accessor);
-        var addressSvc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, StubHereSvc(), cache);
-        return new BulkImportServiceV2(BulkImportTestHarness.Factory(opts), factory, accessor, addressSvc);
+        var addressSvc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, StubHereSvc(), cache, new BulkClientScope(accessor));
+        return new BulkImportServiceV2(BulkImportTestHarness.Factory(opts), factory, accessor, addressSvc, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>());
     }
 
     // ---------------- UploadFile -----------------
@@ -302,7 +302,8 @@ public class BulkImportServiceV2CoreTests
     [Fact]
     public async Task DeleteTucJob_ExistingRow_VoidsAndAnnotates()
     {
-        var svc = NewSvc(out var seed, out _);
+        // Staff: may void any job. Customers are scoped (BulkImportCustomerScopeTests).
+        var svc = NewSvc(out var seed, out _, clientTypeId: "4");
         seed.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "N1", UcjbStatus = 0 });
         seed.TucClientContacts.Add(new TucClientContact { UcctId = 1, Active = true, UcctFirstname = "A", UcctSurname = "B", UcctEmail = "x@y" });
         await seed.SaveChangesAsync();

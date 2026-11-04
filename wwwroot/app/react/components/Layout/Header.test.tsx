@@ -7,6 +7,11 @@ import { renderWithProviders } from '@/test/renderWithProviders';
 
 describe('Header', () => {
   beforeEach(() => {
+    // Echo the same tenant as the bootstrap below, or the tenant-drift guard
+    // wipes the query cache and reloads, and the switch-gated search box
+    // never settles.
+    server.use(http.get('/api/session/current', () =>
+      HttpResponse.json({ currentTenantId: 42, email: 'kevin@example.com' })));
     (window as any).__APP_USER__ = {
       currentTenantId: 42,
       fullName: 'Kevin Tester',
@@ -44,14 +49,25 @@ describe('Header', () => {
     expect(screen.queryByPlaceholderText(/Search jobs/i)).not.toBeInTheDocument();
   });
 
-  it('renders the Route Builder search placeholder on /routes', () => {
+  it('renders the Route Builder search placeholder on /routes', async () => {
     renderWithProviders(<Header />, { initialRoute: '/routes' });
-    expect(screen.getByPlaceholderText(/Search jobs \(job #, ref, client, suburb, run name\)/)).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText(/Search jobs \(job #, ref, client, suburb, run name\)/)).toBeInTheDocument();
   });
 
-  it('renders the Route Viewer search placeholder on /route-viewer', () => {
+  it('renders the Route Viewer search placeholder on /route-viewer', async () => {
     renderWithProviders(<Header />, { initialRoute: '/route-viewer' });
-    expect(screen.getByPlaceholderText('Search jobs (job #)...')).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText('Search jobs (job #)...')).toBeInTheDocument();
+  });
+
+  // ro-bulk-import-customer-scope: a customer with only Bulk Import gets
+  // "This page isn't available" on /routes and /route-viewer, so the header
+  // must not offer a job search there either.
+  it.each(['/routes', '/route-viewer'])('hides the job search on %s when its switch is off', async (route) => {
+    server.use(http.get('/api/me/visible-features', () => HttpResponse.json(['ro-bulk-import'])));
+    renderWithProviders(<Header />, { initialRoute: route });
+    expect(await screen.findByText(route === '/routes' ? 'Route Builder' : 'Route Viewer')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByPlaceholderText(/Search jobs/i)).not.toBeInTheDocument();
   });
 
   it('resolves the deep child page name for /route-viewer/scans', () => {
@@ -61,7 +77,7 @@ describe('Header', () => {
 
   it('shows an X clear button once the RV search box has text', async () => {
     renderWithProviders(<Header />, { initialRoute: '/route-viewer' });
-    const input = screen.getByPlaceholderText('Search jobs (job #)...');
+    const input = await screen.findByPlaceholderText('Search jobs (job #)...');
     fireEvent.change(input, { target: { value: 'ABC' } });
     expect(await screen.findByRole('button', { name: 'Clear search' })).toBeInTheDocument();
   });
@@ -75,7 +91,7 @@ describe('Header', () => {
       }),
     );
     renderWithProviders(<Header />, { initialRoute: '/route-viewer' });
-    const input = screen.getByPlaceholderText('Search jobs (job #)...');
+    const input = await screen.findByPlaceholderText('Search jobs (job #)...');
     fireEvent.change(input, { target: { value: 'JOB123' } });
     fireEvent.focus(input);
     await waitFor(() => expect(called).toBe(true), { timeout: 2000 });

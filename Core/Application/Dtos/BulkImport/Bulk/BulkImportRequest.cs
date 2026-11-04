@@ -29,5 +29,10 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         // Row-level schedule wins over both batch-level options.
         public bool RouteFromClientSite { get; set; }
         public int? OriginLocationId { get; set; }
+
+        // Batch defaults for truck rows. The wizard sends this only when a truck
+        // speed is in play, and it also lifts the validator's P2P dimension caps
+        // (BulkImportTruckPath re-applies them to any P2P row in the same file).
+        public BulkTruckDefaults? TruckDefaults { get; set; }
     }
 }

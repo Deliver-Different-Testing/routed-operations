@@ -32,7 +32,7 @@ export async function asTenantOperator(page: Page) {
   await applyUserOverride(page, { isNetworkPartner: false, npAgentId: null });
 }
 
-async function applyUserOverride(page: Page, override: Record<string, unknown>) {
+export async function applyUserOverride(page: Page, override: Record<string, unknown>) {
   await page.addInitScript((patch) => {
     let current: Record<string, unknown> = { ...patch };
     Object.defineProperty(window, '__APP_USER__', {

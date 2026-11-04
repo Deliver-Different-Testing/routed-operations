@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
-import { useAuth } from '../../context/AuthContext';
-import { useVisibleFeatures } from '../../hooks/queries/useVisibleFeatures';
+import { usePageAccess } from '../../hooks/queries/useVisibleFeatures';
 
 interface Props {
   /** Every Access Control switch on the page's menu chain (group, then page).
@@ -24,19 +23,14 @@ interface Props {
  * failed fetch fails closed. DF Admin bypasses, as on the server.
  */
 export default function FeatureRoute({ requiredKeys, children }: Props) {
-  const user = useAuth();
-  const { visibleFeatures, status } = useVisibleFeatures();
+  const access = usePageAccess(requiredKeys);
 
-  if (requiredKeys.length === 0 || user.bypassesFeatureSwitches) {
+  if (access === 'allowed') {
     return <>{children}</>;
   }
 
-  if (status === 'loading') {
+  if (access === 'loading') {
     return <div role="status" aria-label="Loading" className="p-6 text-sm text-text-muted">Loading...</div>;
-  }
-
-  if (status === 'ready' && visibleFeatures && requiredKeys.every((k) => visibleFeatures.has(k))) {
-    return <>{children}</>;
   }
 
   return (
