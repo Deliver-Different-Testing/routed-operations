@@ -724,6 +724,50 @@ public class TerritoryService(
         var entity = await Context.BulkZonePostcodeGroups
             .FirstOrDefaultAsync(g => g.Id == id)
             ?? throw new InvalidOperationException("Postcode group not found.");
+
+        // The FK on tblBulkRunScheduleDay.PostcodeGroupId cannot protect a
+        // converted schedule, whose group ids live on its detail row with no FK
+        // and whose day columns are NULL. Pickup group columns never had an FK.
+        // Retired schedules are deliberately included, as the FK included them.
+        var usedBy = await Context.TblBulkRunSchedules.AsNoTracking()
+            .Where(d => d.PostcodeGroupId == id || d.PickupPostcodeGroupId == id)
+            .Select(d => new { d.ScheduleId, d.Name })
+            .Distinct()
+            .ToListAsync();
+        // The view hides days a converted schedule's weekday mask switches
+        // off, so a schedule with every day masked would not show above.
+        // Read the detail rows directly as well so it still counts.
+        var seen = usedBy.Select(s => s.ScheduleId).ToHashSet();
+        var detailOnly = await Context.BulkRunScheduleDetails.AsNoTracking()
+            .Where(x => x.PostcodeGroupId == id || x.PickupPostcodeGroupId == id)
+            .Select(x => x.ScheduleId)
+            .ToListAsync();
+        detailOnly = detailOnly.Where(sid => !seen.Contains(sid)).ToList();
+        if (detailOnly.Count > 0)
+        {
+            var extra = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => detailOnly.Contains(h.ScheduleId))
+                .Select(h => new { h.ScheduleId, h.Name })
+                .ToListAsync();
+            usedBy.AddRange(extra);
+            usedBy.AddRange(detailOnly
+                .Where(sid => extra.All(e => e.ScheduleId != sid))
+                .Select(sid => new { ScheduleId = sid, Name = (string)null }));
+        }
+        if (usedBy.Count > 0)
+        {
+            const int maxNames = 5;
+            var count = usedBy.Select(s => s.ScheduleId).Distinct().Count();
+            var names = string.Join(", ", usedBy
+                .GroupBy(s => s.ScheduleId)
+                .Select(s => s.Select(x => x.Name).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? $"#{s.Key}")
+                .OrderBy(n => n)
+                .Take(maxNames));
+            var more = count > maxNames ? $" and {count - maxNames} more" : "";
+            throw new InvalidOperationException(
+                $"This postcode group is used by {count} schedule{(count == 1 ? "" : "s")} ({names}{more}). Remove it from those schedules first.");
+        }
+
         Context.BulkZonePostcodeGroups.Remove(entity);
         await Context.SaveChangesAsync();
     }

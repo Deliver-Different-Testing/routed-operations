@@ -109,12 +109,19 @@ public class ScheduleServiceTests : IDisposable
 
     private ScheduleService NewSvcWithSeed(
         out DynamicDespatchDbContext seed,
-        out DbContextOptions<DespatchContext> opts)
+        out DbContextOptions<DespatchContext> opts) =>
+        NewSvcWithSeed(out seed, out opts, out _);
+
+    private ScheduleService NewSvcWithSeed(
+        out DynamicDespatchDbContext seed,
+        out DbContextOptions<DespatchContext> opts,
+        out IScheduleConverter converter)
     {
         var (sqliteOpts, connection) = CockpitTestHarness.NewSqliteOptions();
         _connections.Add(connection);
         opts = sqliteOpts;
         seed = CockpitTestHarness.Context(opts);
+        converter = NewConverter();
         var accessor = new HttpContextAccessor();
         var cache = new TenantScopedCache(
             new MemoryCache(new MemoryCacheOptions()),
@@ -123,7 +130,7 @@ public class ScheduleServiceTests : IDisposable
             CockpitTestHarness.Factory(opts),
             NullLogger<ScheduleService>.Instance,
             cache,
-            NewConverter(),
+            converter,
             accessor);
     }
 
@@ -983,6 +990,200 @@ public class ScheduleServiceTests : IDisposable
             Assert.NotNull(cleared.MaxJobs);
             Assert.NotNull(cleared.CutoffHours);
         }
+    }
+
+    // ─── Saving a collapsed schedule: what EF compares against ───
+    //
+    // On a collapsed schedule the day rows hold NULL payload, and the save puts
+    // the payload back with uspScheduleUnconvert before writing the operator's
+    // values. That procedure writes behind EF's back. If the day rows were read
+    // BEFORE it ran, EF still believes the columns are NULL, so setting one to
+    // null is "no change" and is never sent; the restored old value then stays
+    // on the day row and the convert copies it straight back onto the detail
+    // row. The API returned 200 and the operator's clear silently did nothing
+    // (schedule 60 on local NZ, 5 Nov 2026). Setting a NEW value always worked,
+    // which is why this only ever showed up as "cannot clear a field".
+    //
+    // The stored procedures cannot run on Sqlite, so the converter seam stands
+    // in with what the real unconvert does to the database: raw SQL on the
+    // caller's own context and transaction, invisible to the change tracker.
+
+    /// <summary>Puts a saved schedule in the collapsed shape: payload nulled
+    /// off the day rows, one detail row present.</summary>
+    private static async Task CollapseAsync(DynamicDespatchDbContext db, int scheduleId)
+    {
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE tblBulkRunScheduleDay
+               SET StartTime = NULL, EndTime = NULL, MaxJobs = NULL, Region = NULL,
+                   SpeedId = NULL, CutoffHours = NULL, CutoffDay = NULL, CutoffTime = NULL,
+                   Description = NULL, AutoBook = NULL, PostcodeGroupId = NULL,
+                   BookPickup = NULL, PickupDepotId = NULL, StorageState = NULL,
+                   DeliveryState = NULL, PickupRatingSpeed = NULL,
+                   PickupPostcodeGroupId = NULL, ParentSpeedId = NULL,
+                   PickupBoxDiscount = NULL, DropOffLocationID = NULL,
+                   ApplyPickupCutoff = NULL, PickupCutoff = NULL,
+                   AutoBookScanAhead = NULL, IsRecurringSchedule = NULL
+             WHERE ScheduleId = {scheduleId}
+            """);
+        db.BulkRunScheduleDetails.Add(new BulkRunScheduleDetail
+        {
+            ScheduleId = scheduleId,
+            WeekDays = "1100000",
+            CutoffDayUnit = "W",
+            OccurrencesAhead = 1,
+            CreatedUtc = DateTime.UtcNow,
+            CreatedBy = "test",
+            PostcodeGroupId = 11,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>What uspScheduleUnconvert does to the database: every payload
+    /// column restored, detail row gone.</summary>
+    private static async Task RestoreLikeUnconvertAsync(DbContext ctx, int scheduleId)
+    {
+        await ctx.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE tblBulkRunScheduleDay
+               SET StartTime = '08:00:00', EndTime = '17:00:00', MaxJobs = 7, Region = 1,
+                   SpeedId = 21, CutoffHours = 24, CutoffDay = 1, CutoffTime = '15:00:00',
+                   Description = 'old description', AutoBook = 1, PostcodeGroupId = 11,
+                   BookPickup = 1, PickupDepotId = 31, StorageState = 2,
+                   DeliveryState = 3, PickupRatingSpeed = 41,
+                   PickupPostcodeGroupId = 12, ParentSpeedId = 51,
+                   PickupBoxDiscount = 5, DropOffLocationID = 61,
+                   ApplyPickupCutoff = 1, PickupCutoff = 90,
+                   AutoBookScanAhead = 3, IsRecurringSchedule = 1
+             WHERE ScheduleId = {scheduleId}
+            """);
+        await ctx.Database.ExecuteSqlInterpolatedAsync(
+            $"DELETE FROM tblBulkRunScheduleDetail WHERE ScheduleId = {scheduleId}");
+    }
+
+    private async Task<(ScheduleService Svc, DbContextOptions<DespatchContext> Opts, int ScheduleId)>
+        NewCollapsedScheduleAsync()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            await CollapseAsync(seed, created.ScheduleId);
+            converter.UnconvertAsync(Arg.Any<DbContext>(), created.ScheduleId)
+                .Returns(ci => RestoreLikeUnconvertAsync(ci.Arg<DbContext>(), created.ScheduleId));
+            return (svc, opts, created.ScheduleId);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_persists_every_cleared_field()
+    {
+        // Every field the request owns, cleared in one save. Direct origin
+        // because that is the shape where clearing the depot is legitimate; the
+        // depot-origin case is pinned separately below.
+        var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+
+        var clear = ValidRequest();
+        clear.ScheduleId = scheduleId;
+        clear.OriginType = "direct";
+        clear.DayWindows = new List<DayWindowUpsertRequest>
+        {
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00" },
+            new() { DayOfWeek = 2, StartTime = "08:00", EndTime = "17:00" },
+        };
+        await svc.UpsertAsync(clear);
+
+        using var read = CockpitTestHarness.Context(opts);
+        var rows = read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == scheduleId).ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r =>
+        {
+            Assert.Null(r.PostcodeGroupId);
+            Assert.Null(r.PickupPostcodeGroupId);
+            Assert.Null(r.SpeedId);
+            Assert.Null(r.ParentSpeedId);
+            Assert.Null(r.PickupDepotId);
+            Assert.Null(r.StorageState);
+            Assert.Null(r.DeliveryState);
+            Assert.Null(r.PickupRatingSpeed);
+            Assert.Null(r.PickupBoxDiscount);
+            Assert.Null(r.DropOffLocationId);
+            Assert.Null(r.AutoBook);
+            Assert.Null(r.BookPickup);
+            Assert.Null(r.ApplyPickupCutoff);
+            Assert.Null(r.PickupCutoff);
+            Assert.Null(r.Description);
+            Assert.Null(r.CutoffDay);
+            Assert.Null(r.CutoffTime);
+            // Not a null, and hit by the same flaw from the other side: the
+            // derived 0 was written, but only because the masked NULL differs
+            // from it. Pinned so the pair and the offset stay in step.
+            Assert.Equal(0, r.CutoffHours);
+        });
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_keeps_values_the_request_does_not_own()
+    {
+        // MaxJobs (F8), AutoBookScanAhead and IsRecurringSchedule are not on the
+        // request. Their only copy during the save is what the unconvert just
+        // restored, so a fix that wrote stale in-memory NULLs over the restored
+        // row would wipe them. This is why the rows are read after the unconvert
+        // rather than having EF's original values patched up afterwards.
+        var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+
+        var save = ValidRequest();
+        save.ScheduleId = scheduleId;
+        await svc.UpsertAsync(save);
+
+        using var read = CockpitTestHarness.Context(opts);
+        Assert.All(read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == scheduleId).ToList(), r =>
+        {
+            Assert.Equal(7, r.MaxJobs);
+            Assert.Equal(3, r.AutoBookScanAhead);
+            Assert.True(r.IsRecurringSchedule);
+        });
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_still_refuses_to_clear_a_depot_origin_depot()
+    {
+        // F24. Now that a clear really takes effect, this guard is the only
+        // thing between a depot-origin save with no depot and losing the depot.
+        // It reads the row's current value, so it can only fire on a collapsed
+        // schedule because the rows are read after the unconvert.
+        var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+
+        var save = ValidRequest();
+        save.ScheduleId = scheduleId;
+        save.OriginType = "depot";
+        save.PickupDepotId = null;
+        await svc.UpsertAsync(save);
+
+        using var read = CockpitTestHarness.Context(opts);
+        Assert.All(read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == scheduleId).ToList(),
+            r => Assert.Equal(31, r.PickupDepotId));
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_blanks_a_day_that_was_unticked()
+    {
+        // The same flaw, reached through ClearDayRowPayload rather than the
+        // template: the dropped day kept its restored window, so the weekday the
+        // operator removed stayed bookable.
+        var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+
+        var drop = ValidRequest();
+        drop.ScheduleId = scheduleId;
+        drop.DayWindows = new List<DayWindowUpsertRequest>
+        {
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+        };
+        await svc.UpsertAsync(drop);
+
+        using var read = CockpitTestHarness.Context(opts);
+        var dropped = read.TblBulkRunScheduleDays.Single(r => r.ScheduleId == scheduleId && r.DayOfWeek == 2);
+        Assert.Null(dropped.StartTime);
+        Assert.Null(dropped.EndTime);
+        Assert.Null(dropped.PostcodeGroupId);
     }
 
     // ─── 6.1: who can book a schedule is a setting, not a derivation ───

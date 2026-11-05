@@ -1362,21 +1362,6 @@ public class ScheduleService(
         var name = req.Name.Trim();
 
         BulkRunScheduleHeader header;
-        // The WRITE entity, not the view. 20261009177000 turned
-        // dbo.tblBulkRunSchedule into a view (IS_UPDATABLE = NO), so every
-        // write in this method targets tblBulkRunScheduleDay. Reads elsewhere
-        // in this service still go through the view, which is the only place
-        // a converted schedule's payload can be read from.
-        List<TblBulkRunScheduleDay> existing;
-        // Child rows keyed by DAY-ROW id. They used to be reached through
-        // navigation collections on the view entity; mirroring those
-        // collections onto the write entity makes EF mint a shadow FK per
-        // child (tried and reverted 2026-10-09, ScheduleModelShapeTests
-        // caught it), so the write path carries its own lookups and sets the
-        // FK column directly.
-        var zonesByDayRow = new Dictionary<int, List<BulkZoneSchedule>>();
-        var pickupZonesByDayRow = new Dictionary<int, List<BulkPickupZoneSchedule>>();
-        var linehaulsByDayRow = new Dictionary<int, List<TblBulkScheduleLinehaul>>();
         // F13 (Steve 2026-09-20): normalise empty/whitespace-only display
         // strings from the form to NULL on write so the backend can tell
         // "operator cleared it" (NULL, fall back to Name) apart from
@@ -1451,26 +1436,6 @@ public class ScheduleService(
                     + "Link it to a client first.");
             header.OriginType = originType;
             header.OriginRegionId = originRegionId;
-            existing = await Context.TblBulkRunScheduleDays
-                .Where(s => s.ScheduleId == header.ScheduleId)
-                .ToListAsync();
-            var dayRowIds = existing.Select(s => s.BulkRunScheduleId).ToList();
-            zonesByDayRow = (await Context.BulkZoneSchedules
-                    .Where(z => z.ScheduleId != null && dayRowIds.Contains(z.ScheduleId.Value))
-                    .ToListAsync())
-                .GroupBy(z => z.ScheduleId.Value)
-                .ToDictionary(g => g.Key, g => g.ToList());
-            pickupZonesByDayRow = (await Context.BulkPickupZoneSchedules
-                    .Where(z => dayRowIds.Contains(z.ScheduleId))
-                    .ToListAsync())
-                .GroupBy(z => z.ScheduleId)
-                .ToDictionary(g => g.Key, g => g.ToList());
-            linehaulsByDayRow = (await Context.TblBulkScheduleLinehauls
-                    .Where(l => l.BulkRunScheduleId != null
-                                && dayRowIds.Contains(l.BulkRunScheduleId.Value))
-                    .ToListAsync())
-                .GroupBy(l => l.BulkRunScheduleId.Value)
-                .ToDictionary(g => g.Key, g => g.ToList());
         }
         else
         {
@@ -1511,120 +1476,7 @@ public class ScheduleService(
                 OriginRegionId = originRegionId,
             };
             Context.BulkRunScheduleHeaders.Add(header);
-            existing = new List<TblBulkRunScheduleDay>();
         }
-
-        // Sync day-window rows.
-        var incomingIds = new HashSet<int>(req.DayWindows.Where(w => w.Id.HasValue).Select(w => w.Id!.Value));
-        foreach (var row in existing.ToList())
-        {
-            var matched = req.DayWindows.FirstOrDefault(w =>
-                (w.Id.HasValue && w.Id.Value == row.BulkRunScheduleId) ||
-                (!w.Id.HasValue && w.DayOfWeek == row.DayOfWeek));
-            if (matched == null)
-            {
-                // The day row itself is NOT deleted. Other tables hold its id
-                // as a foreign key (ShopWindow, BulkZoneSchedule,
-                // TblBulkScheduleLinehaul, tblRouteSchedule) and the booking
-                // procedures pack it into a quote, so the id is a live
-                // external contract. A schedule stops running on a weekday by
-                // losing that bit from its detail row's mask, which is what
-                // the convert step below writes, and the view then stops
-                // emitting the day. uspScheduleConvert refuses to mask off a
-                // day an active ShopWindow points at, which is the same
-                // protection the foreign key used to give the delete.
-                //
-                // Until the schedule converts, the row has to stop being
-                // offered some other way, and the only lever the old shape
-                // has is its payload: a row with no window is not bookable.
-                // So the payload is cleared here and the key columns kept.
-                if (zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
-                    Context.BulkZoneSchedules.RemoveRange(zs);
-                if (pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
-                    Context.BulkPickupZoneSchedules.RemoveRange(pzs);
-                if (linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
-                    Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
-                ClearDayRowPayload(row);
-                existing.Remove(row);
-            }
-        }
-
-        foreach (var w in req.DayWindows)
-        {
-            var row = w.Id.HasValue
-                ? existing.FirstOrDefault(r => r.BulkRunScheduleId == w.Id.Value)
-                : existing.FirstOrDefault(r => r.DayOfWeek == w.DayOfWeek);
-            if (row == null)
-            {
-                row = new TblBulkRunScheduleDay
-                {
-                    Name = name,
-                    // Legacy ClientId column on the day row: keep writing it
-                    // per brief §5 so anything still reading it (Client
-                    // Manager ScheduleService.GetByClient, booking
-                    // ScheduleService.GetRecurringScheduleIds, legacy SPs)
-                    // keeps working on newly-created rows. Stops once
-                    // nothing reads it. Steve's 2026-09-09 regression
-                    // review Finding 6.
-                    ClientId = header.LegacyClientId,
-                    // F8 preservation: 10000 is the default for freshly-inserted
-                    // day rows only. MaxJobs is deliberately NOT on
-                    // ScheduleGroupUpsertRequest and ApplyGroupTemplateToRow
-                    // does NOT touch it, so existing rows keep whatever
-                    // MaxJobs the operator set through the day-level UI.
-                    // Do not add MaxJobs to the request DTO or the template
-                    // without gating "req.MaxJobs > 0 ? req.MaxJobs : row.MaxJobs"
-                    // on the existing-row branch, or you will clobber real
-                    // operator values on save (Steve 2026-09-20 F8).
-                    MaxJobs = 10000,
-                    Header = header, // EF wires ScheduleId on save
-                };
-                Context.TblBulkRunScheduleDays.Add(row);
-                existing.Add(row);
-            }
-            else if (!string.Equals(row.Name, name, StringComparison.Ordinal))
-            {
-                // Header rename cascades to day rows so the legacy Name
-                // column stays in sync with the header's canonical value.
-                row.Name = name;
-            }
-            ApplyGroupTemplateToRow(row, req);
-            row.DayOfWeek = w.DayOfWeek;
-            row.StartTime = ParseTime(w.StartTime);
-            row.EndTime = ParseTime(w.EndTime);
-            // F11 Phase C (Steve 2026-09-24): absolute cutoff pair is the
-            // canonical shape. Legacy CutoffHours is still written so the
-            // list-card summary + any tenant SP not yet on Phase B fall
-            // through to a valid integer offset. DeriveLegacyCutoffHours
-            // produces the same offset the adhoc back-fill script uses.
-            row.CutoffDay = w.CutoffDay.HasValue ? (byte?)w.CutoffDay.Value : null;
-            row.CutoffTime = ParseNullableTime(w.CutoffTime);
-            row.CutoffHours = DeriveLegacyCutoffHours(row.CutoffDay, row.CutoffTime, row.DayOfWeek, row.StartTime);
-        }
-
-        // Zones + linehauls apply to every row in the group.
-        //
-        // F7 preservation (Steve 2026-09-20): only remove-and-re-add when the
-        // caller declared explicit intent by sending a non-null collection.
-        // A null Zones / Linehauls on the request means "leave alone" and we
-        // must NOT touch the existing rows. Sending an empty array [] IS
-        // explicit intent to clear. Prior behaviour treated null and []
-        // the same and wiped live zone / linehaul rows on any save that
-        // did not repopulate them (e.g. the operator edits a non-zone field
-        // and the frontend omits Zones from the payload).
-        // Removals can be issued now; the inserts need day-row ids, so they
-        // are deferred to after the first save. A row created in this same
-        // call has BulkRunScheduleId = 0 until then.
-        foreach (var row in existing)
-        {
-            if (req.Zones != null && zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
-                Context.BulkZoneSchedules.RemoveRange(zs);
-            if (req.PickupZones != null && pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
-                Context.BulkPickupZoneSchedules.RemoveRange(pzs);
-            if (req.Linehauls != null && linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
-                Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
-        }
-
         // Resolve the desired client-link set. clientCodes is authoritative
         // when provided (operator UI toggles chips by code, not by id, so
         // clientCodes reflects exactly the set the operator wants after
@@ -1739,6 +1591,10 @@ public class ScheduleService(
                 await _converter.UnconvertAsync(Context, header.ScheduleId);
             }
 
+            // Only now, so EF compares against what the unconvert really left
+            // in the database. See SyncDayRowsAsync.
+            var existing = await SyncDayRowsAsync(header, req, name);
+
             await Context.SaveChangesAsync();
 
             // Phase 2: children, now that every day row has an id.
@@ -1840,6 +1696,176 @@ public class ScheduleService(
         await RefreshListSummaryEntryAsync(header.ScheduleId);
 
         return await GetDetailByHeaderAsync(header);
+    }
+
+    /// <summary>
+    /// Reads the schedule's day rows and applies the request to them: adds the
+    /// new days, blanks the dropped ones, writes the template onto every row and
+    /// removes the child rows the request replaces. Nothing is saved here.
+    ///
+    /// Must run AFTER uspScheduleUnconvert. On a collapsed schedule the day rows
+    /// hold NULL payload until that procedure restores it, and it does so behind
+    /// the change tracker. Rows read before it would have EF comparing against
+    /// those NULLs, so setting a column to null is "no change" and never reaches
+    /// the database; the restored value then stays on the day row and the convert
+    /// copies it back onto the detail row. The save returned 200 and the clear did
+    /// nothing, while a non-null value always got through because it differs from
+    /// NULL. Reading afterwards also gives the F24 guard the real depot to look at.
+    /// </summary>
+    private async Task<List<TblBulkRunScheduleDay>> SyncDayRowsAsync(
+        BulkRunScheduleHeader header, ScheduleGroupUpsertRequest req, string name)
+    {
+        // The WRITE entity, not the view. 20261009177000 turned
+        // dbo.tblBulkRunSchedule into a view (IS_UPDATABLE = NO), so every
+        // write in this method targets tblBulkRunScheduleDay. Reads elsewhere
+        // in this service still go through the view, which is the only place
+        // a converted schedule's payload can be read from.
+        var existing = new List<TblBulkRunScheduleDay>();
+        // Child rows keyed by DAY-ROW id. They used to be reached through
+        // navigation collections on the view entity; mirroring those
+        // collections onto the write entity makes EF mint a shadow FK per
+        // child (tried and reverted 2026-10-09, ScheduleModelShapeTests
+        // caught it), so the write path carries its own lookups and sets the
+        // FK column directly.
+        var zonesByDayRow = new Dictionary<int, List<BulkZoneSchedule>>();
+        var pickupZonesByDayRow = new Dictionary<int, List<BulkPickupZoneSchedule>>();
+        var linehaulsByDayRow = new Dictionary<int, List<TblBulkScheduleLinehaul>>();
+        if (header.ScheduleId > 0)
+        {
+            existing = await Context.TblBulkRunScheduleDays
+                .Where(s => s.ScheduleId == header.ScheduleId)
+                .ToListAsync();
+            var dayRowIds = existing.Select(s => s.BulkRunScheduleId).ToList();
+            zonesByDayRow = (await Context.BulkZoneSchedules
+                    .Where(z => z.ScheduleId != null && dayRowIds.Contains(z.ScheduleId.Value))
+                    .ToListAsync())
+                .GroupBy(z => z.ScheduleId.Value)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            pickupZonesByDayRow = (await Context.BulkPickupZoneSchedules
+                    .Where(z => dayRowIds.Contains(z.ScheduleId))
+                    .ToListAsync())
+                .GroupBy(z => z.ScheduleId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+            linehaulsByDayRow = (await Context.TblBulkScheduleLinehauls
+                    .Where(l => l.BulkRunScheduleId != null
+                                && dayRowIds.Contains(l.BulkRunScheduleId.Value))
+                    .ToListAsync())
+                .GroupBy(l => l.BulkRunScheduleId.Value)
+                .ToDictionary(g => g.Key, g => g.ToList());
+        }
+
+        // Sync day-window rows.
+        var incomingIds = new HashSet<int>(req.DayWindows.Where(w => w.Id.HasValue).Select(w => w.Id!.Value));
+        foreach (var row in existing.ToList())
+        {
+            var matched = req.DayWindows.FirstOrDefault(w =>
+                (w.Id.HasValue && w.Id.Value == row.BulkRunScheduleId) ||
+                (!w.Id.HasValue && w.DayOfWeek == row.DayOfWeek));
+            if (matched == null)
+            {
+                // The day row itself is NOT deleted. Other tables hold its id
+                // as a foreign key (ShopWindow, BulkZoneSchedule,
+                // TblBulkScheduleLinehaul, tblRouteSchedule) and the booking
+                // procedures pack it into a quote, so the id is a live
+                // external contract. A schedule stops running on a weekday by
+                // losing that bit from its detail row's mask, which is what
+                // the convert step below writes, and the view then stops
+                // emitting the day. uspScheduleConvert refuses to mask off a
+                // day an active ShopWindow points at, which is the same
+                // protection the foreign key used to give the delete.
+                //
+                // Until the schedule converts, the row has to stop being
+                // offered some other way, and the only lever the old shape
+                // has is its payload: a row with no window is not bookable.
+                // So the payload is cleared here and the key columns kept.
+                if (zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
+                    Context.BulkZoneSchedules.RemoveRange(zs);
+                if (pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
+                    Context.BulkPickupZoneSchedules.RemoveRange(pzs);
+                if (linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
+                    Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
+                ClearDayRowPayload(row);
+                existing.Remove(row);
+            }
+        }
+
+        foreach (var w in req.DayWindows)
+        {
+            var row = w.Id.HasValue
+                ? existing.FirstOrDefault(r => r.BulkRunScheduleId == w.Id.Value)
+                : existing.FirstOrDefault(r => r.DayOfWeek == w.DayOfWeek);
+            if (row == null)
+            {
+                row = new TblBulkRunScheduleDay
+                {
+                    Name = name,
+                    // Legacy ClientId column on the day row: keep writing it
+                    // per brief §5 so anything still reading it (Client
+                    // Manager ScheduleService.GetByClient, booking
+                    // ScheduleService.GetRecurringScheduleIds, legacy SPs)
+                    // keeps working on newly-created rows. Stops once
+                    // nothing reads it. Steve's 2026-09-09 regression
+                    // review Finding 6.
+                    ClientId = header.LegacyClientId,
+                    // F8 preservation: 10000 is the default for freshly-inserted
+                    // day rows only. MaxJobs is deliberately NOT on
+                    // ScheduleGroupUpsertRequest and ApplyGroupTemplateToRow
+                    // does NOT touch it, so existing rows keep whatever
+                    // MaxJobs the operator set through the day-level UI.
+                    // Do not add MaxJobs to the request DTO or the template
+                    // without gating "req.MaxJobs > 0 ? req.MaxJobs : row.MaxJobs"
+                    // on the existing-row branch, or you will clobber real
+                    // operator values on save (Steve 2026-09-20 F8).
+                    MaxJobs = 10000,
+                    Header = header, // EF wires ScheduleId on save
+                };
+                Context.TblBulkRunScheduleDays.Add(row);
+                existing.Add(row);
+            }
+            else if (!string.Equals(row.Name, name, StringComparison.Ordinal))
+            {
+                // Header rename cascades to day rows so the legacy Name
+                // column stays in sync with the header's canonical value.
+                row.Name = name;
+            }
+            ApplyGroupTemplateToRow(row, req);
+            row.DayOfWeek = w.DayOfWeek;
+            row.StartTime = ParseTime(w.StartTime);
+            row.EndTime = ParseTime(w.EndTime);
+            // F11 Phase C (Steve 2026-09-24): absolute cutoff pair is the
+            // canonical shape. Legacy CutoffHours is still written so the
+            // list-card summary + any tenant SP not yet on Phase B fall
+            // through to a valid integer offset. DeriveLegacyCutoffHours
+            // produces the same offset the adhoc back-fill script uses.
+            row.CutoffDay = w.CutoffDay.HasValue ? (byte?)w.CutoffDay.Value : null;
+            row.CutoffTime = ParseNullableTime(w.CutoffTime);
+            row.CutoffHours = DeriveLegacyCutoffHours(row.CutoffDay, row.CutoffTime, row.DayOfWeek, row.StartTime);
+        }
+
+        // Zones + linehauls apply to every row in the group.
+        //
+        // F7 preservation (Steve 2026-09-20): only remove-and-re-add when the
+        // caller declared explicit intent by sending a non-null collection.
+        // A null Zones / Linehauls on the request means "leave alone" and we
+        // must NOT touch the existing rows. Sending an empty array [] IS
+        // explicit intent to clear. Prior behaviour treated null and []
+        // the same and wiped live zone / linehaul rows on any save that
+        // did not repopulate them (e.g. the operator edits a non-zone field
+        // and the frontend omits Zones from the payload).
+        // Removals can be issued now; the inserts need day-row ids, so they
+        // are deferred to after the first save. A row created in this same
+        // call has BulkRunScheduleId = 0 until then.
+        foreach (var row in existing)
+        {
+            if (req.Zones != null && zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
+                Context.BulkZoneSchedules.RemoveRange(zs);
+            if (req.PickupZones != null && pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
+                Context.BulkPickupZoneSchedules.RemoveRange(pzs);
+            if (req.Linehauls != null && linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
+                Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
+        }
+
+        return existing;
     }
 
     /// <summary>
