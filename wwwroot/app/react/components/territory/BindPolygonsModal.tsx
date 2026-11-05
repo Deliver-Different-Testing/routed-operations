@@ -16,8 +16,8 @@ interface Props {
 }
 
 /**
- * Attach existing coverage shapes to a US ZoneName or to a zone of a postcode
- * group. Drawing new shapes still happens in Polygon Builder; operators attach
+ * Attach existing coverage shapes to a ZoneName (US, or the rating zones of
+ * NZ/AU) or to a zone of a postcode group. Drawing new shapes still happens in Polygon Builder; operators attach
  * them here.
  *
  * The two axes are not the same shape of thing and the UI says so.

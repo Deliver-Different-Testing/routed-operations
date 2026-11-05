@@ -58,9 +58,13 @@ const BOOTSTRAP_NZ = {
  *  real network calls rather than about React internals. */
 let bootstrapCalls = 0;
 
-function installHandlers(countryCode: 'NZ' | 'US' = 'NZ') {
+function installHandlers(countryCode: 'NZ' | 'US' = 'NZ', ratingZoneNames: unknown[] = []) {
   bootstrapCalls = 0;
   server.use(
+    // Non-US tenants fetch their rating ZoneNames separately from the
+    // bootstrap (polygon zone rating: Bind Polygons).
+    http.get('/api/territory/us/zone-names', () =>
+      HttpResponse.json({ response: ratingZoneNames })),
     http.get('/api/territory/bootstrap', () => {
       bootstrapCalls += 1;
       return HttpResponse.json({ response: { ...BOOTSTRAP_NZ, countryCode } });
@@ -119,6 +123,30 @@ describe('Schedules NEW - Zone groups tab', () => {
     expect(await screen.findByRole('button', { name: /^Postcode Groups$/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Zones$/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Depots$/ })).toBeInTheDocument();
+  });
+
+  it('lists rating zones with Bind Polygons for a non-US tenant that has zone names', async () => {
+    installHandlers('NZ', [
+      { id: 39, name: 'MEL CBD', zoneGroupId: null, zoneGroupName: null, locationId: null, locationName: null, zipCount: 0 },
+    ]);
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+
+    expect(await screen.findByText('Rating Zones')).toBeInTheDocument();
+    expect(screen.getByText('MEL CBD')).toBeInTheDocument();
+  });
+
+  it('shows no rating zones section for a non-US tenant without zone names', async () => {
+    installHandlers('NZ', []);
+    const user = userEvent.setup();
+    renderWithProviders(<SchedulesNew />);
+
+    await user.click(await screen.findByRole('button', { name: /^Zone groups$/ }));
+    await screen.findByRole('button', { name: /^Postcode Groups$/ });
+
+    expect(screen.queryByText('Rating Zones')).not.toBeInTheDocument();
   });
 
   it('opens the zone maintenance grid from the Zones sub-view', async () => {

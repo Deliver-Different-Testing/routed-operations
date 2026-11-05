@@ -61,4 +61,12 @@ public partial class BulkRunPolygonZip
 
     [MaxLength(10)]
     public string Zip { get; set; }
+
+    /// <summary>Zip is >= 99% inside the shape, so polygon zone rating
+    /// needs no coordinates for it. Written by BulkPolygonService.</summary>
+    public bool IsFull { get; set; }
+
+    /// <summary>Intersection area as a % of the zip's own area. Rows below 10
+    /// are slivers kept for rating only; availability reads filter >= 10.</summary>
+    public decimal OverlapPct { get; set; }
 }
