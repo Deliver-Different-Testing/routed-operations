@@ -323,7 +323,10 @@ public class TerritoryService(
         // Schedules on either side. Counted by distinct header, because an
         // operator thinks in schedules and a schedule carries up to seven
         // day rows; the day count is kept as the secondary figure.
-        var dayRows = await Context.TblBulkRunScheduleDays.AsNoTracking()
+        // Through the view, never the day table: a converted schedule's group
+        // ids live on its detail row and its day rows hold NULL, and the view
+        // also drops the days its weekday mask has switched off.
+        var dayRows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Where(d => d.PostcodeGroupId == id || d.PickupPostcodeGroupId == id)
             .Select(d => new { d.ScheduleId, d.Name, d.PostcodeGroupId, d.PickupPostcodeGroupId })
             .ToListAsync();
@@ -414,7 +417,9 @@ public class TerritoryService(
         // Both sides in one pass. A day row can reference the same group on
         // both sides, which is why they are read together rather than as two
         // filtered queries that would double-count nothing but cost twice.
-        var dayRows = await Context.TblBulkRunScheduleDays.AsNoTracking()
+        // Through the view for the same reason as GetPostcodeGroupDetailAsync:
+        // on the day table a converted schedule reads as using no group at all.
+        var dayRows = await Context.TblBulkRunSchedules.AsNoTracking()
             .Where(d => (d.PostcodeGroupId != null && ids.Contains(d.PostcodeGroupId.Value))
                      || (d.PickupPostcodeGroupId != null && ids.Contains(d.PickupPostcodeGroupId.Value)))
             .Select(d => new { d.ScheduleId, d.PostcodeGroupId, d.PickupPostcodeGroupId })
