@@ -126,6 +126,17 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
         return ok ? Ok(new { response = "Removed" }) : NotFound();
     }
 
+    /// <summary>Re-run the postcode overlay for every active polygon
+    /// (backfills BulkRunPolygonZip.IsFull / OverlapPct and sliver rows).
+    /// Idempotent.</summary>
+    [HttpPost("refresh-overlays")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> RefreshOverlays()
+    {
+        var count = await svc.RefreshAllOverlaysAsync();
+        return Ok(new { response = "Refreshed", polygons = count });
+    }
+
     [HttpDelete("{id:int}")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> Delete(int id)
