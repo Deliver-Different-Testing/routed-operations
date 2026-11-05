@@ -23,6 +23,24 @@ worth reading before anything is picked up, because four items in the source doc
 source documents could not be confirmed from code it is marked **to reproduce** rather than restated
 as fact.
 
+## 1a. For Marcus, reading this first
+
+Six things need an answer from you or from ops before parts of this can be built. Everything else is
+Kevin's to get on with.
+
+| What | Why it needs you |
+|---|---|
+| **D2, custom versus default** (section 5) | Your report is what reopened it. Four options are costed there; my recommendation is the per-schedule switch now and your zone-group version once 6.4 exists. Steve decides, but your read on whether option 3 is enough to unblock ops this month is the thing that settles it. |
+| **D3, Recurring Routes in two places** (section 4, S6) | You flagged that the tab and the left-nav section differ in UI and wording. Which one should survive? My suggestion is the left-nav section as the place you maintain them, with the Schedules tab becoming read-only. |
+| **B4, zone groups showing empty** (section 2) | I could not confirm a cause from the code, so it needs reproducing. A named schedule and group where you saw it is enough. I have deliberately **not** acted on the "switch all the radio buttons on" suggestion, for the reason in that section. |
+| **B1, missing schedules in recurring routes** | If you have more examples than Fresh Connection Whangarei and the Stryker runs, they are worth having. Two causes are possible and more examples would tell them apart faster than the diagnostic will. |
+| **Section 6, the tidy-up** | T2, T3 and T4 are ops jobs, not Kevin's. They are blocked behind search and export landing, which is why those are early in the milestones. |
+| **Section 7, what is not Kevin's** | Four items in your doc are Kerran's, including Nisa's linehaul charge-once-only. Worth confirming you are happy with that split before this goes to Kevin. |
+
+Two notes on things you raised that are already settled. The bundles dropdown clipping has a fix
+written but not merged (B5), and client-specific zone groups need no feature, which is the conclusion
+you reached yourself in the doc.
+
 ## 2. Bugs
 
 ### B1. The recurring routes picker silently drops schedules (Marcus, 5 Nov)
@@ -289,7 +307,10 @@ merits.
 
 ## 7. Not in this spec
 
-**Kerran's, per the standing rule that rating work goes to Kerran even when it is SQL:**
+**Kerran's, per the standing rule that rating work goes to Kerran even when it is SQL.** Status
+checked against `gitlab.com/deliver-different` on 6 Nov: everything Kerran has merged is on `master`
+in all six repos he works in, with nothing of his left on `develop`. So none of the below is sitting
+half-shipped; they are simply not built yet.
 
 - Linehaul pricing living inside the schedule, and moving the rates for each speed and linehaul run
   into rating alongside the zone rates by speed.
@@ -302,6 +323,12 @@ merits.
   She is asking for the separate "charge once only" that the collection part already has. This is a
   specific, well-evidenced rating bug and should go to Kerran as its own item rather than sit in a
   Schedules NEW spec.
+
+  **Confirmed not built (6 Nov).** No commit touching cartons-once, charge-once or linehaul rating
+  exists on configurator `master` in the last 60 days; the only linehaul commit in that window is
+  Jacob's Mantine conversion. Worth saying plainly when this goes to Kerran: the checkbox he built is
+  the thing Nisa is reporting as wrong, so this reads as a follow-up to his own work rather than a
+  new ask.
 - Direct Drive Sameday on the delivery leg for the new US speeds. Kerran already did the equivalent
   for the old Urgent P2P speeds.
 
