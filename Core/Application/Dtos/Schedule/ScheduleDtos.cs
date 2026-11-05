@@ -117,7 +117,9 @@ public record ScheduleGroupDto(
     /// obstacle: WindowVariesByDay, PayloadVaries:&lt;column&gt;,
     /// CutoffDayNotExpressible, ShopWindowReferenced:&lt;shop&gt;. Observed
     /// verbatim from a save on a real database, not translated here, so the
-    /// operator sees the actual obstacle.
+    /// operator sees the actual obstacle. A schedule held back by
+    /// ScheduleConvertGuard never reaches the procedure and carries that
+    /// guard's reason instead.
     ///
     /// Only populated on the DTO a save returns. A plain GET leaves it null,
     /// because the question "why did it not convert" is only meaningful

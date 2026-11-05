@@ -341,6 +341,243 @@ public class ScheduleServiceTests : IDisposable
         Assert.Null(dto.ConvertRefusalReasons);
     }
 
+    // ─── ScheduleConvertGuard on the save paths (Steve, 5 Nov 2026) ─────
+
+    private static ScheduleGroupUpsertRequest DifferingCutoffsRequest()
+    {
+        var req = ValidRequest();
+        req.DayWindows[1].CutoffTime = "17:00";
+        return req;
+    }
+
+    private static Task SetStoredCutoffToHoursOnlyAsync(DbContext db, int scheduleId, int hours) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE tblBulkRunScheduleDay
+               SET CutoffHours = {hours}, CutoffDay = NULL, CutoffTime = NULL
+             WHERE ScheduleId = {scheduleId}
+            """);
+
+    private static ScheduleGroupUpsertRequest NoCutoffResave(int scheduleId)
+    {
+        var req = ValidRequest();
+        req.ScheduleId = scheduleId;
+        req.DayWindows = new List<DayWindowUpsertRequest>
+        {
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00" },
+            new() { DayOfWeek = 2, StartTime = "08:00", EndTime = "17:00" },
+        };
+        return req;
+    }
+
+    private static Task DidNotConvert(IScheduleConverter converter) =>
+        converter.DidNotReceive().ConvertAsync(
+            Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>());
+
+    [Fact]
+    public async Task UpsertAsync_does_not_convert_when_cutoffs_differ_and_still_saves()
+    {
+        // Converting would move the minority day onto the majority cutoff for
+        // every booking, because the view never reads the exception rows.
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var dto = await svc.UpsertAsync(DifferingCutoffsRequest());
+
+            await DidNotConvert(converter);
+            Assert.Equal(ScheduleConvertGuard.CutoffsDifferReason, dto.ConvertRefusalReasons);
+            Assert.False(dto.IsCollapsed);
+            Assert.Null(dto.OccurrencesAhead);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var times = read.TblBulkRunScheduleDays
+                .Where(r => r.ScheduleId == dto.ScheduleId)
+                .OrderBy(r => r.DayOfWeek)
+                .Select(r => r.CutoffTime)
+                .ToList();
+            Assert.Equal(new TimeSpan?[] { new(15, 0, 0), new(17, 0, 0) }, times);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_given_differing_cutoffs_ends_unconverted()
+    {
+        // The case in Steve's ruling: "only safe until someone edits one". The
+        // save unconverts first, and the guard then stops it collapsing again.
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            await CollapseAsync(seed, created.ScheduleId);
+            converter.UnconvertAsync(Arg.Any<DbContext>(), created.ScheduleId)
+                .Returns(ci => RestoreLikeUnconvertAsync(ci.Arg<DbContext>(), created.ScheduleId));
+            converter.ClearReceivedCalls();
+
+            var edit = DifferingCutoffsRequest();
+            edit.ScheduleId = created.ScheduleId;
+            var dto = await svc.UpsertAsync(edit);
+
+            await converter.Received(1).UnconvertAsync(Arg.Any<DbContext>(), created.ScheduleId);
+            await DidNotConvert(converter);
+            Assert.False(dto.IsCollapsed);
+            Assert.Equal(ScheduleConvertGuard.CutoffsDifferReason, dto.ConvertRefusalReasons);
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.False(read.BulkRunScheduleDetails.Any(d => d.ScheduleId == created.ScheduleId));
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_does_not_convert_an_hours_only_schedule()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            await SetStoredCutoffToHoursOnlyAsync(seed, created.ScheduleId, 999);
+            converter.ClearReceivedCalls();
+
+            var dto = await svc.UpsertAsync(NoCutoffResave(created.ScheduleId));
+
+            await DidNotConvert(converter);
+            Assert.Equal(ScheduleConvertGuard.HoursOnlyReason, dto.ConvertRefusalReasons);
+
+            // The save keeps the stored hours, so the booking cutoff does not
+            // move and the next save is held on the same rule.
+            using (var read = CockpitTestHarness.Context(opts))
+                Assert.All(
+                    read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == created.ScheduleId).ToList(),
+                    r => Assert.Equal(999, r.CutoffHours));
+
+            converter.ClearReceivedCalls();
+            var again = await svc.UpsertAsync(NoCutoffResave(created.ScheduleId));
+            await DidNotConvert(converter);
+            Assert.Equal(ScheduleConvertGuard.HoursOnlyReason, again.ConvertRefusalReasons);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_converts_once_an_hours_only_schedule_is_given_a_real_cutoff()
+    {
+        var svc = NewSvcWithSeed(out var seed, out _, out var converter);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            await SetStoredCutoffToHoursOnlyAsync(seed, created.ScheduleId, 999);
+            converter.ClearReceivedCalls();
+
+            var edit = ValidRequest();
+            edit.ScheduleId = created.ScheduleId;
+            await svc.UpsertAsync(edit);
+
+            await converter.Received(1).ConvertAsync(
+                Arg.Any<DbContext>(), created.ScheduleId, true, Arg.Any<string>());
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_clearing_a_cutoff_pair_is_not_mistaken_for_hours_only()
+    {
+        // The stored row has a pair and a derived offset. The operator removed
+        // the cutoff, which is a no-cutoff schedule, and that converts.
+        var svc = NewSvcWithSeed(out var seed, out _, out var converter);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            converter.ClearReceivedCalls();
+
+            var dto = await svc.UpsertAsync(NoCutoffResave(created.ScheduleId));
+
+            await converter.Received(1).ConvertAsync(
+                Arg.Any<DbContext>(), created.ScheduleId, true, Arg.Any<string>());
+            Assert.Null(dto.ConvertRefusalReasons);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_ignores_a_dropped_day_when_comparing_cutoffs()
+    {
+        // Unticking the odd day out leaves days that agree. The blanked row is
+        // the procedure's to judge, and it must not produce a false "cutoffs
+        // differ" here.
+        var svc = NewSvcWithSeed(out var seed, out _, out var converter);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.DayWindows.Add(new DayWindowUpsertRequest
+            {
+                DayOfWeek = 3, StartTime = "08:00", EndTime = "17:00", CutoffDay = 3, CutoffTime = "11:00",
+            });
+            var created = await svc.UpsertAsync(create);
+            await DidNotConvert(converter);
+            converter.ClearReceivedCalls();
+
+            var edit = ValidRequest();
+            edit.ScheduleId = created.ScheduleId;
+            await svc.UpsertAsync(edit);
+
+            await converter.Received(1).ConvertAsync(
+                Arg.Any<DbContext>(), created.ScheduleId, true, Arg.Any<string>());
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_does_not_convert_a_copy_of_a_schedule_whose_cutoffs_differ()
+    {
+        var svc = NewSvc(out var converter);
+        var source = await svc.UpsertAsync(DifferingCutoffsRequest());
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Held copy",
+        });
+
+        await DidNotConvert(converter);
+        Assert.False(copy.IsCollapsed);
+    }
+
+    [Fact]
+    public async Task CopyAsync_does_not_convert_a_copy_of_an_hours_only_schedule()
+    {
+        // Unlike a save, a copy carries the stored hours across.
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var source = await svc.UpsertAsync(ValidRequest());
+            await SetStoredCutoffToHoursOnlyAsync(seed, source.ScheduleId, 999);
+            converter.ClearReceivedCalls();
+
+            var copy = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = source.ScheduleId,
+                NewName = "Hours copy",
+            });
+
+            await DidNotConvert(converter);
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.All(
+                read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == copy.ScheduleId).ToList(),
+                r => Assert.Equal(999, r.CutoffHours));
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_still_converts_a_copy_whose_cutoffs_agree()
+    {
+        var svc = NewSvc(out var converter);
+        var source = await svc.UpsertAsync(ValidRequest());
+        converter.ClearReceivedCalls();
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Plain copy",
+        });
+
+        await converter.Received(1).ConvertAsync(
+            Arg.Any<DbContext>(), copy.ScheduleId, true, Arg.Any<string>());
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(61)]
