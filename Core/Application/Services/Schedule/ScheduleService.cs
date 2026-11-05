@@ -1593,7 +1593,7 @@ public class ScheduleService(
 
             // Only now, so EF compares against what the unconvert really left
             // in the database. See SyncDayRowsAsync.
-            var existing = await SyncDayRowsAsync(header, req, name);
+            var (existing, guardDays) = await SyncDayRowsAsync(header, req, name);
 
             await Context.SaveChangesAsync();
 
@@ -1646,9 +1646,7 @@ public class ScheduleService(
             //
             // This is the whole migration of existing data in the plan:
             // opportunistic, on touch, no campaign.
-            _lastConvert = _converter == null
-                ? null
-                : await _converter.ConvertAsync(Context, header.ScheduleId, commit: true, by: "RoutedOps");
+            _lastConvert = await ConvertUnlessGuardedAsync(header.ScheduleId, guardDays);
             // Both procedures changed rows underneath EF. Anything still
             // tracked from the writes above now holds pre-collapse values,
             // and the read that builds the response would hand those back.
@@ -1711,10 +1709,15 @@ public class ScheduleService(
     /// copies it back onto the detail row. The save returned 200 and the clear did
     /// nothing, while a non-null value always got through because it differs from
     /// NULL. Reading afterwards also gives the F24 guard the real depot to look at.
+    ///
+    /// Also returns the days the request describes, for ScheduleConvertGuard.
+    /// A day the request dropped is not among them: its row is blanked here, and
+    /// uspScheduleConvert refuses that with WindowVariesByDay on its own.
     /// </summary>
-    private async Task<List<TblBulkRunScheduleDay>> SyncDayRowsAsync(
+    private async Task<(List<TblBulkRunScheduleDay> Rows, List<ScheduleConvertGuard.Day> GuardDays)> SyncDayRowsAsync(
         BulkRunScheduleHeader header, ScheduleGroupUpsertRequest req, string name)
     {
+        var guardDays = new List<ScheduleConvertGuard.Day>();
         // The WRITE entity, not the view. 20261009177000 turned
         // dbo.tblBulkRunSchedule into a view (IS_UPDATABLE = NO), so every
         // write in this method targets tblBulkRunScheduleDay. Reads elsewhere
@@ -1837,9 +1840,28 @@ public class ScheduleService(
             // list-card summary + any tenant SP not yet on Phase B fall
             // through to a valid integer offset. DeriveLegacyCutoffHours
             // produces the same offset the adhoc back-fill script uses.
+            //
+            // The guard has to see an hours-only day's hours as they were
+            // stored. Having no pair before the save is what separates an
+            // hours-only row from an operator clearing a pair.
+            //
+            // Hours-only rows keep their hours (Steve 5 Nov, Kevin 6 Nov): the
+            // request has no hours field and the modal sends no pair for such a
+            // row, so deriving here wrote 0 and silently moved the booking
+            // cutoff to the run's start time (UTL_/DD_fncJob_
+            // GetClientAvailableBulkRunSchedule use StartTime - CutoffHours
+            // when the pair is unset). The derive only runs when the row had a
+            // pair or the request sends one.
+            var hoursOnlyBefore = row.CutoffDay == null && row.CutoffTime == null && row.CutoffHours.HasValue
+                ? row.CutoffHours
+                : null;
             row.CutoffDay = w.CutoffDay.HasValue ? (byte?)w.CutoffDay.Value : null;
             row.CutoffTime = ParseNullableTime(w.CutoffTime);
-            row.CutoffHours = DeriveLegacyCutoffHours(row.CutoffDay, row.CutoffTime, row.DayOfWeek, row.StartTime);
+            row.CutoffHours = hoursOnlyBefore.HasValue && row.CutoffDay == null && row.CutoffTime == null
+                ? hoursOnlyBefore
+                : DeriveLegacyCutoffHours(row.CutoffDay, row.CutoffTime, row.DayOfWeek, row.StartTime);
+            guardDays.Add(new ScheduleConvertGuard.Day(
+                row.DayOfWeek, row.CutoffDay, row.CutoffTime, row.CutoffHours));
         }
 
         // Zones + linehauls apply to every row in the group.
@@ -1865,7 +1887,23 @@ public class ScheduleService(
                 Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
         }
 
-        return existing;
+        return (existing, guardDays);
+    }
+
+    /// <summary>
+    /// Every convert-on-save goes through here, so ScheduleConvertGuard cannot
+    /// be missed. A guarded schedule comes back as an ordinary refusal: same
+    /// old shape, same route to the operator as one the procedure refused.
+    /// </summary>
+    private async Task<ScheduleConvertResult> ConvertUnlessGuardedAsync(
+        int scheduleId, IReadOnlyCollection<ScheduleConvertGuard.Day> days)
+    {
+        if (_converter == null) return null;
+
+        var reason = ScheduleConvertGuard.RefusalReason(days);
+        return reason != null
+            ? new ScheduleConvertResult { ScheduleId = scheduleId, CanConvert = false, Reasons = reason }
+            : await _converter.ConvertAsync(Context, scheduleId, commit: true, by: "RoutedOps");
     }
 
     /// <summary>
@@ -2382,8 +2420,18 @@ public class ScheduleService(
             // too, and a copy of one that was not has the same reasons not to
             // be, so the answer is simply to try. A refusal leaves the copy
             // in the old shape, which is a faithful copy either way.
-            if (_converter != null)
-                await _converter.ConvertAsync(Context, newHeader.ScheduleId, commit: true, by: "RoutedOps");
+            //
+            // The clones carry their source's stored cutoff untouched, so here
+            // the rows as written are the rows to judge. A held source would
+            // otherwise convert the moment it was copied.
+            var copyConvert = await ConvertUnlessGuardedAsync(
+                newHeader.ScheduleId,
+                clones.Select(c => new ScheduleConvertGuard.Day(
+                    c.Clone.DayOfWeek, c.Clone.CutoffDay, c.Clone.CutoffTime, c.Clone.CutoffHours)).ToList());
+            if (copyConvert != null && !copyConvert.CanConvert)
+                _logger.LogInformation(
+                    "Schedule copy {ScheduleId} saved in the old shape; convert refused: {Reasons}",
+                    newHeader.ScheduleId, copyConvert.Reasons);
 
             if (copyTx != null) await copyTx.CommitAsync();
         }
