@@ -242,4 +242,119 @@ public class PostcodeGroupEffectiveScheduleTests : IDisposable
 
         Assert.Equal((2, 0), await CountsFor(GroupA));
     }
+
+    private async Task<bool> GroupExists(int groupId)
+    {
+        using var db = new DynamicDespatchDbContext(_options);
+        return await db.BulkZonePostcodeGroups.AnyAsync(g => g.Id == groupId);
+    }
+
+    /// <summary>Asserts the delete was refused with the operator-facing message
+    /// and left the group in place, so nothing is left pointing at a missing group.</summary>
+    private async Task AssertDeleteRefused(int groupId, string expectedMessage)
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Svc().DeletePostcodeGroupAsync(groupId));
+        Assert.Equal(expectedMessage, ex.Message);
+        Assert.True(await GroupExists(groupId));
+    }
+
+    [Fact]
+    public async Task Delete_is_refused_for_a_group_on_an_unconverted_schedule()
+    {
+        // Three day rows, one schedule: the count is schedules, not rows.
+        SeedOldShape(40, delivery: GroupA, pickup: null, 1, 2, 3);
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 1 schedule (Schedule 40). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Delete_is_refused_for_a_group_held_only_on_a_detail_row()
+    {
+        // The gap this check closes. The day columns are NULL and the detail
+        // table has no FK to the group, so the database would allow this delete.
+        SeedConverted(41, "1111100", delivery: GroupA, pickup: null, 1, 2, 3, 4, 5);
+        using (var db = new DynamicDespatchDbContext(_options))
+            Assert.True(await db.TblBulkRunScheduleDays
+                .Where(d => d.ScheduleId == 41)
+                .AllAsync(d => d.PostcodeGroupId == null && d.PickupPostcodeGroupId == null));
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 1 schedule (Schedule 41). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Delete_is_refused_for_a_group_on_a_schedule_with_every_day_masked()
+    {
+        // The view hides masked days, so an all-zero mask makes the schedule
+        // invisible there. The detail row still points at the group.
+        SeedConverted(44, "0000000", delivery: GroupA, pickup: null, 1, 2);
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 1 schedule (Schedule 44). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Delete_is_refused_for_a_group_used_only_for_pickup()
+    {
+        // Pickup group columns never had an FK, on either shape.
+        SeedOldShape(42, delivery: null, pickup: GroupA, 1);
+        SeedConverted(43, "1000000", delivery: null, pickup: GroupB, 1);
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 1 schedule (Schedule 42). Remove it from those schedules first.");
+        await AssertDeleteRefused(GroupB,
+            "This postcode group is used by 1 schedule (Schedule 43). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Delete_is_refused_for_a_group_on_a_retired_schedule()
+    {
+        // The FK this replaces did not care about retirement, and a retired
+        // schedule still has to resolve its group for history.
+        SeedConverted(44, "1000000", delivery: GroupA, pickup: null, 1);
+        using (var db = new DynamicDespatchDbContext(_options))
+        {
+            await db.BulkRunScheduleHeaders
+                .Where(h => h.ScheduleId == 44)
+                .ExecuteUpdateAsync(u => u.SetProperty(h => h.RetiredUtc, DateTime.UtcNow));
+        }
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 1 schedule (Schedule 44). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Delete_removes_a_group_no_schedule_uses()
+    {
+        // GroupB's schedule must not stop GroupA being deleted, and vice versa.
+        SeedOldShape(45, delivery: GroupB, pickup: null, 1);
+
+        await Svc().DeletePostcodeGroupAsync(GroupA);
+
+        Assert.False(await GroupExists(GroupA));
+        Assert.True(await GroupExists(GroupB));
+    }
+
+    [Fact]
+    public async Task Refused_delete_names_each_schedule_across_both_shapes()
+    {
+        SeedOldShape(50, delivery: GroupA, pickup: null, 1, 2);
+        SeedConverted(51, "1100000", delivery: GroupA, pickup: GroupA, 1, 2);
+        SeedConverted(52, "1000000", delivery: null, pickup: GroupA, 1);
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 3 schedules (Schedule 50, Schedule 51, Schedule 52). Remove it from those schedules first.");
+    }
+
+    [Fact]
+    public async Task Refused_delete_lists_five_names_and_counts_the_rest()
+    {
+        foreach (var id in Enumerable.Range(60, 7))
+            SeedOldShape(id, delivery: GroupA, pickup: null, 1);
+
+        await AssertDeleteRefused(GroupA,
+            "This postcode group is used by 7 schedules (Schedule 60, Schedule 61, Schedule 62, Schedule 63, Schedule 64 and 2 more). Remove it from those schedules first.");
+    }
 }
