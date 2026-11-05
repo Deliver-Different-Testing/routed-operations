@@ -210,6 +210,26 @@ public class BulkImportP2PGuardTests
     }
 
     [Fact]
+    public async Task P2P_row_with_a_delivery_phone_gets_no_text_tracking_and_no_pallet_note()
+    {
+        // Steve 4 Nov: text tracking is for bulk truck jobs only, and the pallet note
+        // is a truck rule. The phone stays where it went before, in the proof of
+        // delivery field, and the tracking mobile stays empty.
+        var rig = NewRig();
+        var row = P2PRow();
+        row.TrackingEmail = null;
+        row.TrackingMobile = null;
+
+        await rig.Svc.Import(ContactId, OnDemand(row));
+
+        var expected = ExpectedOnDemandCall();
+        expected["trackingEmail"] = "";
+        expected["trackingMobile"] = "";
+        expected["proofOfDeliveryEmail"] = "";
+        AssertSameArguments(expected, Assert.Single(CallsTo(rig.Procs, "INT_stpJob_BulkInsertAsync")));
+    }
+
+    [Fact]
     public async Task P2P_row_writes_one_item_per_quantity_through_the_bulk_item_proc()
     {
         // This is the existing P2P item behaviour, including that the proc writes

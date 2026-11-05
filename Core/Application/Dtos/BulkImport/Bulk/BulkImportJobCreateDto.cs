@@ -93,7 +93,8 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         public string? Speed { get; set; }
         public string? PalletType { get; set; }
         // On a truck row Weight above is per pallet. TotalWeight is divided by the
-        // quantity when Weight is empty; when both are present Weight is used.
+        // quantity when Weight is empty; when both are present Weight is used and the
+        // preview warns on the row.
         public decimal? TotalWeight { get; set; }
         public bool? TailLiftPickup { get; set; }
         public bool? TailLiftDropoff { get; set; }

@@ -20,7 +20,7 @@ public partial class BulkImportServiceV2
 
     private sealed record TruckRunResult(int Created, List<(int RowNo, string Error)> Failed, List<string> Warnings);
 
-    private sealed record TruckPlan(List<TruckInsertRow> Ready, Dictionary<int, TruckPreflightRow> Preflight);
+    private sealed record TruckPlan(List<TruckInsertRow> Ready, Dictionary<int, TruckPreflightRow> Preflight, List<TruckRowPlan> Plans);
 
     // Splits a wizard request. A file with no Speed column, a P2P batch speed and
     // no truck defaults returns here after one query with every row in P2PRows,
@@ -353,6 +353,6 @@ public partial class BulkImportServiceV2
                 ready.Add(finalized.Row);
         }
 
-        return new TruckPlan(ready, preflight);
+        return new TruckPlan(ready, preflight, plans);
     }
 }

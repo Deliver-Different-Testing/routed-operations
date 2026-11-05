@@ -13,7 +13,18 @@ public interface IBulkTruckPreflight
 {
     Task<IReadOnlyDictionary<int, TruckClientFacts>> LoadClientsAsync(IReadOnlyCollection<int> clientIds);
     Task<IReadOnlyList<TruckPreflightRow>> RunAsync(IReadOnlyList<TruckRowPlan> plans);
+
+    /// <summary>
+    /// What the booking page lists for a customer: the rate function's
+    /// PublicDescription, by row. Only the customer preview asks for it.
+    /// </summary>
+    Task<IReadOnlyDictionary<int, string?>> PublicDescriptionsAsync(IReadOnlyList<TruckPublicRateRow> rows);
 }
+
+/// <summary>The rate function's inputs for a row the preflight has already resolved.</summary>
+public sealed record TruckPublicRateRow(
+    int RowNo, int ClientId, int FromId, int ToId, int Speed, decimal TotalWeight, int Qty, int Pickup, int Dropoff,
+    DateTime BookDate, int OverSize, int OverWeight, bool PrivateRes, bool DG, DateTime? TruckStart, double? TruckHours);
 
 public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
     : BaseService(contextFactory), IBulkTruckPreflight
@@ -47,6 +58,7 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         DECLARE @AfterHoursStatus int = (SELECT TOP 1 ucjsID FROM dbo.tucJobStatus WHERE ucjsName = 'After Hours');
         DECLARE @BookingStaff int = (SELECT TOP 1 ucstID FROM dbo.tucStaff WHERE ucstFirstName = 'Booking' AND ucstLastName = 'STP');
         DECLARE @DeliveryNoteType int = (SELECT TOP 1 NoteTypeId FROM dbo.tucNoteType WHERE NoteTypeName = 'Delivery Notes');
+        DECLARE @PickupNoteType int = (SELECT TOP 1 NoteTypeId FROM dbo.tucNoteType WHERE NoteTypeName = 'Pickup Notes');
 
         DECLARE @r TABLE (
             RowNo int PRIMARY KEY, ClientId int, SpeedId int, JobNumber nvarchar(50), FromContact nvarchar(100),
@@ -144,6 +156,7 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
             @AfterHoursStatus AS AfterHoursStatusId,
             @BookingStaff AS BookingStaffId,
             @DeliveryNoteType AS DeliveryNoteTypeId,
+            @PickupNoteType AS PickupNoteTypeId,
             GETDATE() AS ServerNow
         FROM @r r
         INNER JOIN dbo.tblClient c ON c.ClientID = r.ClientId
@@ -192,6 +205,20 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         ORDER BY r.RowNo;
         """;
 
+    // NET_stpJob_Truck_Rate_Described, the booking page's call: fuel included in
+    // each line (1) and the book date as @Date. RowsSql asks with fuel excluded,
+    // so its text is not what the page shows, and this is a separate call.
+    public const string PublicDescriptionsSql = """
+        SET NOCOUNT ON;
+        SELECT j.RowNo, rate.PublicDescription
+        FROM OPENJSON(@rows) WITH (
+            RowNo int, ClientId int, FromId int, ToId int, Speed int, TotalWeight decimal(18,4), Qty int, Pickup int, Dropoff int,
+            BookDate datetime, OverSize int, OverWeight int, PrivateRes bit, DG bit, TruckStart datetime, TruckHours float) j
+        OUTER APPLY dbo.UTL_fncJob_Truck_RateAndDescription(
+            j.ClientId, j.FromId, j.ToId, j.Speed, 4, j.TotalWeight, j.BookDate, 1, j.Qty, j.Pickup, j.Dropoff,
+            j.BookDate, j.OverSize, j.OverWeight, j.PrivateRes, j.DG, j.TruckStart, j.TruckHours, 1) rate;
+        """;
+
     public async Task<IReadOnlyDictionary<int, TruckClientFacts>> LoadClientsAsync(IReadOnlyCollection<int> clientIds)
     {
         var rows = await Context.Database.GetDbConnection().QueryAsync<TruckClientFactsRow>(
@@ -207,6 +234,14 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         var rows = await Context.Database.GetDbConnection().QueryAsync<TruckPreflightRow>(
             RowsSql, new { rows = BuildRowsJson(plans) }, commandTimeout: CommandTimeoutSeconds);
         return rows.ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<int, string?>> PublicDescriptionsAsync(IReadOnlyList<TruckPublicRateRow> rows)
+    {
+        if (rows.Count == 0) return new Dictionary<int, string?>();
+        var found = await Context.Database.GetDbConnection().QueryAsync<TruckPublicDescriptionRow>(
+            PublicDescriptionsSql, new { rows = JsonSerializer.Serialize(rows, TruckJson.Options) }, commandTimeout: CommandTimeoutSeconds);
+        return found.ToDictionary(r => r.RowNo, r => r.PublicDescription);
     }
 
     public static string BuildRowsJson(IReadOnlyList<TruckRowPlan> plans) =>
@@ -249,6 +284,12 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         }), TruckJson.Options);
 
     private static int? ToInt(string? value) => int.TryParse(value?.Trim(), out var n) ? n : null;
+
+    private sealed class TruckPublicDescriptionRow
+    {
+        public int RowNo { get; set; }
+        public string? PublicDescription { get; set; }
+    }
 
     private sealed class TruckClientFactsRow
     {

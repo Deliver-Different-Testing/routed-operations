@@ -12,6 +12,8 @@
 //   WebAPI GSS/Models/Package.cs                oversize and overweight counts
 //   WebAPI JobRepository.PrepareJobItems        one item row per pallet
 //   DES_fncTruckJob_IsVanOK                     VanOK
+//   booking desktopHomeControl.js getPackageSizeString + bookJobObject   pallet note
+//   WebAPI JobRepository.cs:4211-4219           Pickup Notes / Delivery Notes text
 using System.Globalization;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
 
@@ -90,6 +92,11 @@ public sealed class TruckRowPlan
     public DateTime? TruckStart { get; init; }
     public double? TruckHours { get; init; }
     public string? ComposedNotes { get; init; }
+    /// <summary>The pickup tucNote text. The driver reads the pallet size from it (Steve ruling 1).</summary>
+    public string? PickupNote { get; init; }
+    /// <summary>Steve rulings 3 and 4, kept on the plan until Finalize adds any suburb warning.</summary>
+    public string? Warning { get; init; }
+    public string? WarningLevel { get; init; }
     public bool VanOk { get; init; }
     public decimal? StaffAmount { get; init; }
     public required IReadOnlyList<TruckItemRow> Items { get; init; }
@@ -132,6 +139,7 @@ public sealed class TruckPreflightRow
     public int? AfterHoursStatusId { get; set; }
     public int? BookingStaffId { get; set; }
     public int? DeliveryNoteTypeId { get; set; }
+    public int? PickupNoteTypeId { get; set; }
     public DateTime ServerNow { get; set; }
 }
 
@@ -142,6 +150,9 @@ public sealed class TruckInsertRow
     public string ClientCode { get; init; } = "";
     public bool MustInsertAlone { get; init; }
     public string? Warning { get; init; }
+    public string? WarningLevel { get; init; }
+    public string? PickupNote { get; init; }
+    public int? PickupNoteTypeId { get; init; }
     public string? DeliveryNote { get; init; }
     public int? BookingStaffId { get; init; }
     public int? DeliveryNoteTypeId { get; init; }
@@ -224,6 +235,12 @@ public sealed class TruckInsertRow
 
 public sealed record TruckFinalizeResult(TruckInsertRow? Row, string? Error);
 
+public static class TruckWarningLevel
+{
+    /// <summary>The row imports, but Check Truck Prices flags it amber (Steve ruling 4).</summary>
+    public const string Amber = "amber";
+}
+
 public static class TruckRowCalculator
 {
     public const int DefaultTruckWeightLimit = 750;
@@ -235,6 +252,8 @@ public static class TruckRowCalculator
     private const int CompletedStatus = 6;
     private const int DespatchedStatus = 1;
     private const int DefaultAfterHoursStatus = 75;
+    // desktopHomeView.html:930 multiplies by this literal. Truck rows are NZ only.
+    private const decimal NzGstMultiplier = 1.15m;
 
     // Client branches in tucJob_InsertJob, tucJob_Insert_DatacomCode and the
     // tucFTPJob block read one arbitrary row of `inserted` and test its client.
@@ -294,9 +313,10 @@ public static class TruckRowCalculator
                 return Fail($"Truck start '{job.TruckStart}' is not a time or date.");
         }
 
-        string? notes = ComposeNotes(job.Notes, dgClass, job.DgDocument == true);
+        string pickupNote = " " + PalletSizeString(qty, job.Length, job.Width, job.Height, weight.PerPallet);
+        string? notes = ComposeNotes(ComposeJobNotes(pickupNote, job.Notes), dgClass, job.DgDocument == true);
         if (notes != null && notes.Length > MaxNotesLength)
-            return Fail($"Notes are too long once the DG line is added (limit {MaxNotesLength}).");
+            return Fail($"Notes are too long once the pallet and DG lines are added (limit {MaxNotesLength}).");
 
         bool pu = job.TailLiftPickup == true;
         bool dO = job.TailLiftDropoff == true;
@@ -321,6 +341,9 @@ public static class TruckRowCalculator
             TruckStart = truckStart,
             TruckHours = job.TruckHours,
             ComposedNotes = notes,
+            PickupNote = pickupNote,
+            Warning = RowWarning(job, weight),
+            WarningLevel = MissingSizeOrWeight(job, weight).Count > 0 ? TruckWarningLevel.Amber : null,
             VanOk = IsVanOk(qty, weight.PerPallet, job.Length, job.Width, job.Height, pu, dO),
             StaffAmount = job.Amount is > 0 ? job.Amount : null,
             Items = BuildItems(jobNumber, qty, weight.PerPallet, job, pu, dO, dgClass),
@@ -333,14 +356,37 @@ public static class TruckRowCalculator
 
     /// <summary>
     /// Steve decision 2. A Weight column is per pallet; otherwise Total weight is
-    /// divided by the pallet count. When a row gives both, Weight is used: Steve
-    /// has not ruled on that case, so there is deliberately no comparison here.
+    /// divided by the pallet count. When a row gives both, Weight is used and
+    /// RowWarning says so (Steve ruling 3).
     /// </summary>
     public static WeightResult ResolveWeight(decimal perPallet, decimal? total, short qty)
     {
         if (perPallet > 0) return new(perPallet, perPallet * qty);
         if (total is > 0) return new(Math.Round(total.Value / qty, 4, MidpointRounding.AwayFromZero), total.Value);
         return new(0, 0);
+    }
+
+    // Zero is what the row's own parsing leaves for an empty cell, after any stock
+    // size has filled what it can.
+    private static List<string> MissingSizeOrWeight(BulkImportJobCreateDto job, WeightResult weight)
+    {
+        var missing = new List<string>();
+        if (weight.PerPallet <= 0) missing.Add("weight");
+        if (job.Length <= 0) missing.Add("length");
+        if (job.Width <= 0) missing.Add("width");
+        if (job.Height <= 0) missing.Add("height");
+        return missing;
+    }
+
+    private static string? RowWarning(BulkImportJobCreateDto job, WeightResult weight)
+    {
+        var parts = new List<string>();
+        if (job.Weight > 0 && job.TotalWeight is > 0)
+            parts.Add($"Weight and Total weight are both given. Weight was used ({Js(job.Weight)} per pallet).");
+        var missing = MissingSizeOrWeight(job, weight);
+        if (missing.Count > 0)
+            parts.Add($"No {string.Join(", ", missing)} on this row, so the price may be too low.");
+        return parts.Count == 0 ? null : string.Join(" ", parts);
     }
 
     /// <summary>Same arithmetic and truncation as WebAPI Package.GetOverSizeItems.</summary>
@@ -359,6 +405,24 @@ public static class TruckRowCalculator
     /// </summary>
     public static bool IsVanOk(short qty, decimal weight, decimal length, decimal width, decimal height, bool pu, bool dO) =>
         qty == 1 && weight < 750 && length <= 1.2m && width <= 1m && height <= 1.2m && !pu && !dO;
+
+    /// <summary>
+    /// The booking page's getPackageSizeString for a truck job with one package row,
+    /// which is all a bulk row can be. "(LB)" is literal in the page on every tenant
+    /// even though NZ weights are kg, and is kept so the two jobs read the same.
+    /// </summary>
+    public static string PalletSizeString(short qty, decimal length, decimal width, decimal height, decimal weightPerPallet) =>
+        $"{qty}x Pallet{(qty > 1 ? "s" : "")}: {qty} @ {Js(length)}(L) x {Js(width)}(W) x {Js(height)}(H) - {Js(weightPerPallet)}(LB)";
+
+    // A JavaScript number as the page would print it: 120, not 120.00.
+    private static string Js(decimal value) =>
+        value.ToString("0.############################", CultureInfo.InvariantCulture);
+
+    /// <summary>WebAPI JobRepository.cs:4211-4219. A blank delivery note leaves its half out.</summary>
+    public static string ComposeJobNotes(string pickupNote, string? deliveryNote) =>
+        string.IsNullOrWhiteSpace(deliveryNote)
+            ? $"Pickup Notes: {pickupNote}"
+            : $"Pickup Notes: {pickupNote}, Delivery Notes: {deliveryNote}";
 
     /// <summary>WS_stpJob_Insert:942-944. Row notes come after the DG line.</summary>
     public static string? ComposeNotes(string? notes, int dgClass, bool hasDocument)
@@ -462,12 +526,12 @@ public static class TruckRowCalculator
 
         var fromAddress = CompanyAddress(job.FromCompany, job.FromAddress);
         var toAddress = CompanyAddress(job.ToCompany, job.ToAddress);
-        string? warning = null;
+        string? warning = plan.Warning;
         // WS_stpJob_Insert:593-599: an unknown suburb keeps the typed name in the address.
         if (pre.FromUnknown)
         {
             fromAddress = $"{fromAddress},{job.FromSuburb}";
-            warning = $"Pickup suburb '{job.FromSuburb}' was not recognised.";
+            warning = (warning == null ? "" : warning + " ") + $"Pickup suburb '{job.FromSuburb}' was not recognised.";
         }
         if (pre.ToUnknown)
         {
@@ -484,7 +548,12 @@ public static class TruckRowCalculator
         string? proofEmail = input.Completed ? null : Blank(job.TrackingEmail);
         string? proofMobile = input.Completed ? null : Blank(job.ToContactPhone);
         string? trackEmail = input.Completed ? null : Blank(job.TrackingEmail);
-        string? trackMobile = input.Completed ? null : Blank(job.TrackingMobile);
+        // Steve ruling 2: a delivery phone turns on text tracking. It goes in
+        // TrackingMobile because that is the column SMPP_qdfJobUpdatesPickup_
+        // TrakingNoticationSend texts. The booking page does not reach it: WS_stpJob_Insert
+        // passes email then mobile into UTL_stpJob_Truck_Insert's @TrackingMobile,
+        // @TrackingEmail, so its truck jobs hold the phone in TrackingEmail.
+        string? trackMobile = input.Completed ? null : Blank(job.TrackingMobile) ?? Blank(job.ToContactPhone);
         var (fromNumber, fromName) = SplitStreet(job.FromAddress!);
         var (toNumber, toName) = SplitStreet(job.ToAddress!);
         var book = input.BookDateTime;
@@ -498,6 +567,9 @@ public static class TruckRowCalculator
             // arbitrary inserted row, so they never share a statement (section C).
             MustInsertAlone = courierId.HasValue || IsSingleRowClient(input.ClientId, clientCode),
             Warning = warning,
+            WarningLevel = plan.WarningLevel,
+            PickupNote = plan.PickupNote,
+            PickupNoteTypeId = pre.PickupNoteTypeId,
             // Steve decision 5: row notes stay in ucjbNotes and the delivery tucNote.
             DeliveryNote = string.IsNullOrWhiteSpace(job.Notes) ? null : job.Notes.Trim(),
             BookingStaffId = pre.BookingStaffId,
@@ -578,6 +650,31 @@ public static class TruckRowCalculator
         }, null);
 
         static TruckFinalizeResult Fail(string message) => new(null, message);
+    }
+
+    /// <summary>The booking page's Incl GST figure, desktopHomeView.html:930.</summary>
+    public static decimal AmountInclGst(decimal amount) =>
+        Math.Round(amount * NzGstMultiplier, 2, MidpointRounding.AwayFromZero);
+
+    /// <summary>
+    /// The page's splitDescription + fixedDecimal over the rate function's
+    /// PublicDescription: "Name = $1.23" per line, split on CR.
+    /// </summary>
+    public static IReadOnlyList<BulkTruckPriceLine> ParsePriceLines(string? description)
+    {
+        var lines = new List<BulkTruckPriceLine>();
+        if (string.IsNullOrEmpty(description)) return lines;
+        foreach (var line in description.Split('\r'))
+        {
+            var parts = line.Split('=');
+            if (parts.Length < 2) continue;
+            var value = parts[1];
+            int tilde = value.LastIndexOf('~');
+            if (tilde >= 0) value = value[..tilde];
+            if (decimal.TryParse(value.Replace("$", "").Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
+                lines.Add(new BulkTruckPriceLine { Label = parts[0].Trim(), Amount = Math.Round(amount, 2, MidpointRounding.AwayFromZero) });
+        }
+        return lines;
     }
 
     public static int ResolveStatus(int? courierId, decimal? afterHoursAmount, int? afterHoursStatusId, bool completed, bool onHold)

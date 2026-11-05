@@ -79,6 +79,14 @@ public partial class BulkImportServiceV2
                 .Where(t => speedIds.Contains(t.UcjtId))
                 .ToDictionaryAsync(t => t.UcjtId, t => (string?)t.UcjtName);
 
+        // Steve ruling 6. A customer gets what the booking page shows them, decided
+        // here so the rate and fuel never leave the server for a customer login.
+        bool customer = !_scope.IsStaff;
+        response.CustomerPricing = customer;
+        IReadOnlyDictionary<int, string?> publicDescriptions = customer && plan != null
+            ? await _truckPreflight.PublicDescriptionsAsync(PublicRateRows(plan))
+            : new Dictionary<int, string?>();
+
         BulkTruckPreviewRow Row(BulkImportJobCreateDto job) => new()
         {
             RowIndex = indexOf[job],
@@ -111,9 +119,15 @@ public partial class BulkImportServiceV2
                 row.Quantity = insert.ucjbQty;
                 row.Amount = insert.ucjbAmount;
                 row.RatedManually = insert.RatedManually;
-                row.Rate = insert.RatedManually ? null : pre.Rate;
-                row.Fuel = insert.RatedManually ? null : pre.Fuel;
+                row.Rate = insert.RatedManually || customer ? null : pre.Rate;
+                row.Fuel = insert.RatedManually || customer ? null : pre.Fuel;
                 row.Warning = insert.Warning;
+                row.WarningLevel = insert.WarningLevel;
+                if (customer)
+                {
+                    row.AmountInclGst = TruckRowCalculator.AmountInclGst(insert.ucjbAmount);
+                    row.PriceLines = TruckRowCalculator.ParsePriceLines(publicDescriptions.GetValueOrDefault(input.RowNo)).ToList();
+                }
             }
             else
             {
@@ -128,5 +142,18 @@ public partial class BulkImportServiceV2
         Log.Information("({MessageId}) [TruckPreview] {Rows} truck rows, {WouldImport} would import, {Other} other rows",
             request.MessageId, response.Rows.Count, response.Rows.Count(r => r.WouldImport), response.OtherRowCount);
         return response;
+    }
+
+    private static List<TruckPublicRateRow> PublicRateRows(TruckPlan plan)
+    {
+        var plans = plan.Plans.ToDictionary(p => p.Input.RowNo);
+        return plan.Ready.Select(r =>
+        {
+            var p = plans[r.RowNo];
+            return new TruckPublicRateRow(
+                r.RowNo, r.ucjbClientID, r.ucjbFrom, r.ucjbTo, r.ucjbSpeed, p.TotalWeight, p.Quantity,
+                p.TailLiftPickupCount, p.TailLiftDropoffCount, p.Input.BookDateTime, p.OverSizeItems, p.OverWeightItems,
+                p.Residential, p.DangerousGoods, p.TruckStart, p.TruckHours);
+        }).ToList();
     }
 }

@@ -318,7 +318,7 @@ export interface BulkTruckPreviewRow {
   fromSuburb: string | null;
   toSuburb: string | null;
   quantity: number | null;
-  // Both null when staff entered the amount.
+  // Both null when staff entered the amount, and always null for a customer login.
   rate: number | null;
   fuel: number | null;
   // What the insert would write. Null when the row would be refused.
@@ -327,12 +327,19 @@ export interface BulkTruckPreviewRow {
   wouldImport: boolean;
   reason: string | null;
   warning: string | null;
+  // 'amber' flags a row that imports but has no weight or dimensions.
+  warningLevel?: string | null;
+  // Customer login only: what the booking page shows a customer.
+  amountInclGst?: number | null;
+  priceLines?: { label: string; amount: number }[] | null;
 }
 
 export interface BulkTruckPreviewResponse extends BulkBaseResponse {
   rows: BulkTruckPreviewRow[];
   // Rows on the P2P path, which are priced at import as before.
   otherRowCount: number;
+  // True for a customer login. The server has withheld rate and fuel.
+  customerPricing?: boolean;
 }
 
 // -----------------------------------------------------------------------------

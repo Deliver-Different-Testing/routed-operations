@@ -257,6 +257,64 @@ test.describe('Truck rows in the bulk import wizard', () => {
     await expect(page.getByTestId('summary-reason')).toHaveCount(2);
   });
 
+  test('a row with a warning or no weight shows it, stays priced and is still imported', async ({ page }) => {
+    const imported = await mockWizardApis(page, SPEEDS, { ...env, clientId: 1, bookDate: '2031-01-01', speedId: 3, jobs: [] }, {
+      preview: {
+        ...env,
+        otherRowCount: 0,
+        rows: [
+          previewRow({ warning: 'Weight and Total weight are both given. Weight was used (250 per pallet).' }),
+          previewRow({ rowIndex: 1, jobNumber: 'BT1002', warning: 'No weight on this row, so the price may be too low.', warningLevel: 'amber' }),
+        ],
+      },
+    });
+
+    await openOnDemandFile(page);
+    await next(page, 'Fix Suburbs');
+    await next(page, 'Fix Addresses');
+    await next(page, 'Select Depots');
+    await next(page, /Central/);
+    await page.locator('#sp-speed').selectOption('52');
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+
+    const rows = page.getByTestId('truck-preview-row');
+    await expect(rows.nth(0).getByTestId('truck-preview-reason')).toContainText('Weight was used');
+    await expect(rows.nth(0)).not.toHaveAttribute('data-warning');
+    await expect(rows.nth(1)).toHaveAttribute('data-warning', 'amber');
+    await expect(rows.nth(1)).not.toHaveAttribute('data-rejected');
+    await expect(rows.nth(1).getByTestId('truck-preview-price')).toContainText('44.50');
+    await expect(page.getByTestId('truck-preview-rejected-count')).toHaveText('0');
+
+    await page.getByRole('button', { name: 'Import 2 jobs' }).click();
+    await expect.poll(() => imported.importCalls).toBe(1);
+  });
+
+  test('a customer login sees the booking page figures and no rate or fuel', async ({ page }) => {
+    await mockWizardApis(page, SPEEDS, { ...env, clientId: 1, bookDate: '2031-01-01', speedId: 3, jobs: [] }, {
+      preview: {
+        ...env,
+        otherRowCount: 0,
+        customerPricing: true,
+        rows: [previewRow({ rate: null, fuel: null, amountInclGst: 51.18, priceLines: [{ label: 'Truck Economy', amount: 44.5 }] })],
+      },
+    });
+
+    await openOnDemandFile(page);
+    await next(page, 'Fix Suburbs');
+    await next(page, 'Fix Addresses');
+    await next(page, 'Select Depots');
+    await next(page, /Central/);
+    await page.locator('#sp-speed').selectOption('52');
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+
+    await expect(page.getByText('Check Truck Prices')).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Rate', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Fuel', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: 'Price (Excl GST)' })).toBeVisible();
+    await expect(page.getByTestId('truck-preview-price-incl')).toContainText('51.18');
+    await expect(page.getByTestId('truck-preview-lines')).toContainText('Truck Economy');
+  });
+
   test('a client with no truck speeds sees and sends nothing new', async ({ page }) => {
     const imported = await mockWizardApis(page, [SPEEDS[0]], { ...env, clientId: 1, bookDate: '2031-01-01', speedId: 3, jobs: [] });
 
