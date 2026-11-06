@@ -36,7 +36,9 @@ public sealed record TruckClientFacts(
     bool ReferenceAMandatory,
     string? ReferenceAMessage,
     bool ReferenceBMandatory,
-    string? ReferenceBMessage);
+    string? ReferenceBMessage,
+    bool ReferenceADefineList = false,
+    bool ReferenceBDefineList = false);
 
 /// <summary>A truck row plus what its caller knows about it, before any SQL.</summary>
 public sealed class TruckRowInput
@@ -289,10 +291,9 @@ public static class TruckRowCalculator
             return Fail("From Address is required on a truck job.");
         if (string.IsNullOrWhiteSpace(job.ToAddress))
             return Fail("To Address is required on a truck job.");
-        if (client.ReferenceAMandatory && string.IsNullOrWhiteSpace(job.ClientRefA))
-            return Fail($"Reference A is required for this client ({client.ReferenceAMessage}).");
-        if (client.ReferenceBMandatory && string.IsNullOrWhiteSpace(job.ClientRefB))
-            return Fail($"Reference B is required for this client ({client.ReferenceBMessage}).");
+        var referenceRefusal = ClientReferenceRule.MandatoryRefusal(client, job.ClientRefA, job.ClientRefB);
+        if (referenceRefusal != null)
+            return Fail(referenceRefusal);
 
         short qty = job.Quantity ?? 1;
         if (qty < 1) return Fail("Pallet count must be at least 1.");
@@ -497,10 +498,9 @@ public static class TruckRowCalculator
 
         if (pre.JobNumberExists)
             return Fail($"Job number {job.JobNumber} already exists.");
-        if (!pre.ReferenceAInList)
-            return Fail($"Reference A '{job.ClientRefA}' is not in this client's list.");
-        if (!pre.ReferenceBInList)
-            return Fail($"Reference B '{job.ClientRefB}' is not in this client's list.");
+        var listRefusal = ClientReferenceRule.ListRefusal(job.ClientRefA, job.ClientRefB, pre.ReferenceAInList, pre.ReferenceBInList);
+        if (listRefusal != null)
+            return Fail(listRefusal);
         if (!pre.CanBook)
             return Fail(string.IsNullOrWhiteSpace(pre.OutOfHoursMessage)
                 ? "This speed cannot be booked at this time."

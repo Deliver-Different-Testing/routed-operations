@@ -5,6 +5,9 @@
 // failure here means the truck work moved the P2P path, not that the test is
 // out of date. Do not "fix" one by changing the expected values.
 //
+// One deliberate change since then (Kevin, 6 Nov, Steve's M5a rule "same as the
+// booking page"): Weight is per item, so a row of 2 x 12.5 now sends 25.
+//
 // Every INT_stpJob_BulkInsert argument is compared by parameter name, so adding,
 // dropping or changing any one of them fails.
 using System.Reflection;
@@ -144,7 +147,7 @@ public class BulkImportP2PGuardTests
         ["toContactPhone"] = "000 000",
         ["size"] = (short)2,
         ["qty"] = (short)2,
-        ["weight"] = 12.5d,
+        ["weight"] = 25d,
         ["courierID"] = null,
         ["clientRefa"] = "RA",
         ["clientRefb"] = "RB",
@@ -230,27 +233,19 @@ public class BulkImportP2PGuardTests
     }
 
     [Fact]
-    public async Task P2P_row_writes_one_item_per_quantity_through_the_bulk_item_proc()
+    public async Task P2P_row_no_longer_calls_the_bulk_item_proc()
     {
-        // This is the existing P2P item behaviour, including that the proc writes
-        // nothing for an on-demand job. Fixing that is a separate card (decision 6).
+        // M5a replaces the expectation this test held until then. The proc only looks
+        // in the bulk tables, so it wrote nothing for an on-demand job, or attached
+        // the items to a bulk job with the same id. Rows now go through
+        // IBulkP2PItemInserter (BulkP2PJobPinTests and BulkP2PItemsTests).
         var rig = NewRig();
         rig.Seed.TucJobs.Add(new TucJob { UcjbId = 900, UcjbNumber = "ACME1" });
         rig.Seed.SaveChanges();
 
         await rig.Svc.Import(ContactId, OnDemand(P2PRow()));
 
-        var items = CallsTo(rig.Procs, "NET_stpBulkJobItems_InsertAsync");
-        Assert.Equal(2, items.Count);
-        Assert.Equal(900, items[0]["jobID"]);
-        Assert.Equal(0, items[0]["itemID"]);
-        Assert.Equal(1, items[0]["items"]);
-        Assert.Equal(12.5d, items[0]["weight"]);
-        Assert.Equal(50d, items[0]["length"]);
-        Assert.Equal(30d, items[0]["height"]);
-        Assert.Equal(40d, items[0]["depth"]);
-        Assert.Equal("ACME1-1", items[0]["barcode"]);
-        Assert.Equal("ACME1-2", items[1]["barcode"]);
+        Assert.Empty(CallsTo(rig.Procs, "NET_stpBulkJobItems_InsertAsync"));
     }
 
     [Theory]
@@ -348,7 +343,7 @@ public class BulkImportP2PGuardTests
         Assert.Equal(P2PSpeed, call["speed"]);
         Assert.Equal((short)2, call["size"]);
         Assert.Equal((short)2, call["qty"]);
-        Assert.Equal(12.5d, call["weight"]);
+        Assert.Equal(25d, call["weight"]);
         Assert.Equal("To Co, 2 To Street", call["toAddress"]);
         Assert.Null(call["bookTime"]);
         Assert.Equal(1, call["status"]);

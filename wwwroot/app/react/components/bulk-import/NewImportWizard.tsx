@@ -586,7 +586,7 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
  * into BulkImportJobCreateDto[]. Applies the fixedAddresses overrides for
  * any row the operator hand-corrected in Step 4.
  */
-function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreateDto[] {
+export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreateDto[] {
   if (!state.parsed) return [];
   const m = state.mapping;
   const get = (row: Record<string, string>, key: string) => {
@@ -657,12 +657,20 @@ function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreateDto[] 
     if (batchStopType === 'pickup' || batchStopType === 'dropoff') {
       j.stopType = batchStopType;
     }
+    if (overrideDims?.name) {
+      j.packageName = overrideDims.name;
+    }
     if (applyNzOnDemandFlags) {
       j.onHold = state.options.onHold;
       j.nationwideDoc = state.options.nationwideDoc;
     }
     if (truckRows) {
       applyTruckFields(j, (key) => get(row, key), mappedWeight);
+    } else if (state.importType === 'onDemand' && !(overrideDims && overrideDims.weight > 0)) {
+      // The server divides it by the quantity when the row has no Weight. A stock
+      // size's weight stands, as it does over a mapped Weight.
+      const totalWeight = toFloatOrNull(get(row, 'totalWeight'));
+      if (totalWeight != null) j.totalWeight = totalWeight;
     }
     // Fixed-zip override. Legacy matches on (name + postcode) for NZ so
     // duplicate suburb names across postcodes get independent replacements
@@ -791,9 +799,9 @@ function toFloatOrNull(v: string | null): number | null {
  * Override Dimensions dropdown in MapColumnsModal. Returns null when the
  * option is empty or malformed; empty is the wizard default.
  */
-function decodeOverrideDimensions(
+export function decodeOverrideDimensions(
   encoded: string | null | undefined
-): { length: number; width: number; height: number; weight: number } | null {
+): { name: string; length: number; width: number; height: number; weight: number } | null {
   if (!encoded) return null;
   const parts = encoded.split('|');
   if (parts.length < 5) return null;
@@ -802,5 +810,5 @@ function decodeOverrideDimensions(
   const height = Number(parts[3]);
   const weight = Number(parts[4]);
   if (![length, width, height, weight].every((n) => Number.isFinite(n))) return null;
-  return { length, width, height, weight };
+  return { name: parts[0].trim(), length, width, height, weight };
 }

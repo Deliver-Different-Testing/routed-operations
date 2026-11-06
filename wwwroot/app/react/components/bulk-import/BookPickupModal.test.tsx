@@ -154,6 +154,64 @@ describe('BookPickupModal', () => {
     await waitFor(() => expect(screen.getByText(/no can do/)).toBeInTheDocument());
   });
 
+  // The server answers 400 on a refusal. This used to come back as success with no
+  // job, and the modal said "Pickup booked (0 vehicles)".
+  it('a refused booking shows the proc message and never claims a booking', async () => {
+    const refused = 'Require "Reference A" - "cat"';
+    server.use(
+      http.post('/api/bulk-import/pickup-rate', () =>
+        HttpResponse.json({ messageId: 'x', success: true, messages: [], amount: 10 })
+      ),
+      http.post('/api/bulk-import/book-pickup', () =>
+        HttpResponse.json({ messageId: 'x', success: false, messages: [{ message: refused }], jobId: [] }, { status: 400 })
+      )
+    );
+    renderWithProviders(
+      <BookPickupModal open state={seed({ pickupJobPayload: payload })} onClose={vi.fn()} onBooked={vi.fn()} />
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Book pickup' }));
+    await screen.findByText(refused);
+    expect(screen.queryByText(/Pickup booked/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Book pickup' })).toBeInTheDocument();
+  });
+
+  it('a success with no job id is still not a booking', async () => {
+    server.use(
+      http.post('/api/bulk-import/pickup-rate', () =>
+        HttpResponse.json({ messageId: 'x', success: true, messages: [], amount: 10 })
+      ),
+      http.post('/api/bulk-import/book-pickup', () =>
+        HttpResponse.json({ messageId: 'x', success: true, messages: [], jobId: [] })
+      )
+    );
+    renderWithProviders(
+      <BookPickupModal open state={seed({ pickupJobPayload: payload })} onClose={vi.fn()} onBooked={vi.fn()} />
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Book pickup' }));
+    await screen.findByText('Pickup booking failed.');
+    expect(screen.queryByText(/Pickup booked/)).not.toBeInTheDocument();
+  });
+
+  it('a part-booked pickup moves on, so it cannot be booked twice, and names the shortfall', async () => {
+    const shortfall = 'Only 1 of 2 vehicles were booked: Require "Reference A" - "cat"';
+    server.use(
+      http.post('/api/bulk-import/pickup-rate', () =>
+        HttpResponse.json({ messageId: 'x', success: true, messages: [], amount: 10 })
+      ),
+      http.post('/api/bulk-import/book-pickup', () =>
+        HttpResponse.json({ messageId: 'x', success: true, messages: [{ message: shortfall }], jobId: [111] })
+      )
+    );
+    const twoVehicles = { ...payload, numberOfVehicles: [{ value: '2', label: '2' }] };
+    renderWithProviders(
+      <BookPickupModal open state={seed({ pickupJobPayload: twoVehicles })} onClose={vi.fn()} onBooked={vi.fn()} />
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Book pickup' }));
+    expect(await screen.findByTestId('pickup-shortfall')).toHaveTextContent(shortfall);
+    expect(screen.getByText(/Job IDs: 111/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Book pickup' })).not.toBeInTheDocument();
+  });
+
   it('rate fetch reports error string when server 500s', async () => {
     server.use(
       http.post('/api/bulk-import/pickup-rate', () =>

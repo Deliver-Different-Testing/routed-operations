@@ -15,7 +15,7 @@ using RoutedOperations.Infrastructure;
 
 namespace RoutedOperations.Tests.Services.BulkImport;
 
-public class BulkTruckRoutingTests
+public partial class BulkTruckRoutingTests
 {
     private const int ClientId = 5;
     private const int ContactId = 1;
@@ -41,6 +41,7 @@ public class BulkTruckRoutingTests
 
     private sealed class Rig
     {
+        public required IBulkP2PItemInserter Items { get; init; }
         public required BulkImportServiceV2 Svc { get; init; }
         public required DynamicDespatchDbContext Seed { get; init; }
         public required IDespatchContextProcedures Procs { get; init; }
@@ -108,13 +109,16 @@ public class BulkTruckRoutingTests
         });
         seed.SaveChanges();
 
+        var items = Substitute.For<IBulkP2PItemInserter>();
+        items.InsertAsync(default!, default).ReturnsForAnyArgs(Array.Empty<P2PItemFailure>());
         var rig = new Rig
         {
-            Svc = TruckTestFakes.NewService(factory, new NoHttpFactory(), accessor, address, scope, preflight, inserter),
+            Svc = TruckTestFakes.NewService(factory, new NoHttpFactory(), accessor, address, scope, preflight, inserter, items),
             Seed = seed,
             Procs = procs,
             Preflight = preflight,
             Inserter = inserter,
+            Items = items,
         };
         preflight.LoadClientsAsync(Arg.Any<IReadOnlyCollection<int>>())
             .Returns(call => Task.FromResult<IReadOnlyDictionary<int, TruckClientFacts>>(
@@ -367,6 +371,23 @@ public class BulkTruckRoutingTests
         await rig.Svc.Import(ContactId, req);
         await rig.Preflight.DidNotReceiveWithAnyArgs().RunAsync(default!);
         await rig.Inserter.DidNotReceiveWithAnyArgs().InsertAsync(default!, default);
+        // M5a: routed rows are tblBulkJob rows, so they never reach the item batch.
+        await rig.Items.DidNotReceiveWithAnyArgs().InsertAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task In_a_mixed_file_only_the_p2p_row_reaches_the_item_batch()
+    {
+        // Truck rows write their own items in BulkTruckInserter.
+        var rig = NewRig();
+        rig.Seed.TucJobs.Add(new TucJob { UcjbId = 900, UcjbNumber = "P1" });
+        rig.Seed.SaveChanges();
+
+        await rig.Svc.Import(ContactId, OnDemand(Teco, Row("T1", "TECO"), Row("P1", "Standard")));
+
+        var sent = (IReadOnlyList<P2PItemJob>)Assert.Single(rig.Items.ReceivedCalls()).GetArguments()[0]!;
+        Assert.Equal("P1", Assert.Single(sent).JobNumber);
+        Assert.Equal("T1", Assert.Single(rig.Inserted).ucjbNumber);
     }
 
     // ---- staff import --------------------------------------------------------

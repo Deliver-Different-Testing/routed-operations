@@ -194,6 +194,10 @@ public partial class BulkImportServiceV2
         if (refused != null)
             return BulkImportResponseUtility.AddMessageAndReturnResponse(response, refused);
 
+        // Before job numbers are assigned, so a refused row uses none, and before
+        // the truck split, because INT_stpJob_BulkInsert has no reference check.
+        var refusedByReference = await SplitOutReferenceRefusals(request);
+
         string podName = null;
         int? opId = null;
         var contactInfo = await Context.TucClientContacts
@@ -234,20 +238,23 @@ public partial class BulkImportServiceV2
         // the operator sees "Nothing to import" rather than a 500.
         if (firstJob == null)
         {
-            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "No jobs to import.");
+            return refusedByReference.Count > 0
+                ? ReportOnDemandOutcome(response, 0, refusedByReference)
+                : BulkImportResponseUtility.AddMessageAndReturnResponse(response, "No jobs to import.");
         }
 
         string postalCode = IsNzTenant() ? firstJob.ToPostCode : firstJob.ToZipCode;
         var fromLocation = await GetLocationForZip(postalCode, clientId);
 
         List<int> createdJobIds = new List<int>();
-        List<BulkImportJobCreateDto> failedJobs = new List<BulkImportJobCreateDto>();
+        List<BulkImportJobCreateDto> failedJobs = new List<BulkImportJobCreateDto>(refusedByReference);
         int successfulJobCount = 0;
 
         // NZ truck rows take the direct-insert path; everything else stays in
         // the loop below. US and files with no truck speed keep every row here.
         IEnumerable<BulkImportJobCreateDto> p2pJobs = request.Jobs;
         var truckWarnings = new List<string>();
+        var itemJobs = new List<P2PItemJob>();
         if (IsNzTenant())
         {
             var split = await SplitTruckRows(request);
@@ -307,7 +314,8 @@ public partial class BulkImportServiceV2
                 }
 
                 bool hasZoneRate = false;
-                int vehicleSizeId = job.Length > 120 || job.Width > 90 || job.Height > 90 || job.Weight > 400 ? 3 : 2;
+                var rowWeight = P2PItemCalculator.RowWeight(job.Weight, job.TotalWeight, job.Quantity);
+                int vehicleSizeId = job.Length > 120 || job.Width > 90 || job.Height > 90 || rowWeight.PerPallet > 400 ? 3 : 2;
                 if (IsUsTenant() && fromLocation != null && toZoneZip != null)
                 {
                     hasZoneRate = await Context.ZoneCombos
@@ -337,8 +345,6 @@ public partial class BulkImportServiceV2
                     bookTimeForRating.Minute,
                     bookTimeForRating.Second,
                     bookTimeForRating.Kind);
-
-                decimal cubic = job.Length * job.Width * job.Height / 1000000;
 
                 string fromAddress = string.IsNullOrEmpty(job.FromCompany)
                     ? job.FromAddress
@@ -383,7 +389,7 @@ public partial class BulkImportServiceV2
                         toContactPhone: job.ToContactPhone ?? string.Empty,
                         size: (short?)vehicleSizeId,
                         qty: (short?)(job.Quantity ?? 1),
-                        weight: (double?)job.Weight,
+                        weight: (double?)rowWeight.Total,
                         courierID: courierId,
                         clientRefa: job.ClientRefA ?? string.Empty,
                         clientRefb: job.ClientRefB ?? string.Empty,
@@ -447,15 +453,7 @@ public partial class BulkImportServiceV2
 
                     if (tucJobId > 0)
                     {
-                        var itemCount = job.Quantity ?? 1;
-                        for (int qi = 0; qi < itemCount; qi++)
-                        {
-                            await Context.Procedures.NET_stpBulkJobItems_InsertAsync(
-                                tucJobId, qi, 1, (double?)job.Weight, (double?)job.Length,
-                                (double?)job.Height, (double?)job.Width, null, null, null, null, null,
-                                job.Notes, null, $"{job.JobNumber}-{qi + 1}");
-                        }
-                        Log.Information($"Inserted {itemCount} job items for NZ on-demand job {job.JobNumber} (ID: {tucJobId})");
+                        itemJobs.Add(ToItemJob(tucJobId, job));
                     }
                 }
                 else
@@ -490,7 +488,7 @@ public partial class BulkImportServiceV2
                         // so a machine running under en-* other than en-US does not emit
                         // '5,5' and blow up with SQL 8114 "Error converting data type
                         // nvarchar to numeric".
-                        totalWeight: job.Weight.ToString(CultureInfo.InvariantCulture),
+                        totalWeight: rowWeight.Total.ToString(CultureInfo.InvariantCulture),
                         totalDistance: totalDistance?.ToString(CultureInfo.InvariantCulture) ?? "0",
                         @return: "0",
                         courierNotes: string.Empty,
@@ -534,7 +532,7 @@ public partial class BulkImportServiceV2
                         totalPallets: 0,
                         extraStopOffs: 0,
                         dryIceWeight: 0,
-                        cubic: cubic,
+                        cubic: P2PItemCalculator.JobCubic(job.Length, job.Width, job.Height, job.Quantity, job.PackageName, isNz: false),
                         pickupWaitTime: 0,
                         deliveryWaitTime: 0,
                         dGClass: null,
@@ -605,17 +603,7 @@ public partial class BulkImportServiceV2
 
                         await InsertJobDeliveryNote(jobIdParam.Value.Value, job.Notes);
 
-                        {
-                            var itemCount = job.Quantity ?? 1;
-                            for (int qi = 0; qi < itemCount; qi++)
-                            {
-                                await Context.Procedures.NET_stpBulkJobItems_InsertAsync(
-                                    jobIdParam.Value.Value, qi, 1, (double?)job.Weight, (double?)job.Length,
-                                    (double?)job.Height, (double?)job.Width, null, null, null, null, null,
-                                    job.Notes, null, $"{job.JobNumber}-{qi + 1}");
-                            }
-                            Log.Information($"Inserted {itemCount} job items for US on-demand job {job.JobNumber} (ID: {jobIdParam.Value})");
-                        }
+                        itemJobs.Add(ToItemJob(jobIdParam.Value.Value, job));
 
                         Log.Information($"Successfully created US job: {job.JobNumber}, JobID: {jobIdParam.Value}");
                     }
@@ -641,7 +629,14 @@ public partial class BulkImportServiceV2
 
         foreach (var warning in truckWarnings)
             response.Messages.Add(new MessageDto { Message = warning });
+        foreach (var warning in await InsertP2PItems(itemJobs))
+            response.Messages.Add(new MessageDto { Message = warning });
 
+        return ReportOnDemandOutcome(response, successfulJobCount, failedJobs);
+    }
+
+    private static BulkImportResponse ReportOnDemandOutcome(BulkImportResponse response, int successfulJobCount, List<BulkImportJobCreateDto> failedJobs)
+    {
         if (successfulJobCount > 0)
         {
             response.Success = true;
@@ -684,6 +679,21 @@ public partial class BulkImportServiceV2
         }
 
         return response;
+    }
+
+    private static P2PItemJob ToItemJob(int jobId, BulkImportJobCreateDto job) => new(
+        jobId, job.JobNumber!.Trim(), job.Quantity ?? 1, job.Length, job.Width, job.Height,
+        P2PItemCalculator.RowWeight(job.Weight, job.TotalWeight, job.Quantity).PerPallet, job.PackageName);
+
+    // The jobs exist by now, so a failure here leaves a job without items rather
+    // than no job. It is reported, not counted as a failed row: importing the row
+    // again would book the job twice.
+    private async Task<List<string>> InsertP2PItems(IReadOnlyList<P2PItemJob> jobs)
+    {
+        var failures = await _p2pItemInserter.InsertAsync(jobs, IsNzTenant());
+        return failures
+            .Select(f => $"Job {f.JobNumber} was created, but its item lines could not be saved: {f.Error}")
+            .ToList();
     }
 
     // ---- ProcessRoutedJobs ------------------------------------------------

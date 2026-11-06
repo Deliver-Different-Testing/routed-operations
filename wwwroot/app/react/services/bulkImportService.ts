@@ -153,6 +153,8 @@ export interface BulkImportJobCreateDto {
 
   errorMessage?: string | null;
   stopType?: string | null;
+  // The stock size picked in Override Dimensions. Names the P2P item lines.
+  packageName?: string | null;
   // NZ on-demand only, sent only when a truck speed is in play. speed is the
   // file's raw value (id, code or name); the server resolves and checks it.
   speed?: string | null;
@@ -464,6 +466,16 @@ export const bulkImportService = {
       body: JSON.stringify(payload),
     }).then((raw) => ({ response: raw })),
 
+  // POST /api/bulk-import/reference-check - which rows the client reference
+  // check would refuse. Writes nothing.
+  checkReferences: (
+    rows: BulkReferenceCheckRow[]
+  ): Promise<{ response: BulkReferenceCheckResponse }> =>
+    request<BulkReferenceCheckResponse>('/bulk-import/reference-check', {
+      method: 'POST',
+      body: JSON.stringify({ rows }),
+    }).then((raw) => ({ response: raw })),
+
   // POST /api/bulk-import/pickup-rate - price a pickup batch without
   // committing. Used by BookPickupModal to show a live rate as the operator
   // adjusts vehicle size / count / pickup time / weight.
@@ -607,6 +619,23 @@ export interface StaffImportResponse extends BulkBaseResponse {
   successCount: number;
   failedCount: number;
   failedJobs: FailedJobDto[];
+}
+
+export interface BulkReferenceCheckRow {
+  rowNumber: number;
+  clientId?: number | null;
+  clientCode?: string | null;
+  referenceA?: string | null;
+  referenceB?: string | null;
+}
+
+export interface BulkReferenceCheckError {
+  rowNumber: number;
+  error: string;
+}
+
+export interface BulkReferenceCheckResponse extends BulkBaseResponse {
+  errors: BulkReferenceCheckError[];
 }
 
 // -----------------------------------------------------------------------------

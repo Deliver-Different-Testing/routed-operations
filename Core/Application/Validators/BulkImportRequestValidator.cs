@@ -1,4 +1,5 @@
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
+using RoutedOperations.Core.Application.Services.BulkImport;
 using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain.Models;
 using FluentValidation;
@@ -290,6 +291,13 @@ namespace RoutedOperations.Core.Application.Validators
                     j.RuleFor(x => x.Weight)
                         .InclusiveBetween(0.001m, 1000m)
                         .When(x => x.Weight > 0);
+
+                    // A Total Weight on its own is divided by the quantity, so the
+                    // Weight cap applies to what each item comes to.
+                    j.RuleFor(x => x.TotalWeight)
+                        .Must((row, total) => P2PItemCalculator.RowWeight(row.Weight, total, row.Quantity).PerPallet <= 1000m)
+                        .When(x => x.Weight <= 0 && x.TotalWeight > 0)
+                        .WithMessage("Total Weight divided by Quantity must be 1000 or less.");
                 })
                 .When(x => x.TruckDefaults == null || !string.Equals(x.JobType, "ondemand", StringComparison.OrdinalIgnoreCase));
 

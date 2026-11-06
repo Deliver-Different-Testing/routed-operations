@@ -99,7 +99,7 @@ public partial class BulkImportServiceV2
         if (job.Length > 240) return "Length must be 240 or less on a non-truck job.";
         if (job.Width > 120) return "Width must be 120 or less on a non-truck job.";
         if (job.Height > 150) return "Height must be 150 or less on a non-truck job.";
-        if (job.Weight > 1000) return "Weight must be 1000 or less on a non-truck job.";
+        if (P2PItemCalculator.RowWeight(job.Weight, job.TotalWeight, job.Quantity).PerPallet > 1000) return "Weight must be 1000 or less on a non-truck job.";
         return null;
     }
 
