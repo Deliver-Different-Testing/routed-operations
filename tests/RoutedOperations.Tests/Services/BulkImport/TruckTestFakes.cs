@@ -15,7 +15,9 @@ internal static class TruckTestFakes
         AddressService address,
         IBulkClientScope scope,
         IBulkTruckPreflight? preflight = null,
-        IBulkTruckInserter? inserter = null) =>
+        IBulkTruckInserter? inserter = null,
+        IBulkP2PItemInserter? itemInserter = null) =>
         new(factory, httpClientFactory, accessor, address, scope,
-            preflight ?? Substitute.For<IBulkTruckPreflight>(), inserter ?? Substitute.For<IBulkTruckInserter>());
+            preflight ?? Substitute.For<IBulkTruckPreflight>(), inserter ?? Substitute.For<IBulkTruckInserter>(),
+            itemInserter ?? Substitute.For<IBulkP2PItemInserter>());
 }

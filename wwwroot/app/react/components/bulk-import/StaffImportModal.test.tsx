@@ -275,6 +275,90 @@ describe('StaffImportModal - preview + fix flow', () => {
     );
   });
 
+  // The real server answers 400 when no row lands. api.ts turns that into a throw,
+  // so the reasons were lost and only "Import completed with 1 failed jobs" showed.
+  it('a 400 with failed rows shows each row and its reason, not one line', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () => HttpResponse.json({ ...env, suburbs: [] })),
+      http.post('/api/address/geocode', () => HttpResponse.json({ ...env, addresses: [] })),
+      http.post('/api/bulk-import/staff-import', () =>
+        HttpResponse.json(
+          {
+            messageId: 'x',
+            success: false,
+            messages: [{ message: 'Import completed with 1 failed jobs out of 1 total.' }],
+            successCount: 0,
+            failedCount: 1,
+            failedJobs: [{ rowNumber: 1, jobNumber: 'J1', error: 'Require "Reference A" - "cat"' }],
+          },
+          { status: 400 }
+        )
+      )
+    );
+    const onImported = vi.fn();
+    renderWithProviders(<StaffImportModal open onClose={vi.fn()} onImported={onImported} />);
+    await advanceToPreview();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: /Import 1 Jobs/ }));
+
+    const table = await screen.findByTestId('staff-result-errors');
+    expect(table).toHaveTextContent('J1');
+    expect(table).toHaveTextContent('Require "Reference A" - "cat"');
+    expect(screen.getByText(/0 succeeded, 1 failed/)).toBeInTheDocument();
+    expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it('a 400 with no failed rows stays a plain error', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () => HttpResponse.json({ ...env, suburbs: [] })),
+      http.post('/api/address/geocode', () => HttpResponse.json({ ...env, addresses: [] })),
+      http.post('/api/bulk-import/staff-import', () =>
+        HttpResponse.json(
+          { messageId: 'x', success: false, messages: [{ message: 'Import failed: boom' }], successCount: 0, failedCount: 0, failedJobs: [] },
+          { status: 400 }
+        )
+      )
+    );
+    renderWithProviders(<StaffImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
+    await advanceToPreview();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: /Import 1 Jobs/ }));
+    await screen.findByText(/Staff import failed: Import failed: boom/);
+  });
+
+  it('every row refused on preview: shows why and will not go on', async () => {
+    server.use(
+      http.post('/api/bulk-import/reference-check', () =>
+        HttpResponse.json({ ...env, errors: [{ rowNumber: 1, error: 'Require "Reference A" - "cat"' }] })
+      )
+    );
+    renderWithProviders(<StaffImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
+    await advanceToPreview();
+    expect(screen.getByTestId('staff-reference-notice')).toHaveTextContent(/Every row would be refused/);
+    const table = screen.getByTestId('staff-reference-errors');
+    expect(table).toHaveTextContent('J1');
+    expect(table).toHaveTextContent('Require "Reference A" - "cat"');
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('a failed check warns but does not stop the operator, because the import checks again', async () => {
+    server.use(
+      http.post('/api/bulk-import/reference-check', () => HttpResponse.json({}, { status: 500 }))
+    );
+    renderWithProviders(<StaffImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
+    await advanceToPreview();
+    expect(screen.getByTestId('staff-reference-check-failed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+  });
+
   it('Back button on preview returns to upload step', async () => {
     renderWithProviders(<StaffImportModal open onClose={vi.fn()} onImported={vi.fn()} />);
     await advanceToPreview();

@@ -153,6 +153,8 @@ export interface BulkImportJobCreateDto {
 
   errorMessage?: string | null;
   stopType?: string | null;
+  // The stock size picked in Override Dimensions. Names the P2P item lines.
+  packageName?: string | null;
   // NZ on-demand only, sent only when a truck speed is in play. speed is the
   // file's raw value (id, code or name); the server resolves and checks it.
   speed?: string | null;
@@ -318,7 +320,7 @@ export interface BulkTruckPreviewRow {
   fromSuburb: string | null;
   toSuburb: string | null;
   quantity: number | null;
-  // Both null when staff entered the amount.
+  // Both null when staff entered the amount, and always null for a customer login.
   rate: number | null;
   fuel: number | null;
   // What the insert would write. Null when the row would be refused.
@@ -327,12 +329,19 @@ export interface BulkTruckPreviewRow {
   wouldImport: boolean;
   reason: string | null;
   warning: string | null;
+  // 'amber' flags a row that imports but has no weight or dimensions.
+  warningLevel?: string | null;
+  // Customer login only: what the booking page shows a customer.
+  amountInclGst?: number | null;
+  priceLines?: { label: string; amount: number }[] | null;
 }
 
 export interface BulkTruckPreviewResponse extends BulkBaseResponse {
   rows: BulkTruckPreviewRow[];
   // Rows on the P2P path, which are priced at import as before.
   otherRowCount: number;
+  // True for a customer login. The server has withheld rate and fuel.
+  customerPricing?: boolean;
 }
 
 // -----------------------------------------------------------------------------
@@ -455,6 +464,16 @@ export const bulkImportService = {
     request<BulkTruckPreviewResponse>('/bulk-import/truck-preview', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }).then((raw) => ({ response: raw })),
+
+  // POST /api/bulk-import/reference-check - which rows the client reference
+  // check would refuse. Writes nothing.
+  checkReferences: (
+    rows: BulkReferenceCheckRow[]
+  ): Promise<{ response: BulkReferenceCheckResponse }> =>
+    request<BulkReferenceCheckResponse>('/bulk-import/reference-check', {
+      method: 'POST',
+      body: JSON.stringify({ rows }),
     }).then((raw) => ({ response: raw })),
 
   // POST /api/bulk-import/pickup-rate - price a pickup batch without
@@ -600,6 +619,23 @@ export interface StaffImportResponse extends BulkBaseResponse {
   successCount: number;
   failedCount: number;
   failedJobs: FailedJobDto[];
+}
+
+export interface BulkReferenceCheckRow {
+  rowNumber: number;
+  clientId?: number | null;
+  clientCode?: string | null;
+  referenceA?: string | null;
+  referenceB?: string | null;
+}
+
+export interface BulkReferenceCheckError {
+  rowNumber: number;
+  error: string;
+}
+
+export interface BulkReferenceCheckResponse extends BulkBaseResponse {
+  errors: BulkReferenceCheckError[];
 }
 
 // -----------------------------------------------------------------------------

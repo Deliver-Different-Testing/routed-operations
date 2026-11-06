@@ -13,7 +13,25 @@ public interface IBulkTruckPreflight
 {
     Task<IReadOnlyDictionary<int, TruckClientFacts>> LoadClientsAsync(IReadOnlyCollection<int> clientIds);
     Task<IReadOnlyList<TruckPreflightRow>> RunAsync(IReadOnlyList<TruckRowPlan> plans);
+
+    /// <summary>
+    /// What the booking page lists for a customer: the rate function's
+    /// PublicDescription, by row. Only the customer preview asks for it.
+    /// </summary>
+    Task<IReadOnlyDictionary<int, string?>> PublicDescriptionsAsync(IReadOnlyList<TruckPublicRateRow> rows);
+
+    /// <summary>Whether each row's references are in its client's defined lists, by RowNo.</summary>
+    Task<IReadOnlyDictionary<int, ReferenceListResult>> ReferenceListsAsync(IReadOnlyList<ReferenceCheckRow> rows);
 }
+
+public sealed record ReferenceCheckRow(int RowNo, int ClientId, string? ReferenceA, string? ReferenceB);
+
+public sealed record ReferenceListResult(bool ReferenceAInList, bool ReferenceBInList);
+
+/// <summary>The rate function's inputs for a row the preflight has already resolved.</summary>
+public sealed record TruckPublicRateRow(
+    int RowNo, int ClientId, int FromId, int ToId, int Speed, decimal TotalWeight, int Qty, int Pickup, int Dropoff,
+    DateTime BookDate, int OverSize, int OverWeight, bool PrivateRes, bool DG, DateTime? TruckStart, double? TruckHours);
 
 public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
     : BaseService(contextFactory), IBulkTruckPreflight
@@ -29,7 +47,9 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
                CAST(ISNULL(c.ReferenceAMandatory, 0) AS bit) AS ReferenceAMandatory,
                c.ReferenceAMessage,
                CAST(ISNULL(c.ReferenceBMandatory, 0) AS bit) AS ReferenceBMandatory,
-               c.ReferenceBMessage
+               c.ReferenceBMessage,
+               CAST(ISNULL(c.ReferenceADefineList, 0) AS bit) AS ReferenceADefineList,
+               CAST(ISNULL(c.ReferenceBDefineList, 0) AS bit) AS ReferenceBDefineList
         FROM dbo.tblClient c
         WHERE c.ClientID IN (SELECT [value] FROM OPENJSON(@ids) WITH ([value] int '$'));
         """;
@@ -47,6 +67,7 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         DECLARE @AfterHoursStatus int = (SELECT TOP 1 ucjsID FROM dbo.tucJobStatus WHERE ucjsName = 'After Hours');
         DECLARE @BookingStaff int = (SELECT TOP 1 ucstID FROM dbo.tucStaff WHERE ucstFirstName = 'Booking' AND ucstLastName = 'STP');
         DECLARE @DeliveryNoteType int = (SELECT TOP 1 NoteTypeId FROM dbo.tucNoteType WHERE NoteTypeName = 'Delivery Notes');
+        DECLARE @PickupNoteType int = (SELECT TOP 1 NoteTypeId FROM dbo.tucNoteType WHERE NoteTypeName = 'Pickup Notes');
 
         DECLARE @r TABLE (
             RowNo int PRIMARY KEY, ClientId int, SpeedId int, JobNumber nvarchar(50), FromContact nvarchar(100),
@@ -144,6 +165,7 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
             @AfterHoursStatus AS AfterHoursStatusId,
             @BookingStaff AS BookingStaffId,
             @DeliveryNoteType AS DeliveryNoteTypeId,
+            @PickupNoteType AS PickupNoteTypeId,
             GETDATE() AS ServerNow
         FROM @r r
         INNER JOIN dbo.tblClient c ON c.ClientID = r.ClientId
@@ -192,13 +214,49 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         ORDER BY r.RowNo;
         """;
 
+    // NET_stpJob_Truck_Rate_Described, the booking page's call: fuel included in
+    // each line (1) and the book date as @Date. RowsSql asks with fuel excluded,
+    // so its text is not what the page shows, and this is a separate call.
+    public const string PublicDescriptionsSql = """
+        SET NOCOUNT ON;
+        SELECT j.RowNo, rate.PublicDescription
+        FROM OPENJSON(@rows) WITH (
+            RowNo int, ClientId int, FromId int, ToId int, Speed int, TotalWeight decimal(18,4), Qty int, Pickup int, Dropoff int,
+            BookDate datetime, OverSize int, OverWeight int, PrivateRes bit, DG bit, TruckStart datetime, TruckHours float) j
+        OUTER APPLY dbo.UTL_fncJob_Truck_RateAndDescription(
+            j.ClientId, j.FromId, j.ToId, j.Speed, 4, j.TotalWeight, j.BookDate, 1, j.Qty, j.Pickup, j.Dropoff,
+            j.BookDate, j.OverSize, j.OverWeight, j.PrivateRes, j.DG, j.TruckStart, j.TruckHours, 1) rate;
+        """;
+
+    // The proc's own count: WS_stpJob_Insert 764-768. The match is in SQL so the
+    // tenant's collation decides it, and trailing spaces are ignored as they are
+    // there. A blank or NULL value matches nothing, so it comes back as not in list.
+    // nvarchar(100) is the size of the proc's @ReferenceA and @ReferenceB.
+    public const string ReferenceListsSql = """
+        SET NOCOUNT ON;
+        SELECT j.RowNo,
+            CAST(CASE WHEN c.ReferenceADefineList = 1 AND NOT EXISTS (SELECT 1 FROM dbo.tblReference ra WHERE ra.ClientID = j.ClientId AND ra.[Name] = j.ReferenceA AND ra.[Grouping] = 'A') THEN 0 ELSE 1 END AS bit) AS ReferenceAInList,
+            CAST(CASE WHEN c.ReferenceBDefineList = 1 AND NOT EXISTS (SELECT 1 FROM dbo.tblReference rb WHERE rb.ClientID = j.ClientId AND rb.[Name] = j.ReferenceB AND rb.[Grouping] = 'B') THEN 0 ELSE 1 END AS bit) AS ReferenceBInList
+        FROM OPENJSON(@rows) WITH (RowNo int, ClientId int, ReferenceA nvarchar(100), ReferenceB nvarchar(100)) j
+        INNER JOIN dbo.tblClient c ON c.ClientID = j.ClientId;
+        """;
+
+    public async Task<IReadOnlyDictionary<int, ReferenceListResult>> ReferenceListsAsync(IReadOnlyList<ReferenceCheckRow> rows)
+    {
+        if (rows.Count == 0) return new Dictionary<int, ReferenceListResult>();
+        var found = await Context.Database.GetDbConnection().QueryAsync<ReferenceListRow>(
+            ReferenceListsSql, new { rows = JsonSerializer.Serialize(rows, TruckJson.Options) }, commandTimeout: CommandTimeoutSeconds);
+        return found.ToDictionary(r => r.RowNo, r => new ReferenceListResult(r.ReferenceAInList, r.ReferenceBInList));
+    }
+
     public async Task<IReadOnlyDictionary<int, TruckClientFacts>> LoadClientsAsync(IReadOnlyCollection<int> clientIds)
     {
         var rows = await Context.Database.GetDbConnection().QueryAsync<TruckClientFactsRow>(
             ClientsSql, new { ids = JsonSerializer.Serialize(clientIds) }, commandTimeout: CommandTimeoutSeconds);
         return rows.ToDictionary(r => r.ClientId, r => new TruckClientFacts(
             r.ClientId, r.Code ?? "", r.TruckWeightLimit, r.IsBaggage,
-            r.ReferenceAMandatory, r.ReferenceAMessage, r.ReferenceBMandatory, r.ReferenceBMessage));
+            r.ReferenceAMandatory, r.ReferenceAMessage, r.ReferenceBMandatory, r.ReferenceBMessage,
+            r.ReferenceADefineList, r.ReferenceBDefineList));
     }
 
     public async Task<IReadOnlyList<TruckPreflightRow>> RunAsync(IReadOnlyList<TruckRowPlan> plans)
@@ -207,6 +265,14 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         var rows = await Context.Database.GetDbConnection().QueryAsync<TruckPreflightRow>(
             RowsSql, new { rows = BuildRowsJson(plans) }, commandTimeout: CommandTimeoutSeconds);
         return rows.ToList();
+    }
+
+    public async Task<IReadOnlyDictionary<int, string?>> PublicDescriptionsAsync(IReadOnlyList<TruckPublicRateRow> rows)
+    {
+        if (rows.Count == 0) return new Dictionary<int, string?>();
+        var found = await Context.Database.GetDbConnection().QueryAsync<TruckPublicDescriptionRow>(
+            PublicDescriptionsSql, new { rows = JsonSerializer.Serialize(rows, TruckJson.Options) }, commandTimeout: CommandTimeoutSeconds);
+        return found.ToDictionary(r => r.RowNo, r => r.PublicDescription);
     }
 
     public static string BuildRowsJson(IReadOnlyList<TruckRowPlan> plans) =>
@@ -250,6 +316,12 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
 
     private static int? ToInt(string? value) => int.TryParse(value?.Trim(), out var n) ? n : null;
 
+    private sealed class TruckPublicDescriptionRow
+    {
+        public int RowNo { get; set; }
+        public string? PublicDescription { get; set; }
+    }
+
     private sealed class TruckClientFactsRow
     {
         public int ClientId { get; set; }
@@ -260,5 +332,14 @@ public sealed class BulkTruckPreflight(IDbContextFactory<DynamicDespatchDbContex
         public string? ReferenceAMessage { get; set; }
         public bool ReferenceBMandatory { get; set; }
         public string? ReferenceBMessage { get; set; }
+        public bool ReferenceADefineList { get; set; }
+        public bool ReferenceBDefineList { get; set; }
+    }
+
+    private sealed class ReferenceListRow
+    {
+        public int RowNo { get; set; }
+        public bool ReferenceAInList { get; set; }
+        public bool ReferenceBInList { get; set; }
     }
 }

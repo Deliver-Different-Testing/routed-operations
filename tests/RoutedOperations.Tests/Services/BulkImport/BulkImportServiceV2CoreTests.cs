@@ -75,7 +75,7 @@ public class BulkImportServiceV2CoreTests
         var factory = new FakeHttpClientFactory(httpHandler ?? new FakeHandler());
         var cache = BulkImportTestHarness.Cache(accessor);
         var addressSvc = new AddressService(BulkImportTestHarness.Factory(opts), accessor, StubHereSvc(), cache, new BulkClientScope(accessor));
-        return new BulkImportServiceV2(BulkImportTestHarness.Factory(opts), factory, accessor, addressSvc, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>());
+        return new BulkImportServiceV2(BulkImportTestHarness.Factory(opts), factory, accessor, addressSvc, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>(), Substitute.For<IBulkP2PItemInserter>());
     }
 
     // ---------------- UploadFile -----------------

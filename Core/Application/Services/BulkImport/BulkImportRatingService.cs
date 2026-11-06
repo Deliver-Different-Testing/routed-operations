@@ -190,21 +190,42 @@ public partial class BulkImportServiceV2
                     @ShopRef5 = {request.PickupJob.ShopRef5},
                     @SourceId = 3");
 
-            if (jobId.Value != null && jobId.Value != DBNull.Value)
-            {
-                response.JobId.Add((Int32)jobId.Value);
-            }
-
-            if (message.Value != null && jobId.Value != DBNull.Value)
-            {
-                response.Messages.Add(new MessageDto() { Message = message.Value.ToString() });
-            }
-
             Log.Information($"({request.MessageId})({contactId}) Insert Pickup Job with JobID {jobId.Value}.");
+
+            // A refusal comes back with no id and only @Message, and the next vehicle
+            // would get the same answer, so the rest are not tried.
+            if (!RecordPickupBooking(response, jobId.Value, message.Value, request.NumberOfVehicle))
+            {
+                Log.Warning($"({request.MessageId})({contactId}) Pickup booking refused: {response.Messages[0].Message}");
+                break;
+            }
         }
 
-        response.Success = true;
         return response;
+    }
+
+    /// <summary>
+    /// Records one WS_stpJob_Insert outcome. False when it returned no job id.
+    /// The failure goes first in Messages, which is the line the modal shows. With
+    /// some vehicles booked the response stays a success: those jobs exist, and a
+    /// failure would invite the operator to book them again.
+    /// </summary>
+    public static bool RecordPickupBooking(PickupJobResponse response, object? jobId, object? message, int vehiclesRequested)
+    {
+        var text = message is string s && !string.IsNullOrWhiteSpace(s) ? s : null;
+        if (jobId is int id && id > 0)
+        {
+            response.JobId.Add(id);
+            response.Success = true;
+            if (text != null) response.Messages.Add(new MessageDto { Message = text });
+            return true;
+        }
+
+        text ??= "Stored procedure returned a failure status with no error message.";
+        if (response.JobId.Count > 0)
+            text = $"Only {response.JobId.Count} of {vehiclesRequested} vehicles were booked: {text}";
+        response.Messages.Insert(0, new MessageDto { Message = text });
+        return false;
     }
 
     // ---- pricing (main entry) ---------------------------------------------

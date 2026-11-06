@@ -18,5 +18,9 @@ export const handlers: RequestHandler[] = [
   // Default: every Routed Operations switch is on, which is what a tenant sees
   // today. Tests of the gating itself override this via server.use(...).
   http.get('/api/me/visible-features', () => HttpResponse.json([...RO_FEATURE_KEYS])),
+  // New Import on-demand and Staff Import ask this on the way past a step.
+  // Default: nothing refused. Tests of the refusal override via server.use(...).
+  http.post('/api/bulk-import/reference-check', () =>
+    HttpResponse.json({ messageId: 'x', success: true, messages: [], errors: [] })),
   ...driverSchedulingHandlers,
 ];

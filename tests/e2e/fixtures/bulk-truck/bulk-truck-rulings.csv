@@ -1,0 +1,6 @@
+Job Number,Speed,From Contact,From Company,Pickup Address,Pickup Suburb,Pickup Post Code,Recipient Company,Delivery Address,To Suburb,To Post Code,Delivery Contact,Delivery Phone,Pallets,Pallet Type,Length,Width,Height,Weight,Total Weight,Notes
+BT3001,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Both Weights Ltd,20 Sample Street,Otahuhu,1062,Test Receiver,000 000 000,2,,120,100,90,250,900,Call on arrival
+BT3002,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,No Size Ltd,30 Demo Avenue,Otahuhu,1062,Test Receiver,000 000 000,1,,,,,,,
+BT3003,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,With Phone Ltd,40 Placeholder Lane,Otahuhu,1062,Test Receiver,000 000 000,1,,120,100,90,250,,
+BT3004,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Second Phone Ltd,50 Fictional Crescent,Otahuhu,1062,Test Receiver,000 000 000,1,,120,100,90,250,,
+BT3005,Economy,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,P2P With Phone Ltd,60 Imaginary Place,Otahuhu,1062,Test Receiver,000 000 000,1,,40,30,20,5,,

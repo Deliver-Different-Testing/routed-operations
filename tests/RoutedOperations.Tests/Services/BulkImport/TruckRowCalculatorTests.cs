@@ -110,21 +110,63 @@ public class TruckRowCalculatorTests
     }
 
     [Fact]
-    public void When_both_are_given_weight_is_used_and_nothing_is_rejected()
+    public void When_both_are_given_weight_is_used_with_a_warning_and_nothing_is_rejected()
     {
-        // Steve has not ruled on this. There must be no mismatch check here: the
-        // disagreeing figures below still import, on Weight. Open for Steve.
+        // Steve ruling 3: use Weight, but the conflict must not be silent.
         var plan = Plan(Row(j => { j.Weight = 250; j.TotalWeight = 9999; }));
         Assert.Equal(250m, plan.WeightPerPallet);
         Assert.Equal(500m, plan.TotalWeight);
+        Assert.Equal("Weight and Total weight are both given. Weight was used (250 per pallet).", plan.Warning);
+        Assert.Null(plan.WarningLevel);
     }
 
     [Fact]
-    public void No_weight_at_all_is_not_a_new_rejection()
+    public void One_weight_figure_alone_gives_no_warning()
     {
-        // P2P imports zero weight today; Steve set no rule for trucks.
+        Assert.Null(Plan(Row()).Warning);
+        Assert.Null(Plan(Row(j => { j.Weight = 0; j.TotalWeight = 500; })).Warning);
+    }
+
+    [Fact]
+    public void No_weight_at_all_imports_but_is_flagged_amber()
+    {
+        // Steve ruling 4: zeros can underprice, so it imports and cannot go unseen.
         var plan = Plan(Row(j => j.Weight = 0));
         Assert.Equal(0m, plan.TotalWeight);
+        Assert.Equal(TruckWarningLevel.Amber, plan.WarningLevel);
+        Assert.Equal("No weight on this row, so the price may be too low.", plan.Warning);
+    }
+
+    [Fact]
+    public void Missing_dimensions_are_flagged_amber_and_named()
+    {
+        var plan = Plan(Row(j => { j.Length = 0; j.Height = 0; }));
+        Assert.Equal(TruckWarningLevel.Amber, plan.WarningLevel);
+        Assert.Equal("No length, height on this row, so the price may be too low.", plan.Warning);
+    }
+
+    [Fact]
+    public void A_full_row_is_not_flagged()
+    {
+        Assert.Null(Plan(Row()).WarningLevel);
+    }
+
+    [Fact]
+    public void The_plan_warning_and_level_reach_the_row_the_preview_and_import_read()
+    {
+        var row = Finalized(Row(j => j.Weight = 0), Pre(p => p.ToUnknown = true));
+        Assert.Equal(TruckWarningLevel.Amber, row.WarningLevel);
+        Assert.Equal("No weight on this row, so the price may be too low. Delivery suburb 'Otahuhu' was not recognised.", row.Warning);
+    }
+
+    [Fact]
+    public void A_baggage_client_is_refused_before_any_rating()
+    {
+        // Steve ruling 5.
+        var baggage = new TruckClientFacts(5, "ACME", null, true, false, null, false, null);
+        var result = TruckRowCalculator.Prepare(Input(Row()), baggage);
+        Assert.Null(result.Plan);
+        Assert.Equal("Truck jobs cannot be bulk imported for a baggage client.", result.Error);
     }
 
     // ---- rating inputs -------------------------------------------------------
@@ -213,12 +255,158 @@ public class TruckRowCalculatorTests
         Assert.Equal("Keep upright", TruckRowCalculator.ComposeNotes("Keep upright", 0, false));
     }
 
+    // ---- Steve ruling 1: the driver needs the pallet size at pickup -------------
+
+    private const string Bk1001Pallet = "1x Pallet: 1 @ 120(L) x 100(W) x 90(H) - 250(LB)";
+
+    [Fact]
+    public void The_notes_match_booking_page_job_BK1001_byte_for_byte()
+    {
+        // tucJob 12131 and its tucNote rows on local NZ, booked through WS_stpJob_Insert.
+        var row = Finalized(Row(j => { j.Quantity = 1; j.Height = 90; j.Notes = "Call on arrival"; }));
+
+        Assert.Equal(" " + Bk1001Pallet, row.PickupNote);
+        Assert.Equal("Pickup Notes:  " + Bk1001Pallet + ", Delivery Notes: Call on arrival", row.ucjbNotes);
+        Assert.Equal("Call on arrival", row.DeliveryNote);
+    }
+
+    [Fact]
+    public void A_row_with_no_note_still_carries_the_pallet_size_and_no_delivery_part()
+    {
+        var row = Finalized(Row(j => { j.Quantity = 1; j.Height = 90; }));
+
+        Assert.Equal("Pickup Notes:  " + Bk1001Pallet, row.ucjbNotes);
+        Assert.Null(row.DeliveryNote);
+    }
+
+    [Theory]
+    [InlineData(1, 120, 100, 90, 250, "1x Pallet: 1 @ 120(L) x 100(W) x 90(H) - 250(LB)")]
+    [InlineData(3, 120, 100, 180, 250, "3x Pallets: 3 @ 120(L) x 100(W) x 180(H) - 250(LB)")]
+    [InlineData(2, 120.5, 100, 90.25, 12.5, "2x Pallets: 2 @ 120.5(L) x 100(W) x 90.25(H) - 12.5(LB)")]
+    [InlineData(1, 0, 0, 0, 0, "1x Pallet: 1 @ 0(L) x 0(W) x 0(H) - 0(LB)")]
+    public void The_pallet_text_prints_numbers_as_the_page_does(short qty, double l, double w, double h, double kg, string expected) =>
+        Assert.Equal(expected, TruckRowCalculator.PalletSizeString(qty, (decimal)l, (decimal)w, (decimal)h, (decimal)kg));
+
+    [Fact]
+    public void Trailing_zeros_from_a_decimal_do_not_reach_the_note()
+    {
+        Assert.Equal("1x Pallet: 1 @ 120(L) x 100(W) x 90(H) - 250(LB)",
+            TruckRowCalculator.PalletSizeString(1, 120.00m, 100.0m, 90.0000m, 250.00m));
+    }
+
+    [Fact]
+    public void Total_weight_rows_print_the_per_pallet_figure_they_are_rated_on()
+    {
+        var row = Finalized(Row(j => { j.Weight = 0; j.TotalWeight = 500; j.Height = 90; }));
+        Assert.Equal(" 2x Pallets: 2 @ 120(L) x 100(W) x 90(H) - 250(LB)", row.PickupNote);
+    }
+
+    [Fact]
+    public void The_DG_line_still_comes_first_on_the_job_notes()
+    {
+        var row = Finalized(Row(j => { j.Quantity = 1; j.Height = 90; j.DgClass = 3; j.DgDocument = true; }));
+        Assert.Equal("DG Class: 3 and has documentation\r\nPickup Notes:  " + Bk1001Pallet, row.ucjbNotes);
+    }
+
+    [Fact]
+    public void Pickup_and_delivery_notes_are_written_with_their_own_types_pickup_first()
+    {
+        var pre = Pre(p => { p.PickupNoteTypeId = 6; p.DeliveryNoteTypeId = 7; p.BookingStaffId = 417; });
+        var withNote = Finalized(Row(j => { j.Quantity = 1; j.Height = 90; j.Notes = "Call on arrival"; }), pre);
+        var noNote = Finalized(Row(j => { j.JobNumber = "T2"; j.Quantity = 1; j.Height = 90; }), pre);
+
+        using var doc = JsonDocument.Parse(BulkTruckBatchSql.BuildNotesJson(new[] { withNote, noNote }));
+        var notes = doc.RootElement.EnumerateArray().ToList();
+
+        Assert.Equal(new[] { 6, 7, 6 }, notes.Select(n => n.GetProperty("NoteTypeId").GetInt32()));
+        Assert.Equal(new[] { "T1", "T1", "T2" }, notes.Select(n => n.GetProperty("JobNumber").GetString()));
+        Assert.Equal(" " + Bk1001Pallet, notes[0].GetProperty("NoteText").GetString());
+        Assert.Equal("Call on arrival", notes[1].GetProperty("NoteText").GetString());
+        Assert.All(notes, n => Assert.Equal(417, n.GetProperty("CreatedBy").GetInt32()));
+    }
+
+    // ---- Steve ruling 2: text tracking when the file has a delivery phone ------
+
+    [Fact]
+    public void A_delivery_phone_turns_on_text_tracking_in_the_column_the_sender_reads()
+    {
+        // SMPP_qdfJobUpdatesPickup_TrakingNoticationSend texts TrackingMobile on method
+        // 2 or 3. Writing BK1001's shape (phone in TrackingEmail) would send no text.
+        var row = Finalized(Row(j => j.ToContactPhone = "000 000 000"));
+
+        Assert.Equal(2, row.TrackingMethod);
+        Assert.Equal("000 000 000", row.TrackingMobile);
+        Assert.Null(row.TrackingEmail);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void No_delivery_phone_means_no_text_tracking(string? phone)
+    {
+        var row = Finalized(Row(j => j.ToContactPhone = phone));
+
+        Assert.Equal(0, row.TrackingMethod);
+        Assert.Null(row.TrackingMobile);
+    }
+
+    [Fact]
+    public void A_tracking_email_in_the_file_stays_alongside_the_text()
+    {
+        var row = Finalized(Row(j => { j.ToContactPhone = "000 000 000"; j.TrackingEmail = "track@example.invalid"; }));
+
+        Assert.Equal(3, row.TrackingMethod);
+        Assert.Equal("track@example.invalid", row.TrackingEmail);
+        Assert.Equal("000 000 000", row.TrackingMobile);
+    }
+
+    [Fact]
+    public void A_tracking_mobile_in_the_file_wins_over_the_delivery_phone()
+    {
+        var row = Finalized(Row(j => { j.ToContactPhone = "000 000 000"; j.TrackingMobile = "000 000 001"; }));
+
+        Assert.Equal("000 000 001", row.TrackingMobile);
+    }
+
+    [Fact]
+    public void A_job_imported_as_completed_gets_no_tracking()
+    {
+        // The sender skips finished jobs, and Part A already blanks these fields.
+        var job = Row(j => j.ToContactPhone = "000 000 000");
+        var input = new TruckRowInput { Job = job, ClientId = 5, SpeedId = 52, BookDateTime = Book, Completed = true };
+        var plan = TruckRowCalculator.Prepare(input, Client).Plan!;
+
+        var row = TruckRowCalculator.Finalize(plan, Pre(), Client).Row!;
+
+        Assert.Equal(0, row.TrackingMethod);
+        Assert.Null(row.TrackingMobile);
+    }
+
+    // ---- Steve ruling 6: what the booking page shows a customer ----------------
+
+    [Fact]
+    public void Public_description_lines_parse_as_the_page_splits_them()
+    {
+        var lines = TruckRowCalculator.ParsePriceLines("Truck Standard = $59.54\rPallet Excess = $50.58\rTail Lift Surcharge = 19.826~x\rno amount here");
+
+        Assert.Equal(new[] { "Truck Standard", "Pallet Excess", "Tail Lift Surcharge" }, lines.Select(l => l.Label));
+        Assert.Equal(new[] { 59.54m, 50.58m, 19.83m }, lines.Select(l => l.Amount));
+        Assert.Empty(TruckRowCalculator.ParsePriceLines(null));
+    }
+
+    [Fact]
+    public void Incl_gst_is_the_pages_literal_15_percent()
+    {
+        Assert.Equal(51.17m, TruckRowCalculator.AmountInclGst(44.4944m));
+    }
+
     [Fact]
     public void Row_notes_stay_in_job_notes_and_the_delivery_note_not_client_notes()
     {
         // Decision 5.
         var row = Finalized(Row(j => j.Notes = "  Call on arrival "));
-        Assert.Equal("  Call on arrival ", row.ucjbNotes);
+        Assert.EndsWith(", Delivery Notes:   Call on arrival ", row.ucjbNotes);
         Assert.Equal("Call on arrival", row.DeliveryNote);
         Assert.DoesNotContain(BulkTruckBatchSql.JobColumns, c => c.Name == "ClientNotes");
         Assert.DoesNotContain(BulkTruckBatchSql.JobConstants, c => c.Name == "ClientNotes");
