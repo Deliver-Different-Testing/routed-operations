@@ -116,7 +116,7 @@ public class PostcodeGroupCountsTests
         using (var db = new DynamicDespatchDbContext(opts))
         {
             db.BulkZonePostcodeGroups.Add(new BulkZonePostcodeGroup { Id = 11, Name = "PU Regional Tauranga Z1" });
-            db.TblBulkRunScheduleDays.AddRange(
+            db.TblBulkRunSchedules.AddRange(
                 Day(100, 501, dayOfWeek: 1, pickupGroup: 11),
                 Day(101, 501, dayOfWeek: 2, pickupGroup: 11),
                 Day(102, 502, dayOfWeek: 1, pickupGroup: 11));
@@ -139,7 +139,7 @@ public class PostcodeGroupCountsTests
             db.BulkZonePostcodeGroups.Add(new BulkZonePostcodeGroup { Id = 12, Name = "Auckland AH Zones" });
             var d = Day(200, 601, dayOfWeek: 1, deliveryGroup: 12);
             d.PickupPostcodeGroupId = 12;
-            db.TblBulkRunScheduleDays.Add(d);
+            db.TblBulkRunSchedules.Add(d);
             db.SaveChanges();
         }
 
@@ -160,7 +160,7 @@ public class PostcodeGroupCountsTests
             db.BulkZonePostcodes.AddRange(
                 new BulkZonePostcode { Id = 10, PostCode = 3200, Zone = 4, Name = "Outer town", PostcodeGroupId = 13 },
                 new BulkZonePostcode { Id = 11, PostCode = 3204, Zone = 4, Name = null, PostcodeGroupId = 13 });
-            db.TblBulkRunScheduleDays.AddRange(
+            db.TblBulkRunSchedules.AddRange(
                 Day(300, 701, dayOfWeek: 1, deliveryGroup: 13),
                 Day(301, 701, dayOfWeek: 2, deliveryGroup: 13),
                 Day(302, 702, dayOfWeek: 1, pickupGroup: 13));
@@ -213,7 +213,10 @@ public class PostcodeGroupCountsTests
         Assert.Equal(0, g.PickupScheduleCount);
     }
 
-    private static TblBulkRunScheduleDay Day(
+    /// <summary>A row of the view the service reads. How a converted
+    /// schedule's values reach that view is covered in
+    /// PostcodeGroupEffectiveScheduleTests, on a provider that can join.</summary>
+    private static TblBulkRunSchedule Day(
         int bulkRunScheduleId,
         int scheduleId,
         short dayOfWeek,

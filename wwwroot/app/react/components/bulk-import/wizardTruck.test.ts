@@ -82,9 +82,9 @@ describe('truckInPlay', () => {
 describe('urgentFieldsFor truck fields', () => {
   const keys = (truck: boolean) => urgentFieldsFor(false, 'onDemand', false, false, undefined, false, truck).map((f) => f.key);
 
-  it('adds nothing unless a truck speed is in play', () => {
+  it('adds no truck-only fields unless a truck speed is in play', () => {
     expect(keys(false)).not.toContain('speed');
-    expect(keys(false)).not.toContain('totalWeight');
+    expect(keys(false)).not.toContain('palletType');
   });
 
   it('lists every truck target field and labels Weight as per pallet', () => {
@@ -133,6 +133,57 @@ describe('urgentFieldsFor truck fields', () => {
     const mapped = autoMapTruckFields(fields, ['Weight', 'Total Weight'], { weight: 'Weight' });
     expect(mapped.weight).toBe('Weight');
     expect(mapped.totalWeight).toBe('Total Weight');
+  });
+});
+
+// A column read the wrong way multiplies or divides the rated weight by the quantity.
+describe('Weight and Total Weight mapping on an on-demand import', () => {
+  const match = (headers: string[], isUs = false, jobType: 'onDemand' | 'routed' = 'onDemand', truck = false) => {
+    const fields = urgentFieldsFor(isUs, jobType, false, false, undefined, false, truck);
+    const of = (key: string) => {
+      const f = fields.find((x) => x.key === key);
+      return f ? autoMatchColumn(f, headers) : undefined;
+    };
+    return { weight: of('weight'), totalWeight: of('totalWeight') };
+  };
+
+  it.each([false, true])('maps each column when a file has both (US %s)', (isUs) => {
+    expect(match(['Weight', 'Total Weight'], isUs)).toEqual({ weight: 'Weight', totalWeight: 'Total Weight' });
+    expect(match(['Total Weight', 'Weight'], isUs)).toEqual({ weight: 'Weight', totalWeight: 'Total Weight' });
+  });
+
+  it.each(['Gross Weight', 'Total Weight', 'TotalWeight', 'Total Kg', 'Total_Kgs', 'Total Lbs', 'Gross Lbs'])(
+    'a file with only %s maps it to Total Weight and not Weight',
+    (header) => {
+      expect(match([header])).toEqual({ weight: '', totalWeight: header });
+      expect(match([header], true)).toEqual({ weight: '', totalWeight: header });
+    }
+  );
+
+  it('a plain Weight or Kg column stays per item and never reaches Total Weight', () => {
+    expect(match(['Weight'])).toEqual({ weight: 'Weight', totalWeight: '' });
+    expect(match(['Kg'])).toEqual({ weight: 'Kg', totalWeight: '' });
+  });
+
+  it('a money column called Total or Gross is left alone', () => {
+    expect(match(['Total'])).toEqual({ weight: '', totalWeight: '' });
+    expect(match(['Gross'])).toEqual({ weight: '', totalWeight: '' });
+  });
+
+  it('a truck import reads the same headers the same way', () => {
+    expect(match(['Weight', 'Gross Weight'], false, 'onDemand', true)).toEqual({ weight: 'Weight', totalWeight: 'Gross Weight' });
+    expect(match(['Gross Weight'], false, 'onDemand', true)).toEqual({ weight: '', totalWeight: 'Gross Weight' });
+  });
+
+  it('a routed import keeps its matching and has no Total Weight', () => {
+    expect(match(['Total Weight'], false, 'routed')).toEqual({ weight: 'Total Weight', totalWeight: undefined });
+    expect(match(['Gross Weight'], true, 'routed')).toEqual({ weight: 'Gross Weight', totalWeight: undefined });
+  });
+
+  it('hides Total Weight with Weight when a stock size is picked on a P2P import', () => {
+    const keys = urgentFieldsFor(false, 'onDemand', false, false, undefined, true, false).map((f) => f.key);
+    expect(keys).not.toContain('weight');
+    expect(keys).not.toContain('totalWeight');
   });
 });
 

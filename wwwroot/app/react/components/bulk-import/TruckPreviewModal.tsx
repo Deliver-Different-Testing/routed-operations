@@ -26,6 +26,8 @@ export function TruckPreviewModal({ open, state, onBack, onImport, onCancel, imp
   const rows = preview?.rows ?? [];
   const totals = truckPreviewTotals(preview);
   const other = preview?.otherRowCount ?? 0;
+  // The server sends a customer no rate or fuel, and tells us which view to draw.
+  const customer = preview?.customerPricing === true;
 
   return (
     <Modal
@@ -73,7 +75,7 @@ export function TruckPreviewModal({ open, state, onBack, onImport, onCancel, imp
             </div>
           </div>
           <div className="border border-border-light rounded p-3">
-            <div className="text-xs text-text-secondary">Total price (rate + fuel)</div>
+            <div className="text-xs text-text-secondary">{customer ? 'Total price (Excl GST)' : 'Total price (rate + fuel)'}</div>
             <div className="text-2xl font-semibold text-text-primary" data-testid="truck-preview-total">
               {money(totals.totalPrice)}
             </div>
@@ -105,27 +107,31 @@ export function TruckPreviewModal({ open, state, onBack, onImport, onCancel, imp
                 <th className="text-left px-3 py-1.5">From</th>
                 <th className="text-left px-3 py-1.5">To</th>
                 <th className="text-right px-3 py-1.5">Pallets</th>
-                <th className="text-right px-3 py-1.5">Rate</th>
-                <th className="text-right px-3 py-1.5">Fuel</th>
-                <th className="text-right px-3 py-1.5">Price</th>
+                {!customer && <th className="text-right px-3 py-1.5">Rate</th>}
+                {!customer && <th className="text-right px-3 py-1.5">Fuel</th>}
+                <th className="text-right px-3 py-1.5">{customer ? 'Price (Excl GST)' : 'Price'}</th>
+                {customer && <th className="text-right px-3 py-1.5">Price (Incl GST)</th>}
                 <th className="text-left px-3 py-1.5">Reason</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.map((r) => {
+                const amber = r.wouldImport && r.warningLevel === 'amber';
+                return (
                 <tr
                   key={r.rowIndex}
                   data-testid="truck-preview-row"
                   data-rejected={r.wouldImport ? undefined : 'true'}
-                  className={`border-t border-border-light ${r.wouldImport ? '' : 'bg-warning/10'}`}
+                  data-warning={amber ? 'amber' : undefined}
+                  className={`border-t border-border-light ${!r.wouldImport || amber ? 'bg-warning/10' : ''}`}
                 >
                   <td className="px-3 py-1.5">{r.jobNumber ?? 'Assigned at import'}</td>
                   <td className="px-3 py-1.5">{r.speedName ?? ''}</td>
                   <td className="px-3 py-1.5">{r.fromSuburb ?? ''}</td>
                   <td className="px-3 py-1.5">{r.toSuburb ?? ''}</td>
                   <td className="px-3 py-1.5 text-right">{r.quantity ?? ''}</td>
-                  <td className="px-3 py-1.5 text-right">{money(r.rate)}</td>
-                  <td className="px-3 py-1.5 text-right">{money(r.fuel)}</td>
+                  {!customer && <td className="px-3 py-1.5 text-right">{money(r.rate)}</td>}
+                  {!customer && <td className="px-3 py-1.5 text-right">{money(r.fuel)}</td>}
                   <td className="px-3 py-1.5 text-right font-medium" data-testid="truck-preview-price">
                     {money(r.amount)}
                     {r.ratedManually && (
@@ -133,15 +139,28 @@ export function TruckPreviewModal({ open, state, onBack, onImport, onCancel, imp
                         Rated manually
                       </div>
                     )}
+                    {customer && (r.priceLines?.length ?? 0) > 0 && (
+                      <div className="font-normal text-text-secondary" data-testid="truck-preview-lines">
+                        {r.priceLines!.map((l, i) => (
+                          <div key={i}>{l.label}: {money(l.amount)}</div>
+                        ))}
+                      </div>
+                    )}
                   </td>
+                  {customer && (
+                    <td className="px-3 py-1.5 text-right" data-testid="truck-preview-price-incl">
+                      {money(r.amountInclGst ?? null)}
+                    </td>
+                  )}
                   <td
-                    className={`px-3 py-1.5 ${r.wouldImport ? 'text-text-secondary' : 'text-warning font-medium'}`}
+                    className={`px-3 py-1.5 ${r.wouldImport && !amber ? 'text-text-secondary' : 'text-warning font-medium'}`}
                     data-testid="truck-preview-reason"
                   >
                     {r.reason ?? r.warning ?? ''}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

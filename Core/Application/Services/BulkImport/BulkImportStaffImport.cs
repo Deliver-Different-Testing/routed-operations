@@ -47,6 +47,7 @@ public partial class BulkImportServiceV2
         // the source's late-bound property shape.
         var clientCache = new Dictionary<int, dynamic>();
         var clientCodeCache = new Dictionary<string, dynamic>();
+        var clientFacts = new Dictionary<int, TruckClientFacts>();
 
         try
         {
@@ -70,6 +71,7 @@ public partial class BulkImportServiceV2
                 : new List<int>();
             var truckInputs = new List<TruckRowInput>();
             var truckRowNumbers = new List<(int RowNumber, string JobNumber)>();
+            var itemJobs = new List<P2PItemJob>();
 
             foreach (var jobData in request.Jobs)
             {
@@ -121,6 +123,18 @@ public partial class BulkImportServiceV2
                         throw new Exception($"Client not found. ClientID: {clientId}, ClientCode: {clientCode}");
                     }
 
+                    // Before the job number below, so a refused row uses none. Thrown
+                    // so the row catch reports it and the rest of the file still books.
+                    string clientRefA = StaffReference(jobData, "ClientRefA", "Client Ref A", "clientrefa", "Ref A", "Reference A");
+                    string clientRefB = StaffReference(jobData, "ClientRefB", "Client Ref B", "clientrefb", "Ref B", "Reference B");
+                    var referenceRefusals = await ReferenceRefusals(
+                        new[] { new ReferenceCheckRow(rowNumber, (int)client.Id, clientRefA ?? string.Empty, clientRefB ?? string.Empty) },
+                        clientFacts);
+                    if (referenceRefusals.TryGetValue(rowNumber, out var referenceRefusal))
+                    {
+                        throw new Exception(referenceRefusal);
+                    }
+
                     string jobNumber = GetStringValue(jobData, "JobNumber", "Job Number", "jobnumber");
 
                     // Auto-generate job number if not provided or empty. Uses the
@@ -134,7 +148,8 @@ public partial class BulkImportServiceV2
                     }
 
                     // Dates - support both BookDate and DeliveryDate (Despatch_Root legacy)
-                    DateTime bookDate = GetDateValue(jobData, "BookDate", "Book Date", "bookdate", "DeliveryDate", "Delivery Date") ?? DateTime.Today;
+                    DateTime? rowBookDate = GetDateValue(jobData, "BookDate", "Book Date", "bookdate", "DeliveryDate", "Delivery Date");
+                    DateTime bookDate = rowBookDate ?? DateTime.Today;
                     DateTime? bookTime = GetDateValue(jobData, "BookTime", "Book Time", "booktime", "DeliveryTime", "Delivery Time");
 
                     string contact = GetStringValue(jobData, "Contact", "FromContact", "contact", "ContactName");
@@ -162,6 +177,7 @@ public partial class BulkImportServiceV2
                     short? qty = (short?)GetIntValue(jobData, "Qty", "Quantity", "qty", "Items");
                     int? size = GetIntValue(jobData, "Size", "size", "VehicleSize");
                     double? weight = GetDoubleValue(jobData, "Weight", "weight");
+                    decimal? totalWeight = GetDecimalValue(jobData, "TotalWeight", "Total Weight", "totalweight");
                     int? courierId = GetIntValue(jobData, "CourierId", "Courier Id", "courierid", "CourierID");
                     string courierCode = GetStringValue(jobData, "CourierCode", "Courier Code", "couriercode");
 
@@ -181,8 +197,6 @@ public partial class BulkImportServiceV2
                             .FirstOrDefaultAsync();
                     }
 
-                    string clientRefA = GetStringValue(jobData, "ClientRefA", "Client Ref A", "clientrefa");
-                    string clientRefB = GetStringValue(jobData, "ClientRefB", "Client Ref B", "clientrefb");
                     string ourRef = GetStringValue(jobData, "OurRef", "Our Ref", "ourref");
                     string notes = GetStringValue(jobData, "Notes", "notes");
 
@@ -267,7 +281,7 @@ public partial class BulkImportServiceV2
                                 Width = GetDecimalValue(jobData, "Width", "width") ?? 0,
                                 Height = GetDecimalValue(jobData, "Height", "height") ?? 0,
                                 Weight = (decimal)(weight ?? 0),
-                                TotalWeight = GetDecimalValue(jobData, "TotalWeight", "Total Weight", "totalweight"),
+                                TotalWeight = totalWeight,
                                 PalletType = GetStringValue(jobData, "PalletType", "Pallet Type", "pallettype"),
                                 TailLiftPickup = GetBoolValue(jobData, "TailLiftPickup", "Tail Lift PU", "tailliftpickup"),
                                 TailLiftDropoff = GetBoolValue(jobData, "TailLiftDropoff", "Tail Lift DO", "tailliftdropoff"),
@@ -304,6 +318,16 @@ public partial class BulkImportServiceV2
                         continue;
                     }
 
+                    // Read before the job is booked, so a bad value fails the row, not the job's items.
+                    short itemQuantity = qty ?? 1;
+                    var itemLength = GetDecimalValue(jobData, "Length", "length") ?? 0;
+                    var itemWidth = GetDecimalValue(jobData, "Width", "width") ?? 0;
+                    var itemHeight = GetDecimalValue(jobData, "Height", "height") ?? 0;
+                    var rowWeight = P2PItemCalculator.RowWeight((decimal)(weight ?? 0), totalWeight, qty);
+                    var itemWeight = rowWeight.PerPallet;
+                    // A speed of 4+ digits is a schedule booking, which keeps the file's raw weight.
+                    bool scheduleBooking = speedId.Value.ToString().Length > 3;
+
                     // ToAddress includes CompanyName prefix like Despatch_Root does
                     string fullToAddress = !string.IsNullOrEmpty(toCompany)
                         ? $"{toCompany}, {toAddress}"
@@ -331,7 +355,8 @@ public partial class BulkImportServiceV2
                         toContactPhone: toContactPhone ?? string.Empty,
                         size: (short?)(size ?? 2),
                         qty: qty ?? 1,
-                        weight: weight,
+                        // A row with no usable weight still sends what it sent (NULL for an empty cell).
+                        weight: rowWeight.Total > 0 ? (double)rowWeight.Total : weight,
                         courierID: courierId,
                         clientRefa: clientRefA ?? string.Empty,
                         clientRefb: clientRefB ?? string.Empty,
@@ -396,15 +421,7 @@ public partial class BulkImportServiceV2
 
                     if (staffTucJobId > 0)
                     {
-                        var itemCount = qty ?? 1;
-                        for (int qi = 0; qi < itemCount; qi++)
-                        {
-                            await Context.Procedures.NET_stpBulkJobItems_InsertAsync(
-                                staffTucJobId, qi, 1, weight, null, null, null,
-                                null, null, null, null, null,
-                                notes, null, $"{jobNumber}-{qi + 1}");
-                        }
-                        Log.Information($"({request.MessageId}) [StaffImport] Inserted {itemCount} job items for NZ job {jobNumber} (ID: {staffTucJobId})");
+                        itemJobs.Add(new P2PItemJob(staffTucJobId, jobNumber.Trim(), itemQuantity, itemLength, itemWidth, itemHeight, itemWeight));
                     }
                     }
                     else
@@ -419,6 +436,13 @@ public partial class BulkImportServiceV2
                         string fullFromAddress = string.IsNullOrEmpty(fromCompany)
                             ? fromAddress
                             : $"{fromCompany}, {fromAddress}";
+
+                        // A P2P job books for the row's BookDate. With no BookDate on the row
+                        // the row's time still goes as is: bookDate's fallback is the host's
+                        // date, which can be a different day from the tenant's.
+                        DateTime? p2pBookTime = rowBookDate.HasValue
+                            ? bookDate.Date.Add((bookTime ?? TimeZoneUtility.GetTenantNow(_httpContextAccessor)).TimeOfDay)
+                            : bookTime;
 
                         await Context.Procedures.DD_stpJob_InsertExceleratorAsync(
                             bookedBy: contact ?? string.Empty,
@@ -442,7 +466,7 @@ public partial class BulkImportServiceV2
                             referenceA: clientRefA ?? string.Empty,
                             referenceB: clientRefB ?? string.Empty,
                             vehicleSizeID: 2,
-                            totalWeight: (weight ?? 0).ToString(),
+                            totalWeight: scheduleBooking ? (weight ?? 0).ToString() : rowWeight.Total.ToString(System.Globalization.CultureInfo.InvariantCulture),
                             totalDistance: "0",
                             @return: "0",
                             courierNotes: string.Empty,
@@ -463,19 +487,20 @@ public partial class BulkImportServiceV2
                             toAddressCode: string.Empty,
                             fromAddressCode: string.Empty,
                             clientID: client.Id,
-                            // NULL when the row didn't supply a booking time -
+                            // Schedule speeds: NULL when the row didn't supply a booking time -
                             // matches legacy WS_stpJob_Insert semantics.
-                            time: bookTime,
+                            time: scheduleBooking ? bookTime : p2pBookTime,
                             hold: onHold ?? false,
                             fixedAmount: amount > 0 ? amount : (decimal?)null,
                             agentAmount: null,
                             agentCourierID: courierId,
                             fuelSurchargeAmount: null,
                             ourRef: ourRef ?? string.Empty,
-                            pickUpLatitude: pickUpLatitude ?? string.Empty,
-                            pickUpLongitude: pickUpLongitude ?? string.Empty,
-                            deliveryLatitude: deliveryLatitude ?? string.Empty,
-                            deliveryLongitude: deliveryLongitude ?? string.Empty,
+                            // '' fails converting to tucJob's decimal columns (SQL 8114), same as NZ above.
+                            pickUpLatitude: string.IsNullOrWhiteSpace(pickUpLatitude) ? null : pickUpLatitude,
+                            pickUpLongitude: string.IsNullOrWhiteSpace(pickUpLongitude) ? null : pickUpLongitude,
+                            deliveryLatitude: string.IsNullOrWhiteSpace(deliveryLatitude) ? null : deliveryLatitude,
+                            deliveryLongitude: string.IsNullOrWhiteSpace(deliveryLongitude) ? null : deliveryLongitude,
                             pickup: null,
                             dropoff: null,
                             privateRes: null,
@@ -488,7 +513,7 @@ public partial class BulkImportServiceV2
                             totalPallets: 0,
                             extraStopOffs: 0,
                             dryIceWeight: 0,
-                            cubic: 0,
+                            cubic: scheduleBooking ? 0 : P2PItemCalculator.JobCubic(itemLength, itemWidth, itemHeight, qty, null, isNz: false),
                             pickupWaitTime: 0,
                             deliveryWaitTime: 0,
                             dGClass: null,
@@ -523,25 +548,39 @@ public partial class BulkImportServiceV2
                             message: messageParam
                         );
 
+                        // The proc's validation exit returns with no job and no error, only
+                        // @Message. Thrown so the row catch below reports it as failed.
+                        if (!jobIdParam.Value.HasValue || jobIdParam.Value.Value <= 0)
+                        {
+                            throw new Exception(string.IsNullOrWhiteSpace(messageParam.Value)
+                                ? "Stored procedure returned a failure status with no error message."
+                                : messageParam.Value);
+                        }
+
                         successCount++;
                         Log.Information($"({request.MessageId}) [StaffImport] Row {rowNumber}: Successfully created US job {jobNumber}");
 
-                        if (!string.IsNullOrWhiteSpace(notes) && jobIdParam.Value.HasValue && jobIdParam.Value.Value > 0)
+                        if (!string.IsNullOrWhiteSpace(notes))
                         {
                             await InsertJobDeliveryNote(jobIdParam.Value.Value, notes);
                         }
 
-                        if (jobIdParam.Value.HasValue && jobIdParam.Value.Value > 0)
+                        // A speed of 4+ digits is a schedule booking: the proc returns a
+                        // tblBulkJob id, not a tucJob id, so its items stay on the bulk
+                        // proc. Same split as the booking page (JobRepository.cs:4861).
+                        if (scheduleBooking)
                         {
-                            var itemCount = qty ?? 1;
-                            for (int qi = 0; qi < itemCount; qi++)
+                            for (int qi = 0; qi < itemQuantity; qi++)
                             {
                                 await Context.Procedures.NET_stpBulkJobItems_InsertAsync(
                                     jobIdParam.Value.Value, qi, 1, weight, null, null, null,
                                     null, null, null, null, null,
                                     notes, null, $"{jobNumber}-{qi + 1}");
                             }
-                            Log.Information($"({request.MessageId}) [StaffImport] Inserted {itemCount} job items for US job {jobNumber} (ID: {jobIdParam.Value})");
+                        }
+                        else
+                        {
+                            itemJobs.Add(new P2PItemJob(jobIdParam.Value.Value, jobNumber.Trim(), itemQuantity, itemLength, itemWidth, itemHeight, itemWeight));
                         }
                     }
                 }
@@ -557,6 +596,9 @@ public partial class BulkImportServiceV2
                     });
                 }
             }
+
+            foreach (var warning in await InsertP2PItems(itemJobs))
+                response.Messages.Add(new MessageDto { Message = warning });
 
             if (truckInputs.Count > 0)
             {
@@ -598,6 +640,12 @@ public partial class BulkImportServiceV2
             return response;
         }
     }
+
+    // A file can carry two of these columns, so the first with a value wins and a
+    // blank ClientRefA cell does not hide a filled Ref A one.
+    private string StaffReference(Dictionary<string, object> jobData, params string[] columns) =>
+        columns.Select(column => GetStringValue(jobData, column)).FirstOrDefault(value => !string.IsNullOrEmpty(value))
+            ?? GetStringValue(jobData, columns);
 
     // Note: GetStringValue / GetIntValue / GetDecimalValue / GetDoubleValue /
     // GetBoolValue / GetDateValue live on the BulkImportServiceV2 partial in

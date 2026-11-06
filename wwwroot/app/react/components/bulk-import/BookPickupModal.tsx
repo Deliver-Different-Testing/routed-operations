@@ -54,6 +54,7 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
   const [booking, setBooking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bookedJobIds, setBookedJobIds] = useState<number[] | null>(null);
+  const [shortfall, setShortfall] = useState<string | null>(null);
 
   // Hydrate defaults when the modal opens or the payload changes.
   useEffect(() => {
@@ -70,6 +71,7 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
     setAmount(null);
     setError(null);
     setBookedJobIds(null);
+    setShortfall(null);
   }, [open, seed, payload]);
 
   // Debounced rate fetch. Fires 500ms after any change once both dropdowns
@@ -128,17 +130,20 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
     setError(null);
     try {
       const { response } = await bulkImportService.bookPickup(req);
-      if (!response.success) {
+      const booked = response.jobId?.length ?? 0;
+      if (!response.success || booked === 0) {
         setError(response.messages?.[0]?.message ?? 'Pickup booking failed.');
         return;
       }
-      setBookedJobIds(response.jobId ?? []);
-      toast.show(
-        `Pickup booked (${response.jobId?.length ?? 0} vehicle${
-          (response.jobId?.length ?? 0) === 1 ? '' : 's'
-        }).`,
-        'success'
-      );
+      setBookedJobIds(response.jobId);
+      // Some vehicles booked and some refused. Those jobs exist, so this is not
+      // an error that invites another go; the server puts the shortfall first.
+      if (booked < numberOfVehicle) {
+        setShortfall(response.messages?.[0]?.message ?? `Only ${booked} of ${numberOfVehicle} vehicles were booked.`);
+        toast.show(`Pickup booked for ${booked} of ${numberOfVehicle} vehicles.`, 'warning');
+        return;
+      }
+      toast.show(`Pickup booked (${booked} vehicle${booked === 1 ? '' : 's'}).`, 'success');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -273,7 +278,7 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
                 </div>
               </div>
               {error && (
-                <div className="border border-error/40 bg-error/5 rounded p-2 text-xs text-error">
+                <div className="border border-error/40 bg-error/5 rounded p-2 text-xs text-error whitespace-pre-line">
                   {error}
                 </div>
               )}
@@ -285,6 +290,14 @@ export function BookPickupModal({ open, state, onClose, onBooked }: Props) {
           <div className="border border-success/40 bg-success/5 rounded p-3 text-sm text-success">
             Pickup booked. Job IDs: {bookedJobIds!.join(', ') || 'none'}
           </div>
+          {shortfall && (
+            <div
+              data-testid="pickup-shortfall"
+              className="border border-warning/40 bg-warning/10 rounded p-3 text-xs text-text-primary whitespace-pre-line"
+            >
+              {shortfall}
+            </div>
+          )}
         </div>
       )}
     </Modal>

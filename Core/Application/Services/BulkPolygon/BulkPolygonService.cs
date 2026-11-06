@@ -492,11 +492,30 @@ public class BulkPolygonService(
             .ToList();
     }
 
+    /// <summary>Re-run the overlay for every polygon that has a shape.
+    /// Backfill for BulkRunPolygonZip.IsFull / OverlapPct and sliver rows.
+    /// Returns the number of polygons processed.</summary>
+    public async Task<int> RefreshAllOverlaysAsync()
+    {
+        var ids = await Context.Database
+            .SqlQueryRaw<int>(
+                "SELECT PolygonId AS Value FROM dbo.tblBulkRunPolygon WHERE GeographyData IS NOT NULL")
+            .ToListAsync();
+        foreach (var id in ids)
+            await RefreshPartiallyIncludedZipsAsync(id);
+        return ids.Count;
+    }
+
     private async Task RefreshPartiallyIncludedZipsAsync(int polygonId)
     {
-        var zips = new List<string>();
+        var overlaps = new List<ZipOverlapRow>();
         try
         {
+            // Polygon zones in rating: the SAME overlay now also yields every
+            // zip the shape intersects with area > 0 (no 10% floor) plus its
+            // overlap %, which is persisted to BulkRunPolygonZip below.
+            // PartiallyIncludedZips keeps the 10% rule (filtered in C#) so
+            // the route resolver is unchanged.
             // Include a zip in the derived list only when it MEANINGFULLY
             // overlaps the polygon - i.e. the intersection area is at least
             // 10% of that zip's own area OR the polygon completely engulfs
@@ -512,33 +531,43 @@ public class BulkPolygonService(
             // meaningfully covered by the polygon"). Fully-contained zips
             // are always included via the STWithin short-circuit.
             var stream = Context.Database
-                .SqlQueryRaw<string>(
+                .SqlQueryRaw<ZipOverlapRow>(
                     """
                     DECLARE @Poly geography =
                         (SELECT p.GeographyData FROM dbo.tblBulkRunPolygon p
                          WHERE p.PolygonId = @id);
-                    SELECT DISTINCT zp.Zip AS Value
+                    SELECT zp.Zip AS Zip,
+                           -- Percent of the zip's own area inside the shape.
+                           -- STWithin short-circuits to 100 (avoids the
+                           -- STIntersection cost when clearly inside).
+                           -- Summed per Zip in case a zip has several parts.
+                           CAST(100.0 * SUM(x.Area)
+                                / NULLIF(SUM(zp.GeographyData.STArea()), 0)
+                                AS float) AS OverlapPct
                     FROM dbo.ZipPolygon zp
+                    CROSS APPLY (
+                        SELECT CASE WHEN zp.GeographyData.STWithin(@Poly) = 1
+                                    THEN zp.GeographyData.STArea()
+                                    ELSE zp.GeographyData.STIntersection(@Poly).STArea()
+                               END AS Area
+                    ) x
                     WHERE zp.GeographyData IS NOT NULL
                       AND zp.Zip IS NOT NULL
                       AND zp.GeographyData.STIntersects(@Poly) = 1
-                      AND (
-                            -- Zip is fully engulfed by the polygon (fast path,
-                            -- avoids STIntersection cost when clearly inside).
-                            zp.GeographyData.STWithin(@Poly) = 1
-                         OR -- Or the actual overlap area is >= 10% of the
-                            -- zip's total area. Excludes edge-only touches
-                            -- (intersection area = 0) and sliver overlaps
-                            -- caused by ZIP-boundary noise.
-                            zp.GeographyData.STIntersection(@Poly).STArea()
-                              >= 0.1 * zp.GeographyData.STArea()
-                          )
+                    GROUP BY zp.Zip
+                    -- Excludes edge-only touches (intersection area = 0).
+                    HAVING SUM(x.Area) > 0
                     """,
                     new SqlParameter("@id", polygonId))
                 .AsAsyncEnumerable();
             await foreach (var z in stream)
             {
-                if (!string.IsNullOrWhiteSpace(z)) zips.Add(z.Trim());
+                if (!string.IsNullOrWhiteSpace(z.Zip))
+                    overlaps.Add(new ZipOverlapRow
+                    {
+                        Zip = z.Zip.Trim(),
+                        OverlapPct = Math.Min(z.OverlapPct, 100d),
+                    });
             }
         }
         catch (SqlException ex)
@@ -546,11 +575,27 @@ public class BulkPolygonService(
             // Overlay failed (rare - typically a malformed source shape).
             // Log and leave the column untouched. Resolver falls through
             // to spatial-only pass when the pre-filter column is NULL.
-            Log.Warning(ex,
-                "PartiallyIncludedZips overlay failed for BulkRunPolygon {Id}; leaving column untouched",
+            // Error, not Warning: BulkRunPolygonZip is left stale too, and a
+            // polygon with stale rows silently mis-rates once polygon zone
+            // rating is on.
+            Log.Error(ex,
+                "PartiallyIncludedZips/BulkRunPolygonZip overlay failed for BulkRunPolygon {Id}; leaving both untouched",
                 polygonId);
             return;
         }
+
+        // Dedupe case-insensitively, keeping the largest overlap.
+        var byZip = overlaps
+            .GroupBy(o => o.Zip, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(o => o.OverlapPct).First())
+            .ToList();
+
+        // PartiallyIncludedZips keeps the original 10% rule (STWithin counts
+        // as 100%), so the route resolver sees exactly what it did before.
+        var zips = byZip
+            .Where(o => o.OverlapPct >= PartialZipMinOverlapPct)
+            .Select(o => o.Zip)
+            .ToList();
 
         var packed = zips.Count == 0
             ? null
@@ -573,18 +618,51 @@ public class BulkPolygonService(
         await Context.Database.ExecuteSqlRawAsync(
             "DELETE FROM dbo.BulkRunPolygonZip WHERE PolygonId = @id",
             new SqlParameter("@id", polygonId));
-        foreach (var zip in zips.Distinct(StringComparer.OrdinalIgnoreCase))
+        // Every intersecting zip (not just the 10% set). IsFull = >= 99%
+        // inside, so rating needs no coordinates for it. One set-based insert
+        // via JSON rather than a round-trip per zip.
+        var rows = byZip
+            .Where(o => o.Zip.Length <= 10)   // column is VARCHAR(10)
+            .Select(o => new
+            {
+                zip = o.Zip,
+                isFull = o.OverlapPct >= FullZipMinOverlapPct,
+                overlapPct = Math.Round(o.OverlapPct, 2),
+            })
+            .ToList();
+        if (rows.Count > 0)
         {
-            if (zip.Length > 10) continue;   // column is VARCHAR(10)
             await Context.Database.ExecuteSqlRawAsync(
-                "INSERT INTO dbo.BulkRunPolygonZip (PolygonId, Zip) VALUES (@id, @zip)",
+                """
+                INSERT INTO dbo.BulkRunPolygonZip (PolygonId, Zip, IsFull, OverlapPct)
+                SELECT @id, j.Zip, j.IsFull, j.OverlapPct
+                FROM OPENJSON(@json) WITH (
+                    Zip        varchar(10)  '$.zip',
+                    IsFull     bit          '$.isFull',
+                    OverlapPct decimal(5,2) '$.overlapPct') j
+                """,
                 new SqlParameter("@id", polygonId),
-                new SqlParameter("@zip", zip));
+                new SqlParameter("@json", System.Text.Json.JsonSerializer.Serialize(rows)));
         }
 
         Log.Information(
-            "BulkRunPolygon {Id} PartiallyIncludedZips refreshed - {ZipCount} zip(s)",
-            polygonId, zips.Count);
+            "BulkRunPolygon {Id} overlay refreshed - {ZipCount} partially-included zip(s), {RowCount} BulkRunPolygonZip row(s)",
+            polygonId, zips.Count, rows.Count);
+    }
+
+    /// <summary>Resolver prefilter threshold: PartiallyIncludedZips keeps zips
+    /// overlapping by at least this % (route resolver relies on it).</summary>
+    private const double PartialZipMinOverlapPct = 10d;
+
+    /// <summary>A zip at least this % inside the shape is "full" for polygon
+    /// zone rating (tolerates simplification noise vs strict STWithin). A
+    /// postcode copy is rarely exactly 100%: 3000 came out 100, 2060 99.27.</summary>
+    private const double FullZipMinOverlapPct = 99d;
+
+    internal sealed class ZipOverlapRow
+    {
+        public string Zip { get; set; } = "";
+        public double OverlapPct { get; set; }
     }
 
     private static void ValidateName(string name)

@@ -341,6 +341,45 @@ describe('MapColumnsModal', () => {
       );
     });
 
+    it('an on-demand file the client would refuse stays on this step and names the record', async () => {
+      server.use(
+        http.post('/api/bulk-import/reference-check', () =>
+          HttpResponse.json({ ...env, errors: [{ rowNumber: 1, error: '"Reference A" - "NOPE" not in defined list.' }] })
+        )
+      );
+      const onNext = vi.fn();
+      const state = seedState({ mapping: { ...fullMapping }, importType: 'onDemand' });
+      state.options = { ...state.options, overrideFromContact: 'Bob Roy', routeStartsFromClientSite: true };
+      renderWithProviders(
+        <MapColumnsModal open state={state} dispatch={vi.fn()} onBack={noop} onNext={onNext} onCancel={noop} />
+      );
+      await waitFor(() => expect(screen.getByText(/Required Columns/)).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      const banner = await screen.findByTestId('map-reference-errors');
+      expect(banner).toHaveTextContent('Record 1: "Reference A" - "NOPE" not in defined list.');
+      expect(onNext).not.toHaveBeenCalled();
+    });
+
+    it('a routed file never asks: the check does not cover routed imports', async () => {
+      let asked = false;
+      server.use(
+        http.post('/api/bulk-import/reference-check', () => {
+          asked = true;
+          return HttpResponse.json({ ...env, errors: [{ rowNumber: 1, error: 'x' }] });
+        })
+      );
+      const onNext = vi.fn();
+      const state = seedState({ mapping: { ...fullMapping } });
+      state.options = { ...state.options, overrideFromContact: 'Bob Roy' };
+      renderWithProviders(
+        <MapColumnsModal open state={state} dispatch={vi.fn()} onBack={noop} onNext={onNext} onCancel={noop} />
+      );
+      await waitFor(() => expect(screen.getByText(/Required Columns/)).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      await waitFor(() => expect(onNext).toHaveBeenCalled());
+      expect(asked).toBe(false);
+    });
+
     it('lets Next through once Override From Contact supplies it', async () => {
       const onNext = vi.fn();
       const state = seedState({ mapping: { ...fullMapping } });

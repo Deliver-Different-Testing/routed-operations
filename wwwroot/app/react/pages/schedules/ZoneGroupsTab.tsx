@@ -41,6 +41,11 @@ export function ZoneGroupsTab() {
   const depotSingular = depotLabel(tenantIsUs, false);
   const [bootstrap, setBootstrap] = useState<TerritoryBootstrap | null>(null);
   const [loading, setLoading] = useState(false);
+  // Non-US tenants (NZ/AU) rate by ZoneName too (Settings > Pricing > Zone
+  // Rates), but the bootstrap only carries zone names for US. Fetched
+  // separately so the bootstrap shape, and the US-only screens that read it,
+  // stay as they are. Used only to bind polygons to a rating zone.
+  const [ratingZoneNames, setRatingZoneNames] = useState<ZoneNameRow[]>([]);
 
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
   const [duplicatingPg, setDuplicatingPg] = useState<PostcodeGroup | null>(null);
@@ -70,6 +75,13 @@ export function ZoneGroupsTab() {
     try {
       const res = await territoryService.bootstrap();
       setBootstrap(res.response);
+      if (!tenantIsUs) {
+        // Optional extra: a failure here must not fail the whole tab.
+        try {
+          const zn = await territoryService.usZoneNames();
+          setRatingZoneNames(zn.response ?? []);
+        } catch { setRatingZoneNames([]); }
+      }
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setLoading(false); }
   };
@@ -254,6 +266,51 @@ export function ZoneGroupsTab() {
             loading={loading}
             emptyMessage="No zone groups yet."
             minWidth="min-w-[600px]"
+            defaultSort={{ key: 'name', dir: 'asc' }}
+          />
+        </section>
+      )}
+
+      {/* ── Rating zones (non-US) ─────────────────────────────────────────
+             Polygon zones in rating: a drawn polygon bound to a ZoneName is
+             rated in that zone (UTL_fncJob_ExceleratorRate, behind
+             tblSetting.PolygonZoneRatingEnabled). The ZoneNames are created
+             in Settings > Pricing > Zone Rates; this only binds polygons to
+             them. Shown only when the tenant has zone names, so a tenant
+             with none sees no empty section. */}
+      {!tenantIsUs && ratingZoneNames.length > 0 && (
+        <section>
+          <div className="mb-2">
+            <p className="text-xs text-text-secondary">
+              <span className="font-semibold text-text-primary">Rating Zones</span>
+              <span className="mx-2 text-text-muted">·</span>
+              {ratingZoneNames.length} zone{ratingZoneNames.length === 1 ? '' : 's'}
+            </p>
+            <p className="text-[11px] text-text-muted mt-0.5">
+              Bind a drawn polygon to a zone created in Settings &gt; Pricing &gt; Zone Rates. When polygon zone rating is
+              switched on for this tenant, jobs inside the polygon are rated in that zone.
+            </p>
+          </div>
+          <DataTable
+            rows={ratingZoneNames}
+            columns={[
+              { key: 'name', label: 'Name', sortable: true, sortValue: (n) => n.name ?? '',
+                render: (n) => <span className="font-medium text-text-primary">{n.name}</span> },
+              { key: 'zips', label: 'Postcodes', sortable: true, align: 'right', sortValue: (n) => n.zipCount,
+                render: (n) => <span className="text-text-primary font-semibold">{n.zipCount}</span> },
+              { key: 'actions', label: 'Actions', align: 'right',
+                render: (n) => (
+                  <RowActionsMenu
+                    actions={[
+                      { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'zoneName', id: n.id, label: n.name ?? '' }) },
+                    ]}
+                  />
+                ) },
+            ] as DataTableColumn<ZoneNameRow>[]}
+            rowKey={(n) => n.id}
+            loading={loading}
+            emptyMessage="No rating zones yet."
+            minWidth="min-w-[500px]"
             defaultSort={{ key: 'name', dir: 'asc' }}
           />
         </section>

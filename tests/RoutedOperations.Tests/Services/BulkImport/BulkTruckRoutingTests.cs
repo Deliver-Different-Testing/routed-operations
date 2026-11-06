@@ -15,7 +15,7 @@ using RoutedOperations.Infrastructure;
 
 namespace RoutedOperations.Tests.Services.BulkImport;
 
-public class BulkTruckRoutingTests
+public partial class BulkTruckRoutingTests
 {
     private const int ClientId = 5;
     private const int ContactId = 1;
@@ -24,6 +24,9 @@ public class BulkTruckRoutingTests
     private const int TruckStandard = 43;
     private const int ChilledTruck = 124;
     private const int NotOnClientList = 41;
+    // A second point-to-point speed, named as on local NZ so the rulings
+    // fixture also imports end to end against a real client there.
+    private const int P2PEconomy = 36;
 
     private sealed class RecordingContext(DbContextOptions options, IDespatchContextProcedures procs)
         : DynamicDespatchDbContext(options)
@@ -38,6 +41,7 @@ public class BulkTruckRoutingTests
 
     private sealed class Rig
     {
+        public required IBulkP2PItemInserter Items { get; init; }
         public required BulkImportServiceV2 Svc { get; init; }
         public required DynamicDespatchDbContext Seed { get; init; }
         public required IDespatchContextProcedures Procs { get; init; }
@@ -93,9 +97,10 @@ public class BulkTruckRoutingTests
             new TucJobType { UcjtId = Teco, UcjtName = "Truck Economy", ShortName = "TECO", SystemName = "TY", ZoneRated = false, TruckJobEntry = true },
             new TucJobType { UcjtId = TruckStandard, UcjtName = "Truck Standard", ShortName = "TSTD", SystemName = "TS", ZoneRated = false, TruckJobEntry = true },
             new TucJobType { UcjtId = ChilledTruck, UcjtName = "Chilled Truck", ShortName = "CT", SystemName = "CT", ZoneRated = false, TruckJobEntry = true },
-            new TucJobType { UcjtId = NotOnClientList, UcjtName = "Truck Super", ShortName = "TSPR", SystemName = "TSP", ZoneRated = false, TruckJobEntry = true });
+            new TucJobType { UcjtId = NotOnClientList, UcjtName = "Truck Super", ShortName = "TSPR", SystemName = "TSP", ZoneRated = false, TruckJobEntry = true },
+            new TucJobType { UcjtId = P2PEconomy, UcjtName = "Economy", ShortName = "Eco", SystemName = "EC", ZoneRated = false });
         var id = 1;
-        foreach (var speed in new[] { P2PSpeed, Teco, TruckStandard, ChilledTruck })
+        foreach (var speed in new[] { P2PSpeed, Teco, TruckStandard, ChilledTruck, P2PEconomy })
             seed.TblClientAvailableSpeeds.Add(new TblClientAvailableSpeed { Id = id++, ClientId = ClientId, SpeedId = speed, Active = true, WebVisible = true });
         seed.TucClientContacts.Add(new TucClientContact
         {
@@ -104,13 +109,16 @@ public class BulkTruckRoutingTests
         });
         seed.SaveChanges();
 
+        var items = Substitute.For<IBulkP2PItemInserter>();
+        items.InsertAsync(default!, default).ReturnsForAnyArgs(Array.Empty<P2PItemFailure>());
         var rig = new Rig
         {
-            Svc = TruckTestFakes.NewService(factory, new NoHttpFactory(), accessor, address, scope, preflight, inserter),
+            Svc = TruckTestFakes.NewService(factory, new NoHttpFactory(), accessor, address, scope, preflight, inserter, items),
             Seed = seed,
             Procs = procs,
             Preflight = preflight,
             Inserter = inserter,
+            Items = items,
         };
         preflight.LoadClientsAsync(Arg.Any<IReadOnlyCollection<int>>())
             .Returns(call => Task.FromResult<IReadOnlyDictionary<int, TruckClientFacts>>(
@@ -363,6 +371,23 @@ public class BulkTruckRoutingTests
         await rig.Svc.Import(ContactId, req);
         await rig.Preflight.DidNotReceiveWithAnyArgs().RunAsync(default!);
         await rig.Inserter.DidNotReceiveWithAnyArgs().InsertAsync(default!, default);
+        // M5a: routed rows are tblBulkJob rows, so they never reach the item batch.
+        await rig.Items.DidNotReceiveWithAnyArgs().InsertAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task In_a_mixed_file_only_the_p2p_row_reaches_the_item_batch()
+    {
+        // Truck rows write their own items in BulkTruckInserter.
+        var rig = NewRig();
+        rig.Seed.TucJobs.Add(new TucJob { UcjbId = 900, UcjbNumber = "P1" });
+        rig.Seed.SaveChanges();
+
+        await rig.Svc.Import(ContactId, OnDemand(Teco, Row("T1", "TECO"), Row("P1", "Standard")));
+
+        var sent = (IReadOnlyList<P2PItemJob>)Assert.Single(rig.Items.ReceivedCalls()).GetArguments()[0]!;
+        Assert.Equal("P1", Assert.Single(sent).JobNumber);
+        Assert.Equal("T1", Assert.Single(rig.Inserted).ucjbNumber);
     }
 
     // ---- staff import --------------------------------------------------------
@@ -464,6 +489,71 @@ public class BulkTruckRoutingTests
         Assert.Equal("Half Pallet", Text(rows[0], "Pallet Type"));
         Assert.Equal("Y", Text(rows[3], "Tail Lift DO"));
         Assert.Equal("3", Text(rows[4], "DG Class"));
+    }
+
+    private static decimal Number(Dictionary<string, JsonElement> row, string key) =>
+        decimal.TryParse(Text(row, key), out var n) ? n : 0;
+
+    [Theory]
+    [InlineData("bulk-truck-rulings.csv")]
+    [InlineData("bulk-truck-rulings.xlsx")]
+    public async Task The_rulings_fixture_has_the_expected_outcome_on_every_row(string name)
+    {
+        var rig = NewRig();
+        var parsed = await Upload(rig, name);
+        Assert.Equal(5, parsed.Count);
+        var jobs = parsed.Select(r => new BulkImportJobCreateDto
+        {
+            JobNumber = Text(r, "Job Number"),
+            Speed = Text(r, "Speed"),
+            FromContact = Text(r, "From Contact"),
+            FromCompany = Text(r, "From Company"),
+            FromAddress = Text(r, "Pickup Address"),
+            FromSuburb = Text(r, "Pickup Suburb"),
+            FromPostCode = Text(r, "Pickup Post Code"),
+            ToCompany = Text(r, "Recipient Company"),
+            ToAddress = Text(r, "Delivery Address"),
+            ToSuburb = Text(r, "To Suburb"),
+            ToPostCode = Text(r, "To Post Code"),
+            ToContact = Text(r, "Delivery Contact"),
+            ToContactPhone = Text(r, "Delivery Phone"),
+            Quantity = (short)Number(r, "Pallets"),
+            Length = Number(r, "Length"),
+            Width = Number(r, "Width"),
+            Height = Number(r, "Height"),
+            Weight = Number(r, "Weight"),
+            TotalWeight = Number(r, "Total Weight") is > 0 and var total ? total : null,
+            Notes = Text(r, "Notes"),
+        }).ToArray();
+
+        var resp = await rig.Svc.Import(ContactId, OnDemand(P2PSpeed, jobs));
+
+        Assert.True(resp.Success);
+        Assert.True(resp.Jobs == null || !resp.Jobs.Any());
+        TruckInsertRow Truck(string number) => rig.Inserted.Single(r => r.ucjbNumber == number);
+
+        // Both weights: imported on Weight, with the warning.
+        Assert.Equal(500m, Truck("BT3001").ucjbWeight);
+        Assert.Contains("Weight was used", Truck("BT3001").Warning);
+        Assert.Equal("Pickup Notes:  2x Pallets: 2 @ 120(L) x 100(W) x 90(H) - 250(LB), Delivery Notes: Call on arrival", Truck("BT3001").ucjbNotes);
+
+        // No weight or dimensions: imported, amber.
+        Assert.Equal(TruckWarningLevel.Amber, Truck("BT3002").WarningLevel);
+        Assert.Equal(" 1x Pallet: 1 @ 0(L) x 0(W) x 0(H) - 0(LB)", Truck("BT3002").PickupNote);
+
+        // Truck rows with a delivery phone get a text. Every row carries one,
+        // because the wizard will not map a file with a blank delivery phone;
+        // the no-phone case is pinned in TruckRowCalculatorTests.
+        Assert.Equal((2, "000 000 000"), (Truck("BT3003").TrackingMethod, Truck("BT3003").TrackingMobile));
+        Assert.Null(Truck("BT3003").WarningLevel);
+        Assert.Equal((2, "000 000 000"), (Truck("BT3004").TrackingMethod, Truck("BT3004").TrackingMobile));
+
+        // The P2P row keeps its phone out of tracking and gets no pallet note.
+        var p2p = Assert.Single(rig.CallsTo("INT_stpJob_BulkInsertAsync"));
+        Assert.Equal("BT3005", p2p["jobNumber"]);
+        Assert.Equal("", p2p["trackingMobile"]);
+        Assert.Equal("000 000 000", p2p["proofOfDeliveryMobile"]);
+        Assert.Equal("", p2p["notes"]);
     }
 
     [Theory]

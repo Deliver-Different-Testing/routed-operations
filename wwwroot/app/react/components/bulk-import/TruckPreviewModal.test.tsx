@@ -93,6 +93,56 @@ describe('TruckPreviewModal', () => {
     expect(screen.getByTestId('truck-preview-reason')).toHaveTextContent('not recognised');
   });
 
+  // Steve ruling 3: the conflict shows on the row, and the row is still going in.
+  it('shows a both-weights warning on the row without flagging it', () => {
+    renderModal({ truckPreview: preview([row({ warning: 'Weight and Total weight are both given. Weight was used (250 per pallet).' })]) });
+    const r = screen.getByTestId('truck-preview-row');
+    expect(within(r).getByTestId('truck-preview-reason')).toHaveTextContent('Weight was used');
+    expect(r).not.toHaveAttribute('data-warning');
+    expect(r.className).not.toContain('bg-warning');
+  });
+
+  // Steve ruling 4: amber, priced, still counted as an import.
+  it('flags a row with no weight or dimensions amber but still imports it', () => {
+    const onImport = renderModal({
+      truckPreview: preview([row({ warning: 'No weight on this row, so the price may be too low.', warningLevel: 'amber' })]),
+    });
+    const r = screen.getByTestId('truck-preview-row');
+    expect(r).toHaveAttribute('data-warning', 'amber');
+    expect(r).not.toHaveAttribute('data-rejected');
+    expect(r.className).toContain('bg-warning');
+    expect(within(r).getByTestId('truck-preview-price').textContent).toContain('45');
+    expect(screen.getByTestId('truck-preview-rejected-count')).toHaveTextContent('0');
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 job' }));
+    expect(onImport).toHaveBeenCalledOnce();
+  });
+
+  // Steve ruling 6: the view follows what the server sent, not a client-side check.
+  it('shows a customer the booking page figures and no rate or fuel columns', () => {
+    renderModal({
+      truckPreview: {
+        ...preview([row({ rate: null, fuel: null, amountInclGst: 51.75, priceLines: [{ label: 'Truck Economy', amount: 45 }] })]),
+        customerPricing: true,
+      },
+    });
+    expect(screen.queryByRole('columnheader', { name: 'Rate' })).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Fuel' })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'Price (Excl GST)' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Price (Incl GST)' })).toBeInTheDocument();
+    expect(screen.getByTestId('truck-preview-price-incl').textContent).toContain('51.75');
+    expect(screen.getByTestId('truck-preview-lines')).toHaveTextContent('Truck Economy');
+    expect(screen.getByText('Total price (Excl GST)')).toBeInTheDocument();
+  });
+
+  it('leaves the staff view as it was', () => {
+    renderModal({ truckPreview: preview([row({})]) });
+    expect(screen.getByRole('columnheader', { name: 'Rate' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Fuel' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Price' })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Price (Incl GST)' })).toBeNull();
+    expect(screen.getByText('Total price (rate + fuel)')).toBeInTheDocument();
+  });
+
   it('counts the P2P rows on the Import button and says they price at import', () => {
     const onImport = renderModal({ truckPreview: preview([row({}), refused(1, 'No rate')], 2) });
     expect(screen.getByTestId('truck-preview-other')).toHaveTextContent('2 other jobs are not on a truck speed');

@@ -475,6 +475,11 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkTruckInserter>(sp =>
     new RoutedOperations.Core.Application.Services.BulkImport.BulkTruckInserter(
         sp.GetRequiredService<RoutedOperations.Core.Application.Services.BulkImport.ITruckBatchSql>()));
+// P2P item lines: same rows as the booking page, batched after the jobs exist.
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IP2PItemBatchSql, RoutedOperations.Core.Application.Services.BulkImport.BulkP2PItemBatchSql>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.IBulkP2PItemInserter>(sp =>
+    new RoutedOperations.Core.Application.Services.BulkImport.BulkP2PItemInserter(
+        sp.GetRequiredService<RoutedOperations.Core.Application.Services.BulkImport.IP2PItemBatchSql>()));
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.BulkImportServiceV2>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.AddressService>();
 builder.Services.AddScoped<RoutedOperations.Core.Application.Services.BulkImport.ClientService>();

@@ -399,6 +399,117 @@ public class BulkTruckPreviewTests
         Assert.Equal(52.5m, row.Amount);
     }
 
+    // ---- Steve ruling 6 -------------------------------------------------------
+
+    [Fact]
+    public async Task A_customer_never_receives_the_rate_or_fuel_and_gets_the_booking_page_figures()
+    {
+        // Enforced on the server: a hidden column would still be in the response.
+        var rig = NewRig("2");
+        rig.Preflight.PublicDescriptionsAsync(Arg.Any<IReadOnlyList<TruckPublicRateRow>>())
+            .Returns(call => Task.FromResult<IReadOnlyDictionary<int, string?>>(
+                call.Arg<IReadOnlyList<TruckPublicRateRow>>().ToDictionary(r => r.RowNo, _ => (string?)"Truck Economy = $40.00\rTail Lift Surcharge = $12.50")));
+
+        var preview = await rig.Svc.PreviewTruckRows(ContactId, OnDemand(Teco, Row("T1")));
+
+        var row = Assert.Single(preview.Rows);
+        Assert.True(preview.CustomerPricing);
+        Assert.Null(row.Rate);
+        Assert.Null(row.Fuel);
+        Assert.Equal(52.5m, row.Amount);
+        Assert.Equal(60.38m, row.AmountInclGst);
+        Assert.Equal(new[] { "Truck Economy", "Tail Lift Surcharge" }, row.PriceLines!.Select(l => l.Label));
+        NothingWasWritten(rig);
+    }
+
+    [Fact]
+    public async Task The_customer_lines_are_asked_for_on_the_rows_resolved_route_and_what_the_insert_rates()
+    {
+        var rig = NewRig("2");
+        var sent = new List<TruckPublicRateRow>();
+        rig.Preflight.PublicDescriptionsAsync(Arg.Do<IReadOnlyList<TruckPublicRateRow>>(r => sent.AddRange(r)));
+        var req = OnDemand(Teco, Row("T1", qty: 2));
+
+        await rig.Svc.PreviewTruckRows(ContactId, req);
+
+        var rate = Assert.Single(sent);
+        Assert.Equal((ClientId, 10, 11, Teco, 500m, 2), (rate.ClientId, rate.FromId, rate.ToId, rate.Speed, rate.TotalWeight, rate.Qty));
+    }
+
+    [Fact]
+    public async Task Staff_keep_rate_and_fuel_and_never_pay_for_the_customer_lookup()
+    {
+        var rig = NewRig("4");
+
+        var preview = await rig.Svc.PreviewTruckRows(ContactId, OnDemand(Teco, Row("T1")));
+
+        var row = Assert.Single(preview.Rows);
+        Assert.False(preview.CustomerPricing);
+        Assert.Equal(50m, row.Rate);
+        Assert.Equal(2.5m, row.Fuel);
+        Assert.Null(row.AmountInclGst);
+        Assert.Null(row.PriceLines);
+        await rig.Preflight.DidNotReceiveWithAnyArgs().PublicDescriptionsAsync(default!);
+    }
+
+    // ---- Steve rulings 3 and 4 --------------------------------------------------
+
+    [Fact]
+    public async Task Both_weights_import_on_weight_with_a_warning_shown_in_the_preview()
+    {
+        var rig = NewRig();
+        BulkImportJobCreateDto Both()
+        {
+            var row = Row("T1", qty: 2);
+            row.TotalWeight = 900;
+            return row;
+        }
+
+        var row = Assert.Single((await rig.Svc.PreviewTruckRows(ContactId, OnDemand(Teco, Both()))).Rows);
+        await rig.Svc.Import(ContactId, OnDemand(Teco, Both()));
+
+        Assert.True(row.WouldImport);
+        Assert.Contains("Weight was used", row.Warning);
+        Assert.Null(row.WarningLevel);
+        Assert.Equal(500m, Assert.Single(rig.Inserted).ucjbWeight);
+    }
+
+    [Fact]
+    public async Task A_row_with_no_weight_or_dimensions_imports_and_is_amber_in_the_preview()
+    {
+        var rig = NewRig();
+        BulkImportJobCreateDto Empty()
+        {
+            var row = Row("T1");
+            row.Length = row.Width = row.Height = row.Weight = 0;
+            return row;
+        }
+
+        var row = Assert.Single((await rig.Svc.PreviewTruckRows(ContactId, OnDemand(Teco, Empty()))).Rows);
+        await rig.Svc.Import(ContactId, OnDemand(Teco, Empty()));
+
+        Assert.True(row.WouldImport);
+        Assert.Equal("amber", row.WarningLevel);
+        Assert.Contains("No weight, length, width, height", row.Warning);
+        Assert.Single(rig.Inserted);
+    }
+
+    [Fact]
+    public async Task A_stock_size_that_fills_the_blanks_is_not_flagged()
+    {
+        var rig = NewRig();
+        rig.Seed.TblGssstockSizes.Add(new TblGssstockSize { Id = 1, Name = "Half Pallet", Length = 120, Width = 100, Height = 90, Weight = 250 });
+        rig.Seed.SaveChanges();
+        var input = Row("T1");
+        input.Length = input.Width = input.Height = input.Weight = 0;
+        input.PalletType = "Half Pallet";
+
+        var row = Assert.Single((await rig.Svc.PreviewTruckRows(ContactId, OnDemand(Teco, input))).Rows);
+
+        Assert.Null(row.WarningLevel);
+        Assert.Null(row.Warning);
+    }
+
     [Fact]
     public async Task A_customer_cannot_preview_another_clients_rows_and_gets_the_import_refusal()
     {

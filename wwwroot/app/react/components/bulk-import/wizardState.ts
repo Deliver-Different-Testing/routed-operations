@@ -529,6 +529,8 @@ export interface UrgentField {
   required?: boolean;
   showFor: 'both' | 'us' | 'nz';
   jobType?: ImportType | 'both';
+  // Limits which headers the auto-match may claim. A template or a manual pick is not limited.
+  acceptsHeader?: (header: string) => boolean;
 }
 
 /**
@@ -544,17 +546,72 @@ export interface UrgentFieldsClientOverrides {
   referenceBMessage: string | null;
 }
 
+export interface RequiredFieldProblems {
+  unmapped: string[];
+  // record is the 1-based row of the first blank cell in that field's column.
+  blank: { label: string; record: number }[];
+}
+
+/**
+ * A required field is a problem when no column is mapped, or when the mapped
+ * column is blank in any row. The second case catches a column that exists in
+ * the sheet with no value in it, which the server would otherwise refuse.
+ */
+export function requiredFieldProblems(
+  fields: Pick<UrgentField, 'key' | 'label' | 'required'>[],
+  mapping: Record<string, string>,
+  rows: Record<string, string>[]
+): RequiredFieldProblems {
+  const problems: RequiredFieldProblems = { unmapped: [], blank: [] };
+  for (const field of fields) {
+    if (!field.required) continue;
+    const column = mapping[field.key];
+    if (!column) {
+      problems.unmapped.push(field.label);
+      continue;
+    }
+    const index = rows.findIndex((row) => row[column] == null || String(row[column]).trim() === '');
+    if (index >= 0) problems.blank.push({ label: field.label, record: index + 1 });
+  }
+  return problems;
+}
+
+export function requiredFieldLines(problems: RequiredFieldProblems): string[] {
+  const lines = problems.blank.map((b) => `${b.label} is required: record ${b.record} is blank`);
+  if (problems.unmapped.length > 0) {
+    lines.unshift(`Please map required column(s): ${problems.unmapped.join(', ')}.`);
+  }
+  return lines;
+}
+
 // Keys added by urgentFieldsFor when a truck speed is in play.
 export const TRUCK_FIELD_KEYS = [
   'speed', 'palletType', 'totalWeight', 'tailLiftPickup', 'tailLiftDropoff',
   'residential', 'dangerousGoods', 'dgClass', 'dgDocument', 'truckStart', 'truckHours',
 ];
 
+// Weight is per item or per pallet, so it must not read a job total as its own.
+const TOTAL_HEADER = /total|gross/i;
+const WEIGHT_HEADER = /weight|wgt|kg|lb|pound/i;
+
+// Needs both words: a bare "Total" column is usually money, and a plain "Weight"
+// column is per item. Either would otherwise match by substring.
+function totalWeightField(): UrgentField {
+  return {
+    key: 'totalWeight',
+    label: 'Total Weight',
+    aliases: ['TotalWeight', 'Total Kg', 'Total Kgs', 'Total Lbs', 'Total Pounds', 'Total Wgt',
+      'Gross Weight', 'Gross Kg', 'Gross Kgs', 'Gross Lbs', 'Gross Pounds', 'Gross Wgt'],
+    showFor: 'both',
+    acceptsHeader: (h) => TOTAL_HEADER.test(h) && WEIGHT_HEADER.test(h),
+  };
+}
+
 function truckFields(): UrgentField[] {
   return [
     { key: 'speed', label: 'Speed', aliases: ['Service', 'Service Level', 'Speed Code'], showFor: 'nz' },
     { key: 'palletType', label: 'Pallet Type', aliases: ['PalletType', 'Pallet Size'], showFor: 'nz' },
-    { key: 'totalWeight', label: 'Total Weight', aliases: ['TotalWeight', 'Total Kg', 'Total Kgs', 'Gross Weight'], showFor: 'nz' },
+    totalWeightField(),
     { key: 'tailLiftPickup', label: 'Tail Lift PU', aliases: ['TailLift PU', 'Tail Lift Pickup', 'Pickup Tail Lift'], showFor: 'nz' },
     { key: 'tailLiftDropoff', label: 'Tail Lift DO', aliases: ['TailLift DO', 'Tail Lift Delivery', 'Delivery Tail Lift'], showFor: 'nz' },
     { key: 'residential', label: 'Residential', aliases: ['Private Address', 'Private Residence'], showFor: 'nz' },
@@ -782,7 +839,10 @@ export function urgentFieldsFor(
       label: truckInPlay ? 'Weight (per pallet)' : 'Weight',
       aliases: ['Weight', 'Wgt', 'Lbs', 'Pounds', 'Kg', 'Kgs', 'PackageWeight'],
       showFor: 'both',
+      // Routed imports keep their matching: they have no Total Weight to send it to.
+      ...(jobType === 'onDemand' ? { acceptsHeader: (h: string) => !TOTAL_HEADER.test(h) } : {}),
     });
+    if (jobType === 'onDemand' && !truckInPlay) base.push(totalWeightField());
   }
 
   // Optional reference / notes / tracking columns. Legacy homeControl.js
@@ -877,11 +937,9 @@ export function truckInPlay(state: WizardState, isUs: boolean): boolean {
 
 /**
  * The truck fields did not exist when the auto-map ran on open, so match them
- * once a truck speed comes into play. Total Weight only takes a header that says
- * so: a plain "Weight" column is per pallet, and the substring match would
- * otherwise hand it to Total Weight too. The reverse also happens: on open,
- * Weight claims a lone "Total Weight" column by substring, and has to let go of
- * it here, or a row total would be read as a per-pallet figure.
+ * once a truck speed comes into play. A saved template can still hold Weight on a
+ * lone "Total Weight" column, and it has to let go of it here, or a row total
+ * would be read as a per-pallet figure.
  */
 export function autoMapTruckFields(
   fields: UrgentField[],
@@ -893,7 +951,6 @@ export function autoMapTruckFields(
     if ((!TRUCK_FIELD_KEYS.includes(f.key) && f.key !== 'quantity') || next[f.key]) continue;
     const match = autoMatchColumn(f, headers);
     if (!match) continue;
-    if (f.key === 'totalWeight' && !/total|gross/i.test(match)) continue;
     next[f.key] = match;
   }
   if (next.totalWeight && next.weight === next.totalWeight) delete next.weight;
@@ -1011,7 +1068,8 @@ export function truckPreviewTotals(preview: BulkTruckPreviewResponse | null): {
  * starts with `to`, and vice versa. Headers with no prefix pair freely with
  * either side of the field list.
  */
-export function autoMatchColumn(field: UrgentField, customerColumns: string[]): string {
+export function autoMatchColumn(field: UrgentField, allColumns: string[]): string {
+  const customerColumns = field.acceptsHeader ? allColumns.filter(field.acceptsHeader) : allColumns;
   const norm = (s: string) => s.toLowerCase().replace(/[\s_\-]/g, '');
   const prefixOf = (s: string): 'from' | 'to' | null => {
     const n = norm(s);

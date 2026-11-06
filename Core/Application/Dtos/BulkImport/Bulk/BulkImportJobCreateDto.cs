@@ -60,6 +60,9 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         public decimal Width { get; set; }
         public decimal Height { get; set; }
         public decimal Weight { get; set; }
+        // The stock size picked in Override Dimensions. It is the item line's name
+        // on a P2P job, as a stock size is on the booking page. Null for typed sizes.
+        public string? PackageName { get; set; }
         public string? ClientRefA { get; set; }
         public string? ClientRefB { get; set; }
         public string? OurRef { get; set; }
@@ -92,8 +95,9 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         public int? SpeedId { get; set; }
         public string? Speed { get; set; }
         public string? PalletType { get; set; }
-        // On a truck row Weight above is per pallet. TotalWeight is divided by the
-        // quantity when Weight is empty; when both are present Weight is used.
+        // Weight above is per pallet on a truck row and per item on a P2P row. TotalWeight
+        // is divided by the quantity when Weight is empty; when both are present Weight
+        // is used, and the truck preview warns on the row. Routed imports ignore it.
         public decimal? TotalWeight { get; set; }
         public bool? TailLiftPickup { get; set; }
         public bool? TailLiftDropoff { get; set; }
@@ -103,8 +107,9 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         public bool? DgDocument { get; set; }
         public string? TruckStart { get; set; }
         public double? TruckHours { get; set; }
-        // Set by the server on a truck row it refused. The wizard shows these on
-        // the summary with ErrorMessage instead of offering them for km review.
+        // Set by the server on a truck row it refused, and on any row the client
+        // reference check refused. The wizard shows these on the summary with
+        // ErrorMessage instead of offering them for km review.
         public bool? TruckRejected { get; set; }
     }
 
