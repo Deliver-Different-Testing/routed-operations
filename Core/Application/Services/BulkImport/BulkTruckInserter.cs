@@ -180,8 +180,8 @@ public sealed class BulkTruckBatchSql(IDbContextFactory<DynamicDespatchDbContext
                 PU bit, [DO] bit, DGClass int, Notes nvarchar(4000), Cubic decimal(18,4), Barcode varchar(100)) x
             INNER JOIN @ids i ON i.JobNumber = x.JobNumber;
 
-            INSERT INTO dbo.tucNote (NoteTypeID, JobID, NoteText, IsImportant, CreatedDate, CreatedBy)
-            SELECT n.NoteTypeId, i.JobId, n.NoteText, 0, @noteCreatedAt, n.CreatedBy
+            INSERT INTO dbo.tucNote (NoteTypeID, JobID, NoteText, IsImportant, CreatedDate, CreatedBy, UpdatedBy)
+            SELECT n.NoteTypeId, i.JobId, n.NoteText, 0, @noteCreatedAt, n.CreatedBy, n.CreatedBy
             FROM OPENJSON(@notes) WITH (JobNumber varchar(50), NoteTypeId int, NoteText nvarchar(max), CreatedBy int) n
             INNER JOIN @ids i ON i.JobNumber = n.JobNumber;
 
@@ -201,13 +201,15 @@ public sealed class BulkTruckBatchSql(IDbContextFactory<DynamicDespatchDbContext
 
     public static string BuildNotesJson(IReadOnlyList<TruckInsertRow> rows) =>
         JsonSerializer.Serialize(
-            rows.Where(r => r.DeliveryNote != null).Select(r => new
-            {
-                JobNumber = r.ucjbNumber,
-                NoteTypeId = r.DeliveryNoteTypeId,
-                NoteText = r.DeliveryNote,
-                CreatedBy = r.BookingStaffId,
-            }), TruckJson.Options);
+            rows.SelectMany(r => new[] { (Text: r.PickupNote, Type: r.PickupNoteTypeId, Row: r), (Text: r.DeliveryNote, Type: r.DeliveryNoteTypeId, Row: r) })
+                .Where(n => n.Text != null)
+                .Select(n => new
+                {
+                    JobNumber = n.Row.ucjbNumber,
+                    NoteTypeId = n.Type,
+                    NoteText = n.Text,
+                    CreatedBy = n.Row.BookingStaffId,
+                }), TruckJson.Options);
 
     public async Task<IReadOnlyDictionary<string, int>> InsertBatchAsync(IReadOnlyList<TruckInsertRow> rows, DateTime noteCreatedAt)
     {

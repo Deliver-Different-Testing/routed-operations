@@ -71,6 +71,7 @@ public partial class BulkImportServiceV2 : BaseService
     private readonly IBulkClientScope _scope;
     private readonly IBulkTruckPreflight _truckPreflight;
     private readonly IBulkTruckInserter _truckInserter;
+    private readonly IBulkP2PItemInserter _p2pItemInserter;
 
     public BulkImportServiceV2(
         IDbContextFactory<DynamicDespatchDbContext> contextFactory,
@@ -79,7 +80,8 @@ public partial class BulkImportServiceV2 : BaseService
         AddressService addressService,
         IBulkClientScope scope,
         IBulkTruckPreflight truckPreflight,
-        IBulkTruckInserter truckInserter)
+        IBulkTruckInserter truckInserter,
+        IBulkP2PItemInserter p2pItemInserter)
         : base(contextFactory)
     {
         _httpClientFactory = httpClientFactory;
@@ -88,6 +90,7 @@ public partial class BulkImportServiceV2 : BaseService
         _scope = scope;
         _truckPreflight = truckPreflight;
         _truckInserter = truckInserter;
+        _p2pItemInserter = p2pItemInserter;
     }
 
     // Per-job result of Steve's 4-step origin precedence chain. Built by

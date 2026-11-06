@@ -171,6 +171,26 @@ public class BulkImportController(
         }
     }
 
+    // POST /api/bulk-import/reference-check - which rows the client reference check
+    // would refuse, and why. Writes nothing. The service limits it to clients the
+    // caller may act for, so it is open to the same callers as /import.
+    [HttpPost("reference-check")]
+    public async Task<IActionResult> CheckReferences([FromBody] BulkReferenceCheckRequest request)
+    {
+        try
+        {
+            LogRequestStart(request.MessageId);
+            if (!ModelState.IsValid)
+                return HandleBulkInvalidModelState(request.MessageId);
+            return HandleBulkResponse(await bulkService.CheckReferences(GetCurrentContactId(), request));
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "CheckReferences failed");
+            throw;
+        }
+    }
+
     // POST /api/bulk-import/staff-import - NZ internal-staff direct tucJob
     // insert. Auth gate mirrors BulkImportHyper's BulkController.StaffImport:
     // requires Internal claim + CountryCode == NZ, otherwise returns 403

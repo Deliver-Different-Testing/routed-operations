@@ -7,10 +7,14 @@ import { useConfirm } from '../../context/ConfirmContext';
 import { clientsService, type ClientSettingsDto } from '../../services/clientsService';
 import { addressService, type RegionDto } from '../../services/addressService';
 import { templatesService, type TemplateDto } from '../../services/templatesService';
+import { bulkImportService, type BulkReferenceCheckError } from '../../services/bulkImportService';
+import { mappedReferenceRows, referenceErrorLines } from './referenceCheck';
 import {
   autoMapTruckFields,
   autoMatchColumn,
   columnHasTruckSpeed,
+  requiredFieldLines,
+  requiredFieldProblems,
   truckFieldsEligible,
   truckInPlay,
   urgentFieldsFor,
@@ -51,6 +55,8 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
   // Contact-owned templates. Loaded once when the modal opens; getTemplates
   // is filtered server-side by ContactID so no client-side scoping is needed.
   const [templates, setTemplates] = useState<TemplateDto[]>([]);
+  const [referenceErrors, setReferenceErrors] = useState<BulkReferenceCheckError[]>([]);
+  const [checkingReferences, setCheckingReferences] = useState(false);
 
   const truckEligible = truckFieldsEligible(state, isUsTenant);
   const truckActive = truckInPlay(state, isUsTenant);
@@ -131,6 +137,11 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, state.client?.id, isUsTenant, state.importType, state.options.autogenerateJobNumber]);
 
+  // The errors above were for the columns mapped then.
+  useEffect(() => {
+    setReferenceErrors([]);
+  }, [state.mapping.clientRefA, state.mapping.clientRefB]);
+
   // Spot a Speed column that names a truck speed as soon as settings arrive,
   // so the truck fields appear without the operator asking. A Speed column with
   // only P2P values stays unmapped and the step looks as it always has.
@@ -174,20 +185,31 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
   // Autogenerate Job Number is ticked, jobNumber is not present in
   // visibleFields at all (see urgentFieldsFor in wizardState.ts:394-402),
   // so ticking Autogen automatically satisfies this check.
-  const missingRequired = visibleFields
-    .filter((f) => {
-      if (!f.required) return false;
-      const mapped = state.mapping[f.key];
-      if (!mapped) return true;
-      if (!state.parsed) return false;
-      return state.parsed.rows.some((r) => {
-        const v = r[mapped];
-        return v == null || String(v).trim() === '';
-      });
-    })
-    .map((f) => f.label);
+  const requiredProblems = requiredFieldProblems(visibleFields, state.mapping, parsedRows);
+  const missingRequired = [...requiredProblems.unmapped, ...requiredProblems.blank.map((b) => b.label)];
+  const requiredLines = requiredFieldLines(requiredProblems);
 
-  function handleNext() {
+  // A row the server would refuse, shown on the step that can still fix it. The
+  // on-demand import checks again per row. Routed imports do not run this check.
+  async function checkReferences(): Promise<boolean> {
+    setCheckingReferences(true);
+    setReferenceErrors([]);
+    try {
+      const { response } = await bulkImportService.checkReferences(
+        mappedReferenceRows(parsedRows, state.mapping, state.client!.id)
+      );
+      const errors = response.errors ?? [];
+      setReferenceErrors(errors);
+      return errors.length === 0;
+    } catch {
+      toast.show('Could not check client references. They will be checked again when the file imports.', 'warning');
+      return true;
+    } finally {
+      setCheckingReferences(false);
+    }
+  }
+
+  async function handleNext() {
     if (missingRequired.length > 0) {
       const jobNumberBlocked = missingRequired.includes('Job Number');
       // From Contact has a second, non-obvious way to satisfy it, so name it
@@ -198,30 +220,13 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
         ? `Job Number is empty in one or more rows. Map a column with values or tick 'Autogenerate Job Number'.`
         : fromContactBlocked && missingRequired.length === 1
           ? `From Contact is required. Map a column, or pick someone under 'Override From Contact' to use for every row.`
-          : `Please map: ${missingRequired.join(', ')}`;
+          : requiredLines.join(' ');
       toast.show(msg, 'warning');
       return;
     }
+    if (state.importType === 'onDemand' && state.client && !(await checkReferences())) return;
     onNext();
   }
-
-  // 1-based row number of the first row whose mapped required column is
-  // blank. Used to drive the legacy-style "Invalid data at record N."
-  // banner. Zero means no invalid rows were found.
-  const firstInvalidRecord = (() => {
-    if (!state.parsed) return 0;
-    for (let i = 0; i < state.parsed.rows.length; i++) {
-      const row = state.parsed.rows[i];
-      for (const f of visibleFields) {
-        if (!f.required) continue;
-        const col = state.mapping[f.key];
-        if (!col) continue;
-        const v = row[col];
-        if (v == null || String(v).trim() === '') return i + 1;
-      }
-    }
-    return 0;
-  })();
 
   return (
     <Modal
@@ -243,9 +248,9 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
             <Button
               variant="primary"
               onClick={handleNext}
-              disabled={missingRequired.length > 0}
+              disabled={missingRequired.length > 0 || checkingReferences}
             >
-              Next
+              {checkingReferences ? 'Checking...' : 'Next'}
             </Button>
           </div>
         </div>
@@ -680,10 +685,20 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
         )}
         {missingRequired.length > 0 && (
           <div className="mt-3 p-2 bg-error/5 border border-error/30 rounded text-xs text-error">
-            Please map required column(s): {missingRequired.join(', ')}.
-            {firstInvalidRecord > 0 && (
-              <span> Invalid data at record {firstInvalidRecord}.</span>
-            )}
+            {requiredLines.map((line) => (
+              <div key={line}>{line}</div>
+            ))}
+          </div>
+        )}
+        {referenceErrors.length > 0 && (
+          <div
+            data-testid="map-reference-errors"
+            className="mt-3 p-2 bg-error/5 border border-error/30 rounded text-xs text-error whitespace-pre-line"
+          >
+            <div className="font-medium">This client would refuse these records. Fix the file and upload it again, or map a different column.</div>
+            {referenceErrorLines(referenceErrors).map((line) => (
+              <div key={line}>{line}</div>
+            ))}
           </div>
         )}
       </div>

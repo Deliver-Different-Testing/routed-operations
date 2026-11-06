@@ -33,7 +33,7 @@ public class BulkImportControllerTests
         var addressService = new AddressService(ControllerTestHarness.Factory(opts), accessor, here, cache, new BulkClientScope(accessor));
         var httpClientFactory = Substitute.For<IHttpClientFactory>();
         httpClientFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient());
-        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>());
+        var svc = new BulkImportServiceV2(ControllerTestHarness.Factory(opts), httpClientFactory, accessor, addressService, new BulkClientScope(accessor), Substitute.For<IBulkTruckPreflight>(), Substitute.For<IBulkTruckInserter>(), Substitute.For<IBulkP2PItemInserter>());
         var logger = Substitute.For<ILogger<BulkImportController>>();
         var ctl = new BulkImportController(svc, logger);
         ControllerTestHarness.AttachHttpContext(ctl,
@@ -91,6 +91,28 @@ public class BulkImportControllerTests
         ctl.ModelState.AddModelError("ClientId", "required");
         var req = new BulkImportRequest { ClientId = 0, SpeedId = 1, BookDate = DateTime.UtcNow };
         Assert.IsType<BadRequestObjectResult>(await ctl.Import(req));
+    }
+
+    // ── POST /reference-check ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task CheckReferences_InvalidModelState_ReturnsBadRequest()
+    {
+        var (ctl, _) = NewCtl();
+        ctl.ModelState.AddModelError("Rows", "required");
+        Assert.IsType<BadRequestObjectResult>(await ctl.CheckReferences(new BulkReferenceCheckRequest()));
+    }
+
+    [Fact]
+    public async Task CheckReferences_ClientNotFound_IsARowError_NotAFailedRequest()
+    {
+        var (ctl, _) = NewCtl();
+        var ok = Assert.IsType<OkObjectResult>(await ctl.CheckReferences(new BulkReferenceCheckRequest
+        {
+            Rows = new() { new BulkReferenceCheckRow { RowNumber = 1, ClientId = 999 } },
+        }));
+        var body = Assert.IsType<BulkReferenceCheckResponse>(ok.Value!);
+        Assert.Equal(1, Assert.Single(body.Errors).RowNumber);
     }
 
     // ── POST /truck-preview ───────────────────────────────────────────────

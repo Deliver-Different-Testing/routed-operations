@@ -6,12 +6,15 @@ import FileUploadZone from '../import/FileUploadZone';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
+import { ApiError } from '../../services/api';
 import {
   bulkImportService,
   type FailedJobDto,
   type ParsedFile,
   type StaffImportResponse,
 } from '../../services/bulkImportService';
+import { pickRowValue, refusedRowsNotice, STAFF_JOB_NUMBER_KEYS, staffReferenceRows } from './referenceCheck';
+import { RowErrorTable } from './RowErrorTable';
 import {
   addressService,
   type SuburbDto,
@@ -67,11 +70,15 @@ interface State {
   geocodeData: GeocodeAddressDto[];
   selectedFlaggedIdx: number | null;
   result: StaffImportResponse | null;
+  // Rows the client reference check would refuse, found when the file is parsed.
+  referenceErrors: FailedJobDto[];
+  referenceCheckFailed: boolean;
   submitting: boolean;
   error: string | null;
 }
 
 type Action =
+  | { type: 'SET_REFERENCE_CHECK'; errors: FailedJobDto[]; failed: boolean }
   | { type: 'RESET' }
   | { type: 'SET_STEP'; step: Step }
   | { type: 'SET_FILE'; file: File | null }
@@ -100,28 +107,11 @@ function initialState(): State {
     geocodeData: [],
     selectedFlaggedIdx: null,
     result: null,
+    referenceErrors: [],
+    referenceCheckFailed: false,
     submitting: false,
     error: null,
   };
-}
-
-// Case-insensitive column lookup used by every "get value from row" call.
-// Mirrors homeControl.js:4803-4821 getStaffJobFieldValue.
-function pickRowValue(
-  row: Record<string, string>,
-  candidates: string[]
-): string | null {
-  for (const c of candidates) {
-    if (row[c] != null && row[c] !== '') return row[c];
-  }
-  // Case-insensitive fallback.
-  const lowered = candidates.map((c) => c.toLowerCase());
-  for (const key of Object.keys(row)) {
-    if (lowered.includes(key.toLowerCase()) && row[key] != null && row[key] !== '') {
-      return row[key];
-    }
-  }
-  return null;
 }
 
 function findRowKey(row: Record<string, string>, candidates: string[]): string | null {
@@ -147,6 +137,8 @@ function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'RESET':
       return initialState();
+    case 'SET_REFERENCE_CHECK':
+      return { ...state, referenceErrors: action.errors, referenceCheckFailed: action.failed };
     case 'SET_STEP':
       return { ...state, step: action.step, error: null };
     case 'SET_FILE':
@@ -321,6 +313,19 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
         return;
       }
       dispatch({ type: 'SET_PARSED', parsed: response });
+      // The server checks each row again at import, so a failed check here only
+      // costs the early warning and does not hold the operator up.
+      try {
+        const { response: check } = await bulkImportService.checkReferences(staffReferenceRows(response.rows));
+        const errors = (check.errors ?? []).map((e) => ({
+          rowNumber: e.rowNumber,
+          jobNumber: pickRowValue(response.rows[e.rowNumber - 1] ?? {}, STAFF_JOB_NUMBER_KEYS),
+          error: e.error,
+        }));
+        dispatch({ type: 'SET_REFERENCE_CHECK', errors, failed: false });
+      } catch {
+        dispatch({ type: 'SET_REFERENCE_CHECK', errors: [], failed: true });
+      }
       dispatch({ type: 'SET_STEP', step: 'preview' });
     } catch (e) {
       dispatch({ type: 'SET_ERROR', error: `Parse failed: ${(e as Error).message}` });
@@ -525,13 +530,26 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
       dispatch({ type: 'SET_STEP', step: 'result' });
       const msg = response.messages?.[0]?.message;
       if (response.success) {
-        toast.show(msg ?? `Imported ${response.successCount} jobs.`, 'success');
+        if (response.failedCount > 0) {
+          toast.show(`Imported ${response.successCount} jobs. ${response.failedCount} failed, see the table for why.`, 'warning');
+        } else {
+          toast.show(msg ?? `Imported ${response.successCount} jobs.`, 'success');
+        }
         onImported();
       } else {
         toast.show(msg ?? 'Staff import completed with errors.', 'warning');
       }
     } catch (e) {
-      dispatch({ type: 'SET_ERROR', error: `Staff import failed: ${(e as Error).message}` });
+      // With no row landing the server answers 400, and the body still carries
+      // each row's reason. Anything else has no rows to show.
+      const body = e instanceof ApiError ? (e.body as StaffImportResponse | null) : null;
+      if (body?.failedJobs?.length) {
+        dispatch({ type: 'SET_RESULT', result: body });
+        dispatch({ type: 'SET_STEP', step: 'result' });
+        toast.show(`No jobs were imported. ${body.failedCount} failed, see the table for why.`, 'warning');
+      } else {
+        dispatch({ type: 'SET_ERROR', error: `Staff import failed: ${(e as Error).message}` });
+      }
     } finally {
       dispatch({ type: 'END_SUBMIT' });
     }
@@ -550,6 +568,8 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
 
   const previewHeaders = state.parsed?.headers ?? [];
   const previewRows = state.rows.slice(0, 50);
+  const refusedCount = state.referenceErrors.length;
+  const importableCount = rowCount - refusedCount;
 
   // Detect legacy field names so we can hint at how they map on the server.
   const legacyFields = useMemo(() => {
@@ -625,6 +645,25 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
           Parsed {rowCount} row{rowCount === 1 ? '' : 's'}. Showing first{' '}
           {previewRows.length}.
         </p>
+        {refusedCount > 0 && (
+          <div className="space-y-1">
+            <div
+              data-testid="staff-reference-notice"
+              className="p-2 bg-error/5 border border-error/30 rounded text-xs text-error"
+            >
+              {refusedRowsNotice(refusedCount, rowCount)}
+            </div>
+            <RowErrorTable rows={state.referenceErrors} testId="staff-reference-errors" />
+          </div>
+        )}
+        {state.referenceCheckFailed && (
+          <div
+            data-testid="staff-reference-check-failed"
+            className="p-2 bg-warning/10 border border-warning/30 rounded text-xs text-text-primary"
+          >
+            Could not check client references. They will be checked again when the file imports, and any refused row will be listed then.
+          </div>
+        )}
         {legacyFields.length > 0 && (
           <div className="p-2 bg-brand-cyan/10 border border-brand-cyan/30 rounded text-[11px] text-text-primary">
             <strong>Legacy field names detected:</strong> {legacyFields.join(', ')}. These
@@ -794,12 +833,13 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
     return (
       <div className="space-y-3">
         <div className="p-3 bg-warning/10 border border-warning/30 rounded text-sm text-text-primary">
-          <strong>Confirm Staff Import.</strong> {rowCount} row{rowCount === 1 ? '' : 's'} will
+          <strong>Confirm Staff Import.</strong> {importableCount} row{importableCount === 1 ? '' : 's'} will
           be imported directly into the live job table (<code>tucJob</code>). This bypasses
           the normal wizard validation and cannot be undone. Are you sure you want to proceed?
         </div>
         <ul className="text-xs text-text-secondary list-disc pl-5">
           <li>Total rows: {rowCount}</li>
+          {refusedCount > 0 && <li>Rows that will be refused: {refusedCount}</li>}
           <li>
             Suburb corrections applied:{' '}
             {state.flaggedSuburbs.filter((f) => f.replace).length}
@@ -829,26 +869,10 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
           <strong>Import complete.</strong> {r.successCount} succeeded, {r.failedCount} failed.
         </div>
         {r.failedJobs.length > 0 && (
-          <div className="overflow-auto border border-border rounded max-h-72">
-            <table className="w-full text-[11px]">
-              <thead className="bg-surface-cream text-text-secondary sticky top-0">
-                <tr>
-                  <th className="text-left px-2 py-1">Row</th>
-                  <th className="text-left px-2 py-1">Job Number</th>
-                  <th className="text-left px-2 py-1">Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {r.failedJobs.map((fj: FailedJobDto, i: number) => (
-                  <tr key={i} className="border-t border-border-light">
-                    <td className="px-2 py-1">{fj.rowNumber}</td>
-                    <td className="px-2 py-1">{fj.jobNumber ?? '-'}</td>
-                    <td className="px-2 py-1 text-error">{friendlyError(fj.error)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <RowErrorTable
+            testId="staff-result-errors"
+            rows={r.failedJobs.map((fj: FailedJobDto) => ({ ...fj, error: friendlyError(fj.error) }))}
+          />
         )}
       </div>
     );
@@ -882,7 +906,11 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
             <Button variant="neutral" onClick={() => dispatch({ type: 'SET_STEP', step: 'upload' })}>
               Back
             </Button>
-            <Button variant="primary" onClick={() => dispatch({ type: 'SET_STEP', step: 'fixSuburbs' })}>
+            <Button
+              variant="primary"
+              disabled={rowCount > 0 && importableCount <= 0}
+              onClick={() => dispatch({ type: 'SET_STEP', step: 'fixSuburbs' })}
+            >
               Next
             </Button>
           </div>
@@ -945,9 +973,9 @@ export function StaffImportModal({ open, onClose, onImported }: Props) {
             <Button
               variant="warning"
               onClick={fireImport}
-              disabled={state.submitting || rowCount === 0}
+              disabled={state.submitting || importableCount <= 0}
             >
-              {state.submitting ? 'Importing...' : `Import ${rowCount} Jobs`}
+              {state.submitting ? 'Importing...' : `Import ${importableCount} Jobs`}
             </Button>
           </div>
         </div>

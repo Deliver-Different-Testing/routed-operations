@@ -15,6 +15,16 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
 
         // Rows that stay on the P2P path, which are priced at import as before.
         public int OtherRowCount { get; set; }
+
+        // True for a customer login: Rate and Fuel are withheld, and each row carries
+        // what the booking page shows a customer instead.
+        public bool CustomerPricing { get; set; }
+    }
+
+    public class BulkTruckPriceLine
+    {
+        public string Label { get; set; } = "";
+        public decimal Amount { get; set; }
     }
 
     public class BulkTruckPreviewRow
@@ -29,7 +39,8 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
         public string? ToSuburb { get; set; }
         public int? Quantity { get; set; }
 
-        // The rate and fuel behind Amount. Both null when staff entered the amount.
+        // The rate and fuel behind Amount. Both null when staff entered the amount,
+        // and always null for a customer login.
         public decimal? Rate { get; set; }
         public decimal? Fuel { get; set; }
 
@@ -44,5 +55,13 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
 
         // A row that imports but is worth a look, such as an unrecognised suburb.
         public string? Warning { get; set; }
+
+        // "amber" when the row should be flagged rather than just annotated: it has no
+        // weight or dimensions, so its price may be too low. Null otherwise.
+        public string? WarningLevel { get; set; }
+
+        // Customer login only. The booking page's Incl GST price and charge lines.
+        public decimal? AmountInclGst { get; set; }
+        public List<BulkTruckPriceLine>? PriceLines { get; set; }
     }
 }

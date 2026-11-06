@@ -576,6 +576,26 @@ public class BulkImportRequestValidatorTests
         result.ShouldNotHaveValidationErrorFor("Jobs[0].Weight");
     }
 
+    [Theory]
+    [InlineData(3000, 3, false)]
+    [InlineData(3003, 3, true)]
+    [InlineData(1001, null, true)]
+    public void TotalWeight_only_is_capped_on_what_each_item_comes_to(int total, int? qty, bool fails)
+    {
+        var sut = new BulkImportRequestValidator(UsTenant());
+        var req = ValidUsRequest();
+        var job = ValidUsJob();
+        job.Weight = 0m;
+        job.TotalWeight = total;
+        job.Quantity = (short?)qty;
+        req.Jobs = new[] { job };
+
+        var result = sut.TestValidate(req);
+
+        if (fails) result.ShouldHaveValidationErrorFor("Jobs[0].TotalWeight");
+        else result.ShouldNotHaveValidationErrorFor("Jobs[0].TotalWeight");
+    }
+
     [Fact]
     public void MultiboxJob_QuantityNotOne_Fails()
     {
