@@ -12,6 +12,9 @@ public class LabelRequest
     public string? SpeedIds { get; set; }
     public string? RegionIds { get; set; }
     public string? BulkJobIds { get; set; }
+    /// <summary>CSV of tucJob ids. Route Viewer sends the jobs its run grid
+    /// shows for a routed run so the print matches the screen (ticket #855).</summary>
+    public string? JobIds { get; set; }
     public string? RunName { get; set; }
     public int? SortMode { get; set; }
     public int? SortDir { get; set; }
