@@ -547,4 +547,24 @@ describe('routeViewerService - assignment / actions', () => {
     await routeViewerService.getTransferContext(7);
     expect(seen.searchParams.get('anchorJobId')).toBe('7');
   });
+
+  it('getTransferContext maps the server RouteTransferContextResponse to picker rows', async () => {
+    // #1004: the server sends { currentRouteId, currentRouteName, routes:
+    // [{ id, name, area }] } (RouteTransferDto.cs:11-26), not an array.
+    server.use(wrapGet('/api/runviewer/routes/active', {
+      currentRouteId: 15,
+      currentRouteName: 'Burbank to Lab',
+      routes: [
+        { id: 5, name: 'RNO200', area: 'Reno' },
+        { id: 15, name: ' Burbank to Lab ', area: null },
+        { id: 9, name: null, area: null },
+      ],
+    }));
+    const rows = await routeViewerService.getTransferContext();
+    expect(rows).toEqual([
+      { routeId: 5, label: 'RNO200' },
+      { routeId: 15, label: 'Burbank to Lab' },
+      { routeId: 9, label: 'Route 9' },
+    ]);
+  });
 });

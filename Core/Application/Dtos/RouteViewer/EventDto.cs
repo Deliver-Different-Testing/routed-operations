@@ -61,6 +61,10 @@ public class EventListRequest
 public class CreateEventRequest
 {
     public int? BulkJobId { get; set; }
+    /// <summary>tucJob.ucjbID. Used when BulkJobId is null or 0 (synthetic
+    /// route rows): the server resolves tblBulkJob.BulkJobID from
+    /// tblBulkJob.JobID (#1003, RouteViewerEventService.ResolveBulkJobIdAsync).</summary>
+    public int? JobId { get; set; }
     public int? CourierId { get; set; }
     public string? Notes { get; set; }
     public string? Name { get; set; }

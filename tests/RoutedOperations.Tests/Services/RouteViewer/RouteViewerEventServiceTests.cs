@@ -74,6 +74,67 @@ public class RouteViewerEventServiceTests
         Assert.Equal(0, result);
     }
 
+    // ── #1003: bulk row resolution for Create Job Event ─────────────────
+    // tblBulkEvent.BulkJobID has an FK to tblBulkJob, and Route Viewer rows
+    // on synthetic route runs carry bulkJobId 0 (every Medical row). The
+    // server resolves the bulk row from tucJob.ucjbID = tblBulkJob.JobID.
+
+    [Fact]
+    public async Task ResolveBulkJobIdAsync_BulkIdSupplied_IsUsedAsIs()
+    {
+        var (sut, _) = NewSvc(new NpScope(true, null));
+        Assert.Equal(6313, await sut.ResolveBulkJobIdAsync(new CreateEventRequest { BulkJobId = 6313, JobId = 1 }));
+    }
+
+    [Fact]
+    public async Task ResolveBulkJobIdAsync_BulkIdZero_ResolvesFromTheJobId()
+    {
+        // E896WILLDEL on Medical prod: ucjbID 20857, BulkJobID 6313.
+        var (sut, seed) = NewSvc(new NpScope(true, null));
+        seed.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 6313, JobId = 20857 });
+        seed.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 6315, JobId = 20866 });
+        await seed.SaveChangesAsync();
+
+        Assert.Equal(6313, await sut.ResolveBulkJobIdAsync(new CreateEventRequest { BulkJobId = 0, JobId = 20857 }));
+        Assert.Equal(6315, await sut.ResolveBulkJobIdAsync(new CreateEventRequest { JobId = 20866 }));
+    }
+
+    [Fact]
+    public async Task ResolveBulkJobIdAsync_JobWithNoBulkRow_ThrowsAClearPerJobError()
+    {
+        // An LHP leg has no tblBulkJob row (E896WILLLHP). Before #1003 this
+        // reached the proc and failed on FK_tblBulkEvent_tblBulkJob.
+        var (sut, _) = NewSvc(new NpScope(true, null));
+        var ex = await Assert.ThrowsAsync<EventTargetNotFoundException>(() =>
+            sut.ResolveBulkJobIdAsync(new CreateEventRequest { BulkJobId = 0, JobId = 20849 }));
+        Assert.Contains("Job 20849", ex.Message);
+    }
+
+    [Fact]
+    public async Task ResolveBulkJobIdAsync_ZeroBulkIdAndNoJobId_Throws()
+    {
+        var (sut, _) = NewSvc(new NpScope(true, null));
+        await Assert.ThrowsAsync<EventTargetNotFoundException>(() =>
+            sut.ResolveBulkJobIdAsync(new CreateEventRequest { BulkJobId = 0 }));
+    }
+
+    [Fact]
+    public async Task ResolveBulkJobIdAsync_NothingSupplied_StaysNull()
+    {
+        // Unchanged behaviour for a caller that sends neither (null passes
+        // through to the proc as before).
+        var (sut, _) = NewSvc(new NpScope(true, null));
+        Assert.Null(await sut.ResolveBulkJobIdAsync(new CreateEventRequest()));
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_JobWithNoBulkRow_ThrowsBeforeTheProc()
+    {
+        var (sut, _) = NewSvc(new NpScope(true, null));
+        await Assert.ThrowsAsync<EventTargetNotFoundException>(() =>
+            sut.CreateEventAsync(new CreateEventRequest { BulkJobId = 0, JobId = 20849, EventDate = DateTime.Today }));
+    }
+
     [Fact]
     public async Task CloseEventAsync_Np_ReturnsFalse()
     {

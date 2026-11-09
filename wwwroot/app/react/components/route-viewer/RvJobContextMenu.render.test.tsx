@@ -76,11 +76,33 @@ describe('RvJobContextMenu (render)', () => {
     expect(screen.getByText(/2 jobs selected/)).toBeInTheDocument();
   });
 
-  it('disables single-job-only items in bulk mode', () => {
-    renderMenu({ jobs: [mkJob({ bulkJobId: 1 }), mkJob({ bulkJobId: 2 })] });
-    expect(screen.getByText('Transfer Route').closest('button')!).toBeDisabled();
-    expect(screen.getByText('Book Direct Redelivery').closest('button')!).toBeDisabled();
-    expect(screen.getByText('Top Up').closest('button')!).toBeDisabled();
+  // #1003 / Steve D2 (2026-11-09): Transfer Route, Transfer Courier and
+  // Create Job Event act on the whole selection; the rest stay single-job
+  // and say why. This test used to pin Transfer Route as disabled in bulk.
+  it('keeps the D2 multi-select items enabled in bulk mode', () => {
+    renderMenu({ jobs: [mkJob({ bulkJobId: 1, jobId: 100 }), mkJob({ bulkJobId: 2, jobId: 101 })] });
+    expect(screen.getByText('Transfer Route').closest('button')!).toBeEnabled();
+    expect(screen.getByText('Transfer Courier').closest('button')!).toBeEnabled();
+    expect(screen.getByText('Create Job Event').closest('button')!).toBeEnabled();
+  });
+
+  it('disables single-job-only items in bulk mode with a "Select one job" tooltip', () => {
+    renderMenu({
+      jobs: [
+        mkJob({ bulkJobId: 1, jobId: 100, proofOfDeliveryMobile: '021' }),
+        mkJob({ bulkJobId: 2, jobId: 101, proofOfDeliveryMobile: '021' }),
+      ],
+    });
+    for (const label of ['Book Direct Redelivery', 'Return to Base', 'Top Up', 'Create Client Intel']) {
+      const btn = screen.getByText(label).closest('button')!;
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute('title', 'Select one job');
+    }
+  });
+
+  it('shows no "Select one job" tooltip for a single job', () => {
+    renderMenu({ jobs: [mkJob({ proofOfDeliveryMobile: '021' })] });
+    expect(screen.getByText('Top Up').closest('button')!).not.toHaveAttribute('title');
   });
 
   it('disables Create Client Intel when no proofOfDeliveryMobile', () => {

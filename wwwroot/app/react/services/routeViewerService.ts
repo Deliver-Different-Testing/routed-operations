@@ -939,8 +939,21 @@ export const routeViewerService = {
     },
   ),
 
-  getTransferContext: (anchorJobId?: number) =>
-    unwrap<Array<{ routeId: number; label: string }>>(
-      `/runviewer/routes/active${buildQuery({ anchorJobId })}`,
-    ),
+  /** Active routes for the Transfer Route picker. The server returns
+   *  `RouteTransferContextResponse` (RouteTransferDto.cs:11-26):
+   *  `{ currentRouteId, currentRouteName, routes: [{ id, name, area }] }`.
+   *  This used to be typed as a bare `{ routeId, label }[]`, so the dialog's
+   *  `rows.filter(...)` ran on an object and the picker could never load
+   *  against the real API (#1004). Mapped here to the picker's shape. */
+  getTransferContext: async (anchorJobId?: number): Promise<Array<{ routeId: number; label: string }>> => {
+    const ctx = await unwrap<{
+      currentRouteId?: number | null;
+      currentRouteName?: string | null;
+      routes?: Array<{ id: number; name: string | null; area: string | null }> | null;
+    }>(`/runviewer/routes/active${buildQuery({ anchorJobId })}`);
+    return (ctx?.routes ?? []).map((r) => ({
+      routeId: r.id,
+      label: r.name?.trim() ? r.name.trim() : `Route ${r.id}`,
+    }));
+  },
 };

@@ -69,5 +69,11 @@ public class RunViewerRouteTransferController(
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
         }
+        catch (RouteTransferRejectedException ex)
+        {
+            // Proc RAISERROR (SqlException 50000), e.g. destination route
+            // inactive. Was a bare 500 before #1004.
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }
