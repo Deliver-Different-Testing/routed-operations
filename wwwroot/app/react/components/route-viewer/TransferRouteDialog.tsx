@@ -37,11 +37,20 @@ interface Props {
   /** Run date used to fetch the run's jobs when `jobs` is not supplied
    *  (yyyy-MM-dd). Ignored when `jobs` is provided. */
   runDate?: string;
+  /** Run Jobs grid filters for the fetch path (#1001 D4), so the preview
+   *  and the transfer cover what the operator sees, not the whole run. */
+  filters?: {
+    group?: string;
+    regionIds?: number[];
+    speedIds?: number[];
+    clientIds?: number[];
+    courierId?: number | null;
+  };
 }
 
 type Step = 'pick' | 'confirm';
 
-export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }: Props) {
+export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate, filters }: Props) {
   const [step, setStep] = useState<Step>('pick');
   const [routes, setRoutes] = useState<Array<{ routeId: number; label: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -57,10 +66,14 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
     setLoading(true);
     setError(null);
     routeViewerService.getTransferContext(undefined).then((rows) => {
-      // Exclude the current run so the operator cannot transfer a run to
-      // itself. In legacy this was also filtered by tenant scope inside
-      // the SP - the endpoint honours the same rule.
-      setRoutes(rows.filter((r) => r.routeId !== runId));
+      // Exclude the current route so the operator cannot transfer a run to
+      // itself. A synthetic route run's id is -RouteId (RVW_stpBulkRuns_2),
+      // so the current route is -runId; a real bulk run (id >= 0) is not a
+      // route and excludes nothing. (Before #1004 this compared the run id
+      // itself, which never matched a route run and could hide an unrelated
+      // route whose id equalled a bulk run id.)
+      const currentRouteId = runId < 0 ? -runId : null;
+      setRoutes(rows.filter((r) => r.routeId !== currentRouteId));
     }).catch((e) => setError((e as Error).message))
       .finally(() => setLoading(false));
   }, [runId]);
@@ -68,10 +81,13 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
   // Run-scoped preview: when the caller (RvRunContextMenu) does not
   // hand us a jobs array, hydrate one from the run's job list so the
   // step-2 table still shows something meaningful.
+  const filtersKey = JSON.stringify(filters ?? null);
+  // #1001 D4: fetched with the grid filters. Not gated on runId > 0: a
+  // synthetic route run has a negative id and is the common case.
   useEffect(() => {
-    if (jobs || !runDate || runId <= 0) return;
+    if (jobs || !runDate || runId === 0) return;
     setJobsLoading(true);
-    routeViewerService.getRunJobs(runId, runDate).then((rows) => {
+    routeViewerService.getRunJobs(runId, runDate, filters).then((rows) => {
       setFetchedJobs(rows.map((r) => ({
         jobId: r.jobId,
         jobNumber: r.jobNumber,
@@ -83,7 +99,10 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
       // per-job fetch fails - fall back to the banner-only view.
       setFetchedJobs([]);
     }).finally(() => setJobsLoading(false));
-  }, [jobs, runDate, runId]);
+    // filtersKey stands in for `filters` so an inline object from the
+    // caller does not refetch on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, runDate, runId, filtersKey]);
 
   const previewJobs: TransferJobPreview[] = useMemo(
     () => jobs ?? fetchedJobs ?? [],
@@ -95,16 +114,26 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
     [routes, toRouteId],
   );
 
+  // The ids sent are exactly the rows in the preview table: the caller's
+  // `jobs`, or the filtered fetch. The server does NOT derive a run set
+  // from an empty list; it rejects it with 400 (RunViewerRouteTransferController
+  // Transfer guard), which is what the run menu used to hit.
+  const transferIds = useMemo(
+    () => previewJobs.map((j) => j.jobId).filter((id) => id > 0),
+    [previewJobs],
+  );
+
   const doTransfer = async () => {
     if (!toRoute) return;
+    if (transferIds.length === 0) {
+      setError('No jobs to transfer for the current filters.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
       const result = await routeViewerService.transferRoute({
-        // Job-scoped callers pass a jobs array; forward those ids so the
-        // server only touches that subset. Run-scoped callers leave jobs
-        // undefined and the server derives the full run set.
-        jobIds: jobs ? jobs.map((j) => j.jobId).filter((id) => id > 0) : [],
+        jobIds: transferIds,
         toRouteId: toRoute.routeId,
         transferBooking,
         transferZipcodes,
@@ -116,7 +145,12 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
       const bits: string[] = [`${result.succeeded} jobs`];
       if (transferBooking && result.bookingsAffected > 0) bits.push(`${result.bookingsAffected} bookings`);
       if (transferZipcodes && result.zipCodesMoved > 0) bits.push(`${result.zipCodesMoved} zipcodes`);
-      onSuccess(`Transferred ${bits.join(', ')} from run #${runId} to ${toRoute.label}.`);
+      // #1004: anchors the proc did not move (status other than OK /
+      // NoChange) are reported, not folded into the success count.
+      const notMoved = result.failed > 0
+        ? ` ${result.failed} not moved: ${(result.errors ?? []).join('; ')}`
+        : '';
+      onSuccess(`Transferred ${bits.join(', ')} from run #${runId} to ${toRoute.label}.${notMoved}`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -148,7 +182,11 @@ export function TransferRouteDialog({ runId, onClose, onSuccess, jobs, runDate }
                 Next
               </Button>
             ) : (
-              <Button variant="warning" onClick={doTransfer} disabled={submitting}>
+              <Button
+                variant="warning"
+                onClick={doTransfer}
+                disabled={submitting || (jobsLoading && !jobs) || transferIds.length === 0}
+              >
                 {submitting ? 'Transferring...' : 'Transfer'}
               </Button>
             )}

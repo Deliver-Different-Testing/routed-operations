@@ -11,6 +11,8 @@ import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '
 import { RvFilterBar, type FilterState } from '../../components/route-viewer/RvFilterBar';
 import { RvRunList } from '../../components/route-viewer/RvRunList';
 import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
+import { buildRunFilterIdentity, pruneSelectedRunIds } from '../../lib/runViewerSelection';
+import { resolveRunDropRoute } from '../../lib/runDropTarget';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvRunContextMenu } from '../../components/route-viewer/RvRunContextMenu';
 import { RvJobContextMenu } from '../../components/route-viewer/RvJobContextMenu';
@@ -149,7 +151,48 @@ export default function RunViewer() {
     group: viewMode,
   });
 
+  // Audit 7.4: client-side courier filter. Runs SP doesn't take a
+  // courier param; look up the selected courier's code from the same
+  // courier list the FilterBar dropdown reads, then keep only runs
+  // whose courierCode matches. Falls back to all runs when the
+  // selected courier isn't in the current-day list.
+  // Declared here (before the Run Jobs query) since #1002: the job query
+  // and `singleRun` are keyed on the runs the operator can SEE.
+  const courierListForFilter = useQuery({
+    // Same tenant-scoped key shape as RvFilterBar so both share cache
+    // instead of duplicate-fetching, and both isolate per-tenant.
+    queryKey: ['rv-filter-couriers', user.currentTenantId ?? 0, filters.runDate],
+    queryFn: () => routeViewerService.getActiveCouriers(filters.runDate),
+    enabled: !user.isNetworkPartner && filters.courierId != null && !!filters.runDate,
+    staleTime: 30_000,
+  });
+  const selectedCourierCode = filters.courierId != null
+    ? courierListForFilter.data?.find((c) => c.courierId === filters.courierId)?.code ?? null
+    : null;
+  const visibleRuns = useMemo(() => {
+    const all = runsQuery.data ?? [];
+    if (!selectedCourierCode) return all;
+    return all.filter((r) => r.courierCode === selectedCourierCode);
+  }, [runsQuery.data, selectedCourierCode]);
+
   const singleRunId = selectedRunIds.length === 1 ? selectedRunIds[0] : null;
+  // #1002: the selected run is looked up in the VISIBLE list (courier
+  // filter included). Before, it was looked up in runsQuery.data while the
+  // job query ran on the bare id, so a run that had dropped out of the
+  // list kept showing its jobs under "Run - (select a run)".
+  const singleRun = singleRunId != null
+    ? visibleRuns.find((r) => r.id === singleRunId) ?? null
+    : null;
+  // Filters the Run Jobs grid is fetched with. Shared with the run-menu
+  // Assign Route / Transfer Route flows (#1001 D4) so a run-level action
+  // acts on exactly the set the grid shows.
+  const runJobsFilters = useMemo(() => ({
+    group: viewMode,
+    regionIds: filters.regionIds,
+    speedIds: filters.speedIds,
+    clientIds: filters.clientIds,
+    courierId: filters.courierId,
+  }), [viewMode, filters.regionIds, filters.speedIds, filters.clientIds, filters.courierId]);
   // Filter panel state is forwarded to the middle-pane Run Jobs SP so it
   // applies the same region / speed / client narrowing the Run List
   // already does. Legacy runViewer passes these; without them
@@ -163,14 +206,10 @@ export default function RunViewer() {
       filters.regionIds.join(','), filters.speedIds.join(','), filters.clientIds.join(','),
       filters.courierId ?? 0,
     ],
-    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, {
-      group: viewMode,
-      regionIds: filters.regionIds,
-      speedIds: filters.speedIds,
-      clientIds: filters.clientIds,
-      courierId: filters.courierId,
-    }),
-    enabled: singleRunId != null,
+    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, runJobsFilters),
+    // #1002: only fetch when the selected run is actually in the visible
+    // Run List. No run = no fetch = empty grid.
+    enabled: singleRun != null,
     staleTime: 5_000,
   });
 
@@ -245,7 +284,11 @@ export default function RunViewer() {
   // the same stale-screen complaint one box over. Guarded on a ref rather than
   // run on mount, so it cannot wipe the `?jobNumber=` deep-link selection that
   // the effect above applies once the run list has loaded.
-  const filterIdentity = `${filters.runDate}|${[...filters.regionIds].sort((a, b) => a - b).join(',')}`;
+  //
+  // #1002 (2026-11-09): the identity now also covers view mode, speeds,
+  // clients and courier (buildRunFilterIdentity), since each of those can
+  // drop the selected run out of the Run List.
+  const filterIdentity = buildRunFilterIdentity(filters, viewMode);
   const lastFilterIdentityRef = useRef(filterIdentity);
   useEffect(() => {
     if (lastFilterIdentityRef.current === filterIdentity) return;
@@ -257,6 +300,23 @@ export default function RunViewer() {
     setSelectedCourier(null);
     runAnchorRef.current = null;
   }, [filterIdentity]);
+
+  // #1002: once the run list has loaded, drop any selected run the
+  // operator can no longer see (a 25 s poll, a transfer or another user
+  // can empty a run without any filter changing). Waits for the courier
+  // lookup when a courier filter is on, so visibleRuns is final.
+  const courierFilterPending = filters.courierId != null && courierListForFilter.isLoading;
+  useEffect(() => {
+    if (!runsQuery.isSuccess || courierFilterPending) return;
+    const next = pruneSelectedRunIds(selectedRunIds, visibleRuns.map((r) => r.id));
+    if (next === selectedRunIds) return;
+    setSelectedRunIds(next);
+    setSelectedJobId(null);
+    setSelectedJobIds([]);
+    setSiblingOverride(null);
+    setJobCtxMenu(null);
+    if (runAnchorRef.current != null && !next.includes(runAnchorRef.current)) runAnchorRef.current = null;
+  }, [runsQuery.isSuccess, courierFilterPending, visibleRuns, selectedRunIds]);
   const onSelectRun = useCallback((id: number, mods: { ctrl: boolean; shift: boolean }) => {
     setSelectedRunIds((prev) => {
       if (mods.shift && runAnchorRef.current != null) {
@@ -371,8 +431,15 @@ export default function RunViewer() {
     toast.show(`Applied layout: ${layout.name}`);
   };
 
-  const singleRun = runsQuery.data?.find((r) => r.id === singleRunId) ?? null;
-  const rawRunJobs = runJobsQuery.data ?? [];
+  // #1002: no visible run selected = empty grid, even if the query cache
+  // still holds rows for the previous selection.
+  const rawRunJobs = singleRun != null ? (runJobsQuery.data ?? []) : [];
+  // True only when the grid's rows are the answer for the CURRENT query key
+  // (selected run + every filter). The key carries the run id and filters
+  // and the query has no placeholderData, so a success here is never
+  // another run's or another filter set's rows. While it is false the run
+  // menu fetches its own scope instead of trusting an empty grid.
+  const gridJobsLoaded = singleRun != null && runJobsQuery.isSuccess && !runJobsQuery.isPlaceholderData;
 
   // Print Run flow: printer icon on the Run Jobs toolbar opens a small
   // Sort Mode picker (Run Name / Product / Client - legacy parity with
@@ -427,28 +494,6 @@ export default function RunViewer() {
       toast.show(`Print job report failed: ${(e as Error).message}`, 'error');
     }
   };
-
-  // Audit 7.4: client-side courier filter. Runs SP doesn't take a
-  // courier param; look up the selected courier's code from the same
-  // courier list the FilterBar dropdown reads, then keep only runs
-  // whose courierCode matches. Falls back to all runs when the
-  // selected courier isn't in the current-day list.
-  const courierListForFilter = useQuery({
-    // Same tenant-scoped key shape as RvFilterBar so both share cache
-    // instead of duplicate-fetching, and both isolate per-tenant.
-    queryKey: ['rv-filter-couriers', user.currentTenantId ?? 0, filters.runDate],
-    queryFn: () => routeViewerService.getActiveCouriers(filters.runDate),
-    enabled: !user.isNetworkPartner && filters.courierId != null && !!filters.runDate,
-    staleTime: 30_000,
-  });
-  const selectedCourierCode = filters.courierId != null
-    ? courierListForFilter.data?.find((c) => c.courierId === filters.courierId)?.code ?? null
-    : null;
-  const visibleRuns = useMemo(() => {
-    const all = runsQuery.data ?? [];
-    if (!selectedCourierCode) return all;
-    return all.filter((r) => r.courierCode === selectedCourierCode);
-  }, [runsQuery.data, selectedCourierCode]);
 
   // Tier-2 item 15: multi-run colour tinting. When operator has 2+
   // selected runs, assign each a distinct hue from an 8-colour palette
@@ -705,13 +750,20 @@ export default function RunViewer() {
                         .catch((err) => toast.show(`Assign failed: ${err.message}`));
                     }}
                     onDropRunJobs={(toRunId, fromRunId, jobIds) => {
-                      // No-op when the drop lands on the source run;
-                      // the transfer-route SP would just churn otherwise.
-                      if (toRunId === fromRunId) return;
                       const toRun = visibleRuns.find((r) => r.id === toRunId);
+                      // #1004: a synthetic route run's id is -RouteId, so
+                      // the route id is the negated run id. A real bulk run
+                      // is not a route and is refused (it used to send
+                      // tblBulkRun.ID as a RouteId). Same-run drop = no-op.
+                      const target = resolveRunDropRoute(toRunId, fromRunId, toRun?.name);
+                      if (target.kind === 'same-run') return;
+                      if (target.kind === 'not-a-route') {
+                        toast.show(target.message, 'error');
+                        return;
+                      }
                       routeViewerService.transferRoute({
                         jobIds,
-                        toRouteId: toRunId,
+                        toRouteId: target.routeId,
                         transferBooking: false,
                         transferZipcodes: false,
                       })
@@ -835,10 +887,10 @@ export default function RunViewer() {
                     </>
                   }
                 >
-                  {singleRunId == null && (
+                  {singleRun == null && (
                     <div className="p-3 text-xs text-text-muted">Pick a run to see its jobs.</div>
                   )}
-                  {singleRunId != null && (
+                  {singleRun != null && (
                     <table className="w-full text-xs">
                       <thead className="sticky top-0 bg-surface-white border-b border-border">
                         <tr className="text-left text-text-muted">
@@ -898,23 +950,22 @@ export default function RunViewer() {
                           return (
                             <tr
                               key={j.jobId}
-                              draggable={singleRunId != null && j.bulkJobId > 0}
+                              draggable={singleRun != null && j.jobId > 0}
                               onDragStart={(e) => {
                                 // Audit item 20: batch payload = "drop
                                 // this whole selection", so include every
                                 // multi-selected id when the dragged row
                                 // is part of it; otherwise just this row.
-                                // selectedJobIds are jobIds (unique) but
-                                // the transfer-route payload needs
-                                // bulkJobIds; map + drop the zeros so
-                                // synthetic rows that can't be
-                                // transferred are filtered out.
+                                // #1004: the transfer-route proc anchors
+                                // on tucJob.ucjbID (RVW_stpTransferRouteForFamilies
+                                // @JobIDs), so the payload carries jobIds.
+                                // It used to carry bulkJobIds, which are 0
+                                // on every synthetic route row (Medical)
+                                // and a different id space elsewhere.
                                 const inSel = selectedJobIds.includes(j.jobId);
                                 const jobIds = inSel && selectedJobIds.length > 1
-                                  ? selectedJobIds
-                                      .map((id) => runJobs.find((row) => row.jobId === id)?.bulkJobId ?? 0)
-                                      .filter((bid) => bid > 0)
-                                  : (j.bulkJobId > 0 ? [j.bulkJobId] : []);
+                                  ? selectedJobIds.filter((id) => id > 0 && runJobs.some((row) => row.jobId === id))
+                                  : (j.jobId > 0 ? [j.jobId] : []);
                                 if (jobIds.length === 0) {
                                   e.preventDefault();
                                   return;
@@ -1155,8 +1206,25 @@ export default function RunViewer() {
           runId={ctxMenu.runId}
           runDate={filters.runDate}
           viewMode={viewMode}
+          filters={runJobsFilters}
+          // #1001 D4: when the menu is for the run whose jobs are on
+          // screen, act on exactly those rows (view mode, cancelled and
+          // multibox toggles included). Other runs fetch with the filters.
+          // Only once the grid has answered for THIS run and filter set:
+          // right-clicking a run selects it, so before its Run Jobs
+          // response lands `runJobs` is [] and the menu would report "No
+          // jobs" instead of fetching (regression found 2026-11-09).
+          visibleJobIds={gridJobsLoaded && ctxMenu.runId === singleRun?.id
+            ? runJobs.map((j) => j.jobId).filter((id) => id > 0)
+            : undefined}
+          visibleJobs={gridJobsLoaded && ctxMenu.runId === singleRun?.id ? runJobs : undefined}
           onClose={() => setCtxMenu(null)}
-          onDone={() => runsQuery.refetch()}
+          onDone={() => {
+            runsQuery.refetch();
+            if (singleRunId != null) {
+              queryClient.invalidateQueries({ queryKey: ['rv-run-jobs', singleRunId] });
+            }
+          }}
         />
       )}
 
@@ -1168,7 +1236,8 @@ export default function RunViewer() {
         />
       )}
 
-      {jobCtxMenu && selectedJobIds.length > 0 && (
+      {/* #1002: no visible run = no job grid = no job menu. */}
+      {jobCtxMenu && singleRun != null && selectedJobIds.length > 0 && (
         <RvJobContextMenu
           x={jobCtxMenu.x}
           y={jobCtxMenu.y}

@@ -149,6 +149,10 @@ public class RouteViewerEventService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return 0;
 
+        // #1003 / D2: resolve the bulk row from the tucJob id when the
+        // caller has no bulk id (every synthetic route row on Medical).
+        var bulkJobId = await ResolveBulkJobIdAsync(request);
+
         // Uses SqlQuery with OUTPUT parameter binding via SqlParameter -
         // EF Core 8 SqlQueryRaw doesn't surface output params, so wrap
         // the call directly through the connection.
@@ -158,7 +162,7 @@ public class RouteViewerEventService(
         cmd.CommandText = "[RVW_stpCreateBulkEvent]";
         cmd.CommandType = System.Data.CommandType.StoredProcedure;
         cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@BulkJobID",
-            request.BulkJobId.HasValue ? (object)request.BulkJobId.Value : DBNull.Value));
+            bulkJobId.HasValue ? (object)bulkJobId.Value : DBNull.Value));
         cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@CourierID",
             request.CourierId.HasValue ? (object)request.CourierId.Value : DBNull.Value));
         cmd.Parameters.Add(new Microsoft.Data.SqlClient.SqlParameter("@Notes", request.Notes ?? string.Empty));
@@ -174,6 +178,42 @@ public class RouteViewerEventService(
         cmd.Parameters.Add(outParam);
         await cmd.ExecuteNonQueryAsync();
         return outParam.Value is int id ? id : 0;
+    }
+
+    /// <summary>The tblBulkJob.BulkJobID an event attaches to.
+    /// tblBulkEvent.BulkJobID has an FK to tblBulkJob, and Route Viewer
+    /// rows on synthetic route runs carry bulkJobId 0 (RVW_stpBulkRunJobs
+    /// returns NULL for it), so sending that through failed on the FK.
+    /// Rules:
+    ///   - BulkJobId &gt; 0: used as-is (unchanged behaviour);
+    ///   - else JobId &gt; 0: the bulk row whose JobID = tucJob.ucjbID
+    ///     (highest BulkJobID if there were ever two; Medical prod has
+    ///     none with two, checked 2026-11-09);
+    ///   - JobId given but no bulk row, or BulkJobId = 0 with no JobId:
+    ///     EventTargetNotFoundException with a per-job message;
+    ///   - neither supplied (null): null, as before.</summary>
+    public async Task<int?> ResolveBulkJobIdAsync(CreateEventRequest request)
+    {
+        if (request.BulkJobId is > 0) return request.BulkJobId;
+
+        if (request.JobId is > 0)
+        {
+            var jobId = request.JobId.Value;
+            var bulkId = await Context.TblBulkJobs
+                .Where(b => b.JobId == jobId)
+                .OrderByDescending(b => b.BulkJobId)
+                .Select(b => (int?)b.BulkJobId)
+                .FirstOrDefaultAsync();
+            if (bulkId is null)
+                throw new EventTargetNotFoundException(
+                    $"Job {jobId} has no bulk job record, so an event cannot be attached to it.");
+            return bulkId;
+        }
+
+        if (request.BulkJobId == 0)
+            throw new EventTargetNotFoundException("No job was supplied for the event.");
+
+        return null;
     }
 
     /// <summary>POST /api/runviewer/events/{id}/close - mark the event
@@ -242,3 +282,7 @@ public class RouteViewerEventService(
                 string.IsNullOrEmpty(request.PhotoDescription) ? (object?)null : request.PhotoDescription));
     }
 }
+
+/// <summary>The event's job has no tblBulkJob row. Mapped to 400 by
+/// RunViewerEventController instead of surfacing an FK error.</summary>
+public sealed class EventTargetNotFoundException(string message) : Exception(message);

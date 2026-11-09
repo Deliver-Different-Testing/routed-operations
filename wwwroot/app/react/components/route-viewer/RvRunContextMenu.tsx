@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useToast } from '../../context/ToastContext';
-import { routeViewerService } from '../../services/routeViewerService';
+import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
 import { AssignRouteDialog } from './AssignRouteDialog';
 import { TransferRouteDialog } from './TransferRouteDialog';
@@ -22,6 +22,24 @@ import { TransferRouteDialog } from './TransferRouteDialog';
 // Medical-Prod report: previously the dialog re-fetched with a hardcoded
 // group='Combined', so Inbound/Outbound view selections were ignored.
 
+//
+// 2026-11-09 (#1001 comment, Steve D4): every run-level action uses the
+// same filters as the job list on screen. Assign Route and Transfer Route
+// now fetch with the full Run Jobs filter set (group, regions, speeds,
+// clients, courier), not just the run id, and when the menu is for the
+// run already shown in the grid they use the grid's visible job ids
+// directly. Before, Assign Route on a Will Call filtered Burbank to Lab
+// handed ~40 jobs to the dialog while the grid showed 2, and the run-menu
+// Transfer Route sent an empty id list and always got a 400.
+
+export interface RunMenuJobFilters {
+  group?: string;
+  regionIds?: number[];
+  speedIds?: number[];
+  clientIds?: number[];
+  courierId?: number | null;
+}
+
 interface Props {
   x: number;
   y: number;
@@ -31,19 +49,54 @@ interface Props {
    *  Assign Route jobIds so only jobs matching the current view get
    *  handed to the dialog. */
   viewMode: ViewMode;
+  /** The Run Jobs grid filters (RunViewer runJobsFilters). Sent with the
+   *  run-jobs fetch when the menu is not for the run on screen. */
+  filters?: RunMenuJobFilters;
+  /** Job ids currently visible in the grid, supplied only when the menu
+   *  is for the run the grid shows. Used as-is, no fetch. */
+  visibleJobIds?: number[];
+  /** Visible grid rows for the same run, used for the Transfer Route
+   *  preview table. */
+  visibleJobs?: BulkJob[];
   onClose: () => void;
   onDone: () => void;
 }
 
-export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDone }: Props) {
+type ScopedRunJob = Pick<BulkJob, 'jobId' | 'jobNumber' | 'fromAddress' | 'runName'>;
+
+export function RvRunContextMenu({
+  x, y, runId, runDate, viewMode, filters, visibleJobIds, visibleJobs, onClose, onDone,
+}: Props) {
   const user = useAuth();
   const confirm = useConfirm();
   const toast = useToast();
   const [assignLoading, setAssignLoading] = useState(false);
   const [assignJobIds, setAssignJobIds] = useState<number[] | null>(null);
-  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferLoading, setTransferLoading] = useState(false);
+  const [transferJobs, setTransferJobs] = useState<ScopedRunJob[] | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const assignOpen = assignJobIds !== null;
+  const transferOpen = transferJobs !== null;
+
+  /** The jobs a run-level action applies to: the grid's visible rows for
+   *  the run on screen, otherwise a fetch with the same filters the grid
+   *  uses plus the client-side view-mode predicate. */
+  const resolveScopedJobs = async (): Promise<ScopedRunJob[]> => {
+    if (visibleJobIds) {
+      const byId = new Map((visibleJobs ?? []).map((j) => [j.jobId, j] as const));
+      return visibleJobIds.filter((id) => id > 0).map((id) => {
+        const j = byId.get(id);
+        return { jobId: id, jobNumber: j?.jobNumber ?? null, fromAddress: j?.fromAddress ?? null, runName: j?.runName ?? null };
+      });
+    }
+    const jobs = await routeViewerService.getRunJobs(runId, runDate, { group: viewMode, ...filters });
+    return jobs.filter((j) => j.jobId > 0 && matchesViewMode(j, viewMode));
+  };
+
+  const noJobsMessage = () => {
+    const scope = viewMode === 'Combined' ? 'jobs' : `${viewMode.toLowerCase()} jobs`;
+    return `No ${scope} on this run for the current filters.`;
+  };
 
   // Close on outside click / Esc. Skip while a child dialog is open so
   // the operator does not lose the whole flow on the first backdrop
@@ -51,7 +104,7 @@ export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDo
   // is in-flight so a stray mousedown does not abort the pending
   // dialog open.
   useEffect(() => {
-    if (assignOpen || transferOpen || assignLoading) return;
+    if (assignOpen || transferOpen || assignLoading || transferLoading) return;
     const onDown = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
     };
@@ -62,24 +115,19 @@ export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDo
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [onClose, assignOpen, transferOpen, assignLoading]);
+  }, [onClose, assignOpen, transferOpen, assignLoading, transferLoading]);
 
-  // Assign Route: fetch this run's jobs, filter by the parent's
-  // viewMode, then open the dialog with the pre-scoped jobIds. Legacy
-  // parity - homeControl.js runListMenu:2189 also pre-computes jobIds
-  // from run.jobs before opening the dialog.
+  // Assign Route: resolve the run's jobs with the on-screen filters
+  // (resolveScopedJobs), then open the dialog with the pre-scoped jobIds.
+  // Legacy parity - homeControl.js runListMenu:2189 also pre-computes
+  // jobIds from run.jobs before opening the dialog.
   const doAssign = async () => {
     if (assignLoading || assignOpen) return;
     setAssignLoading(true);
     try {
-      const jobs = await routeViewerService.getRunJobs(runId, runDate);
-      const ids = jobs
-        .filter((j) => matchesViewMode(j, viewMode))
-        .map((j) => j.jobId)
-        .filter((id) => id > 0);
+      const ids = (await resolveScopedJobs()).map((j) => j.jobId);
       if (ids.length === 0) {
-        const scope = viewMode === 'Combined' ? 'assignable jobs' : `${viewMode.toLowerCase()} jobs`;
-        toast.show(`No ${scope} on this run.`, 'error');
+        toast.show(noJobsMessage(), 'error');
         return;
       }
       setAssignJobIds(ids);
@@ -87,6 +135,25 @@ export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDo
       toast.show(`Failed to load run jobs: ${(e as Error).message}`, 'error');
     } finally {
       setAssignLoading(false);
+    }
+  };
+
+  // Transfer Route: same scope as Assign Route. The dialog gets the jobs
+  // explicitly, so it sends their ids (it used to send [] and get a 400).
+  const doTransfer = async () => {
+    if (transferLoading || transferOpen) return;
+    setTransferLoading(true);
+    try {
+      const jobs = await resolveScopedJobs();
+      if (jobs.length === 0) {
+        toast.show(noJobsMessage(), 'error');
+        return;
+      }
+      setTransferJobs(jobs);
+    } catch (e) {
+      toast.show(`Failed to load run jobs: ${(e as Error).message}`, 'error');
+    } finally {
+      setTransferLoading(false);
     }
   };
 
@@ -171,7 +238,9 @@ export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDo
             : user.isNetworkPartner ? 'Assign Courier' : 'Assign Route'}
         </MenuItem>
         {!user.isNetworkPartner && (
-          <MenuItem onClick={() => setTransferOpen(true)}>Transfer Route</MenuItem>
+          <MenuItem onClick={doTransfer} disabled={transferLoading}>
+            {transferLoading ? 'Loading jobs…' : 'Transfer Route'}
+          </MenuItem>
         )}
         <MenuItem onClick={doSendSms}>
           Send SMS to run's drivers
@@ -212,13 +281,18 @@ export function RvRunContextMenu({ x, y, runId, runDate, viewMode, onClose, onDo
         />
       )}
 
-      {transferOpen && (
+      {transferJobs && (
         <TransferRouteDialog
           runId={runId}
-          runDate={runDate}
-          onClose={() => { setTransferOpen(false); onClose(); }}
+          jobs={transferJobs.map((j) => ({
+            jobId: j.jobId,
+            jobNumber: j.jobNumber,
+            fromAddress: j.fromAddress,
+            currentRouteName: j.runName,
+          }))}
+          onClose={() => { setTransferJobs(null); onClose(); }}
           onSuccess={(summary) => {
-            setTransferOpen(false);
+            setTransferJobs(null);
             onClose();
             toast.show(summary);
             onDone();

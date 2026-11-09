@@ -95,6 +95,28 @@ public class RunViewerRouteTransferControllerTests
     }
 
     [Fact]
+    public async Task Transfer_ProcRejection_Returns400WithTheProcMessage()
+    {
+        // #1004: a RAISERROR from RVW_stpTransferRouteForFamilies (SqlException
+        // 50000) is translated by the service into RouteTransferRejectedException.
+        // SqlException cannot be constructed in a test, so the exception is
+        // raised from the route guard, which runs inside the same try.
+        var (ctl, guard) = NewCtl();
+        guard.EnsureRouteInScopeAsync(Arg.Any<int>())
+            .Returns(Task.FromException(new RouteTransferRejectedException(
+                "RVW_stpTransferRouteForFamilies: @NewRouteId does not exist or is not active.")));
+
+        var result = await ctl.Transfer(new TransferRouteRequest
+        {
+            JobIds = new List<int> { 1 },
+            NewRouteId = 5,
+        });
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("not active", bad.Value!.GetType().GetProperty("message")!.GetValue(bad.Value) as string);
+    }
+
+    [Fact]
     public async Task Transfer_NpGuardThrows_Returns403()
     {
         var (ctl, guard) = NewCtl();
