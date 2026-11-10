@@ -63,7 +63,11 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
     ///                  frontend can select the filter and get an empty
     ///                  list rather than a schema error.
     ///
-    ///   q     = substring match on Name (case-insensitive).
+    ///   q     = substring match on Name, on the legacy per-client code, or on
+    ///           the code of any linked client (case-insensitive). S2.
+    ///   depots = pipe-separated depot names. Keeps a schedule whose origin
+    ///           depot or delivery region has one of the names. Applied before
+    ///           paging (S1); it used to run in the browser on one page only.
     /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(
@@ -72,7 +76,8 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
         [FromQuery] int? clientId = null,
         [FromQuery] string clientIds = null,
         [FromQuery] int page = 0,
-        [FromQuery] int pageSize = 0)
+        [FromQuery] int pageSize = 0,
+        [FromQuery] string depots = null)
     {
         try
         {
@@ -131,10 +136,14 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             if (!string.IsNullOrWhiteSpace(q))
             {
                 var needle = q.Trim();
+                var linkedIds = await svc.ScheduleIdsLinkedToClientCodeAsync(needle);
                 filtered = filtered.Where(s =>
-                    s.Name != null &&
-                    s.Name.Contains(needle, StringComparison.OrdinalIgnoreCase));
+                    MatchesSearch(s.ScheduleId, s.Name, s.LegacyClientCode, needle, linkedIds));
             }
+
+            var wantedDepots = ParseDepots(depots);
+            if (wantedDepots.Count > 0)
+                filtered = filtered.Where(s => MatchesDepots(s.PickupDepotName, s.RegionName, wantedDepots));
 
             // Server-side pagination. `pageSize <= 0` means "return
             // everything" (back-compat with the pre-2026-09-15 shape:
@@ -170,6 +179,30 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             .Distinct()
             .ToList();
     }
+
+    /// <summary>S2: list search. Name, legacy per-client code, or any linked
+    /// client code (<paramref name="linkedScheduleIds"/>, resolved from the
+    /// link table).</summary>
+    public static bool MatchesSearch(int scheduleId, string name, string legacyClientCode, string needle, ISet<int> linkedScheduleIds) =>
+        (name != null && name.Contains(needle, StringComparison.OrdinalIgnoreCase))
+        || (legacyClientCode != null && legacyClientCode.Contains(needle, StringComparison.OrdinalIgnoreCase))
+        || linkedScheduleIds.Contains(scheduleId);
+
+    /// <summary>S1: pipe-separated depot names from the list's depot filter.
+    /// Pipe, not comma, because depot names are free text.</summary>
+    public static HashSet<string> ParseDepots(string depots) =>
+        string.IsNullOrWhiteSpace(depots)
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : depots.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>S1: same rule the page used to apply client-side: the origin
+    /// depot or the delivery region has one of the chosen names. An empty
+    /// choice keeps every row.</summary>
+    public static bool MatchesDepots(string pickupDepotName, string regionName, HashSet<string> wanted) =>
+        wanted.Count == 0
+        || (pickupDepotName != null && wanted.Contains(pickupDepotName))
+        || (regionName != null && wanted.Contains(regionName));
 
     /// <summary>
     /// Full detail for one schedule header. Used by the edit modal's
@@ -466,7 +499,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>
     /// POST /api/v2/schedules/{id}/copy - clone a schedule under a new
-    /// name. Body `{ newName, clientIds? }`. Wraps
+    /// name. Body `{ newName, clientIds?, copyClientLinks?, isDefault? }`. Wraps
     /// ScheduleService.CopyAsync. Copy carries the source's day rows +
     /// zones + polygons; client link rows are set to `clientIds` (or
     /// empty for a "default" copy).
@@ -480,18 +513,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
         {
             if (req == null || string.IsNullOrWhiteSpace(req.NewName))
                 return BadRequest(new { message = "newName is required." });
-            var group = await svc.CopyAsync(new ScheduleCopyRequest
-            {
-                SourceScheduleId = scheduleId,
-                NewName = req.NewName,
-                ClientCodes = new List<string>(),   // link-row semantics: copy uses ClientIds directly.
-                ClientIds = (req.ClientIds ?? Array.Empty<int>()).ToList(),
-                // An empty ClientIds here means "no client links", not
-                // "inherit the source's". Without this the shared resolver
-                // falls through to its inherit branch and the copy silently
-                // picks up every one of the source's clients.
-                CopyClientLinks = false,
-            });
+            var group = await svc.CopyAsync(req.ToServiceRequest(scheduleId));
             return Ok(new { response = new { scheduleId = group.ScheduleId } });
         }
         catch (InvalidOperationException ex)
@@ -732,6 +754,26 @@ public class CopyScheduleRequest
 {
     public string NewName { get; set; }
     public int[] ClientIds { get; set; } = Array.Empty<int>();
+    /// <summary>Bring the source's client links across. Only consulted when
+    /// ClientIds is empty. Off unless the operator ticks it.</summary>
+    public bool CopyClientLinks { get; set; }
+    /// <summary>Null or false: the copy is client-specific. True: a default.</summary>
+    public bool? IsDefault { get; set; }
+
+    public ScheduleCopyRequest ToServiceRequest(int sourceScheduleId) => new()
+    {
+        SourceScheduleId = sourceScheduleId,
+        NewName = NewName,
+        ClientCodes = new List<string>(),   // link-row semantics: copy uses ClientIds directly.
+        ClientIds = (ClientIds ?? Array.Empty<int>()).ToList(),
+        // An empty ClientIds means "no client links" unless the operator
+        // ticked "copy client links" (M2 / B2, 2026-11-10). This used to be
+        // hardcoded false, so the source's clients could never come along.
+        // Defaulting to false keeps the 2026-10-05 fix: an empty list alone
+        // never inherits a 40-client source's links.
+        CopyClientLinks = CopyClientLinks,
+        IsDefault = IsDefault,
+    };
 }
 
 public class SetIsActiveRequest

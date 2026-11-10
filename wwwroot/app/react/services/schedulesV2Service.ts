@@ -21,6 +21,9 @@ export interface SchedulesV2Filters {
    *  set - a schedule is bookable if it's bookable for ANY of the
    *  selected clients. Sent as CSV. */
   clientIds?: number[];
+  /** S1: depot names (origin depot or delivery region). Filtered on the
+   *  server before paging. Sent pipe-separated. */
+  depots?: string[];
   /** 0-indexed page number. Only applies when `pageSize > 0`. */
   page?: number;
   /** Server-side pagination window. `0` = return everything (back-
@@ -107,6 +110,9 @@ export const schedulesV2Service = {
         clientId: filters?.clientId ?? undefined,
         clientIds: filters?.clientIds && filters.clientIds.length > 0
           ? filters.clientIds.join(',')
+          : undefined,
+        depots: filters?.depots && filters.depots.length > 0
+          ? filters.depots.join('|')
           : undefined,
         page: filters?.page ?? undefined,
         pageSize: filters?.pageSize ?? undefined,
@@ -249,11 +255,26 @@ export const schedulesV2Service = {
       { method: 'POST', body: JSON.stringify({ clientIds }) },
     ).then((r) => r.response),
 
-  /** POST /api/v2/schedules/{id}/copy - clone a schedule. */
-  copy: (scheduleId: number, newName: string, clientIds: number[] = []) =>
+  /** POST /api/v2/schedules/{id}/copy - clone a schedule. The copy is
+   *  client-specific (not a default) unless isDefault is true. With
+   *  clientIds empty, copyClientLinks brings the source's clients across. */
+  copy: (
+    scheduleId: number,
+    newName: string,
+    clientIds: number[] = [],
+    opts: { copyClientLinks?: boolean; isDefault?: boolean } = {},
+  ) =>
     request<{ response: { scheduleId: number } }>(
       `/v2/schedules/${scheduleId}/copy`,
-      { method: 'POST', body: JSON.stringify({ newName, clientIds }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          newName,
+          clientIds,
+          copyClientLinks: opts.copyClientLinks ?? false,
+          ...(opts.isDefault !== undefined ? { isDefault: opts.isDefault } : {}),
+        }),
+      },
     ).then((r) => r.response),
 
   /** PUT /api/v2/schedule-bundles/{id} - rename / redescribe. */

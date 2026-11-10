@@ -933,6 +933,210 @@ public class ScheduleServiceTests : IDisposable
         Assert.Equal(new[] { 100, 200 }, reread.ClientIds.OrderBy(x => x).ToArray());
     }
 
+    // ─── M2 / B2 (2026-11-10): what a copy carries across ───
+    //
+    // #2910 "(copy)" on Urgent prod was created IsDefault = 1, so every
+    // client in its region could book a half-edited copy until it was retired
+    // 71 seconds later. The same path also dropped the display name, the
+    // booking horizon, the AutoBook scan-ahead and recurring flags, and turned
+    // a client-origin schedule into a depot one. Each test below was run
+    // against the old CopyAsync first and failed there.
+
+    [Fact]
+    public async Task CopyAsync_is_not_a_default_unless_the_caller_asks_for_one()
+    {
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        var source = await svc.UpsertAsync(src);
+        Assert.True(source.IsDefault);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy)",
+        });
+        // Bookable by nobody until someone links a client or makes it a
+        // default on purpose, which is the safe state for a fresh copy.
+        Assert.False(copy.IsDefault);
+
+        var asked = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy 2)",
+            IsDefault = true,
+        });
+        Assert.True(asked.IsDefault);
+    }
+
+    [Fact]
+    public async Task CopyAsync_carries_display_name_and_description()
+    {
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.DisplayName = "Shown to clients";
+        src.DisplayDescription = "Book by 11am";
+        var source = await svc.UpsertAsync(src);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy)",
+        });
+
+        Assert.Equal("Shown to clients", copy.DisplayName);
+        Assert.Equal("Book by 11am", copy.DisplayDescription);
+    }
+
+    [Fact]
+    public async Task CopyAsync_keeps_client_origin_unless_the_copy_is_made_a_default()
+    {
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.IsDefault = false;
+        src.ClientIds = new List<int> { 100 };
+        src.OriginType = "client";
+        src.OriginRegionId = 7;
+        var source = await svc.UpsertAsync(src);
+        Assert.Equal("client", source.OriginType);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy)",
+        });
+        Assert.Equal("client", copy.OriginType);
+        Assert.Equal(7, copy.OriginRegionId);
+
+        // Spec 2.1 still holds: a default cannot start at a client address,
+        // so an explicit default copy falls back to depot, as before.
+        var asDefault = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (default copy)",
+            IsDefault = true,
+        });
+        Assert.Equal("depot", asDefault.OriginType);
+        Assert.Null(asDefault.OriginRegionId);
+    }
+
+    [Fact]
+    public async Task CopyAsync_carries_scan_ahead_and_recurring_flags_from_the_day_rows()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var source = await svc.UpsertAsync(ValidRequest());
+            await seed.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE tblBulkRunScheduleDay
+                   SET AutoBookScanAhead = 14, IsRecurringSchedule = 1
+                 WHERE ScheduleId = {source.ScheduleId}
+                """);
+
+            var copy = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = source.ScheduleId,
+                NewName = "Scan copy",
+            });
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == copy.ScheduleId).ToList();
+            Assert.Equal(2, rows.Count);
+            Assert.All(rows, r =>
+            {
+                Assert.Equal(14, r.AutoBookScanAhead);
+                Assert.True(r.IsRecurringSchedule);
+            });
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_of_a_collapsed_schedule_carries_its_detail_row_settings()
+    {
+        // On a collapsed source the scan-ahead, recurring flag and booking
+        // horizon live on the detail row, not the day rows. The copy is
+        // written in the old shape and then converted, and uspScheduleConvert
+        // seeds OccurrencesAhead from the active-day count (one week's
+        // worth), so without carrying it the copy offers a different number
+        // of runs from its source.
+        var svc = NewSvcWithSeed(out var seed, out var opts, out var converter);
+        using (seed)
+        {
+            var source = await svc.UpsertAsync(ValidRequest());
+            seed.BulkRunScheduleDetails.Add(new BulkRunScheduleDetail
+            {
+                ScheduleId = source.ScheduleId,
+                WeekDays = "1100000",
+                CutoffDayUnit = "W",
+                OccurrencesAhead = 12,
+                AutoBookScanAhead = 21,
+                IsRecurringSchedule = true,
+                CreatedUtc = DateTime.UtcNow,
+                CreatedBy = "test",
+            });
+            await seed.SaveChangesAsync();
+
+            // Stand-in for uspScheduleConvert: collapse the copy onto a detail
+            // row seeded the way the procedure seeds it.
+            converter.ConvertAsync(Arg.Any<DbContext>(), Arg.Any<int>(), Arg.Any<bool>(), Arg.Any<string>())
+                .Returns(async ci =>
+                {
+                    var ctx = ci.Arg<DbContext>();
+                    var id = ci.ArgAt<int>(1);
+                    ctx.Set<BulkRunScheduleDetail>().Add(new BulkRunScheduleDetail
+                    {
+                        ScheduleId = id,
+                        WeekDays = "1100000",
+                        CutoffDayUnit = "W",
+                        OccurrencesAhead = 2,
+                        CreatedUtc = DateTime.UtcNow,
+                        CreatedBy = "convert",
+                    });
+                    await ctx.SaveChangesAsync();
+                    return new ScheduleConvertResult { ScheduleId = id, CanConvert = true };
+                });
+
+            var copy = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = source.ScheduleId,
+                NewName = "Collapsed copy",
+            });
+
+            Assert.Equal((byte)12, copy.OccurrencesAhead);
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == copy.ScheduleId).ToList();
+            Assert.All(rows, r =>
+            {
+                Assert.Equal(21, r.AutoBookScanAhead);
+                Assert.True(r.IsRecurringSchedule);
+            });
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_leaves_IsActive_as_it_was_pending_D4()
+    {
+        // Pins CURRENT behaviour on purpose. D4 (should a copy start
+        // inactive?) is not settled, and Q8 ties it to N6. When D4 is
+        // decided this test is the one to change, deliberately.
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.IsActive = false;
+        var source = await svc.UpsertAsync(src);
+        Assert.False(source.IsActive);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy)",
+        });
+
+        Assert.True(copy.IsActive);
+    }
+
     [Fact]
     public async Task DeleteAsync_removes_group_and_junctions()
     {
@@ -1423,6 +1627,90 @@ public class ScheduleServiceTests : IDisposable
         Assert.Null(dropped.PostcodeGroupId);
     }
 
+    // ─── N2: a header with two live day rows on one weekday ───
+    //
+    // Prod has 73 live headers shaped like this (VB1, 2026-11-06). The detail
+    // modal keeps one row per weekday, so its save carries only one of the two
+    // ids. SyncDayRowsAsync then treated the other row as a dropped day: it
+    // blanked the row and deleted its zones and linehaul legs. The operator
+    // never saw the second row and never asked for it to go.
+
+    /// <summary>Creates a Mon + Tue schedule, then plants a second live Monday
+    /// day row with its own zone row and linehaul leg, the way the duplicate
+    /// rows exist on prod.</summary>
+    private async Task<(ScheduleService Svc, DbContextOptions<DespatchContext> Opts,
+            int ScheduleId, int FirstMondayId, int TuesdayId, int SecondMondayId)>
+        NewScheduleWithDuplicateMondayAsync()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            var rows = seed.TblBulkRunScheduleDays.AsNoTracking()
+                .Where(r => r.ScheduleId == created.ScheduleId).ToList();
+            var monday = rows.Single(r => r.DayOfWeek == 1);
+            var tuesday = rows.Single(r => r.DayOfWeek == 2);
+            var second = new TblBulkRunScheduleDay
+            {
+                ScheduleId = created.ScheduleId,
+                Name = monday.Name,
+                DayOfWeek = 1,
+                StartTime = new TimeSpan(18, 0, 0),
+                EndTime = new TimeSpan(20, 0, 0),
+                Region = monday.Region,
+                MaxJobs = 0,
+                CutoffHours = 0,
+            };
+            seed.TblBulkRunScheduleDays.Add(second);
+            await seed.SaveChangesAsync();
+            seed.BulkZoneSchedules.Add(new BulkZoneSchedule
+            {
+                ScheduleId = second.BulkRunScheduleId, Zone = 9, Active = true,
+            });
+            seed.TblBulkScheduleLinehauls.Add(new TblBulkScheduleLinehaul
+            {
+                BulkRunScheduleId = second.BulkRunScheduleId, Active = true, Name = "leg on second Monday",
+            });
+            await seed.SaveChangesAsync();
+            return (svc, opts, created.ScheduleId, monday.BulkRunScheduleId,
+                tuesday.BulkRunScheduleId, second.BulkRunScheduleId);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_refuses_a_save_that_would_blank_a_duplicate_weekday_row()
+    {
+        var (svc, opts, scheduleId, firstMonday, tuesday, secondMonday) =
+            await NewScheduleWithDuplicateMondayAsync();
+
+        // Exactly what the modal sends: one window per weekday, each with the
+        // id of the row it kept.
+        var save = ValidRequest();
+        save.ScheduleId = scheduleId;
+        save.DayWindows = new List<DayWindowUpsertRequest>
+        {
+            new() { Id = firstMonday, DayOfWeek = 1, StartTime = "09:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            new() { Id = tuesday, DayOfWeek = 2, StartTime = "09:00", EndTime = "17:00", CutoffDay = 2, CutoffTime = "15:00" },
+        };
+
+        // Before the guard this save returned normally and left the second
+        // Monday blanked (StartTime/EndTime NULL) with its zone row and leg
+        // deleted; that was pinned first and is what the guard now refuses.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(save));
+        Assert.Contains("more than one live day row for Monday", ex.Message);
+
+        // Nothing changed: the second Monday keeps its window, zone and leg,
+        // and the first Monday did not take the new 09:00 start either.
+        using var read = CockpitTestHarness.Context(opts);
+        var second = read.TblBulkRunScheduleDays.Single(r => r.BulkRunScheduleId == secondMonday);
+        Assert.Equal(new TimeSpan(18, 0, 0), second.StartTime);
+        Assert.Equal(new TimeSpan(20, 0, 0), second.EndTime);
+        Assert.Single(read.BulkZoneSchedules.Where(z => z.ScheduleId == secondMonday).ToList());
+        Assert.Single(read.TblBulkScheduleLinehauls.Where(l => l.BulkRunScheduleId == secondMonday).ToList());
+        var first = read.TblBulkRunScheduleDays.Single(r => r.BulkRunScheduleId == firstMonday);
+        Assert.Equal(new TimeSpan(8, 0, 0), first.StartTime);
+    }
+
     // ─── 6.1: who can book a schedule is a setting, not a derivation ───
     //
     // These four pin the rule rather than the field, which is the point: the
@@ -1650,6 +1938,184 @@ public class ScheduleServiceTests : IDisposable
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => svc.ReplaceClientsAsync(created.ScheduleId, new List<int>()));
             Assert.Contains("needs at least one client", ex.Message);
+        }
+    }
+
+    // ─── M4 / B4 (2026-11-10): day rows whose delivery zones differ ───
+    //
+    // Zones hang off DAY rows, and the detail modal showed only rows[0]'s set.
+    // Urgent prod has headers whose days carry different active zones (2154,
+    // 2746, 2761 across weekdays, VB3). Saving such a header wrote Monday's set
+    // to every day, silently changing where the other days deliver. The fix is
+    // to SHOW the difference and refuse a zone save unless the caller says the
+    // set applies to all days. Zones are never merged across days.
+
+    /// <summary>Mon + Tue schedule (Mon zones {1 active, 2 inactive}), then
+    /// Tuesday's zones replaced with {3 active}.</summary>
+    private async Task<(ScheduleService Svc, DbContextOptions<DespatchContext> Opts, int ScheduleId)>
+        NewScheduleWithDifferentTuesdayZonesAsync()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            var tuesdayId = created.DayWindows.Single(d => d.DayOfWeek == 2).Id!.Value;
+            seed.BulkZoneSchedules.RemoveRange(seed.BulkZoneSchedules.Where(z => z.ScheduleId == tuesdayId));
+            seed.BulkZoneSchedules.Add(new BulkZoneSchedule { ScheduleId = tuesdayId, Zone = 3, Active = true });
+            await seed.SaveChangesAsync();
+            return (svc, opts, created.ScheduleId);
+        }
+    }
+
+    private static List<int> ActiveZonesOn(DbContextOptions<DespatchContext> opts, int scheduleId, int dayOfWeek)
+    {
+        using var read = CockpitTestHarness.Context(opts);
+        var dayId = read.TblBulkRunScheduleDays
+            .Single(r => r.ScheduleId == scheduleId && r.DayOfWeek == dayOfWeek).BulkRunScheduleId;
+        return read.BulkZoneSchedules
+            .Where(z => z.ScheduleId == dayId && z.Active == true)
+            .Select(z => z.Zone).OrderBy(z => z).ToList();
+    }
+
+    [Fact]
+    public async Task GetDetail_reports_which_days_have_which_zones_when_they_differ()
+    {
+        var (svc, _, scheduleId) = await NewScheduleWithDifferentTuesdayZonesAsync();
+
+        var dto = await svc.GetDetailAsync(scheduleId);
+
+        Assert.True(dto.ZonesDifferByDay);
+        Assert.Equal(new[] { 1 }, dto.DayZoneSets.Single(d => d.DayOfWeek == 1).ActiveZones);
+        Assert.Equal(new[] { 3 }, dto.DayZoneSets.Single(d => d.DayOfWeek == 2).ActiveZones);
+    }
+
+    [Fact]
+    public async Task GetDetail_does_not_flag_days_that_differ_only_in_inactive_zones()
+    {
+        // An inactive zone row gates nothing, so {1 active, 2 inactive} and
+        // {1 active} are the same delivery coverage.
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            var tuesdayId = created.DayWindows.Single(d => d.DayOfWeek == 2).Id!.Value;
+            seed.BulkZoneSchedules.RemoveRange(
+                seed.BulkZoneSchedules.Where(z => z.ScheduleId == tuesdayId && z.Zone == 2));
+            await seed.SaveChangesAsync();
+
+            var dto = await svc.GetDetailAsync(created.ScheduleId);
+
+            Assert.False(dto.ZonesDifferByDay);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_refuses_a_zone_save_that_would_flatten_days_with_different_zones()
+    {
+        var (svc, opts, scheduleId) = await NewScheduleWithDifferentTuesdayZonesAsync();
+
+        var edit = ValidRequest();
+        edit.ScheduleId = scheduleId;
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(edit));
+        Assert.Contains("different delivery zones", ex.Message);
+
+        Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, scheduleId, 1));
+        Assert.Equal(new[] { 3 }, ActiveZonesOn(opts, scheduleId, 2));
+    }
+
+    [Fact]
+    public async Task UpsertAsync_applies_one_zone_set_to_every_day_when_the_caller_chooses_it()
+    {
+        var (svc, opts, scheduleId) = await NewScheduleWithDifferentTuesdayZonesAsync();
+
+        var edit = ValidRequest();
+        edit.ScheduleId = scheduleId;
+        edit.ApplyZonesToAllDays = true;
+        await svc.UpsertAsync(edit);
+
+        Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, scheduleId, 1));
+        Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, scheduleId, 2));
+    }
+
+    [Fact]
+    public async Task UpsertAsync_without_zones_leaves_each_days_zones_alone()
+    {
+        // The modal omits Zones on such a header unless the operator chose a
+        // set for all days, so other edits still save.
+        var (svc, opts, scheduleId) = await NewScheduleWithDifferentTuesdayZonesAsync();
+
+        var edit = ValidRequest();
+        edit.ScheduleId = scheduleId;
+        edit.Zones = null;
+        edit.Description = "edited";
+        await svc.UpsertAsync(edit);
+
+        Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, scheduleId, 1));
+        Assert.Equal(new[] { 3 }, ActiveZonesOn(opts, scheduleId, 2));
+    }
+
+    // ---- S3: inactive clients in the schedule client picker ----------------
+
+    [Fact]
+    public async Task SearchClientsAsync_hides_inactive_accounts_by_default()
+    {
+        // Every other picker on the endpoint (overrides page, legacy modals)
+        // still wants active accounts only, so the old behaviour is the default.
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A", UcclActive = true });
+            seed.TucClients.Add(new TucClient { UcclId = 42, UcclCode = "BBB", UcclName = "Client B", UcclActive = false });
+            await seed.SaveChangesAsync();
+
+            var hits = await svc.SearchClientsAsync(null, 50);
+
+            Assert.Equal(new[] { 41 }, hits.Select(h => h.Id));
+        }
+    }
+
+    [Fact]
+    public async Task SearchClientsAsync_lists_inactive_accounts_labelled_when_asked()
+    {
+        // A schedule can be linked to an account that is currently inactive
+        // (seasonal clients). The schedule modal must be able to find it, and
+        // the operator must be able to tell it is inactive.
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A", UcclActive = true });
+            seed.TucClients.Add(new TucClient { UcclId = 42, UcclCode = "BBB", UcclName = "Client B", UcclActive = false });
+            await seed.SaveChangesAsync();
+
+            var hits = await svc.SearchClientsAsync(null, 50, includeInactive: true);
+
+            Assert.Equal("AAA Client A", hits.Single(h => h.Id == 41).Name);
+            Assert.Equal("BBB Client B (inactive)", hits.Single(h => h.Id == 42).Name);
+        }
+    }
+
+    // ---- S2: schedule list search matches linked client codes --------------
+
+    [Fact]
+    public async Task ScheduleIdsLinkedToClientCodeAsync_finds_schedules_by_any_linked_client_code()
+    {
+        // The list row only carries the first 3 linked codes, so the match has
+        // to come from the link table, not the row, or a schedule's 4th client
+        // could never be searched for.
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "ACME", UcclName = "Acme Ltd" });
+            seed.TucClients.Add(new TucClient { UcclId = 42, UcclCode = "BOLT", UcclName = "Bolt Co" });
+            await seed.SaveChangesAsync();
+
+            var create = ValidRequest();
+            create.IsDefault = false;
+            create.ClientCodes = new List<string> { "ACME" };
+            var created = await svc.UpsertAsync(create);
+
+            Assert.Equal(new[] { created.ScheduleId }, await svc.ScheduleIdsLinkedToClientCodeAsync("cme"));
+            Assert.Empty(await svc.ScheduleIdsLinkedToClientCodeAsync("BOLT"));
         }
     }
 }

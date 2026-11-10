@@ -479,7 +479,10 @@ export function SchedulePicker({ excludeIds, onPick, onCancel }: {
               onClick={() => onPick({ scheduleId: r.scheduleId, name: r.name ?? `#${r.scheduleId}` })}
               className="w-full text-left px-2 py-1.5 hover:bg-surface-light flex justify-between gap-2"
             >
-              <span className="font-medium truncate">{r.name ?? `#${r.scheduleId}`}</span>
+              {/* S4: wrap long names instead of truncating them; the panel is
+                  only as wide as the search box, and the tail of the name is
+                  often what tells two schedules apart. */}
+              <span className="font-medium min-w-0 break-words" title={r.name ?? undefined}>{r.name ?? `#${r.scheduleId}`}</span>
               <span className="text-text-muted shrink-0">
                 {[r.regionName, r.speedName].filter(Boolean).join(' - ')}
                 {r.clientCount === 0 ? ' - all clients' : ` - ${r.clientCount} linked`}

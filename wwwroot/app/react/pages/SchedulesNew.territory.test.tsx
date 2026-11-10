@@ -102,7 +102,9 @@ describe('Schedules NEW - Zone groups tab', () => {
     // The schedule tabs are untouched - territory is added, not swapped in.
     expect(await screen.findByRole('button', { name: /^Schedules/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Schedule Bundles/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Recurring Routes/ })).toBeInTheDocument();
+    // S6 (2026-11-10): the read-only Recurring Routes tab was removed. Routes
+    // are managed in Scheduled Routes; the Roster tab shows them per schedule.
+    expect(screen.queryByRole('button', { name: /Recurring Routes/ })).not.toBeInTheDocument();
 
     expect(screen.getByRole('button', { name: /^Zone groups$/ })).toBeInTheDocument();
 
