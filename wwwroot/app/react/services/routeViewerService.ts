@@ -9,6 +9,7 @@
 // six. If it grows past ~500 lines, split by controller.
 
 import { buildQuery, request } from './api';
+import type { LabelPayload } from '../lib/labelPrint';
 
 // Row-shape mirrors of the C# DTOs. Match the JSON casing that Newtonsoft
 // emits from RoutedOperations (camelCase by default; `area` stays
@@ -737,52 +738,17 @@ export const routeViewerService = {
   addBulkJobNote: (bulkJobId: number, notes: string) =>
     unwrapPost<string>('/runviewer/jobs/add-bulk-note', { bulkJobId, notes }),
 
-  /** Print labels for a set of jobs. Wraps POST /runviewer/labels/bulk-jobs.
-   *  Backend is currently 501 (P14: AlertLabel + SSRS wiring pending)
-   *  but the UI is wired so it lights up as soon as the endpoint lands. */
-  printLabels: (bulkJobIds: number[]) =>
-    unwrapPost<string>('/runviewer/labels/bulk-jobs', { bulkJobIds }),
-
-  /** Print labels for the current cockpit filter set with an operator-
-   *  picked sort mode (1=Run Name, 2=Product, 3=Client). Fires the
-   *  same POST endpoint as `printLabels` but with a LabelRequest shape
-   *  (BookDate + ClientIds + RegionIds + SpeedIds + SortMode) instead
-   *  of an explicit bulkJobIds list, matching the legacy AngularJS
-   *  getLabels() call that keyed off $parent.labelsSortMode. */
-  printLabelsWithSort: (payload: {
-    bookDate: string;
-    sortMode: number;
-    clientIds?: string | null;
-    regionIds?: string | null;
-    speedIds?: string | null;
-  }) => unwrapPost<string>('/runviewer/labels/bulk-jobs', {
-    bookDate: payload.bookDate,
-    sortMode: payload.sortMode,
-    clientIds: payload.clientIds ?? null,
-    regionIds: payload.regionIds ?? null,
-    speedIds: payload.speedIds ?? null,
-  }),
-
   /** Wraps POST /runviewer/labels/bulk-jobs and returns the raw PDF as
    *  a Blob so the caller can `window.open(URL.createObjectURL(blob))`.
+   *  Used by every label button (Print Run, run toolbar tag icon, Utility
+   *  menu Labels, Print Manager); build the body with lib/labelPrint.ts.
    *  The backend's LabelPdfAsync returns FileContentResult with
    *  Content-Type=application/pdf; the shared `request()` wrapper
    *  assumes JSON and would trip on the binary body, so this method
    *  fetches directly and preserves the CSRF header the wrapper
-   *  normally sets. Matches legacy homeControl.js:printLabel mode=4
-   *  which base64-decoded the response into a blob and window.open'd
-   *  it. Callers pass the same LabelRequest fields as the legacy
-   *  (bookDate + sortMode + runName + optional filter csvs). */
-  printRunLabelsPdf: async (payload: {
-    bookDate: string;
-    sortMode: number;
-    runName?: string | null;
-    bulkJobIds?: string | null;
-    clientIds?: string | null;
-    courierIds?: string | null;
-    regionIds?: string | null;
-    speedIds?: string | null;
-  }): Promise<Blob> => {
+   *  normally sets. On failure the server's message is thrown, e.g. the
+   *  422 "No labels to print for this run (...)" (ticket #855). */
+  printRunLabelsPdf: async (payload: LabelPayload): Promise<Blob> => {
     const res = await fetch('/api/runviewer/labels/bulk-jobs', {
       method: 'POST',
       credentials: 'same-origin',
@@ -790,16 +756,7 @@ export const routeViewerService = {
         'Content-Type': 'application/json',
         'X-Requested-With': 'XMLHttpRequest',
       },
-      body: JSON.stringify({
-        bookDate: payload.bookDate,
-        sortMode: payload.sortMode,
-        runName: payload.runName ?? null,
-        bulkJobIds: payload.bulkJobIds ?? null,
-        clientIds: payload.clientIds ?? null,
-        courierIds: payload.courierIds ?? null,
-        regionIds: payload.regionIds ?? null,
-        speedIds: payload.speedIds ?? null,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       // Surface a server-provided message so the toast can name

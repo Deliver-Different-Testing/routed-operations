@@ -8,6 +8,7 @@
 // flows that already guarded NP users surfaced a 500 instead.
 using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
+using DeliverDifferent.AlertLabel.Data.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Serilog;
@@ -82,6 +83,16 @@ public class RunViewerLabelController(
         }
     }
 
+    private static string NoLabelsMessage(NoLabelsException ex)
+    {
+        var where = new List<string>();
+        if (!string.IsNullOrWhiteSpace(ex.RunName)) where.Add(ex.RunName.Trim());
+        if (ex.Date.HasValue) where.Add(ex.Date.Value.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture));
+        return where.Count == 0
+            ? "No labels to print for this run."
+            : $"No labels to print for this run ({string.Join(", ", where)}).";
+    }
+
     private static async Task<IActionResult> LabelPdfAsync(Task<byte[]> generator, string tag)
     {
         try
@@ -94,6 +105,16 @@ public class RunViewerLabelController(
             return new ObjectResult(new { message = ex.Message })
             {
                 StatusCode = StatusCodes.Status403Forbidden,
+            };
+        }
+        // The selection matched no jobs. Nothing is broken; there is just
+        // nothing to print, so say that rather than an error (#855). Must sit
+        // above the InvalidOperationException branch, which it derives from.
+        catch (NoLabelsException ex)
+        {
+            return new ObjectResult(new { message = NoLabelsMessage(ex) })
+            {
+                StatusCode = StatusCodes.Status422UnprocessableEntity,
             };
         }
         catch (InvalidOperationException ex)

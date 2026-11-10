@@ -13,17 +13,15 @@ import { RvScanDetailBox } from '../../components/route-viewer/RvScanDetailBox';
 import { useToast } from '../../context/ToastContext';
 import type { ListSort } from '../../components/cockpit/CockpitState';
 import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
+import { buildBulkJobsLabelPayload, labelFailureText } from '../../lib/labelPrint';
 
 // Print Manager page (master Section 11). Wires to the dedicated
 // Print list endpoint (`GET /runviewer/jobs/print-list` -> wraps
 // `RVW_stpPrintJobsV2`) so the 13-column legacy grid parity fields
 // (Speed / RefA / RefB / OurRef / Mobile / Email / Notes) land in
 // the row shape without a separate DTO. Multi-select rows and hit
-// Print Labels to POST them at `/api/runviewer/labels/bulk-jobs`.
-//
-// Backend label endpoints are still 501 pending the P14 AlertLabel +
-// SSRS wiring. The UI is complete so the flow lights up immediately
-// once the backend lands.
+// Print Labels to POST them at `/api/runviewer/labels/bulk-jobs` and open
+// the returned PDF.
 
 type SortMode = 1 | 2 | 3 | 4;
 
@@ -224,13 +222,14 @@ export default function PrintManager() {
     if (selectedIds.length === 0) return;
     setSubmitting(true);
     try {
-      await routeViewerService.printLabels(selectedIds);
-      toast.show(`Print queued for ${selectedIds.length} job(s).`);
+      // #855: LabelRequest.BulkJobIds is a CSV string (an array never
+      // bound) and the response is a PDF, so open it like Print Run does.
+      const blob = await routeViewerService.printRunLabelsPdf(buildBulkJobsLabelPayload(runDate, selectedIds));
+      window.open(URL.createObjectURL(blob), '_blank');
       setSelectedIds([]);
     } catch (e) {
-      // Backend is 501 today (P14 AlertLabel + SSRS wiring pending);
-      // surface the error verbatim so operators aren't confused.
-      toast.show(`Print failed: ${(e as Error).message}`);
+      const msg = labelFailureText('Print failed', (e as Error).message);
+      toast.show(msg, msg.startsWith('No labels') ? undefined : 'error');
     } finally {
       setSubmitting(false);
     }

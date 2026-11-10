@@ -17,6 +17,9 @@ import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvRunContextMenu } from '../../components/route-viewer/RvRunContextMenu';
 import { RvJobContextMenu } from '../../components/route-viewer/RvJobContextMenu';
 import { PrintRunSortModeDialog, type PrintRunSortMode } from '../../components/route-viewer/PrintRunSortModeDialog';
+import {
+  buildRunLabelPayload, labelFailureText, runLabelPayloadIsEmpty, NO_LABELS_MESSAGE, type LabelPayload,
+} from '../../lib/labelPrint';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 import { RvRunListLite } from '../../components/route-viewer/RvRunListLite';
@@ -452,25 +455,40 @@ export default function RunViewer() {
   // scaffolds that did not call any endpoint.
   const [printRunOpen, setPrintRunOpen] = useState(false);
   const [printRunSubmitting, setPrintRunSubmitting] = useState(false);
+  //
+  // #855: the labels are for the rows the run grid shows (after its
+  // Cancelled / Multibox / direction filters). A routed run (negative run
+  // id) sends their tucJob ids, a bulk-form run their bulkJobIds; see
+  // lib/labelPrint.ts. The run toolbar tag icon prints the same set.
+  const runLabelPayload = (sortMode: number) => buildRunLabelPayload({
+    runId: singleRunId,
+    runName: singleRun?.name ?? null,
+    rows: runJobs,
+    bookDate: filters.runDate,
+    sortMode,
+    clientIds: filters.clientIds,
+    regionIds: filters.regionIds,
+    speedIds: filters.speedIds,
+  });
+  const openLabelPdf = async (payload: LabelPayload) => {
+    const blob = await routeViewerService.printRunLabelsPdf(payload);
+    window.open(URL.createObjectURL(blob), '_blank');
+  };
   const doPrintRun = async (sortMode: PrintRunSortMode) => {
     if (printRunSubmitting) return;
+    const payload = runLabelPayload(sortMode);
+    if (runLabelPayloadIsEmpty(singleRunId, payload)) {
+      setPrintRunOpen(false);
+      toast.show(NO_LABELS_MESSAGE);
+      return;
+    }
     setPrintRunSubmitting(true);
     try {
-      const bulkJobIds = rawRunJobs.map((j) => j.bulkJobId).filter((n) => n > 0);
-      const blob = await routeViewerService.printRunLabelsPdf({
-        bookDate: filters.runDate,
-        sortMode,
-        runName: singleRun?.name ?? null,
-        bulkJobIds: bulkJobIds.length > 0 ? bulkJobIds.join(',') : null,
-        clientIds: filters.clientIds.length > 0 ? filters.clientIds.join(',') : null,
-        regionIds: filters.regionIds.length > 0 ? filters.regionIds.join(',') : null,
-        speedIds: filters.speedIds.length > 0 ? filters.speedIds.join(',') : null,
-      });
+      await openLabelPdf(payload);
       setPrintRunOpen(false);
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank');
     } catch (e) {
-      toast.show(`Print run failed: ${(e as Error).message}`, 'error');
+      const msg = labelFailureText('Print run failed', (e as Error).message);
+      toast.show(msg, msg.startsWith('No labels') ? undefined : 'error');
     } finally {
       setPrintRunSubmitting(false);
     }
@@ -652,14 +670,20 @@ export default function RunViewer() {
               // sort mode from LabelsSortPickerModal.
               if (k === 'labels') {
                 const sortMode = (payload as { sortMode?: number } | undefined)?.sortMode ?? 1;
-                routeViewerService.printLabelsWithSort({
+                // Day-wide (no run, no ids), as before; now opened as a PDF.
+                openLabelPdf(buildRunLabelPayload({
+                  runId: null,
+                  runName: null,
+                  rows: [],
                   bookDate: filters.runDate,
                   sortMode,
-                  clientIds: filters.clientIds.length > 0 ? filters.clientIds.join(',') : null,
-                  regionIds: filters.regionIds.length > 0 ? filters.regionIds.join(',') : null,
-                  speedIds: filters.speedIds.length > 0 ? filters.speedIds.join(',') : null,
-                }).then(() => toast.show('Print queued for labels.'))
-                  .catch((e) => toast.show(`Print failed: ${(e as Error).message}`, 'error'));
+                  clientIds: filters.clientIds,
+                  regionIds: filters.regionIds,
+                  speedIds: filters.speedIds,
+                })).catch((e) => {
+                  const msg = labelFailureText('Print failed', (e as Error).message);
+                  toast.show(msg, msg.startsWith('No labels') ? undefined : 'error');
+                });
                 return;
               }
               // Map dropdown-item key → report endpoint slug. Woop
@@ -830,11 +854,12 @@ export default function RunViewer() {
                         title="Print labels for run"
                         onClick={() => {
                           if (singleRunId == null) return;
-                          const ids = runJobs.map((j) => j.bulkJobId).filter((n) => n > 0);
-                          if (ids.length === 0) { toast.show('No jobs to label.'); return; }
-                          routeViewerService.printLabels(ids)
-                            .then(() => toast.show(`Print labels queued for ${ids.length} job(s).`))
-                            .catch(() => toast.show('Print labels failed - check network.'));
+                          const payload = runLabelPayload(1);
+                          if (payload.jobIds == null && payload.bulkJobIds == null) { toast.show(NO_LABELS_MESSAGE); return; }
+                          openLabelPdf(payload).catch((e) => {
+                            const msg = labelFailureText('Print labels failed', (e as Error).message);
+                            toast.show(msg, msg.startsWith('No labels') ? undefined : 'error');
+                          });
                         }}
                         className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/5 text-text-secondary"
                       >

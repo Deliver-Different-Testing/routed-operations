@@ -460,11 +460,28 @@ describe('routeViewerService - assignment / actions', () => {
     expect(seen.b).toEqual({ bulkJobId: 2, notes: 'n2' });
   });
 
-  it('printLabels POSTs /runviewer/labels/bulk-jobs', async () => {
+  it('printRunLabelsPdf POSTs the LabelRequest body and returns the PDF blob', async () => {
     let seen: unknown;
-    server.use(wrapPost('/api/runviewer/labels/bulk-jobs', 'ok', (p) => (seen = p)));
-    await routeViewerService.printLabels([1, 2]);
-    expect(seen).toEqual({ bulkJobIds: [1, 2] });
+    server.use(http.post('/api/runviewer/labels/bulk-jobs', async ({ request }) => {
+      seen = await request.json();
+      return new HttpResponse(new Uint8Array([37, 80, 68, 70]), { headers: { 'Content-Type': 'application/pdf' } });
+    }));
+    const payload = {
+      bookDate: '2026-11-04', sortMode: 1, runName: 'Burbank to Lab', jobIds: '17960,20849',
+      bulkJobIds: null, clientIds: null, regionIds: null, speedIds: '423',
+    };
+    const blob = await routeViewerService.printRunLabelsPdf(payload);
+    expect(seen).toEqual(payload);
+    expect(blob.size).toBe(4);
+  });
+
+  it('printRunLabelsPdf throws the server message, e.g. the 422 nothing-to-print', async () => {
+    server.use(http.post('/api/runviewer/labels/bulk-jobs', () =>
+      HttpResponse.json({ message: 'No labels to print for this run (Burbank to Lab, 3 Nov 2026).' }, { status: 422 })));
+    await expect(routeViewerService.printRunLabelsPdf({
+      bookDate: '2026-11-03', sortMode: 1, runName: 'Burbank to Lab', jobIds: '1',
+      bulkJobIds: null, clientIds: null, regionIds: null, speedIds: null,
+    })).rejects.toThrow('No labels to print for this run (Burbank to Lab, 3 Nov 2026).');
   });
 
   it('sendPodEmail POSTs /runviewer/jobs/:id/send-pod?toEmail= (URL-encoded)', async () => {
