@@ -102,6 +102,8 @@
     <!-- Access Control switches shared with Hub and the configurator: CallerLane,
          ClientTypeFeatureResolver, [RequireFeature]. Private feed, see nuget.config. -->
     <PackageReference Include="DeliverDifferent.AccessControl" Version="1.0.0" />
+    <!-- MCP app pass (Hub-issued JWT Bearer) so an agent can call [Authorize] endpoints as the connecting user. -->
+    <PackageReference Include="DeliverDifferent.AgentAccess" Version="1.0.0" />
   </ItemGroup>
 
   <ItemGroup>
