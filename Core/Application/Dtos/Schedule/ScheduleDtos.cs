@@ -138,7 +138,26 @@ public record ScheduleGroupDto(
     /// Optional with a true default so a positional caller written before
     /// 6.1 still compiles and keeps the pre-6.1 reading.
     /// </summary>
-    bool IsDefault = true);
+    bool IsDefault = true,
+    /// <summary>
+    /// M4 / B4 (2026-11-10): true when the schedule's live day rows carry
+    /// different ACTIVE delivery zone sets. Zones hang off day rows, and
+    /// Zones above is only the first live day's set, so without this the
+    /// modal showed one day's zones as if they were every day's. A save that
+    /// sends Zones on such a schedule is refused unless it sets
+    /// ApplyZonesToAllDays.
+    /// </summary>
+    bool ZonesDifferByDay = false,
+    /// <summary>Per live day row, its active delivery zones. Lets the modal
+    /// say which days differ and how.</summary>
+    List<DayZoneSetDto> DayZoneSets = null);
+
+/// <summary>One live day row's active delivery zones (M4 / B4).</summary>
+public record DayZoneSetDto(
+    int DayRowId,
+    /// <summary>1 = Monday .. 7 = Sunday.</summary>
+    int DayOfWeek,
+    List<int> ActiveZones);
 
 /// <summary>
 /// One run the booking page would offer, for the preview under the

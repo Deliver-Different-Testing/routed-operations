@@ -53,10 +53,14 @@ export interface RouteZipcode {
 }
 
 export interface RouteScheduleRef {
+  /** Bound DAY-ROW id (what tblRouteSchedule stores). */
   scheduleId: number;
   name: string;
   window: string;
   days: number[];
+  /** Schedule header the day row belongs to. Compare this, not scheduleId,
+   *  against a header id. */
+  headerId: number;
 }
 
 export interface RecurringRoute {
@@ -257,12 +261,17 @@ export interface UpsertRosterBody {
   dayOfWeek?: number | null;
 }
 
+/** One entry per live schedule header. `id` is a DAY-ROW id and is the value
+ *  to submit; `headerId` is for display and matching only. */
 export interface ScheduleLookup {
   id: number;
   name: string;
   startTime: string;
   endTime: string;
   days: number[];
+  headerId: number;
+  isActive: boolean;
+  clientCodes: string[];
 }
 
 /**

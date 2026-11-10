@@ -42,8 +42,10 @@ public record RouteZipcodeDto(int ZipPolygonId, string Zip);
 public record RouteBulkPolygonDto(int PolygonId, string Name, decimal CentroidLatitude, decimal CentroidLongitude);
 
 /// <summary>Schedule attached to a route (via the tblRouteSchedule junction).
-/// Days is the list of ISO days-of-week (1=Mon...7=Sun) the schedule covers.</summary>
-public record RouteScheduleDto(int ScheduleId, string Name, string Window, List<int> Days);
+/// Days is the list of ISO days-of-week (1=Mon...7=Sun) the schedule covers.
+/// ScheduleId is the bound DAY-ROW id; HeaderId is the schedule header it
+/// belongs to, which is what a header-keyed screen (the Roster tab) compares.</summary>
+public record RouteScheduleDto(int ScheduleId, string Name, string Window, List<int> Days, int HeaderId);
 
 /// <summary>
 /// Read shape for a Route. Mirrors the Configurator TenantRouteDto contract
@@ -239,13 +241,19 @@ public record UpsertRouteRosterRequest(
     DateTime? RosterDate,
     byte? DayOfWeek);
 
-/// <summary>Schedule lookup entry - grouped from the one-row-per-weekday tblBulkRunSchedule.</summary>
+/// <summary>Schedule picker entry, one per live (non-retired) schedule header.
+/// Id is a DAY-ROW id (the header's lowest live day row), because that is what
+/// tblRouteSchedule stores; HeaderId is for display and matching only and must
+/// never be submitted as a schedule id. ClientCodes come from tblScheduleClient.</summary>
 public record ScheduleLookupDto(
     int Id,
     string Name,
     string StartTime,
     string EndTime,
-    List<int> Days);
+    List<int> Days,
+    int HeaderId,
+    bool IsActive,
+    List<string> ClientCodes);
 
 /// <summary>Full polygon shape for the map layer - one row per zip.</summary>
 public record ZipPolygonShapeDto(

@@ -740,11 +740,12 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   onChange={(e) => setApplyPickupCutoff(e.target.checked)}
                   className="accent-brand-cyan"
                 />
-                Apply pickup cutoff (courier must arrive by N hours before delivery)
+                {/* N5: applied as minutes by the booking procs, not hours. */}
+                Apply pickup cutoff (collection is set N minutes before the run start time)
               </label>
               {applyPickupCutoff && (
                 <label className="block text-xs">
-                  Pickup cutoff (hours)
+                  Pickup cutoff (minutes before start time)
                   <input
                     type="number"
                     min={0}
@@ -870,6 +871,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
                   onChange={setClientIds}
                   placeholder="Pick clients..."
                   triggerWidth="w-full"
+                  includeInactive
                 />
               </div>
             )}

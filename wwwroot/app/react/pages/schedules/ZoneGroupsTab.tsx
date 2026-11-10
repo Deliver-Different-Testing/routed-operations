@@ -48,6 +48,9 @@ export function ZoneGroupsTab() {
   const [ratingZoneNames, setRatingZoneNames] = useState<ZoneNameRow[]>([]);
 
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
+  // Z1: name / depot / client search over the loaded group list. The list is
+  // already fully loaded by the territory bootstrap, so this stays client-side.
+  const [pgSearch, setPgSearch] = useState('');
   const [duplicatingPg, setDuplicatingPg] = useState<PostcodeGroup | null>(null);
   const [editingZn, setEditingZn] = useState<ZoneNameRow | 'new' | null>(null);
   const [editingZg, setEditingZg] = useState<ZoneGroupRow | 'new' | null>(null);
@@ -134,6 +137,14 @@ export function ZoneGroupsTab() {
               A schedule can point at a group for its delivery coverage, its pickup coverage, or both, which is why the two are counted apart.
             </p>
           </div>
+          <input
+            type="search"
+            value={pgSearch}
+            onChange={(e) => setPgSearch(e.target.value)}
+            placeholder={`Search ${groupPlural.toLowerCase()}...`}
+            aria-label={`Search ${groupPlural.toLowerCase()}`}
+            className="ml-auto w-56 px-2 py-1 text-xs border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
+          />
           <button
             onClick={() => setEditingPg('new')}
             className="bg-brand-cyan text-[#0d0c2c] font-medium px-3 py-1.5 rounded-full text-xs hover:shadow-cyan-glow transition-shadow"
@@ -142,7 +153,11 @@ export function ZoneGroupsTab() {
           </button>
         </div>
         <DataTable
-          rows={bootstrap?.postcodeGroups ?? []}
+          rows={(bootstrap?.postcodeGroups ?? []).filter((g) => {
+            const n = pgSearch.trim().toLowerCase();
+            if (!n) return true;
+            return [g.name, g.depotName, g.clientCode].some((v) => v != null && v.toLowerCase().includes(n));
+          })}
           columns={[
             { key: 'name', label: 'Name', sortable: true, sortValue: (g) => g.name ?? '',
               render: (g) => <span className="font-medium text-text-primary">{g.name}</span> },

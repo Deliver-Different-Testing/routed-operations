@@ -453,37 +453,151 @@ public class RecurringRouteServiceTests
         Assert.Equal("NP", res.Nps[0].Name);
     }
 
-    [Fact]
-    public async Task GetSchedulesLookupAsync_GroupsByCompositeKeyAndSurfacesDays()
+    // ─── Schedule picker (M1: B1 + D1, 2026-11-10) ───
+    //
+    // The picker used to group day rows by (Name, Start, End, ClientId,
+    // Region, SpeedId) and drop AutoBook rows. AutoBook schedules carry routes
+    // on prod (all 8 Medical bindings), so hiding them made those schedules
+    // unbindable from Routed Ops. The Id it submits must stay a DAY-ROW id,
+    // because tblRouteSchedule and the resolver key on it.
+
+    private static TblBulkRunSchedule DayRow(int id, int headerId, short day,
+        bool? autoBook = false, int startHour = 8, int? clientId = null) => new()
     {
+        BulkRunScheduleId = id, ScheduleId = headerId, Name = $"view name {headerId}",
+        ClientId = clientId, Region = 1, SpeedId = 1, DayOfWeek = day,
+        StartTime = new TimeSpan(startHour, 0, 0), EndTime = new TimeSpan(startHour + 2, 0, 0),
+        AutoBook = autoBook,
+    };
+
+    private static BulkRunScheduleHeader Header(int id, string name,
+        bool isActive = true, DateTime? retiredUtc = null) => new()
+    {
+        ScheduleId = id, Name = name, IsDefault = true, IsActive = isActive,
+        RetiredUtc = retiredUtc, CreatedUtc = DateTime.UtcNow, CreatedBy = "test",
+    };
+
+    [Fact]
+    public async Task GetSchedulesLookupAsync_lists_auto_book_schedules()
+    {
+        // D1: the filter is gone. A schedule whose every day row is AutoBook
+        // (#949 Fresh Connection Whangarei, the reported case) must be pickable.
         var svc = NewSvc(out var seed);
+        seed.BulkRunScheduleHeaders.Add(Header(949, "Fresh Connection Whangarei"));
         seed.TblBulkRunSchedules.AddRange(
-            new TblBulkRunSchedule
-            {
-                BulkRunScheduleId = 1, Name = "S", ClientId = 1, Region = 1, SpeedId = 1,
-                DayOfWeek = 1, StartTime = new TimeSpan(8, 0, 0), EndTime = new TimeSpan(10, 0, 0),
-                AutoBook = false,
-            },
-            new TblBulkRunSchedule
-            {
-                BulkRunScheduleId = 2, Name = "S", ClientId = 1, Region = 1, SpeedId = 1,
-                DayOfWeek = 3, StartTime = new TimeSpan(8, 0, 0), EndTime = new TimeSpan(10, 0, 0),
-                AutoBook = false,
-            },
-            new TblBulkRunSchedule
-            {
-                BulkRunScheduleId = 3, Name = "AutoBook", ClientId = 1, Region = 1, SpeedId = 1,
-                DayOfWeek = 1, StartTime = new TimeSpan(8, 0, 0), EndTime = new TimeSpan(10, 0, 0),
-                AutoBook = true,
-            });
+            DayRow(5001, 949, 1, autoBook: true),
+            DayRow(5002, 949, 3, autoBook: true));
+        await seed.SaveChangesAsync();
+
+        var s = Assert.Single(await svc.GetSchedulesLookupAsync());
+
+        Assert.Equal(949, s.HeaderId);
+        Assert.Equal("Fresh Connection Whangarei", s.Name);
+    }
+
+    [Fact]
+    public async Task GetSchedulesLookupAsync_gives_one_entry_per_header_keyed_on_its_lowest_live_day_row()
+    {
+        // Two day rows with DIFFERENT windows on one header used to split into
+        // two picker entries under the old group key. Now one entry, and its
+        // Id is the lowest live day-row id, never the header id. A blanked row
+        // (no window) is not live and cannot be the representative.
+        var svc = NewSvc(out var seed);
+        seed.BulkRunScheduleHeaders.Add(Header(7, "Header seven"));
+        var blanked = DayRow(10, 7, 2);
+        blanked.StartTime = null;
+        blanked.EndTime = null;
+        seed.TblBulkRunSchedules.AddRange(
+            blanked,
+            DayRow(12, 7, 1, startHour: 8),
+            DayRow(11, 7, 3, startHour: 14),
+            DayRow(13, 7, 5, startHour: 8));
+        await seed.SaveChangesAsync();
+
+        var s = Assert.Single(await svc.GetSchedulesLookupAsync());
+
+        Assert.Equal(11, s.Id);
+        Assert.NotEqual(s.HeaderId, s.Id);
+        Assert.Equal(7, s.HeaderId);
+        // Window shown is the representative row's.
+        Assert.Equal("14:00", s.StartTime);
+        Assert.Equal(new[] { 1, 3, 5 }, s.Days.ToArray());
+        // The header's name, not the view row's.
+        Assert.Equal("Header seven", s.Name);
+    }
+
+    [Fact]
+    public async Task GetSchedulesLookupAsync_excludes_retired_and_flags_inactive()
+    {
+        // Retired headers are gone for good. Inactive ones stay pickable,
+        // because the resolver does not read IsActive and binding a route
+        // before activation does no harm; the flag lets the UI say so.
+        var svc = NewSvc(out var seed);
+        seed.BulkRunScheduleHeaders.AddRange(
+            Header(1, "Live"),
+            Header(2, "Retired", retiredUtc: DateTime.UtcNow.AddDays(-1)),
+            Header(3, "Paused", isActive: false));
+        seed.TblBulkRunSchedules.AddRange(
+            DayRow(101, 1, 1), DayRow(201, 2, 1), DayRow(301, 3, 1));
         await seed.SaveChangesAsync();
 
         var lookup = await svc.GetSchedulesLookupAsync();
 
-        var s = Assert.Single(lookup);
-        Assert.Equal("S", s.Name);
-        Assert.Equal(new[] { 1, 3 }, s.Days.ToArray());
-        Assert.Equal("08:00", s.StartTime);
+        Assert.Equal(new[] { "Live", "Paused" }, lookup.Select(s => s.Name).ToArray());
+        Assert.True(lookup.Single(s => s.HeaderId == 1).IsActive);
+        Assert.False(lookup.Single(s => s.HeaderId == 3).IsActive);
+    }
+
+    [Fact]
+    public async Task GetSchedulesLookupAsync_takes_client_codes_from_the_schedule_client_junction()
+    {
+        // The view's ClientId is NULL on schedules created since the junction,
+        // so codes must come from tblScheduleClient or every new client
+        // schedule shows no client at all. The day row's ClientId is ignored.
+        var svc = NewSvc(out var seed);
+        seed.TucClients.AddRange(
+            new TucClient { UcclId = 41, UcclCode = "ZED", UcclName = "Zed" },
+            new TucClient { UcclId = 42, UcclCode = "ABC", UcclName = "Abc" },
+            new TucClient { UcclId = 43, UcclCode = "LEGACY", UcclName = "Legacy" });
+        seed.BulkRunScheduleHeaders.AddRange(Header(1, "Linked"), Header(2, "Default"));
+        seed.ScheduleClients.AddRange(
+            new ScheduleClient { ScheduleId = 1, ClientId = 41, CreatedUtc = DateTime.UtcNow, CreatedBy = "t" },
+            new ScheduleClient { ScheduleId = 1, ClientId = 42, CreatedUtc = DateTime.UtcNow, CreatedBy = "t" });
+        seed.TblBulkRunSchedules.AddRange(
+            DayRow(101, 1, 1, clientId: null),
+            DayRow(201, 2, 1, clientId: 43));
+        await seed.SaveChangesAsync();
+
+        var lookup = await svc.GetSchedulesLookupAsync();
+
+        Assert.Equal(new[] { "ABC", "ZED" }, lookup.Single(s => s.HeaderId == 1).ClientCodes.ToArray());
+        Assert.Empty(lookup.Single(s => s.HeaderId == 2).ClientCodes);
+    }
+
+    [Fact]
+    public async Task GetAllAsync_route_schedules_carry_the_header_id_for_the_roster_tab()
+    {
+        // N3: the Roster tab compared the bound DAY-ROW id with the schedule's
+        // HEADER id, so a route showed on whichever schedule's header id
+        // happened to equal its day-row id (Medical #8 showed #7's route).
+        // The binding has to expose its header for a header-to-header match.
+        var svc = NewSvc(out var seed);
+        seed.BulkRunScheduleHeaders.AddRange(Header(7, "Seven"), Header(8, "Eight"));
+        var bound = DayRow(8, 7, 4);
+        seed.TblBulkRunSchedules.Add(bound);
+        var route = new RouteEntity
+        {
+            RouteId = 1, Name = "R", Area = "", Active = true,
+            CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        };
+        route.Schedules.Add(bound);
+        seed.Routes.Add(route);
+        await seed.SaveChangesAsync();
+
+        var s = Assert.Single((await svc.GetAllAsync()).Single().Schedules);
+
+        Assert.Equal(8, s.ScheduleId);
+        Assert.Equal(7, s.HeaderId);
     }
 
     [Fact]

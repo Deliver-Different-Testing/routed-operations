@@ -24,9 +24,12 @@ import { useAuth } from '../../context/AuthContext';
 interface Props {
   scheduleId: number | null;
   onClose: () => void;
+  /** S3: also list inactive accounts, labelled "(inactive)". Set by the
+   *  schedule modal's Clients tab; the overrides page leaves it off. */
+  includeInactive?: boolean;
 }
 
-export function AttachClientsModal({ scheduleId, onClose }: Props) {
+export function AttachClientsModal({ scheduleId, onClose, includeInactive = false }: Props) {
   const qc = useQueryClient();
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
@@ -62,8 +65,8 @@ export function AttachClientsModal({ scheduleId, onClose }: Props) {
 
   // Client search - 50 rows per response, live server-side match.
   const clientsQuery = useQuery({
-    queryKey: ['schedules-v2-attach-search', tenantId, debounced],
-    queryFn: () => scheduleService.searchClients(debounced, 50).then((r) => r.response),
+    queryKey: ['schedules-v2-attach-search', tenantId, debounced, includeInactive],
+    queryFn: () => scheduleService.searchClients(debounced, 50, includeInactive).then((r) => r.response),
     enabled: scheduleId != null,
     staleTime: 30_000,
   });
