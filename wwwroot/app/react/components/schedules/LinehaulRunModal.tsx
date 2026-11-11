@@ -10,7 +10,8 @@ import {
   type TenantLinehaulRun,
   type TenantLinehaulRunUpsert,
 } from '../../services/linehaulService';
-import type { LinehaulRunLookup, LookupItem } from '../../services/scheduleService';
+import type { DepotLookupItem, LinehaulRunLookup, LookupItem } from '../../services/scheduleService';
+import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 
 interface Props {
   open: boolean;
@@ -18,7 +19,7 @@ interface Props {
   /** Current linehaul runs list from schedule lookups. Used to seed the picker. */
   runs: LinehaulRunLookup[];
   /** Depot dropdown options (schedule modal already has these). */
-  depots: LookupItem[];
+  depots: DepotLookupItem[];
   /** Courier dropdown options (schedule modal already has these). */
   couriers: LookupItem[];
   /** Fires with the refreshed runs list after a save or delete so the
@@ -115,6 +116,7 @@ export function LinehaulRunModal({ open, onClose, runs, depots, couriers, onRuns
     if (!form.runName?.trim()) { toast.show('Run name is required', 'error'); return; }
     if (!form.fromDepotId) { toast.show('From depot is required', 'error'); return; }
     if (!form.toDepotId) { toast.show('To depot is required', 'error'); return; }
+    if (hasInactiveDepot(depots, [form.fromDepotId, form.toDepotId])) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     // Courier is nullable server-side; the legacy modal treated it the same way.
     setBusy(true);
     try {
@@ -241,7 +243,7 @@ export function LinehaulRunModal({ open, onClose, runs, depots, couriers, onRuns
               onChange={(e) => setForm((f) => ({ ...f, fromDepotId: Number(e.target.value) }))}
             >
               <option value="">Choose...</option>
-              {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {depotOptions(depots, form.fromDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
             </select>
           </Field>
           <Field label="To Depot" required>
@@ -251,7 +253,7 @@ export function LinehaulRunModal({ open, onClose, runs, depots, couriers, onRuns
               onChange={(e) => setForm((f) => ({ ...f, toDepotId: Number(e.target.value) }))}
             >
               <option value="">Choose...</option>
-              {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {depotOptions(depots, form.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
             </select>
           </Field>
         </div>

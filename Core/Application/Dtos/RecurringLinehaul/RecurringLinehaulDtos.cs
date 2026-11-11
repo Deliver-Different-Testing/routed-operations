@@ -68,6 +68,9 @@ public class RecurringLinehaulDepotLookupDto
 {
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>False for a deactivated depot. Inactive depots are returned so
+    /// a run already on one still shows it; the selects hide them otherwise.</summary>
+    public bool Active { get; set; }
 }
 
 public class RecurringLinehaulCourierLookupDto

@@ -5,6 +5,7 @@ import {
   currencySymbol,
   postcodeLabel,
   stateLabel,
+  tenantHasZoneGroups,
 } from './tenantLabels';
 
 describe('postcodeLabel', () => {
@@ -59,5 +60,21 @@ describe('currencySymbol', () => {
   });
   it('NZ returns "NZ$"', () => {
     expect(currencySymbol(false)).toBe('NZ$');
+  });
+});
+
+describe('tenantHasZoneGroups', () => {
+  // AU points zone groups at driver location lists exactly like US. Reading
+  // the bootstrap's countryCode instead would hide them on AU, which it
+  // reports as "NZ".
+  it('US and AU have zone groups (any case)', () => {
+    expect(tenantHasZoneGroups('US')).toBe(true);
+    expect(tenantHasZoneGroups('AU')).toBe(true);
+    expect(tenantHasZoneGroups('au')).toBe(true);
+  });
+  it('NZ and a missing claim do not', () => {
+    expect(tenantHasZoneGroups('NZ')).toBe(false);
+    expect(tenantHasZoneGroups(null)).toBe(false);
+    expect(tenantHasZoneGroups(undefined)).toBe(false);
   });
 });

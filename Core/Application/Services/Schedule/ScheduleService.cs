@@ -1189,10 +1189,12 @@ public class ScheduleService(
 
     public async Task<ScheduleLookupsDto> GetLookupsAsync()
     {
+        // Every depot, with its flag. The selects hide inactive ones unless one
+        // is already the field's value; filtering here instead left a schedule
+        // on a retired depot showing a blank select.
         var depots = await Context.TblBulkRegions.AsNoTracking()
-            .Where(r => r.Active ?? true)
             .OrderBy(r => r.Name)
-            .Select(r => new LookupItemDto(r.BulkRegionId, r.Name))
+            .Select(r => new DepotLookupDto(r.BulkRegionId, r.Name, r.Active ?? true))
             .ToListAsync();
 
         var speeds = await Context.TucJobTypes.AsNoTracking()

@@ -1,5 +1,6 @@
 ﻿import { useState } from 'react';
-import type { LookupItem } from '../../services/scheduleService';
+import type { DepotLookupItem, LookupItem } from '../../services/scheduleService';
+import { depotOptions } from '../../lib/depotOptions';
 
 // Vertical stacked leg builder - MVP of Dane's schedules-module
 // ChainBuilder (SCHEDULES.md section A4). Steve's brief section 2b
@@ -132,6 +133,21 @@ export type Leg = CollectionLeg | DepotLeg | LinehaulLeg | DeliveryLeg;
 /** The three values tblBulkRunScheduleHeader.OriginType can hold. */
 export type ScheduleOriginType = 'depot' | 'client' | 'direct';
 
+/** Every depot id the chain's legs point at, for the save-time inactive
+ *  depot check (lib/depotOptions hasInactiveDepot). A linehaul's From depot
+ *  is skipped while it books from the client address, because the select is
+ *  disabled and the value is not used. */
+export function legDepotIds(legs: Leg[]): Array<number | null> {
+  return legs.flatMap((l) => {
+    switch (l.type) {
+      case 'depot': return [l.depotId, l.originRegionId];
+      case 'linehaul': return [l.fromClientAddress ? null : l.fromDepotId, l.toDepotId];
+      case 'delivery': return [l.regionId || null];
+      default: return [];
+    }
+  });
+}
+
 /**
  * Origin resolution for the save path: the chain's FIRST Depot leg decides
  * what the header stores. Three-way since 2026-10-08, when Direct joined
@@ -172,7 +188,7 @@ const LEG_STYLE: Record<LegType, { tag: string; bg: string; border: string; dot:
 };
 
 interface LookupCatalogue {
-  depots: LookupItem[];
+  depots: DepotLookupItem[];
   speeds: LookupItem[];
   postcodeGroups: LookupItem[];
   storageStates: Array<{ id: number; label: string }>;
@@ -1065,8 +1081,8 @@ function LegEditor({
                 actually land, so it has to be a real one. */}
             {isFirstDepot && <option value="client">Client address</option>}
             {isFirstDepot && <option value="direct">Direct (pickup address from the booking)</option>}
-            {lookups.depots.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
+            {depotOptions(lookups.depots, leg.depotId).map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
             ))}
           </select>
         </label>
@@ -1088,8 +1104,8 @@ function LegEditor({
               className="mt-1 w-full px-2 py-1 border border-border rounded"
             >
               <option value="">-</option>
-              {lookups.depots.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
+              {depotOptions(lookups.depots, leg.originRegionId).map((d) => (
+                <option key={d.id} value={d.id}>{d.label}</option>
               ))}
             </select>
           </label>
@@ -1174,8 +1190,8 @@ function LegEditor({
             title={leg.fromClientAddress === true ? 'Disabled while "Book from client address" is on' : undefined}
           >
             <option value="">- pick a depot -</option>
-            {lookups.depots.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
+            {depotOptions(lookups.depots, leg.fromDepotId).map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
             ))}
           </select>
         </label>
@@ -1187,8 +1203,8 @@ function LegEditor({
             className="mt-1 w-full px-2 py-1 border border-border rounded"
           >
             <option value="">- pick a depot -</option>
-            {lookups.depots.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
+            {depotOptions(lookups.depots, leg.toDepotId).map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
             ))}
           </select>
         </label>
@@ -1353,8 +1369,8 @@ function LegEditor({
           className="mt-1 w-full px-2 py-1 border border-border rounded"
         >
           <option value="">- pick a region -</option>
-          {lookups.depots.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
+          {depotOptions(lookups.depots, leg.regionId).map((d) => (
+            <option key={d.id} value={d.id}>{d.label}</option>
           ))}
         </select>
       </label>

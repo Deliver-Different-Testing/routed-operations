@@ -469,7 +469,7 @@ public record ScheduleLinehaulDto(
 /// bootstraps every dropdown the form needs.
 /// </summary>
 public record ScheduleLookupsDto(
-    List<LookupItemDto> Depots,
+    List<DepotLookupDto> Depots,
     List<LookupItemDto> Speeds,
     List<LookupItemDto> Couriers,
     List<LookupItemDto> Clients,
@@ -483,6 +483,12 @@ public record ScheduleLookupsDto(
     List<StateOptionDto> PickupBoxDiscounts);
 
 public record LookupItemDto(int Id, string Name);
+
+/// <summary>A depot in the schedule lookups. Every depot comes back, inactive
+/// ones included, so a schedule or run already on a retired depot still shows
+/// it; the selects hide inactive depots unless one is the field's current
+/// value (12 Nov).</summary>
+public record DepotLookupDto(int Id, string Name, bool Active);
 
 /// <summary>
 /// One tickable zone on a schedule leg, labelled and scoped to a depot.

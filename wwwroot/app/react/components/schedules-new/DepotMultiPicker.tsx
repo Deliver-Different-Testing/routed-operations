@@ -21,6 +21,9 @@ interface Props {
   triggerWidth?: string;
   /** Label rendered inside the panel header. */
   panelTitle?: string;
+  /** Names of inactive depots. Still selectable (old schedules live on
+   *  them); shown with an "(inactive)" suffix. The value stays the name. */
+  inactive?: ReadonlySet<string>;
 }
 
 export function DepotMultiPicker({
@@ -30,6 +33,7 @@ export function DepotMultiPicker({
   placeholder = 'All depots',
   triggerWidth = 'w-56',
   panelTitle,
+  inactive,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -117,7 +121,9 @@ export function DepotMultiPicker({
                     onChange={() => toggle(name)}
                     className="accent-brand-cyan"
                   />
-                  <span className="flex-1 text-text-primary">{name}</span>
+                  <span className="flex-1 text-text-primary">
+                    {name}{inactive?.has(name) && <span className="text-text-muted"> (inactive)</span>}
+                  </span>
                 </label>
               );
             })}

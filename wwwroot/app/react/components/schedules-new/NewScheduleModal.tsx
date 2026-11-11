@@ -5,7 +5,8 @@ import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/sc
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { ClientMultiPicker } from './ClientMultiPicker';
-import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
+import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
@@ -321,6 +322,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
     }
     const enabled = days.filter((d) => d.enabled);
     if (enabled.length === 0) { setError('Enable at least one operating day.'); return; }
+    if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(legs))) { setError(INACTIVE_DEPOT_MESSAGE); return; }
     if (clientMode === 'specific' && clientIds.length === 0) {
       setError('Pick at least one client, or switch to "All clients".'); return;
     }

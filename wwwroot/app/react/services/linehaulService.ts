@@ -60,6 +60,8 @@ export interface TenantLinehaulBookingLookup {
 export interface DepotLookup {
   id: number;
   name: string;
+  /** False for a deactivated depot (returned so a saved one still shows). */
+  active?: boolean;
 }
 
 export interface LinehaulCourierLookup {
