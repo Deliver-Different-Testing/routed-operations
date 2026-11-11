@@ -309,8 +309,14 @@ export interface ZoneOption {
   groupLabel: string;
 }
 
+/** A depot in the schedule lookups. Inactive depots are included so a saved
+ *  one still has a name; the selects hide them otherwise (lib/depotOptions). */
+export interface DepotLookupItem extends LookupItem {
+  active?: boolean;
+}
+
 export interface ScheduleLookups {
-  depots: LookupItem[];
+  depots: DepotLookupItem[];
   speeds: LookupItem[];
   couriers: LookupItem[];
   /** Active clients for the multi-client picker (capped at 500 per tenant). */

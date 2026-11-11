@@ -192,4 +192,28 @@ public class ZoneOptionTests
         Assert.Contains(21, lookups.ZoneNumbers);
         Assert.Contains(22, lookups.ZoneNumbers);
     }
+
+    [Fact]
+    public async Task Lookups_return_inactive_depots_flagged_so_a_saved_one_still_shows()
+    {
+        // The depot selects hide inactive depots unless one is the saved value,
+        // and then they need its name. A server-side Active filter would turn a
+        // schedule on a retired depot into a blank select. Null Active is active
+        // here, as it was under the old (Active ?? true) filter.
+        var opts = NewOptions();
+        using (var db = new DynamicDespatchDbContext(opts))
+        {
+            db.TblBulkRegions.AddRange(
+                new TblBulkRegion { BulkRegionId = 8, Name = "Auckland", Active = true },
+                new TblBulkRegion { BulkRegionId = 3, Name = "Tauranga", Active = false },
+                new TblBulkRegion { BulkRegionId = 4, Name = "Hamilton", Active = null });
+            db.SaveChanges();
+        }
+
+        var depots = (await Svc(opts, isUs: false).GetLookupsAsync()).Depots;
+
+        Assert.Equal(
+            new[] { (3, false), (4, true), (8, true) },
+            depots.Select(d => (d.Id, d.Active)).OrderBy(t => t.Id).ToArray());
+    }
 }

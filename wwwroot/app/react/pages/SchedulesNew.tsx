@@ -494,10 +494,17 @@ function SchedulesTab({
     queryFn: () => scheduleService.lookups().then((r) => r.response),
     staleTime: 5 * 60_000,
   });
+  // Every depot, inactive ones included: a filter has to reach schedules that
+  // still sit on a retired depot. The picker marks them "(inactive)". The
+  // filter matches by name, so a name shared with an active depot is not marked.
+  const inactiveDepotNames = useMemo(() => {
+    const depots = lookupsQuery.data?.depots ?? [];
+    const activeNames = new Set(depots.filter((d) => d.active !== false).map((d) => d.name));
+    return new Set(depots.filter((d) => d.active === false && !activeNames.has(d.name)).map((d) => d.name));
+  }, [lookupsQuery.data]);
   const depotOptions = useMemo(() => {
     if (lookupsQuery.data?.depots?.length) {
-      return lookupsQuery.data.depots
-        .map((d) => d.name)
+      return Array.from(new Set(lookupsQuery.data.depots.map((d) => d.name)))
         .filter((n) => !!n)
         .sort((a, b) => a.localeCompare(b));
     }
@@ -573,6 +580,7 @@ function SchedulesTab({
             placeholder="All depots"
             panelTitle="Filter by depot"
             triggerWidth="w-44"
+            inactive={inactiveDepotNames}
           />
         </div>
 

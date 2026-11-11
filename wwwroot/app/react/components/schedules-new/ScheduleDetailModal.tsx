@@ -16,7 +16,8 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
+import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE, INACTIVE_DEPOT_OVERRIDE_MESSAGE } from '../../lib/depotOptions';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
@@ -1009,6 +1010,14 @@ export function ScheduleDetailModal({
     // upsert validations entirely (name / region / days apply to the
     // base schedule; overrides layer on top).
     if (isOverride && overrideMode) {
+      // #3 (Kevin, 12 Nov): an override carries no depot, but it still sits
+      // on the base schedule's route, so the same inactive-depot block
+      // applies. formLegs here are the base legs (Route is read-only in
+      // override mode); the fix has to happen on the base schedule.
+      if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(formLegs))) {
+        setSaveError(INACTIVE_DEPOT_OVERRIDE_MESSAGE);
+        return;
+      }
       setSaveError(null);
       ovSaveMut.mutate(buildOverridePutBody());
       return;
@@ -1019,6 +1028,7 @@ export function ScheduleDetailModal({
     }
     const enabledDays = formDays.filter((d) => d.enabled);
     if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
+    if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(formLegs))) { setSaveError(INACTIVE_DEPOT_MESSAGE); return; }
     // Spec 6.1 rule 3, operator-facing half. The backend refuses this too;
     // catching it here names the fix in the operator's own terms instead of
     // surfacing a server error after a round trip. legacyClientId counts as
@@ -2078,7 +2088,7 @@ interface RouteTabProps {
   legs: Leg[];
   onLegsChange: (legs: Leg[]) => void;
   lookups: {
-    depots: { id: number; name: string }[];
+    depots: { id: number; name: string; active?: boolean }[];
     speeds: { id: number; name: string }[];
     postcodeGroups: { id: number; name: string; depotId: number | null }[];
     storageStates: { id: number; label: string }[];
