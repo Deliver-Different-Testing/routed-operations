@@ -1721,7 +1721,8 @@ public class ScheduleService(
 
     /// <summary>
     /// Reads the schedule's day rows and applies the request to them: adds the
-    /// new days, blanks the dropped ones, writes the template onto every row and
+    /// new days, deletes the dropped ones nothing else references (blanks the
+    /// rest, see ReferencedDayRowIdsAsync), writes the template onto every row and
     /// removes the child rows the request replaces. Nothing is saved here.
     ///
     /// Must run AFTER uspScheduleUnconvert. On a collapsed schedule the day rows
@@ -1734,8 +1735,9 @@ public class ScheduleService(
     /// NULL. Reading afterwards also gives the F24 guard the real depot to look at.
     ///
     /// Also returns the days the request describes, for ScheduleConvertGuard.
-    /// A day the request dropped is not among them: its row is blanked here, and
-    /// uspScheduleConvert refuses that with WindowVariesByDay on its own.
+    /// A day the request dropped is not among them: its row is deleted or
+    /// blanked here, and a blanked one makes uspScheduleConvert refuse with
+    /// WindowVariesByDay on its own.
     /// </summary>
     private async Task<(List<TblBulkRunScheduleDay> Rows, List<ScheduleConvertGuard.Day> GuardDays)> SyncDayRowsAsync(
         BulkRunScheduleHeader header, ScheduleGroupUpsertRequest req, string name)
@@ -1838,37 +1840,60 @@ public class ScheduleService(
 
         // Sync day-window rows.
         var incomingIds = new HashSet<int>(req.DayWindows.Where(w => w.Id.HasValue).Select(w => w.Id!.Value));
-        foreach (var row in existing.ToList())
-        {
-            var matched = req.DayWindows.FirstOrDefault(w =>
+        var droppedRows = existing
+            .Where(row => !req.DayWindows.Any(w =>
                 (w.Id.HasValue && w.Id.Value == row.BulkRunScheduleId) ||
-                (!w.Id.HasValue && w.DayOfWeek == row.DayOfWeek));
-            if (matched == null)
+                (!w.Id.HasValue && w.DayOfWeek == row.DayOfWeek)))
+            .ToList();
+        var referencedDropped = await ReferencedDayRowIdsAsync(
+            droppedRows.Select(r => r.BulkRunScheduleId).ToList());
+        foreach (var row in droppedRows)
+        {
+            // The zones, pickup zones and linehaul legs belong to the day and
+            // go with it either way. This save owns them.
+            if (zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
+                Context.BulkZoneSchedules.RemoveRange(zs);
+            if (pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
+                Context.BulkPickupZoneSchedules.RemoveRange(pzs);
+            if (linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
+                Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
+
+            if (!referencedDropped.Contains(row.BulkRunScheduleId))
             {
-                // The day row itself is NOT deleted. Other tables hold its id
-                // as a foreign key (ShopWindow, BulkZoneSchedule,
-                // TblBulkScheduleLinehaul, tblRouteSchedule) and the booking
-                // procedures pack it into a quote, so the id is a live
-                // external contract. A schedule stops running on a weekday by
-                // losing that bit from its detail row's mask, which is what
-                // the convert step below writes, and the view then stops
-                // emitting the day. uspScheduleConvert refuses to mask off a
-                // day an active ShopWindow points at, which is the same
-                // protection the foreign key used to give the delete.
+                // Nothing outside this save holds the id, so the row is
+                // deleted (2026-11-11). Blanking it instead broke Bulk Import
+                // on Urgent prod: uspScheduleConvert counts a blanked row as
+                // a day, refuses with WindowVariesByDay, the schedule keeps
+                // no detail row, and dbo.tblBulkRunSchedule then emits the
+                // blank row with NULL StartTime / Region, which
+                // ClientService.GetSettings cannot map (500 on every upload,
+                // schedules 2920 / 2921). With the row gone the remaining
+                // days agree and the convert goes through.
+                Context.TblBulkRunScheduleDays.Remove(row);
+            }
+            else
+            {
+                // The id is still held elsewhere (a shop window, a route, a
+                // job or a booking), so the row is NOT deleted: the booking
+                // procedures pack it into a quote and jobs price through it,
+                // which makes the id a live external contract. A schedule
+                // stops running on a weekday by losing that bit from its
+                // detail row's mask, which is what the convert step below
+                // writes, and the view then stops emitting the day.
+                // uspScheduleConvert refuses to mask off a day an active
+                // ShopWindow points at, which is the same protection the
+                // foreign key used to give the delete.
                 //
                 // Until the schedule converts, the row has to stop being
                 // offered some other way, and the only lever the old shape
                 // has is its payload: a row with no window is not bookable.
                 // So the payload is cleared here and the key columns kept.
-                if (zonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var zs))
-                    Context.BulkZoneSchedules.RemoveRange(zs);
-                if (pickupZonesByDayRow.TryGetValue(row.BulkRunScheduleId, out var pzs))
-                    Context.BulkPickupZoneSchedules.RemoveRange(pzs);
-                if (linehaulsByDayRow.TryGetValue(row.BulkRunScheduleId, out var lhs))
-                    Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
+                // 20261111150000_CompatView_HideBlankOldShapeDayRows keeps
+                // such a row out of the view while the schedule has no
+                // detail row.
                 ClearDayRowPayload(row);
-                existing.Remove(row);
             }
+            existing.Remove(row);
         }
 
         foreach (var w in req.DayWindows)
@@ -2065,6 +2090,58 @@ public class ScheduleService(
         row.PickupCutoff = null;
         row.AutoBookScanAhead = null;
         row.IsRecurringSchedule = null;
+    }
+
+    /// <summary>
+    /// Which of the given day-row ids something outside the schedule save still
+    /// holds: a shop window or route (foreign keys on tblBulkRunScheduleDay),
+    /// or a job or booking (ScheduleID, no foreign key). Zones, pickup zones
+    /// and linehaul legs are not checked because the save removes them itself.
+    ///
+    /// tblRouteSchedule cascades on delete, so missing it here would silently
+    /// unlink a route; ShopWindow does not cascade and would fail the save.
+    /// Both are SQL Server only (neither is an entity in this model), so the
+    /// Sqlite harness checks the job tables it can see and treats the rest as
+    /// unreferenced.
+    /// </summary>
+    private async Task<HashSet<int>> ReferencedDayRowIdsAsync(IReadOnlyCollection<int> dayRowIds)
+    {
+        var ids = dayRowIds.Where(id => id > 0).Distinct().ToList();
+        if (ids.Count == 0) return new HashSet<int>();
+
+        var isSqlServer = Context.Database.ProviderName?
+            .Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true;
+        if (isSqlServer)
+        {
+            // Integer ids only, so the literal list cannot inject anything.
+            // One plain IN lookup per table, UNIONed: the OR'ed correlated
+            // EXISTS form took 10.4 s on Urgent prod (2026-11-11) because
+            // tblBulkJob (606k) and tucJobArchive (1.87M) have no ScheduleID
+            // index and the OR forced a scan per id; this shape took about
+            // 0.65 s for the same ids.
+            var list = string.Join(",", ids);
+            var sql = $"""
+                SELECT ScheduleId AS Value FROM dbo.ShopWindow       WHERE ScheduleId IN ({list})
+                UNION SELECT ScheduleId FROM dbo.tblRouteSchedule WHERE ScheduleId IN ({list})
+                UNION SELECT ScheduleID FROM dbo.tblBulkJob       WHERE ScheduleID IN ({list})
+                UNION SELECT ScheduleID FROM dbo.tucJob           WHERE ScheduleID IN ({list})
+                UNION SELECT ScheduleID FROM dbo.tucJobArchive    WHERE ScheduleID IN ({list})
+                UNION SELECT ScheduleID FROM dbo.tucJobBooking    WHERE ScheduleID IN ({list})
+                """;
+            return (await Context.Database.SqlQueryRaw<int>(sql).ToListAsync()).ToHashSet();
+        }
+
+        var held = new HashSet<int>();
+        held.UnionWith(await Context.TblBulkJobs
+            .Where(j => j.ScheduleId != null && ids.Contains(j.ScheduleId.Value))
+            .Select(j => j.ScheduleId!.Value).ToListAsync());
+        held.UnionWith(await Context.TucJobs
+            .Where(j => j.ScheduleId != null && ids.Contains(j.ScheduleId.Value))
+            .Select(j => j.ScheduleId!.Value).ToListAsync());
+        held.UnionWith(await Context.TucJobBookings
+            .Where(j => j.ScheduleId != null && ids.Contains(j.ScheduleId.Value))
+            .Select(j => j.ScheduleId!.Value).ToListAsync());
+        return held;
     }
 
     /// <summary>Day-row weekday (1 = Monday ... 7 = Sunday) as a word, for
