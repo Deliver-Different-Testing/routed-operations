@@ -18,8 +18,6 @@ import {
   scheduleService,
   type ScheduleGroupSummary,
 } from '../services/scheduleService';
-import { recurringRouteService, RouteDirection, type RecurringRoute } from '../services/recurringRouteService';
-import { linehaulService, type TenantLinehaulRun, LinehaulMode } from '../services/linehaulService';
 import { ScheduleDetailModal, type OverrideEditContext } from '../components/schedules-new/ScheduleDetailModal';
 import { ClientMultiPicker } from '../components/schedules-new/ClientMultiPicker';
 import { DepotMultiPicker } from '../components/schedules-new/DepotMultiPicker';
@@ -61,9 +59,9 @@ import { LinehaulTab } from './schedules/LinehaulTab';
 // Pricing spec 3.1. Linehaul is its own tab rather than a Pricing sub-view
 // because a run is a depot-to-depot leg with no zone group, which is the
 // point Marcus made on 15 Oct; the zone group banner must not show above it.
-type Tab = 'schedules' | 'bundles' | 'routes' | 'zonegroups' | 'pricing' | 'linehaul';
+type Tab = 'schedules' | 'bundles' | 'zonegroups' | 'pricing' | 'linehaul';
 
-const TABS: Tab[] = ['schedules', 'bundles', 'routes', 'zonegroups', 'pricing', 'linehaul'];
+const TABS: Tab[] = ['schedules', 'bundles', 'zonegroups', 'pricing', 'linehaul'];
 
 function isTab(v: string | null): v is Tab {
   return v != null && (TABS as string[]).includes(v);
@@ -187,18 +185,12 @@ export default function SchedulesNew() {
   //   means we don't fetch the whole list just for the count; the
   //   Schedules tab itself has its own list query with the full
   //   pageSize=50, so this doesn't duplicate work meaningfully).
-  // - Schedule Bundles + Recurring Routes: full-list length. Both are
-  //   small enough (dozens, not thousands) that this is cheap.
+  // - Schedule Bundles: full-list length. Small enough
+  //   (dozens, not thousands) that this is cheap.
   const schedulesCountQuery = useSchedulesV2List({ page: 0, pageSize: 1 });
   const bundlesCountQuery = useSchedulesV2Bundles();
-  const routesCountQuery = useQuery({
-    queryKey: ['schedules-v2-recurring-routes-count'],
-    queryFn: () => recurringRouteService.list().then((r) => r.response),
-    staleTime: 30_000,
-  });
   const schedulesCount = schedulesCountQuery.data?.total ?? null;
   const bundlesCount = bundlesCountQuery.data?.length ?? null;
-  const routesCount = routesCountQuery.data?.length ?? null;
 
   return (
     // AppLayout's <main> is `overflow-hidden` so each page owns its
@@ -239,9 +231,6 @@ export default function SchedulesNew() {
           <TabButton active={tab === 'bundles'} onClick={() => setTab('bundles')} count={bundlesCount}>
             Schedule Bundles
           </TabButton>
-          <TabButton active={tab === 'routes'} onClick={() => setTab('routes')} count={routesCount}>
-            Recurring Routes
-          </TabButton>
           {/* Territory maintenance (pricing spec 3.1). No count pill: the
               sub-views own their own fetch rather than a React Query cache
               this component can read, and prefetching the territory payload
@@ -267,7 +256,6 @@ export default function SchedulesNew() {
         />
       )}
       {tab === 'bundles' && <ScheduleBundlesTab onScheduleClick={openBase} />}
-      {tab === 'routes' && <RecurringRoutesTab />}
       {tab === 'pricing' && <PricingTab />}
       {tab === 'linehaul' && <LinehaulTab />}
 
@@ -316,6 +304,7 @@ export default function SchedulesNew() {
       <AttachClientsModal
         scheduleId={attachScheduleId}
         onClose={() => setAttachScheduleId(null)}
+        includeInactive
       />
       <NewScheduleModal
         open={newScheduleOpen}
@@ -371,6 +360,9 @@ function SchedulesTab({
     type: type === 'overrides' ? 'all' : type,
     q: debouncedQ || undefined,
     clientIds: viewAsClientIds.length > 0 ? viewAsClientIds : undefined,
+    // S1: filtered on the server before paging, so the total and page
+    // count reflect the depot choice.
+    depots: depotFilter.length > 0 ? depotFilter : undefined,
     page,
     pageSize: PAGE_SIZE,
   });
@@ -487,10 +479,9 @@ function SchedulesTab({
     retireMut.mutate(row.scheduleId);
   };
 
-  // Backend now returns a paged envelope; the server owns page + total.
-  // Depot filter + nest-override remain client-side (only affects
-  // the current page - documented compromise, worth revisiting if
-  // Kevin wants a depot server-side filter param).
+  // Backend returns a paged envelope; the server owns page + total.
+  // The depot filter is applied server-side (S1); only the
+  // overrides-only chip still prunes the current page.
   const serverRows = query.data?.rows ?? [];
   const serverTotal = query.data?.total ?? 0;
 
@@ -527,14 +518,8 @@ function SchedulesTab({
     if (type === 'overrides') {
       rows = rows.filter((s) => (s.overrides?.length ?? 0) > 0);
     }
-    if (depotFilter.length === 0) return rows;
-    const wanted = new Set(depotFilter);
-    return rows.filter(
-      (s) =>
-        (s.pickupDepotName != null && wanted.has(s.pickupDepotName)) ||
-        (s.regionName != null && wanted.has(s.regionName)),
-    );
-  }, [serverRows, depotFilter, type]);
+    return rows;
+  }, [serverRows, type]);
 
   // Server pagination: total from server, page rows from current fetch.
   const pageCount = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
@@ -554,7 +539,7 @@ function SchedulesTab({
           type="search"
           placeholder="Search schedules by name, route, client or run..."
           value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); setDepotFilter([]); }}
+          onChange={(e) => { setQ(e.target.value); setPage(0); }}
           className="w-full pl-8 pr-3 py-1.5 text-xs border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
         />
       </div>
@@ -564,7 +549,7 @@ function SchedulesTab({
           <span className="text-xs uppercase tracking-wide text-text-muted">View as</span>
           <ClientMultiPicker
             selected={viewAsClientIds}
-            onChange={(ids) => { setViewAsClientIds(ids); setPage(0); setDepotFilter([]); }}
+            onChange={(ids) => { setViewAsClientIds(ids); setPage(0); }}
             placeholder="All schedules"
             panelTitle="View as clients"
             triggerWidth="w-44"
@@ -572,15 +557,11 @@ function SchedulesTab({
           />
         </div>
 
-        {/* Reset depotFilter on any server-side filter change (audit
-            MEDIUM #12 2026-09-17). Depot filter is client-side over the
-            CURRENT page; changing type / q / view-as swaps the row set,
-            so a stale depot filter can silently narrow to zero rows. */}
         <div className="flex bg-surface-light border border-border rounded p-0.5">
-          <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); setDepotFilter([]); }}>All</SegmentPill>
-          <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); setDepotFilter([]); }}>Defaults</SegmentPill>
-          <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); setDepotFilter([]); }}>Shared</SegmentPill>
-          <SegmentPill active={type === 'overrides'} onClick={() => { setType('overrides'); setPage(0); setDepotFilter([]); }}>Overrides</SegmentPill>
+          <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); }}>All</SegmentPill>
+          <SegmentPill active={type === 'default'} onClick={() => { setType('default'); setPage(0); }}>Defaults</SegmentPill>
+          <SegmentPill active={type === 'shared'} onClick={() => { setType('shared'); setPage(0); }}>Shared</SegmentPill>
+          <SegmentPill active={type === 'overrides'} onClick={() => { setType('overrides'); setPage(0); }}>Overrides</SegmentPill>
         </div>
 
         <div className="flex items-center gap-2">
@@ -1530,343 +1511,4 @@ function CreateBundleModal({
   );
   // toast import kept for downstream extensions (attach clients etc)
   void toast;
-}
-
-// ─── Recurring Routes tab ───────────────────────────────────────────
-
-type RouteType = 'all' | 'first' | 'middle' | 'final';
-
-/** Unified row shape backing the Recurring Routes tab. Routes and
- *  linehaul runs render into the same table with different content
- *  in a handful of columns; using one type simplifies the table body
- *  and lets the search / pager work uniformly. */
-interface RecurringRow {
-  key: string;
-  kind: 'first' | 'middle' | 'final';
-  name: string;
-  subtitle: string;
-  area: string;
-  defaultTargetName: string | null;
-  defaultTargetType: number | string | null;
-  schedules: { scheduleId: number | null; name: string }[];
-  zipCount: number | null;
-  active: boolean;
-  masterBookingLabel: string | null;
-  mode: 'Road' | 'Flight' | null;
-  clientCodes: string[];
-}
-
-function RecurringRoutesTab() {
-  const user = useAuth();
-  const [type, setType] = useState<RouteType>('all');
-  const [q, setQ] = useState('');
-  const [page, setPage] = useState(0);
-
-  const routesQuery = useQuery({
-    queryKey: ['schedules-v2-recurring-routes', user.currentTenantId ?? 0],
-    queryFn: () => recurringRouteService.list().then((r) => r.response),
-    staleTime: 30_000,
-  });
-
-  const linehaulQuery = useQuery({
-    queryKey: ['schedules-v2-linehaul-runs', user.currentTenantId ?? 0],
-    queryFn: () => linehaulService.list(),
-    staleTime: 30_000,
-  });
-
-  // For "Clients via schedule" we need the schedule -> client list.
-  // The Schedules list summary already carries linkedClientCodes[] +
-  // clientCount; use it as the source instead of a fresh query.
-  const schedSummary = useQuery({
-    queryKey: ['schedules-v2-summary-for-routes', user.currentTenantId ?? 0],
-    queryFn: () => schedulesV2Service.list({ type: 'all', pageSize: 0 }).then((p) => p.rows ?? []),
-    staleTime: 30_000,
-  });
-
-  const codesBySched = useMemo(() => {
-    const map = new Map<number, string[]>();
-    for (const s of (schedSummary.data ?? [])) map.set(s.scheduleId, s.linkedClientCodes ?? []);
-    return map;
-  }, [schedSummary.data]);
-
-  // Feature 5.1: classify from the stored Routes.Direction instead of
-  // guessing at the route's name.
-  //
-  // The name regex it replaces was /deliver|final|pm\b|home/ over
-  // `${name} ${area}`. It happened to classify all 11 live routes on
-  // medical-prod correctly, so this is not fixing a visible misclassification
-  // - it is removing the guess that Feature 5 exists to make unnecessary.
-  //
-  // CONSEQUENCE WORTH KNOWING: Direction is NOT NULL DEFAULT 1, so until an
-  // operator (or the 5.6 data step) marks a route as final mile it now reads
-  // as first mile. Route 15 "Burbank to Lab" on medical-prod is the one that
-  // changes: the regex called it final via its name, and it will show as
-  // first until its Direction is set. Deliberately NOT papering over that
-  // with a name fallback - a fallback would also override an operator who
-  // explicitly chose first mile on a route whose name contains "delivery",
-  // and the stored value has to be the single source of truth or the whole
-  // feature is decorative.
-  //
-  // 'middle' is not reachable here and never was: it belongs to linehaul runs
-  // (tblbulkLinehaulRun), which push their own rows with kind 'middle' below.
-  // Routes.Direction only has 1 and 2 by CK_Routes_Direction.
-  const routeKind = (r: RecurringRoute): 'first' | 'final' =>
-    r.direction === RouteDirection.FinalMile ? 'final' : 'first';
-
-  const rows = useMemo<RecurringRow[]>(() => {
-    const out: RecurringRow[] = [];
-    for (const r of routesQuery.data ?? []) {
-      const kind = routeKind(r);
-      const clientCodes = Array.from(new Set(
-        r.schedules.flatMap((s) => (s.scheduleId ? codesBySched.get(s.scheduleId) ?? [] : []))
-      )).sort();
-      out.push({
-        key: `route-${r.routeId}`,
-        kind,
-        name: r.name,
-        subtitle: `#${r.routeId}`,
-        area: r.area,
-        defaultTargetName: r.defaultTargetName,
-        defaultTargetType: r.defaultTargetType,
-        schedules: r.schedules.map((s) => ({ scheduleId: s.scheduleId ?? null, name: s.name })),
-        zipCount: r.zipcodes.length,
-        active: r.active,
-        // Final-mile routes carry a master booking the same way a linehaul
-        // run does, so the Master job column reads for both (Steve, 22 Oct:
-        // Route Viewer has nowhere to put it, this row does). First-mile
-        // routes have no master and render "-" in the column.
-        masterBookingLabel: r.masterBookingLabel ?? null,
-        mode: null,
-        clientCodes,
-      });
-    }
-    for (const lh of linehaulQuery.data ?? []) {
-      out.push({
-        key: `linehaul-${lh.id}`,
-        kind: 'middle',
-        name: lh.runName,
-        subtitle: `${lh.fromDepotName} → ${lh.toDepotName}`,
-        area: `${lh.fromDepotName} → ${lh.toDepotName}`,
-        defaultTargetName: lh.defaultTargetName,
-        defaultTargetType: lh.defaultTargetType,
-        // Linehaul runs bind by LinehaulRunId on the schedule's linehaul
-        // leg. The listing does not expose that map today; render a
-        // placeholder pill so the column stays populated visually.
-        schedules: lh.usedBySchedulesCount > 0
-          ? [{ scheduleId: null, name: `${lh.usedBySchedulesCount} schedule${lh.usedBySchedulesCount === 1 ? '' : 's'}` }]
-          : [],
-        zipCount: null,
-        active: lh.active,
-        masterBookingLabel: lh.masterBookingLabel,
-        mode: lh.mode === LinehaulMode.Flight ? 'Flight' : 'Road',
-        clientCodes: [],
-      });
-    }
-    return out;
-  }, [routesQuery.data, linehaulQuery.data, codesBySched]);
-
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return rows
-      .filter((r) => (type === 'all' ? true : r.kind === type))
-      .filter((r) => {
-        if (!needle) return true;
-        return (
-          r.name.toLowerCase().includes(needle) ||
-          r.area.toLowerCase().includes(needle) ||
-          r.schedules.some((s) => s.name.toLowerCase().includes(needle))
-        );
-      });
-  }, [rows, type, q]);
-
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const boundedPage = Math.min(page, pageCount - 1);
-  const pageRows = filtered.slice(boundedPage * PAGE_SIZE, (boundedPage + 1) * PAGE_SIZE);
-  const isLoading = routesQuery.isLoading || linehaulQuery.isLoading;
-  const anyError = routesQuery.error ?? linehaulQuery.error;
-
-  return (
-    <div className="space-y-4 bg-surface-white border border-border rounded-lg p-5">
-      <div className="flex flex-wrap gap-3 items-center justify-between">
-        <input
-          type="search"
-          placeholder="Search routes by name, area, or schedule..."
-          value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
-          className="w-96 px-3 py-2 text-sm border border-border rounded focus:outline-none focus:ring-2 focus:ring-brand-cyan/40"
-        />
-        <div className="flex gap-1 p-1 bg-surface-light border border-border rounded">
-          <SegmentPill active={type === 'all'} onClick={() => { setType('all'); setPage(0); }}>All types</SegmentPill>
-          <SegmentPill active={type === 'first'} onClick={() => { setType('first'); setPage(0); }}>First mile</SegmentPill>
-          <SegmentPill active={type === 'middle'} onClick={() => { setType('middle'); setPage(0); }}>Middle mile</SegmentPill>
-          <SegmentPill active={type === 'final'} onClick={() => { setType('final'); setPage(0); }}>Final mile</SegmentPill>
-        </div>
-        <span className="text-xs text-text-muted">
-          {!isLoading ? `Showing ${pageRows.length} of ${filtered.length}` : ''}
-        </span>
-      </div>
-
-      <p className="text-xs text-text-muted italic max-w-3xl">
-        Same rows as the Recurring Routes page, anchored to the schedules that
-        deliver them. Middle-mile rows are linehaul runs, showing their master
-        job (or a red flag if none set).
-      </p>
-
-      {isLoading && <div className="text-sm text-text-muted py-8 text-center">Loading routes...</div>}
-      {anyError && (
-        <div className="text-sm text-error py-8 text-center">
-          Failed to load routes: {(anyError as Error).message}
-        </div>
-      )}
-      {filtered.length === 0 && !isLoading && (
-        <div className="text-sm text-text-muted py-8 text-center">No routes match.</div>
-      )}
-      {pageRows.length > 0 && (
-        <>
-          <RecurringRoutesTable rows={pageRows} />
-          <Pager
-            page={boundedPage}
-            pageCount={pageCount}
-            total={filtered.length}
-            onPage={setPage}
-          />
-        </>
-      )}
-    </div>
-  );
-}
-
-function RecurringRoutesTable({ rows }: { rows: RecurringRow[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-left text-[10px] uppercase tracking-wider text-text-muted border-b border-border">
-          <tr>
-            <th className="py-2 pr-3 font-medium">Name</th>
-            <th className="py-2 pr-3 font-medium">Type</th>
-            <th className="py-2 pr-3 font-medium">Default target</th>
-            <th className="py-2 pr-3 font-medium">Schedule(s)</th>
-            <th className="py-2 pr-3 font-medium">Clients via schedule</th>
-            <th className="py-2 pr-3 font-medium">Master job</th>
-            <th className="py-2 pr-3 font-medium">Active</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.key} className="border-b border-border/60 hover:bg-surface-light">
-              <td className="py-2 pr-3">
-                <div className="font-medium text-text-primary">{r.name}</div>
-                <div className="text-xs text-text-muted">{r.subtitle}</div>
-              </td>
-              <td className="py-2 pr-3">
-                <span className={`text-[10px] px-2 py-0.5 rounded border ${
-                  r.kind === 'middle'
-                    ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30'
-                    : 'bg-surface-light text-text-secondary border-border'
-                }`}>
-                  {r.kind === 'first' ? 'First mile' : r.kind === 'middle' ? `Middle mile · ${r.mode ?? 'Road'}` : 'Final mile'}
-                </span>
-              </td>
-              <td className="py-2 pr-3">
-                {r.defaultTargetName ? (
-                  <>
-                    <span className="text-text-primary">{r.defaultTargetName}</span>
-                    <span className="text-xs text-text-muted ml-1">
-                      ({typeof r.defaultTargetType === 'number'
-                        ? targetTypeLabel(r.defaultTargetType)
-                        : (r.defaultTargetType ?? '-')})
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-text-muted">-</span>
-                )}
-              </td>
-              <td className="py-2 pr-3">
-                {r.schedules.length === 0 ? (
-                  <span className="text-xs bg-warning-bg text-warning border border-warning/30 px-2 py-0.5 rounded">
-                    Unbound
-                  </span>
-                ) : (
-                  <div className="flex gap-1 flex-wrap max-w-md">
-                    {r.schedules.slice(0, 3).map((s, i) => (
-                      <span
-                        key={s.scheduleId ?? `${s.name}-${i}`}
-                        className="text-[10px] bg-surface-light text-text-secondary border border-border px-2 py-0.5 rounded"
-                        title={s.name}
-                      >
-                        {s.name}
-                      </span>
-                    ))}
-                    {r.schedules.length > 3 && (
-                      <span className="text-[10px] text-text-muted">
-                        +{r.schedules.length - 3}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </td>
-              <td className="py-2 pr-3">
-                {r.clientCodes.length === 0 ? (
-                  <span className="text-text-muted">-</span>
-                ) : (
-                  <div className="flex gap-1 flex-wrap max-w-md">
-                    {r.clientCodes.slice(0, 3).map((c) => (
-                      <span
-                        key={c}
-                        className="text-[10px] bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 px-2 py-0.5 rounded"
-                      >
-                        {c}
-                      </span>
-                    ))}
-                    {r.clientCodes.length > 3 && (
-                      <span className="text-[10px] text-text-muted">
-                        +{r.clientCodes.length - 3}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </td>
-              {/* Master job. Linehaul runs and FINAL-MILE routes both have
-                  one; first-mile routes do not, so they stay "-" rather
-                  than being flagged as missing something they never need. */}
-              <td className="py-2 pr-3">
-                {r.kind === 'first' ? (
-                  <span className="text-text-muted">-</span>
-                ) : r.masterBookingLabel ? (
-                  <span
-                    className="text-xs font-mono text-brand-cyan"
-                    title={r.kind === 'middle'
-                      ? "Run's master booking (IsLinehaulMaster=1)"
-                      : "Route's final-mile master booking (IsLinehaulMaster=1, LinehaulRunId NULL)"}
-                  >
-                    Master: {r.masterBookingLabel}
-                  </span>
-                ) : (
-                  <span
-                    className="inline-flex items-center gap-1 text-xs text-error"
-                    title={r.kind === 'middle'
-                      ? 'Without a master job the driver sees every item as its own job.'
-                      : 'Without a master job the driver has nothing to scan totes against at the depot.'}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-error inline-block" />
-                    <span className="font-medium">Missing</span>
-                  </span>
-                )}
-              </td>
-              <td className="py-2 pr-3">
-                <ToggleSwitch on={r.active} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function targetTypeLabel(t: number | null): string {
-  if (t === 1) return 'Courier';
-  if (t === 2) return 'Agent';
-  if (t === 3) return 'NP';
-  return '-';
 }

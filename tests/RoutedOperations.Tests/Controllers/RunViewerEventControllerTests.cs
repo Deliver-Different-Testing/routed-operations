@@ -205,4 +205,27 @@ public class RunViewerEventControllerTests : IDisposable
             Environment.SetEnvironmentVariable("S3Bucket", "test-bucket");
         }
     }
+
+    // ── CreateEvent (#1003) ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task CreateEvent_JobWithNoBulkRow_Returns400WithAPerJobMessage()
+    {
+        // Was an FK_tblBulkEvent_tblBulkJob failure (500) when a Route Viewer
+        // row with bulkJobId 0 was sent through.
+        var (ctl, _) = NewCtl();
+
+        var result = await ctl.CreateEvent(new CreateEventRequest
+        {
+            BulkJobId = 0,
+            JobId = 20849,
+            Notes = "n",
+            Name = "Kev",
+            EventDate = DateTime.Today,
+        });
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        var message = bad.Value!.GetType().GetProperty("message")!.GetValue(bad.Value) as string;
+        Assert.Contains("Job 20849", message);
+    }
 }

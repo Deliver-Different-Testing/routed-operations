@@ -6,10 +6,23 @@ import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { TransferRouteDialog } from './TransferRouteDialog';
 
+// Real wire shape of GET /api/runviewer/routes/active
+// (RouteTransferContextResponse, RouteTransferDto.cs:11-26). The stub
+// used to return a bare `{ routeId, label }[]`, which is not what the
+// server sends, so these tests passed while the dialog could not load
+// routes against the real API (#1004).
 const stubRoutes = (rows: Array<{ routeId: number; label: string }>) =>
   http.get('/api/runviewer/routes/active', () =>
-    HttpResponse.json({ response: rows }),
+    HttpResponse.json({
+      response: {
+        currentRouteId: null,
+        currentRouteName: null,
+        routes: rows.map((r) => ({ id: r.routeId, name: r.label, area: null })),
+      },
+    }),
   );
+
+const oneJob = [{ jobId: 11, jobNumber: 'JB-11', fromAddress: '1 Alpha St', currentRouteName: 'Old East' }];
 
 function renderDlg(props: Partial<Parameters<typeof TransferRouteDialog>[0]> = {}) {
   const defaults = {
@@ -29,17 +42,27 @@ describe('TransferRouteDialog', () => {
     expect(screen.getByText(/Loading routes/)).toBeInTheDocument();
   });
 
-  it('lists routes (excluding current runId) after fetch', async () => {
+  it('lists routes excluding the current route (route run id = -RouteId)', async () => {
     server.use(stubRoutes([
       { routeId: 100, label: 'Current' },
       { routeId: 200, label: 'North' },
       { routeId: 201, label: 'South' },
     ]));
-    renderDlg({ runId: 100 });
-    // 100 is excluded
+    // Synthetic route run for route 100 has run id -100.
+    renderDlg({ runId: -100 });
     expect(await screen.findByRole('option', { name: 'North' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'South' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Current' })).toBeNull();
+  });
+
+  it('a real bulk run id is not a route id and excludes nothing', async () => {
+    // tblBulkRun.ID 100 must not hide dbo.Routes.RouteId 100.
+    server.use(stubRoutes([
+      { routeId: 100, label: 'Route 100' },
+      { routeId: 200, label: 'North' },
+    ]));
+    renderDlg({ runId: 100 });
+    expect(await screen.findByRole('option', { name: 'Route 100' })).toBeInTheDocument();
   });
 
   it('Next button disabled until a route is picked', async () => {
@@ -75,7 +98,7 @@ describe('TransferRouteDialog', () => {
         });
       }),
     );
-    const props = renderDlg({ runId: 100 });
+    const props = renderDlg({ runId: 100, jobs: oneJob });
     const user = userEvent.setup();
     await user.selectOptions(await screen.findByRole('combobox'), '200');
     const checkboxes = screen.getAllByRole('checkbox');
@@ -87,6 +110,7 @@ describe('TransferRouteDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Transfer' }));
     await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
     // Wire shape MUST match the backend DTO exactly.
+    expect(sent.jobIds).toEqual([11]);
     expect(sent.newRouteId).toBe(200);
     expect(sent.alsoTransferRecurringBooking).toBe(true);
     expect(sent.alsoTransferZipCodes).toBe(true);
@@ -135,7 +159,7 @@ describe('TransferRouteDialog', () => {
         HttpResponse.json({ messages: [{ message: 'transfer boom' }] }, { status: 500 }),
       ),
     );
-    renderDlg();
+    renderDlg({ jobs: oneJob });
     const user = userEvent.setup();
     await user.selectOptions(await screen.findByRole('combobox'), '200');
     await user.click(screen.getByRole('button', { name: 'Next' }));
@@ -217,8 +241,17 @@ describe('TransferRouteDialog', () => {
     expect(cells[3].className).toContain('text-success');
   });
 
-  it('run-scoped path with no runDate + no jobs shows empty-state message', async () => {
-    server.use(stubRoutes([{ routeId: 200, label: 'North' }]));
+  it('run-scoped path with no runDate + no jobs shows empty-state message and cannot submit', async () => {
+    // Regression guard (#1004): the run menu used to POST jobIds: [] here
+    // and always got a 400. With nothing to move, Transfer stays disabled.
+    let posted = false;
+    server.use(
+      stubRoutes([{ routeId: 200, label: 'North' }]),
+      http.post('/api/runviewer/jobs/transfer-route', () => {
+        posted = true;
+        return HttpResponse.json({ response: {} });
+      }),
+    );
     renderDlg({ runId: 100 });
     const user = userEvent.setup();
     await user.selectOptions(await screen.findByRole('combobox'), '200');
@@ -226,5 +259,66 @@ describe('TransferRouteDialog', () => {
 
     const table = await screen.findByTestId('transfer-preview-table');
     expect(table.textContent).toContain('No jobs to display');
+    expect(screen.getByRole('button', { name: 'Transfer' })).toBeDisabled();
+    expect(posted).toBe(false);
+  });
+
+  it('run-scoped fetch sends the grid filters and transfers exactly the fetched ids', async () => {
+    let seenUrl = '';
+    let sent: any = null;
+    server.use(
+      stubRoutes([{ routeId: 200, label: 'North' }]),
+      http.get('/api/runviewer/runs/-15/jobs', ({ request }) => {
+        seenUrl = request.url;
+        return HttpResponse.json({
+          response: [
+            { jobId: 31, jobNumber: 'E896WILLDEL', fromAddress: 'A', runName: 'Burbank to Lab' },
+            { jobId: 32, jobNumber: 'E897WILLDEL', fromAddress: 'B', runName: 'Burbank to Lab' },
+          ],
+        });
+      }),
+      http.post('/api/runviewer/jobs/transfer-route', async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json({
+          response: { succeeded: 2, failed: 0, rowsUpdated: 2, bookingsAffected: 0, zipCodesMoved: 0, errors: [] },
+        });
+      }),
+    );
+    const props = renderDlg({
+      runId: -15,
+      runDate: '2026-11-04',
+      filters: { group: 'Outbound', speedIds: [423], clientIds: [85], regionIds: [3], courierId: 20 },
+    });
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole('combobox'), '200');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('E897WILLDEL');
+    const q = new URL(seenUrl).searchParams;
+    expect(q.get('group')).toBe('Outbound');
+    expect(q.get('speedIds')).toBe('423');
+    expect(q.get('clientIds')).toBe('85');
+    expect(q.get('regionIds')).toBe('3');
+    expect(q.get('courierId')).toBe('20');
+    await user.click(screen.getByRole('button', { name: 'Transfer' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(sent.jobIds).toEqual([31, 32]);
+  });
+
+  it('reports anchors the proc did not move instead of hiding them', async () => {
+    server.use(
+      stubRoutes([{ routeId: 200, label: 'North' }]),
+      http.post('/api/runviewer/jobs/transfer-route', () =>
+        HttpResponse.json({
+          response: { succeeded: 1, failed: 1, rowsUpdated: 1, bookingsAffected: 0, zipCodesMoved: 0, errors: ['Job 12: job not found'] },
+        }),
+      ),
+    );
+    const props = renderDlg({ jobs: [...oneJob, { jobId: 12, jobNumber: 'JB-12', fromAddress: null, currentRouteName: null }] });
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByRole('combobox'), '200');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(await screen.findByRole('button', { name: 'Transfer' }));
+    await waitFor(() => expect(props.onSuccess).toHaveBeenCalled());
+    expect(vi.mocked(props.onSuccess).mock.calls[0][0]).toMatch(/1 not moved: Job 12: job not found/);
   });
 });

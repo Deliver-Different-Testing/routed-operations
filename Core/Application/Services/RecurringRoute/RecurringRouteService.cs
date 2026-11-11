@@ -285,7 +285,7 @@ public class RecurringRouteService(
             .Select(s => new
             {
                 s.BulkRunScheduleId, s.Name, s.StartTime, s.EndTime,
-                s.ClientId, s.Region, s.SpeedId, s.DayOfWeek,
+                s.ClientId, s.Region, s.SpeedId, s.DayOfWeek, s.ScheduleId,
             })
             .ToListAsync();
 
@@ -321,7 +321,8 @@ public class RecurringRouteService(
                 s.BulkRunScheduleId,
                 s.Name ?? string.Empty,
                 FormatWindow(s.StartTime, s.EndTime),
-                days);
+                days,
+                s.ScheduleId);
         }
         return result;
     }
@@ -933,29 +934,73 @@ public class RecurringRouteService(
 
     public async Task<List<ScheduleLookupDto>> GetSchedulesLookupAsync()
     {
-        // tblBulkRunSchedule is one row per (schedule, day-of-week). Group in
-        // memory by (Name + Start + End + Client + Region + Speed) and expose
-        // the representative id (MIN) + days list. Matches Configurator's
-        // grouping semantics for the schedule picker.
-        var rows = await Context.TblBulkRunSchedules
-            .AsNoTracking()
-            .Where(s => (s.AutoBook ?? false) == false)
-            .Select(s => new
-            {
-                s.BulkRunScheduleId, s.Name, s.StartTime, s.EndTime,
-                s.DayOfWeek, s.ClientId, s.Region, s.SpeedId
-            })
+        // One entry per live schedule header (M1, 2026-11-10).
+        //
+        // Was: day rows grouped by (Name, Start, End, ClientId, Region,
+        // SpeedId) with AutoBook rows filtered out. The AutoBook filter hid
+        // most of the estate although nothing downstream treats an auto-book
+        // schedule differently for routing: Medical prod's existing bindings
+        // are on AutoBook day rows. The Route Builder cockpit
+        // keeps its own AutoBook filters (RunService, JobService); this one
+        // is the recurring-route picker only.
+        //
+        // Id stays a DAY-ROW id: the header's lowest live day-row id. That is
+        // what tblRouteSchedule stores and what the resolver matches on, and
+        // every existing binding on Urgent and Medical prod is exactly that
+        // id (checked 2026-11-10). Submitting the header id instead would bind
+        // the wrong schedule wherever a header id equals another schedule's
+        // day-row id. A live row is one the view emits with a window; rows a
+        // save blanked have none.
+        //
+        // Retired headers are excluded. Inactive ones are included and
+        // flagged: the resolver does not read IsActive, so binding a route
+        // ahead of activation does no harm.
+        var rows = await (
+                from s in Context.TblBulkRunSchedules.AsNoTracking()
+                join h in Context.BulkRunScheduleHeaders.AsNoTracking()
+                    on s.ScheduleId equals h.ScheduleId
+                where h.RetiredUtc == null && s.StartTime != null
+                select new
+                {
+                    s.BulkRunScheduleId, s.ScheduleId, HeaderName = h.Name, h.IsActive,
+                    s.StartTime, s.EndTime, s.DayOfWeek,
+                })
             .ToListAsync();
 
+        // The view's ClientId is NULL on schedules created since the junction,
+        // so client codes come from tblScheduleClient.
+        var clientCodesByHeader = (await (
+                from sc in Context.ScheduleClients.AsNoTracking()
+                join c in Context.TucClients.AsNoTracking() on sc.ClientId equals c.UcclId
+                join h in Context.BulkRunScheduleHeaders.AsNoTracking()
+                    on sc.ScheduleId equals h.ScheduleId
+                where h.RetiredUtc == null
+                select new { sc.ScheduleId, c.UcclCode })
+            .ToListAsync())
+            .Where(x => !string.IsNullOrWhiteSpace(x.UcclCode))
+            .GroupBy(x => x.ScheduleId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.UcclCode.Trim()).Distinct().OrderBy(c => c).ToList());
+
         return rows
-            .GroupBy(s => new { s.Name, s.StartTime, s.EndTime, s.ClientId, s.Region, s.SpeedId })
-            .Select(g => new ScheduleLookupDto(
-                g.Min(x => x.BulkRunScheduleId),
-                g.Key.Name ?? string.Empty,
-                g.Key.StartTime.HasValue ? g.Key.StartTime.Value.ToString(@"hh\:mm") : string.Empty,
-                g.Key.EndTime.HasValue ? g.Key.EndTime.Value.ToString(@"hh\:mm") : string.Empty,
-                g.Where(x => x.DayOfWeek.HasValue).Select(x => (int)x.DayOfWeek!.Value).OrderBy(x => x).ToList()))
+            .GroupBy(s => s.ScheduleId)
+            .Select(g =>
+            {
+                var rep = g.OrderBy(x => x.BulkRunScheduleId).First();
+                return new ScheduleLookupDto(
+                    rep.BulkRunScheduleId,
+                    rep.HeaderName ?? string.Empty,
+                    rep.StartTime.HasValue ? rep.StartTime.Value.ToString(@"hh\:mm") : string.Empty,
+                    rep.EndTime.HasValue ? rep.EndTime.Value.ToString(@"hh\:mm") : string.Empty,
+                    g.Where(x => x.DayOfWeek.HasValue).Select(x => (int)x.DayOfWeek!.Value)
+                        .Distinct().OrderBy(x => x).ToList(),
+                    g.Key,
+                    rep.IsActive,
+                    clientCodesByHeader.GetValueOrDefault(g.Key, new List<string>()));
+            })
             .OrderBy(s => s.Name)
+            .ThenBy(s => s.HeaderId)
             .ToList();
     }
 

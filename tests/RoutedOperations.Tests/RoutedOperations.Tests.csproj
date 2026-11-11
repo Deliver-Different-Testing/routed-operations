@@ -30,6 +30,7 @@
     <!-- WebApplicationFactory for controller-level + bootstrap integration
          tests (Phase 3 covers Program.cs via this). -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
 
     <!-- Coverage collector. PrivateAssets=all so consumers of this test project
          (there are none, but standard-form) do not transitively pull coverlet. -->

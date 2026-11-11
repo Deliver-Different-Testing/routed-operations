@@ -115,9 +115,10 @@ public class SchedulesController(ScheduleService svc) : BaseController
     [RequireFeature("ro-schedules", "ro-schedules-new", "ro-client-overrides")]
     public async Task<IActionResult> SearchClients(
         [FromQuery] string q = null,
-        [FromQuery] int limit = 50)
+        [FromQuery] int limit = 50,
+        [FromQuery] bool includeInactive = false)
     {
-        var list = await svc.SearchClientsAsync(q, limit);
+        var list = await svc.SearchClientsAsync(q, limit, includeInactive);
         return Ok(new { response = list });
     }
 

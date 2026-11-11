@@ -9,13 +9,34 @@ import { request } from '../../services/api';
 // (chained event dialog rule). Rendering-only P7 core - Booking landmines
 // on the JSON body (Internal + ClientFollowup as true/false, NOT 1/0) are
 // preserved in the submit payload.
+//
+// 2026-11-09 (#1003, Steve D2): Create Job Event is multi-select. With
+// `targets` the dialog posts one event per selected job, one after the
+// other, and reports "N of M created". Each post carries the tucJob id as
+// well as the bulk id, because Route Viewer rows on synthetic route runs
+// have bulkJobId 0 and the server now resolves the bulk row from the job
+// id (RouteViewerEventService.ResolveBulkJobIdAsync). Jobs that fail stay
+// in the dialog so Save retries only those, never re-posting a success.
+
+export interface EventTarget {
+  /** tblBulkJob.BulkJobID, 0 when the row has none on screen. */
+  bulkJobId: number;
+  /** tucJob.ucjbID, 0 when unknown. */
+  jobId: number;
+  jobNumber: string | null;
+}
 
 interface Props {
+  /** Single-job caller (CustomerServices): tblBulkJob.BulkJobID. Ignored
+   *  when `targets` is supplied. */
   jobId: number;
   jobNumber?: string;
   courierCode?: string | null;
+  /** Multi-job caller (RvJobContextMenu): one event per entry. */
+  targets?: EventTarget[];
   onClose: () => void;
-  onCreated: () => void;
+  /** Called once every target has an event. `summary` is "N of N created". */
+  onCreated: (summary?: string) => void;
   /** When true, this dialog auto-opened after a booking - the header
    *  banner tells the operator "your booking succeeded, now log the
    *  event". Optional. */
@@ -23,9 +44,15 @@ interface Props {
 }
 
 export function CreateEventDialog({
-  jobId, jobNumber, courierCode, onClose, onCreated, chainedFromBooking,
+  jobId, jobNumber, courierCode, targets, onClose, onCreated, chainedFromBooking,
 }: Props) {
   const user = useAuth();
+  const allTargets: EventTarget[] = targets && targets.length > 0
+    ? targets
+    : [{ bulkJobId: jobId, jobId: 0, jobNumber: jobNumber ?? null }];
+  // Targets still without an event. Shrinks as posts succeed.
+  const [pending, setPending] = useState<EventTarget[]>(allTargets);
+  const isMulti = allTargets.length > 1;
   const [followupClient, setFollowupClient] = useState(false);   // false = UCL, true = Client
   const [yourName, setYourName] = useState(user.fullName ?? '');
   const [notes, setNotes] = useState('');
@@ -37,30 +64,50 @@ export function CreateEventDialog({
   const submit = async () => {
     setSubmitting(true);
     setError(null);
-    try {
-      // Section 3.2.1 landmine: BulkEvent bools MUST serialise as
-      // true/false (not 1/0). Sending 0/1 makes the SP branch as
-      // "flag unset" on both sides because it strict-equals a bool.
-      await request('/runviewer/events', {
-        method: 'POST',
-        body: JSON.stringify({
-          bulkJobId: jobId,
-          courierId: null,
-          notes,
-          name: yourName,
-          internal: !followupClient,
-          clientFollowup: !!followupClient,
-          clientCreated: !!clientVisible,
-          eventDate: new Date().toISOString(),
-          notify: !!notifyClient,
-        }),
-      });
-      onCreated();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSubmitting(false);
+    const failed: Array<{ target: EventTarget; message: string }> = [];
+    // Sequential on purpose: one SP call at a time, like the other bulk
+    // job actions (useSequentialBulkAction).
+    for (const t of pending) {
+      try {
+        // Section 3.2.1 landmine: BulkEvent bools MUST serialise as
+        // true/false (not 1/0). Sending 0/1 makes the SP branch as
+        // "flag unset" on both sides because it strict-equals a bool.
+        const res = await request<{ response?: { bulkEventId?: number } }>('/runviewer/events', {
+          method: 'POST',
+          body: JSON.stringify({
+            bulkJobId: t.bulkJobId > 0 ? t.bulkJobId : null,
+            jobId: t.jobId > 0 ? t.jobId : null,
+            courierId: null,
+            notes,
+            name: yourName,
+            internal: !followupClient,
+            clientFollowup: !!followupClient,
+            clientCreated: !!clientVisible,
+            eventDate: new Date().toISOString(),
+            notify: !!notifyClient,
+          }),
+        });
+        // The server answers 200 with bulkEventId 0 when it did not
+        // create anything (partner session), so 0 is not a success.
+        if (!res?.response?.bulkEventId) {
+          failed.push({ target: t, message: 'no event was created' });
+        }
+      } catch (e) {
+        failed.push({ target: t, message: (e as Error).message });
+      }
     }
+    setSubmitting(false);
+    const total = allTargets.length;
+    const created = total - failed.length;
+    if (failed.length === 0) {
+      onCreated(`${created} of ${total} created.`);
+      return;
+    }
+    setPending(failed.map((f) => f.target));
+    const label = (t: EventTarget) => t.jobNumber ?? `#${t.jobId || t.bulkJobId}`;
+    setError(
+      `${created} of ${total} created. Failed: ${failed.map((f) => `${label(f.target)} (${f.message})`).join('; ')}`,
+    );
   };
 
   return (
@@ -88,8 +135,12 @@ export function CreateEventDialog({
 
       <div className="grid grid-cols-2 gap-2 text-sm">
         <div>
-          <div className="text-xs text-text-muted">Job number</div>
-          <div>{jobNumber ?? `#${jobId}`}</div>
+          <div className="text-xs text-text-muted">{isMulti ? 'Jobs' : 'Job number'}</div>
+          <div>
+            {isMulti
+              ? `${allTargets.length} jobs selected${pending.length < allTargets.length ? ` (${pending.length} left)` : ''}`
+              : (allTargets[0].jobNumber ?? `#${jobId}`)}
+          </div>
         </div>
         <div>
           <div className="text-xs text-text-muted">Courier code</div>

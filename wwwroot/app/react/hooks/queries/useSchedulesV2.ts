@@ -49,7 +49,8 @@ export const schedulesV2Keys = {
     clientIds: string,
     page: number,
     pageSize: number,
-  ) => ['schedules-v2-list', tenantId, type, q, clientId, clientIds, page, pageSize] as const,
+    depots = '',
+  ) => ['schedules-v2-list', tenantId, type, q, clientId, clientIds, page, pageSize, depots] as const,
   bundles: (tenantId: string | number) => ['schedules-v2-bundles', tenantId] as const,
   bundle: (tenantId: string | number, bundleId: number) => ['schedules-v2-bundle', tenantId, bundleId] as const,
   detail: (tenantId: string | number, scheduleId: number) =>
@@ -86,6 +87,7 @@ export function useSchedulesV2List(filters?: SchedulesV2Filters) {
       // cache buckets and each caller gets its own data.
       filters?.page ?? 0,
       filters?.pageSize ?? 0,
+      (filters?.depots ?? []).join('|'),
     ),
     queryFn: () => schedulesV2Service.list(filters),
     // Schedule state changes at operator pace, not machine pace. 30s

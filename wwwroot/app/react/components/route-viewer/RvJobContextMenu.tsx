@@ -19,6 +19,15 @@ import { MoveBackToRunBuilderDialog } from './MoveBackToRunBuilderDialog';
 //
 // NP branch (Section 7.10) collapses to just Assign Courier + Create
 // Job Event. Admin sees the full menu.
+//
+// 2026-11-09 (#1003, Steve D2): Transfer Route, Transfer Courier and
+// Create Job Event take the whole selection. Book Direct Redelivery,
+// Return to Base, Top Up, NP Assign Courier and Create Client Intel stay
+// single-job, greyed out with a "Select one job" tooltip instead of
+// silently.
+
+/** Tooltip on the items that stay single-job when 2+ jobs are selected. */
+export const SINGLE_JOB_ONLY_TOOLTIP = 'Select one job';
 
 interface Props {
   x: number;
@@ -60,6 +69,7 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
 
   const primary = jobs[0];
   const isBulk = jobs.length > 1;
+  const singleOnlyTitle = isBulk ? SINGLE_JOB_ONLY_TOOLTIP : undefined;
   const anyDialogOpen = assignOpen || transferRouteOpen || bookRedeliveryOpen || topUpOpen || eventOpen || intelOpen || moveBackOpen;
 
   useEffect(() => {
@@ -194,10 +204,10 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
         {!user.isNetworkPartner && (
           <>
             <MenuItem onClick={doActivate} disabled={running}>Activate</MenuItem>
-            <MenuItem onClick={() => { setTransferRouteOpen(true); }} disabled={running || isBulk}>
+            <MenuItem onClick={() => { setTransferRouteOpen(true); }} disabled={running}>
               Transfer Route
             </MenuItem>
-            <MenuItem onClick={() => setAssignOpen(true)} disabled={running || isBulk}>
+            <MenuItem onClick={() => setAssignOpen(true)} disabled={running}>
               Transfer Courier
             </MenuItem>
             <MenuItem onClick={doSendSms} disabled={running}>Send SMS</MenuItem>
@@ -214,29 +224,29 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
             <MenuItem onClick={doVoid} disabled={running}>Void</MenuItem>
 
             <div className="border-t border-border my-1" />
-            <MenuItem onClick={() => { setBookMode('redelivery'); setBookRedeliveryOpen(true); }} disabled={running || isBulk}>
+            <MenuItem onClick={() => { setBookMode('redelivery'); setBookRedeliveryOpen(true); }} disabled={running || isBulk} title={singleOnlyTitle}>
               Book Direct Redelivery
             </MenuItem>
-            <MenuItem onClick={() => { setBookMode('return-to-base'); setBookRedeliveryOpen(true); }} disabled={running || isBulk}>
+            <MenuItem onClick={() => { setBookMode('return-to-base'); setBookRedeliveryOpen(true); }} disabled={running || isBulk} title={singleOnlyTitle}>
               Return to Base
             </MenuItem>
-            <MenuItem onClick={() => setTopUpOpen(true)} disabled={running || isBulk}>
+            <MenuItem onClick={() => setTopUpOpen(true)} disabled={running || isBulk} title={singleOnlyTitle}>
               Top Up
             </MenuItem>
           </>
         )}
 
         {user.isNetworkPartner && (
-          <MenuItem onClick={() => setAssignOpen(true)} disabled={running || isBulk}>
+          <MenuItem onClick={() => setAssignOpen(true)} disabled={running || isBulk} title={singleOnlyTitle}>
             Assign Courier
           </MenuItem>
         )}
 
         <div className="border-t border-border my-1" />
-        <MenuItem onClick={() => setEventOpen(true)} disabled={running || isBulk}>
+        <MenuItem onClick={() => setEventOpen(true)} disabled={running}>
           Create Job Event
         </MenuItem>
-        <MenuItem onClick={() => setIntelOpen(true)} disabled={running || isBulk || !primary.proofOfDeliveryMobile}>
+        <MenuItem onClick={() => setIntelOpen(true)} disabled={running || isBulk || !primary.proofOfDeliveryMobile} title={singleOnlyTitle}>
           Create Client Intel
         </MenuItem>
       </div>
@@ -308,9 +318,18 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
           jobId={primary.bulkJobId}
           jobNumber={primary.jobNumber ?? undefined}
           courierCode={primary.courierCode}
+          // #1003: one event per selected job. When chained from a single-
+          // job booking the selection is that one job anyway.
+          targets={jobs.map((j) => ({ bulkJobId: j.bulkJobId, jobId: j.jobId, jobNumber: j.jobNumber }))}
           chainedFromBooking={eventChainedFromBooking}
           onClose={() => { setEventOpen(false); setEventChainedFromBooking(false); onClose(); }}
-          onCreated={() => { setEventOpen(false); setEventChainedFromBooking(false); onClose(); toast.show('Event created.', 'success'); onDone(); }}
+          onCreated={(summary) => {
+            setEventOpen(false);
+            setEventChainedFromBooking(false);
+            onClose();
+            toast.show(isBulk && summary ? `Events: ${summary}` : 'Event created.', 'success');
+            onDone();
+          }}
         />
       )}
       {intelOpen && primary.proofOfDeliveryMobile && (
@@ -341,17 +360,22 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
 function MenuItem({
   onClick,
   disabled,
+  title,
   children,
 }: {
   onClick: () => void;
   disabled?: boolean;
+  /** Hover text. Shown on disabled items too: the wrapper span carries it
+   *  because browsers do not fire hover on a disabled button. */
+  title?: string;
   children: React.ReactNode;
 }) {
-  return (
+  const button = (
     <button
       type="button"
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
+      title={title}
       className={`w-full text-left px-3 py-1.5 ${
         disabled
           ? 'text-text-muted cursor-not-allowed'
@@ -361,4 +385,5 @@ function MenuItem({
       {children}
     </button>
   );
+  return title ? <span className="block" title={title}>{button}</span> : button;
 }

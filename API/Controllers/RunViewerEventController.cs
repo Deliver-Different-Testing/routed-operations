@@ -56,8 +56,17 @@ public class RunViewerEventController(
     [HttpPost]
     public async Task<IActionResult> CreateEvent([FromBody] CreateEventRequest request)
     {
-        var id = await eventService.CreateEventAsync(request);
-        return Ok(new { response = new { bulkEventId = id } });
+        try
+        {
+            var id = await eventService.CreateEventAsync(request);
+            return Ok(new { response = new { bulkEventId = id } });
+        }
+        catch (EventTargetNotFoundException ex)
+        {
+            // #1003: the job has no tblBulkJob row. Clear per-job message
+            // instead of the FK_tblBulkEvent_tblBulkJob failure (500).
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/events/client-intel - create or
