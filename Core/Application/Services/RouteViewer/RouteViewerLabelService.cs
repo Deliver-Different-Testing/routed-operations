@@ -45,6 +45,14 @@ public class RouteViewerLabelService(
     private static string? ProxyBase => Environment.GetEnvironmentVariable("RunViewerLabelProxyUrl");
     private static string? ProxyToken => Environment.GetEnvironmentVariable("RunViewerLabelProxyToken");
 
+    // The label package opens its own SqlConnection, so it needs the tenant
+    // connection string. Non-relational providers (the EF InMemory store the
+    // unit tests use) have none and GetConnectionString() throws there, so an
+    // empty string is handed over instead. In the app the provider is always
+    // SQL Server and this is exactly GetConnectionString().
+    private string TenantConnectionString =>
+        Context.Database.IsRelational() ? Context.Database.GetConnectionString()! : string.Empty;
+
     // ─────────────────────────────────────────────────────────────────
     // Label PDF endpoints (Mode 1, 2, 4/8, 5, 6). AlertLabel-backed.
     // ─────────────────────────────────────────────────────────────────
@@ -55,7 +63,7 @@ public class RouteViewerLabelService(
         var templateId = await GetTemplateIdForJobAsync(jobId);
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = TenantConnectionString,
             TemplateId       = templateId,
             JobId            = jobId,
             Mode             = 1,
@@ -71,7 +79,7 @@ public class RouteViewerLabelService(
         var templateId = await GetDefaultBulkTemplateIdAsync();
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = TenantConnectionString,
             TemplateId       = templateId,
             JobId            = jobId,
             Mode             = 1,
@@ -84,7 +92,7 @@ public class RouteViewerLabelService(
         var templateId = await GetTemplateIdForBulkJobAsync(bulkJobId);
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = TenantConnectionString,
             TemplateId       = templateId,
             JobId            = bulkJobId,
             Mode             = 2,
@@ -96,17 +104,35 @@ public class RouteViewerLabelService(
         await EnsureBulkLabelFlowSupportedForNpAsync();
         var templateId = await GetDefaultBulkTemplateIdAsync();
         var trimmedRun = request.RunName?.Trim();
+
+        // Routed run -> Mode 8, otherwise Mode 4 (bulk-form run). Route Viewer
+        // sends JobIds only for routed runs (the grid's tucJob ids), so their
+        // presence settles it without the dbo.Routes lookup. Without JobIds a
+        // run name found in dbo.Routes still selects Mode 8, which then
+        // searches by route and leg number (the pre-#855 behaviour).
+        var routed = NormalizeIdCsv(request.JobIds) is not null
+            || (!string.IsNullOrEmpty(trimmedRun) && await IsRoutedRunAsync(trimmedRun));
+
+        return await alertLabelService.GeneratePdfAsync(
+            BuildBulkRunRequest(request, templateId, TenantConnectionString, routed));
+    }
+
+    /// <summary>Builds the label-package request for a Print Run: Mode 8 for
+    /// a routed run, Mode 4 for a bulk-form run. Both carry the operator's
+    /// Speed filter, the jobs on screen and the sort pick (ticket #855: all
+    /// three were dropped on the routed path, and Speed plus jobs on the bulk
+    /// path).</summary>
+    public static AlertLabelRequest BuildBulkRunRequest(
+        LabelRequest request, int templateId, string connectionString, bool routed)
+    {
+        var trimmedRun = request.RunName?.Trim();
         var bookDate   = request.BookDate ?? DateTime.Today;
 
-        // Routed-run override: run name exists in dbo.Routes -> Mode 8
-        // (queries tblBulkJob delivery jobs + tblJob LHP jobs via
-        // tucJob.RouteId -> Routes.Name with per-item barcodes from
-        // tucJobItems). Non-routed bulk-form prints use Mode 4.
-        if (!string.IsNullOrEmpty(trimmedRun) && await IsRoutedRunAsync(trimmedRun))
+        if (routed)
         {
-            return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
+            return new AlertLabelRequest
             {
-                ConnectionString = Context.Database.GetConnectionString()!,
+                ConnectionString = connectionString,
                 TemplateId       = templateId,
                 Mode             = 8,
                 BookDate         = bookDate.Date,
@@ -114,12 +140,17 @@ public class RouteViewerLabelService(
                 CourierIds       = NullIfBlank(request.CourierIds),
                 RegionIds        = NullIfBlank(request.RegionIds),
                 RunName          = trimmedRun,
-            });
+                JobIds           = NormalizeIdCsv(request.JobIds),
+                BulkJobIds       = NormalizeIdCsv(request.BulkJobIds),
+                SpeedIds         = NormalizeIdCsv(request.SpeedIds),
+                SortMode         = request.SortMode ?? 1,
+                SortDir          = request.SortDir  ?? 1,
+            };
         }
 
-        return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
+        return new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = connectionString,
             TemplateId       = templateId,
             Mode             = 4,
             BookDate         = bookDate,
@@ -127,9 +158,25 @@ public class RouteViewerLabelService(
             CourierIds       = request.CourierIds,
             RegionIds        = request.RegionIds,
             RunName          = trimmedRun,
+            BulkJobIds       = NormalizeIdCsv(request.BulkJobIds),
+            SpeedIds         = NormalizeIdCsv(request.SpeedIds),
             SortMode         = request.SortMode ?? 1,
             SortDir          = request.SortDir  ?? 1,
-        });
+        };
+    }
+
+    /// <summary>Keeps only positive integer ids from a CSV, so the label
+    /// package's CAST(value AS INT) never sees a blank or junk token. Null
+    /// when nothing usable is left.</summary>
+    public static string? NormalizeIdCsv(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return null;
+        var ids = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => int.TryParse(t, out var n) ? n : 0)
+            .Where(n => n > 0)
+            .Distinct()
+            .ToList();
+        return ids.Count == 0 ? null : string.Join(',', ids);
     }
 
     public async Task<byte[]> GetBulkLabelsBySpeedAsync(LabelRequest request)
@@ -138,7 +185,7 @@ public class RouteViewerLabelService(
         var templateId = await GetDefaultBulkTemplateIdAsync();
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = TenantConnectionString,
             TemplateId       = templateId,
             Mode             = 5,
             BookDate         = request.BookDate ?? DateTime.Today,
@@ -159,7 +206,7 @@ public class RouteViewerLabelService(
         var templateId = await GetDefaultBulkTemplateIdAsync();
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
-            ConnectionString = Context.Database.GetConnectionString()!,
+            ConnectionString = TenantConnectionString,
             TemplateId       = templateId,
             Mode             = 6,
             RunDate          = request.BookDate ?? DateTime.Today,
@@ -223,8 +270,7 @@ public class RouteViewerLabelService(
     // ─────────────────────────────────────────────────────────────────
     private async Task<bool> IsRoutedRunAsync(string runName)
     {
-        var connectionString = Context.Database.GetConnectionString()!;
-        await using var conn = new SqlConnection(connectionString);
+        await using var conn = new SqlConnection(TenantConnectionString);
         await conn.OpenAsync();
 
         const string sql = @"
@@ -241,12 +287,21 @@ public class RouteViewerLabelService(
 
     private static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
-    // ─────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------
     // Template ID lookup. AlertTemplate.TemplateType: 1 = Job label,
-    // 2 = Bulk label. Falls back to a tenant-appropriate first template
-    // when tblSetting.Default*LabelId is NULL (newly-provisioned
-    // tenants hit this until operations seeds an explicit default).
-    // ─────────────────────────────────────────────────────────────────
+    // 2 = Bulk label.
+    //
+    // Job chain:  speed LabelId -> DefaultJobLabelId -> first type-1
+    //             -> DefaultBulkLabelId -> first template of any type
+    // Bulk chain: speed LabelId -> DefaultBulkLabelId -> first type-2
+    //             -> DefaultJobLabelId -> first template of any type
+    //
+    // The two cross-type steps log a warning. They exist because a tenant
+    // with only one kind of template should still print (#855: Medical prod
+    // has a single bulk-type template, so every speed without its own
+    // LabelId, Will Call among them, returned 501 on single print). Only a
+    // tenant with no AlertTemplate at all gets the 501.
+    // -----------------------------------------------------------------
     private const int TemplateTypeJob  = 1;
     private const int TemplateTypeBulk = 2;
 
@@ -257,17 +312,7 @@ public class RouteViewerLabelService(
             .Select(j => new { j.UcjbSpeed })
             .FirstOrDefaultAsync();
 
-        var speed = job is not null
-            ? await Context.TucJobTypes.FirstOrDefaultAsync(s => s.UcjtId == job.UcjbSpeed)
-            : null;
-
-        if (speed?.LabelId is not null)
-        {
-            var label = await Context.AlertTemplates.FirstOrDefaultAsync(a => a.Id == speed.LabelId);
-            if (label is not null) return label.Id;
-        }
-
-        return await GetDefaultTemplateIdAsync(TemplateTypeJob);
+        return await GetTemplateIdForSpeedAsync(job?.UcjbSpeed, TemplateTypeJob);
     }
 
     private async Task<int> GetTemplateIdForBulkJobAsync(int bulkJobId)
@@ -277,52 +322,69 @@ public class RouteViewerLabelService(
             .Select(j => new { j.Speed })
             .FirstOrDefaultAsync();
 
-        var speed = bj is not null
-            ? await Context.TucJobTypes.FirstOrDefaultAsync(s => s.UcjtId == bj.Speed)
-            : null;
+        return await GetTemplateIdForSpeedAsync(bj?.Speed, TemplateTypeBulk);
+    }
 
-        if (speed?.LabelId is not null)
+    private async Task<int> GetTemplateIdForSpeedAsync(int? speedId, int templateType)
+    {
+        if (speedId is not null)
         {
-            var label = await Context.AlertTemplates.FirstOrDefaultAsync(a => a.Id == speed.LabelId);
-            if (label is not null) return label.Id;
+            var labelId = await Context.TucJobTypes
+                .Where(s => s.UcjtId == speedId)
+                .Select(s => s.LabelId)
+                .FirstOrDefaultAsync();
+            if (labelId is not null && await Context.AlertTemplates.AnyAsync(a => a.Id == labelId))
+                return labelId.Value;
         }
 
-        return await GetDefaultBulkTemplateIdAsync();
+        return await GetDefaultTemplateIdAsync(templateType);
     }
 
     private Task<int> GetDefaultBulkTemplateIdAsync() => GetDefaultTemplateIdAsync(TemplateTypeBulk);
 
-    // Reads the FK column directly (not the nav property) so a NULL FK
+    // Reads the FK columns directly (not the nav properties) so a NULL FK
     // doesn't NRE - the nav-property load path was the cause of the
-    // tenant-wide 500 on US medical-staging in the legacy. Fall back
-    // to the first AlertTemplate of the requested TemplateType when
-    // the FK is NULL so operators get a working print even before
-    // Default*LabelId is seeded.
+    // tenant-wide 500 on US medical-staging in the legacy.
     private async Task<int> GetDefaultTemplateIdAsync(int templateType)
     {
         var settings = await Context.TblSettings
             .Select(s => new { s.DefaultJobLabelId, s.DefaultBulkLabelId })
             .FirstOrDefaultAsync();
 
-        var configuredId = templateType == TemplateTypeBulk
-            ? settings?.DefaultBulkLabelId
-            : settings?.DefaultJobLabelId;
+        var isBulk       = templateType == TemplateTypeBulk;
+        var otherType    = isBulk ? TemplateTypeJob : TemplateTypeBulk;
+        var sameDefault  = isBulk ? settings?.DefaultBulkLabelId : settings?.DefaultJobLabelId;
+        var otherDefault = isBulk ? settings?.DefaultJobLabelId  : settings?.DefaultBulkLabelId;
 
-        if (configuredId is not null) return configuredId.Value;
+        if (sameDefault is not null) return sameDefault.Value;
 
-        var fallbackId = await Context.AlertTemplates
-            .Where(a => a.TemplateType == templateType)
+        var sameTypeId = await FirstTemplateIdAsync(templateType);
+        if (sameTypeId is not null) return sameTypeId.Value;
+
+        var crossId = otherDefault
+            ?? await FirstTemplateIdAsync(otherType)
+            ?? await FirstTemplateIdAsync(null);
+        if (crossId is not null)
+        {
+            logger.LogWarning(
+                "No {Wanted} label template configured; using AlertTemplate {TemplateId} instead. " +
+                "Set tblSetting.{Setting} to choose one explicitly.",
+                isBulk ? "bulk" : "job", crossId.Value,
+                isBulk ? "DefaultBulkLabelId" : "DefaultJobLabelId");
+            return crossId.Value;
+        }
+
+        throw new InvalidOperationException(
+            "No label template is configured for this tenant, so labels cannot be printed. " +
+            "Ask ops to set up a label (AlertTemplate) and set tblSetting.DefaultJobLabelId / DefaultBulkLabelId.");
+    }
+
+    private Task<int?> FirstTemplateIdAsync(int? templateType) =>
+        Context.AlertTemplates
+            .Where(a => templateType == null || a.TemplateType == templateType)
             .OrderBy(a => a.Id)
             .Select(a => (int?)a.Id)
             .FirstOrDefaultAsync();
-
-        if (fallbackId is not null) return fallbackId.Value;
-
-        throw new InvalidOperationException(
-            $"No AlertTemplate of TemplateType={templateType} configured. " +
-            "Seed at least one template or set tblSetting." +
-            (templateType == TemplateTypeBulk ? "DefaultBulkLabelId" : "DefaultJobLabelId") + ".");
-    }
 
     // Bulk-label flow gate. Single-job label scope checks live in
     // INpScopeGuard. Bulk-label flows route through AlertLabel whose SP

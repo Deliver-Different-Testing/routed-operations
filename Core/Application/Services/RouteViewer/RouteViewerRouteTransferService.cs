@@ -102,38 +102,88 @@ public class RouteViewerRouteTransferService(
             jobIdsCsv, request.NewRouteId, request.AlsoTransferRecurringBooking,
             request.AlsoTransferZipCodes);
 
-        // Two result sets: family report + zip move detail. We roll up
-        // succeeded/failed counts + distinct booking roots + distinct
-        // zips into the response DTO.
-        var families = await Context.Database.SqlQueryRaw<FamilyReportRow>(
-            @"EXEC dbo.RVW_stpTransferRouteForFamilies
-                @JobIDs, @NewRouteId, @AlsoTransferBooking, @AlsoTransferZipCodes",
-            SpParam.Of("@JobIDs", jobIdsCsv),
-            SpParam.Of("@NewRouteId", request.NewRouteId),
-            SpParam.Of("@AlsoTransferBooking", request.AlsoTransferRecurringBooking),
-            SpParam.Of("@AlsoTransferZipCodes", request.AlsoTransferZipCodes))
-            .ToListAsync();
+        // Two result sets: per-anchor report + zip move detail. Read both
+        // with a plain reader (SqlQueryRaw only sees the first set) and
+        // hand them to the pure rollup (TransferRouteRollup).
+        var families = new List<TransferFamilyRow>();
+        var zips = new List<TransferZipRow>();
 
-        // TODO: NextResultAsync round-trip for the second result set
-        // (zip move detail). Deferred until the SP surfaces the extra
-        // columns to a mapped DTO. Fallback: rollup from the first set.
+        var conn = Context.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open) await conn.OpenAsync();
+        try
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandType = System.Data.CommandType.StoredProcedure;
+            cmd.CommandText = "dbo.RVW_stpTransferRouteForFamilies";
+            cmd.Parameters.Add(SpParam.Of("@JobIDs", jobIdsCsv));
+            cmd.Parameters.Add(SpParam.Of("@NewRouteId", request.NewRouteId));
+            cmd.Parameters.Add(SpParam.Of("@AlsoTransferBooking", request.AlsoTransferRecurringBooking));
+            cmd.Parameters.Add(SpParam.Of("@AlsoTransferZipCodes", request.AlsoTransferZipCodes));
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                families.Add(new TransferFamilyRow
+                {
+                    AnchorJobID = ReadInt(reader, "AnchorJobID") ?? 0,
+                    FamilyRoot = ReadInt(reader, "FamilyRoot"),
+                    FromRouteId = ReadInt(reader, "FromRouteId"),
+                    RowsUpdated = ReadInt(reader, "RowsUpdated") ?? 0,
+                    Status = ReadString(reader, "Status") ?? "",
+                    BookingRootUcbkID = ReadInt(reader, "BookingRootUcbkID"),
+                    BookingRowsUpdated = ReadInt(reader, "BookingRowsUpdated") ?? 0,
+                    BookingStatus = ReadString(reader, "BookingStatus") ?? "",
+                });
+            }
+
+            if (await reader.NextResultAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    zips.Add(new TransferZipRow
+                    {
+                        FromRouteId = ReadInt(reader, "FromRouteId") ?? 0,
+                        ZipPolygonId = ReadInt(reader, "ZipPolygonId") ?? 0,
+                        Zip = ReadString(reader, "Zip"),
+                        InsertedToDestination = ReadBool(reader, "InsertedToDestination"),
+                        DeletedFromSource = ReadBool(reader, "DeletedFromSource"),
+                    });
+                }
+            }
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            // RAISERROR from the proc's own validation (inactive route,
+            // missing schema). Nothing was written, so surface it as a
+            // request problem rather than a 500.
+            logger.LogWarning(ex, "TransferRoute rejected by proc: {Message}", ex.Message);
+            throw new RouteTransferRejectedException(ex.Message);
+        }
 
         var newRouteName = await Context.Routes
             .Where(r => r.RouteId == request.NewRouteId)
             .Select(r => r.Name)
             .FirstOrDefaultAsync();
 
-        return new TransferRouteResult
-        {
-            Succeeded = families.Count(f => f.Ok),
-            Failed = families.Count(f => !f.Ok),
-            RowsUpdated = families.Sum(f => f.RowsUpdated),
-            Families = families.Select(f => f.FamilyRoot ?? "").ToList(),
-            NewRouteId = request.NewRouteId,
-            NewRouteName = newRouteName,
-            AlsoTransferredRecurringBooking = request.AlsoTransferRecurringBooking,
-            AlsoTransferredZipCodes = request.AlsoTransferZipCodes,
-        };
+        return TransferRouteRollup.Build(families, zips, request, newRouteName);
+    }
+
+    private static int? ReadInt(System.Data.Common.DbDataReader r, string col)
+    {
+        var i = r.GetOrdinal(col);
+        return r.IsDBNull(i) ? null : Convert.ToInt32(r.GetValue(i), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string? ReadString(System.Data.Common.DbDataReader r, string col)
+    {
+        var i = r.GetOrdinal(col);
+        return r.IsDBNull(i) ? null : Convert.ToString(r.GetValue(i), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static bool ReadBool(System.Data.Common.DbDataReader r, string col)
+    {
+        var i = r.GetOrdinal(col);
+        return !r.IsDBNull(i) && Convert.ToBoolean(r.GetValue(i), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static List<int> ParseIdsCsv(string? csv) =>
@@ -141,11 +191,4 @@ public class RouteViewerRouteTransferService(
             .Select(s => int.TryParse(s.Trim(), out var i) ? i : 0)
             .Where(i => i > 0)
             .ToList();
-
-    private class FamilyReportRow
-    {
-        public string? FamilyRoot { get; set; }
-        public bool Ok { get; set; }
-        public int RowsUpdated { get; set; }
-    }
 }

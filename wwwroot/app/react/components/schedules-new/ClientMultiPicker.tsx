@@ -52,6 +52,9 @@ interface Props {
    *  the standard py-1.5 / text-sm size. (Steve toolbar-alignment note
    *  2026-09-24.) */
   compact?: boolean;
+  /** S3: also list inactive accounts (labelled "(inactive)" by the server).
+   *  On for the schedule modals, off for the list's "View as" filter. */
+  includeInactive?: boolean;
 }
 
 export function ClientMultiPicker({
@@ -62,6 +65,7 @@ export function ClientMultiPicker({
   triggerWidth = 'w-56',
   panelTitle,
   compact = false,
+  includeInactive = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -79,8 +83,8 @@ export function ClientMultiPicker({
 
   // Load first-50 on open + on every debounced-search change.
   const q = useQuery({
-    queryKey: ['schedules-v2-client-picker', debounced],
-    queryFn: () => scheduleService.searchClients(debounced, 50).then((r) => r.response),
+    queryKey: ['schedules-v2-client-picker', debounced, includeInactive],
+    queryFn: () => scheduleService.searchClients(debounced, 50, includeInactive).then((r) => r.response),
     enabled: open,
     staleTime: 30_000,
   });

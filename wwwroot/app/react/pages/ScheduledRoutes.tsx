@@ -657,7 +657,8 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   const filteredSchedules = useMemo(() => {
     const needle = scheduleFilter.trim().toLowerCase();
     if (!needle) return schedules;
-    return schedules.filter((s) => s.name.toLowerCase().includes(needle));
+    return schedules.filter((s) => s.name.toLowerCase().includes(needle)
+      || s.clientCodes.some((c) => c.toLowerCase().includes(needle)));
   }, [schedules, scheduleFilter]);
 
   const targetOptions = useMemo<AssignableTarget[]>(() => {
@@ -891,7 +892,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
             <div className="border border-border rounded-lg bg-surface-white">
               <input type="text" value={scheduleFilter} onChange={(e) => setScheduleFilter(e.target.value)}
                 className={INPUT_CLASS + ' text-xs border-0 border-b border-border-light rounded-b-none'}
-                placeholder="Filter schedules by name..." />
+                placeholder="Filter schedules by name or client code..." />
               <ul className="max-h-56 overflow-auto text-xs divide-y divide-border-light">
                 {filteredSchedules.length === 0 && (
                   <li className="px-2 py-3 text-center text-text-muted italic">
@@ -906,10 +907,18 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                         <input type="checkbox" className="mt-0.5" checked={checked}
                           onChange={() => toggleSchedule(s.id)} />
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate">{s.name}</div>
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="font-medium truncate">{s.name}</span>
+                            {!s.isActive && (
+                              <span className="shrink-0 px-1 rounded bg-surface-cream text-[10px] text-text-muted border border-border-light">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-text-muted">
                             {s.startTime}-{s.endTime}
                             {s.days.length > 0 && ` (${s.days.map((d) => DAYS_OF_WEEK[d - 1] ?? d).join(',')})`}
+                            {s.clientCodes.length > 0 && ` - ${s.clientCodes.join(', ')}`}
                           </div>
                         </div>
                       </label>

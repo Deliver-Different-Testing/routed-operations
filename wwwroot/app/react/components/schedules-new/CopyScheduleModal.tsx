@@ -24,20 +24,22 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
   const auth = useAuth();
   const tenantId = auth.currentTenantId ?? 0;
   const [newName, setNewName] = useState('');
+  const [copyClientLinks, setCopyClientLinks] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (source) {
       setNewName(`${source.name ?? `Schedule #${source.scheduleId}`} (copy)`);
-      setError(null);
     } else {
       setNewName('');
-      setError(null);
     }
+    setCopyClientLinks(false);
+    setError(null);
   }, [source]);
 
   const copyMut = useMutation({
-    mutationFn: (name: string) => schedulesV2Service.copy(source!.scheduleId, name),
+    mutationFn: (name: string) =>
+      schedulesV2Service.copy(source!.scheduleId, name, [], { copyClientLinks }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       onSuccess?.();
@@ -110,9 +112,22 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
             />
           </label>
 
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={copyClientLinks}
+              disabled={source.clientCount === 0}
+              onChange={(e) => setCopyClientLinks(e.target.checked)}
+            />
+            <span className={source.clientCount === 0 ? 'text-text-muted' : 'text-text-primary'}>
+              Also link the source's {source.clientCount} client{source.clientCount === 1 ? '' : 's'}
+            </span>
+          </label>
+
           <p className="text-xs text-text-muted italic">
-            The copy inherits the source's day windows, linehauls, zones, and delivery route.
-            Client link rows are NOT copied - the new schedule starts as a default group.
+            The copy inherits the source's day windows, linehauls, zones, delivery route, display
+            name and booking settings. It is created for specific clients, not as a default, so
+            nobody can book it until you link a client or set it to all clients.
           </p>
         </div>
       )}

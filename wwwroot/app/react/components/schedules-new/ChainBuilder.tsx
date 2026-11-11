@@ -743,7 +743,7 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
         Deliver in {depotName(leg.regionId) ?? '(region not set)'}
       </div>
       <div className="text-xs text-text-muted">
-        Speed {speedName(leg.speedId) ?? '-'} · zone group {groupName(leg.postcodeGroupId) ?? '-'}
+        Speed {speedName(leg.speedId) ?? '-'} · zone group {leg.postcodeGroupId ? (groupName(leg.postcodeGroupId) ?? '-') : 'Depot base zones'}
         {leg.zones?.length > 0 && <> · zones {leg.zones.join(', ')}</>}
       </div>
     </>
@@ -1378,7 +1378,11 @@ function LegEditor({
           onChange={(e) => onPatch({ postcodeGroupId: e.target.value ? Number(e.target.value) : null } as Partial<Leg>)}
           className="mt-1 w-full px-2 py-1 border border-border rounded"
         >
-          <option value="">-</option>
+          {/* M4 / B4: NULL is not "empty". The availability function matches
+              ISNULL(PostcodeGroupId, 0) against the depot's ungrouped
+              BulkZonePostcode rows, i.e. the depot's base zone map. Showing
+              "-" made 45% of Urgent headers look like they had no zones. */}
+          <option value="">Depot base zones</option>
           {lookups.postcodeGroups.map((g) => (
             <option key={g.id} value={g.id}>{g.name}</option>
           ))}

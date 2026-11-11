@@ -81,6 +81,14 @@ public class ScheduleGroupUpsertRequest
     public List<ScheduleZoneUpsertRequest>? Zones { get; set; }
 
     /// <summary>
+    /// M4 / B4 (2026-11-10): the operator's explicit choice to write Zones to
+    /// every day. Only consulted when the schedule's live days currently hold
+    /// different active zone sets; there, a request that sends Zones without
+    /// this is refused rather than silently flattening the days.
+    /// </summary>
+    public bool? ApplyZonesToAllDays { get; set; }
+
+    /// <summary>
     /// Zones the collection leg collects from (schedule-origin spec 3.2),
     /// persisted to BulkPickupZoneSchedule. Same null-means-leave-alone
     /// contract as Zones: a payload that omits it does not wipe the rows.
@@ -200,6 +208,13 @@ public class ScheduleCopyRequest
     /// 40-client schedule.
     /// </summary>
     public bool CopyClientLinks { get; set; } = true;
+    /// <summary>
+    /// M2 / B2 (2026-11-10): null or false makes the copy a client-specific
+    /// (non-default) schedule; only an explicit true makes it a default. A
+    /// copy used to be a default unconditionally, so every client in the
+    /// region could book a half-edited copy (#2910 on Urgent prod).
+    /// </summary>
+    public bool? IsDefault { get; set; }
 }
 
 public class DayWindowUpsertRequest

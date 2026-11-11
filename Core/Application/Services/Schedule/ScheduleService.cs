@@ -1143,10 +1143,32 @@ public class ScheduleService(
         return await GetAsync(id);
     }
 
-    public async Task<List<LookupItemDto>> SearchClientsAsync(string q, int limit = 50)
+    /// <summary>
+    /// S2: ids of live schedules linked (tblScheduleClient) to a client whose
+    /// code contains <paramref name="needle"/>. Used by the Schedules NEW list
+    /// search. Reads the link table rather than the list row's chip strip,
+    /// which carries only the first 3 codes.
+    /// </summary>
+    public async Task<HashSet<int>> ScheduleIdsLinkedToClientCodeAsync(string needle)
+    {
+        if (string.IsNullOrWhiteSpace(needle)) return new HashSet<int>();
+        var pattern = $"%{needle.Trim()}%";
+        var ids = await (
+            from sc in Context.ScheduleClients.AsNoTracking()
+            join c in Context.TucClients.AsNoTracking() on sc.ClientId equals c.UcclId
+            where EF.Functions.Like(c.UcclCode, pattern)
+            select sc.ScheduleId).Distinct().ToListAsync();
+        return ids.ToHashSet();
+    }
+
+    /// <param name="includeInactive">S3: when true, inactive accounts are
+    /// listed too, with " (inactive)" after the name. The schedule modal asks
+    /// for this because a schedule can be linked to a seasonal account that is
+    /// currently inactive. Off by default so every other picker is unchanged.</param>
+    public async Task<List<LookupItemDto>> SearchClientsAsync(string q, int limit = 50, bool includeInactive = false)
     {
         var query = Context.TucClients.AsNoTracking()
-            .Where(c => c.UcclActive == true);
+            .Where(c => includeInactive || c.UcclActive == true);
 
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -1160,7 +1182,8 @@ public class ScheduleService(
         return await query
             .OrderBy(c => c.UcclCode)
             .Take(Math.Clamp(limit, 1, 200))
-            .Select(c => new LookupItemDto(c.UcclId, (c.UcclCode ?? "") + " " + (c.UcclName ?? "")))
+            .Select(c => new LookupItemDto(c.UcclId,
+                (c.UcclCode ?? "") + " " + (c.UcclName ?? "") + (c.UcclActive == true ? "" : " (inactive)")))
             .ToListAsync();
     }
 
@@ -1757,6 +1780,62 @@ public class ScheduleService(
                 .ToDictionary(g => g.Key, g => g.ToList());
         }
 
+        // N2 (2026-11-10): refuse to blank a duplicate weekday row. Some
+        // headers carry two or more live day rows on the same weekday (73 on
+        // Urgent prod, 2026-11-06). The detail modal keeps one row per weekday
+        // and sends only that row's id, so the loop below would treat every
+        // other row on that weekday as a dropped day: blank it and delete its
+        // zones and linehaul legs, none of which the operator could see.
+        // "Live" means not already blanked; a blanked row has no window. Runs
+        // here, after the unconvert, because only now do the rows carry their
+        // real payload. Throwing inside UpsertAsync's transaction rolls the
+        // unconvert back too, so a refused save changes nothing.
+        var unmatchedDuplicateDays = existing
+            .Where(r => r.StartTime != null)
+            .GroupBy(r => r.DayOfWeek)
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g)
+            .Where(r => !req.DayWindows.Any(w =>
+                (w.Id.HasValue && w.Id.Value == r.BulkRunScheduleId) ||
+                (!w.Id.HasValue && w.DayOfWeek == r.DayOfWeek)))
+            .Select(r => r.DayOfWeek)
+            .Distinct()
+            .OrderBy(d => d)
+            .ToList();
+        if (unmatchedDuplicateDays.Count > 0)
+            throw new InvalidOperationException(
+                $"Schedule #{header.ScheduleId} has more than one live day row for "
+                + string.Join(", ", unmatchedDuplicateDays.Select(WeekdayName))
+                + ". This screen shows only one row per day, so saving would blank the "
+                + "other rows and delete their zones and linehaul legs. Nothing was saved. "
+                + "Ask support to merge the duplicate rows first.");
+
+        // M4 / B4 (2026-11-10): refuse to flatten days whose delivery zones
+        // differ. Phase 2 of UpsertAsync writes req.Zones onto every day row,
+        // and the modal fills req.Zones from one day's set, so a save that
+        // only changed the description used to give every day Monday's zones.
+        // Compared over the live rows the request keeps: a day being dropped
+        // is blanked anyway, so its zones do not matter. Zones are never
+        // merged across days; the operator either picks one set for all days
+        // (ApplyZonesToAllDays) or leaves Zones out and each day keeps its own.
+        if (req.Zones != null && req.ApplyZonesToAllDays != true)
+        {
+            var keptLiveSets = BuildDayZoneSets(existing
+                .Where(r => r.StartTime != null && req.DayWindows.Any(w =>
+                    (w.Id.HasValue && w.Id.Value == r.BulkRunScheduleId) ||
+                    (!w.Id.HasValue && w.DayOfWeek == r.DayOfWeek)))
+                .Select(r => (r.BulkRunScheduleId, (int)r.DayOfWeek,
+                    zonesByDayRow.TryGetValue(r.BulkRunScheduleId, out var zs)
+                        ? (IEnumerable<BulkZoneSchedule>)zs
+                        : Enumerable.Empty<BulkZoneSchedule>())));
+            if (ZoneSetsDiffer(keptLiveSets))
+                throw new InvalidOperationException(
+                    "The days of this schedule have different delivery zones ("
+                    + DescribeDayZoneSets(keptLiveSets)
+                    + "). Saving these zones would give every day the same set. Nothing was saved. "
+                    + "Tick 'Apply this zone set to all days' to do that on purpose, or leave the zones unchanged.");
+        }
+
         // Sync day-window rows.
         var incomingIds = new HashSet<int>(req.DayWindows.Where(w => w.Id.HasValue).Select(w => w.Id!.Value));
         foreach (var row in existing.ToList())
@@ -1987,6 +2066,15 @@ public class ScheduleService(
         row.AutoBookScanAhead = null;
         row.IsRecurringSchedule = null;
     }
+
+    /// <summary>Day-row weekday (1 = Monday ... 7 = Sunday) as a word, for
+    /// operator-facing messages.</summary>
+    private static string WeekdayName(short dayOfWeek) => dayOfWeek switch
+    {
+        1 => "Monday", 2 => "Tuesday", 3 => "Wednesday", 4 => "Thursday",
+        5 => "Friday", 6 => "Saturday", 7 => "Sunday",
+        _ => $"day {dayOfWeek}",
+    };
 
     /// <summary>
     /// The next <paramref name="count"/> runs this schedule would offer,
@@ -2229,6 +2317,23 @@ public class ScheduleService(
         if (sourceRows.Count == 0)
             throw new InvalidOperationException("Source schedule has no day rows.");
 
+        // M2 / B2 (2026-11-10): AutoBookScanAhead and IsRecurringSchedule are
+        // not mapped on the view entity, and OccurrencesAhead exists only on
+        // the detail row, so a copy dropped all three. Read them from the two
+        // base tables and resolve detail-first, the same COALESCE(detail, day)
+        // the compatibility view applies.
+        var sourceDetail = await Context.BulkRunScheduleDetails.AsNoTracking()
+            .FirstOrDefaultAsync(d => d.ScheduleId == source.ScheduleId);
+        var sourceDayExtras = await Context.TblBulkRunScheduleDays.AsNoTracking()
+            .Where(d => d.ScheduleId == source.ScheduleId)
+            .Select(d => new { d.BulkRunScheduleId, d.AutoBookScanAhead, d.IsRecurringSchedule })
+            .ToDictionaryAsync(d => d.BulkRunScheduleId);
+
+        // A copy is client-specific unless the caller explicitly asks for a
+        // default. It used to be a default unconditionally, so every client in
+        // the region could book a half-edited copy (#2910 on Urgent prod).
+        var copyIsDefault = req.IsDefault == true;
+
         // Resolve target client ids before writes so a bad code throws early.
         List<int> targetClientIds;
         if (req.ClientCodes != null && req.ClientCodes.Count > 0)
@@ -2272,33 +2377,41 @@ public class ScheduleService(
         var srcPolygons = new List<int>();
 
         // New header + day-row clones + junction rows in one atomic save.
-        // CLIENT origin is deliberately NOT copied. A copy is created as a
-        // default header, and a default schedule cannot start at a client
-        // address (spec 2.1), so carrying OriginType = 'client' across would
-        // produce a row that violates its own rule. Such a copy lands as depot
-        // origin and the operator sets it after linking the client, the same
-        // order the create path forces.
+        // Origin is copied as the source had it (M2 / B2, 2026-11-10), with
+        // one exception: a copy explicitly made a DEFAULT cannot start at a
+        // client address (spec 2.1), so there client origin falls back to
+        // depot and the operator sets it after linking a client, the same
+        // order the create path forces. Before 2026-11-10 every copy was a
+        // default, so client origin was always dropped.
         //
-        // DIRECT origin IS copied (2026-10-08). The reason client origin
-        // cannot be carried is that the address is client-specific, so it
-        // means nothing on a default header. A Direct schedule has no
-        // client-specific address at all - its pickup address arrives with the
-        // booking - so the copy is meaningful as-is, and dropping it would
-        // silently turn a Direct schedule into a depot one.
-        var copiedOriginType =
-            string.Equals(source.OriginType, "direct", StringComparison.OrdinalIgnoreCase)
-                ? "direct" : "depot";
+        // DIRECT origin is copied either way (2026-10-08): its pickup address
+        // arrives with the booking, so it is meaningful on a default too.
+        var sourceOrigin = (source.OriginType ?? "depot").ToLowerInvariant();
+        var copiedOriginType = sourceOrigin switch
+        {
+            "direct" => "direct",
+            "client" when !copyIsDefault => "client",
+            _ => "depot",
+        };
         var newHeader = new BulkRunScheduleHeader
         {
             Name = newName,
-            IsDefault = true,
+            IsDefault = copyIsDefault,
             LegacyClientId = null,
             CreatedUtc = DateTime.UtcNow,
             CreatedBy = "RoutedOps",
+            DisplayName = source.DisplayName,
+            DisplayDescription = source.DisplayDescription,
+            // TODO D4: IsActive is deliberately NOT copied and not set, so the
+            // entity default (true) applies and a copy of an inactive schedule
+            // starts active. Whether a copy should start inactive is D4, still
+            // open (REPORT 2026-11-06 Q8, tied to N6). Change it there, along
+            // with CopyAsync_leaves_IsActive_as_it_was_pending_D4.
             OriginType = copiedOriginType,
-            // NULL either way: 'depot' never has one and 'direct' forces it
-            // null (its dispatch region is the day row's Region).
-            OriginRegionId = null,
+            // Only 'client' carries an origin region; 'depot' never has one
+            // and 'direct' forces it null (its dispatch region is the day
+            // row's Region).
+            OriginRegionId = copiedOriginType == "client" ? source.OriginRegionId : null,
         };
         Context.BulkRunScheduleHeaders.Add(newHeader);
 
@@ -2312,10 +2425,9 @@ public class ScheduleService(
             {
                 Name = newName,
                 // Legacy ClientId column on day row - see UpsertAsync for
-                // full rationale. New copy is always a default header
-                // (LegacyClientId is null), so day-row ClientId stays
-                // null too - matches the legacy convention where
-                // default-schedule day rows carry ClientId IS NULL.
+                // full rationale. A copy never has a LegacyClientId (its
+                // clients go through the junction), so day-row ClientId
+                // stays null too.
                 ClientId = newHeader.LegacyClientId,
                 Header = newHeader, // EF wires ScheduleId on save
                 // The view declares DayOfWeek nullable; the day table does not
@@ -2350,6 +2462,10 @@ public class ScheduleService(
                 PickupBoxDiscount = src.PickupBoxDiscount,
                 DropOffLocationId = src.DropOffLocationId,
                 Description = src.Description,
+                AutoBookScanAhead = sourceDetail?.AutoBookScanAhead
+                    ?? (sourceDayExtras.TryGetValue(src.BulkRunScheduleId, out var ex1) ? ex1.AutoBookScanAhead : null),
+                IsRecurringSchedule = sourceDetail?.IsRecurringSchedule
+                    ?? (sourceDayExtras.TryGetValue(src.BulkRunScheduleId, out var ex2) ? ex2.IsRecurringSchedule : null),
             };
             Context.TblBulkRunScheduleDays.Add(clone);
             clones.Add((clone, src));
@@ -2432,6 +2548,24 @@ public class ScheduleService(
                 _logger.LogInformation(
                     "Schedule copy {ScheduleId} saved in the old shape; convert refused: {Reasons}",
                     newHeader.ScheduleId, copyConvert.Reasons);
+
+            // uspScheduleConvert seeds OccurrencesAhead from the active-day
+            // count (one week's worth). Put the source's value back so the
+            // copy offers the same number of runs. An old-shape copy has no
+            // detail row and nowhere to store it, the same as its source
+            // would if it were old-shape.
+            if (sourceDetail != null)
+            {
+                var copyDetail = await Context.BulkRunScheduleDetails
+                    .FirstOrDefaultAsync(d => d.ScheduleId == newHeader.ScheduleId);
+                if (copyDetail != null && copyDetail.OccurrencesAhead != sourceDetail.OccurrencesAhead)
+                {
+                    copyDetail.OccurrencesAhead = sourceDetail.OccurrencesAhead;
+                    copyDetail.UpdatedUtc = DateTime.UtcNow;
+                    copyDetail.UpdatedBy = "RoutedOps";
+                    await Context.SaveChangesAsync();
+                }
+            }
 
             if (copyTx != null) await copyTx.CommitAsync();
         }
@@ -2820,6 +2954,14 @@ public class ScheduleService(
                 FormatTime(r.CutoffTime)))
             .ToList();
 
+        // M4 / B4: Zones below is one day's set. Report every live day's set
+        // too, so a schedule whose days differ is visible as such instead of
+        // looking like it has the first day's zones everywhere. Blanked rows
+        // (no window) are dropped days and are left out.
+        var dayZoneSets = BuildDayZoneSets(rows
+            .Where(r => r.StartTime != null)
+            .Select(r => (r.BulkRunScheduleId, (int)(r.DayOfWeek ?? 0), (IEnumerable<BulkZoneSchedule>)r.BulkZoneSchedules)));
+
         var zones = t.BulkZoneSchedules
             .OrderBy(z => z.Zone)
             .Select(z => new ScheduleZoneDto(z.Id, z.ScheduleId, z.Zone, z.Active))
@@ -2873,8 +3015,37 @@ public class ScheduleService(
             detail != null,
             detail?.OccurrencesAhead,
             convertRefusalReasons,
-            header.IsDefault);
+            header.IsDefault,
+            ZoneSetsDiffer(dayZoneSets),
+            dayZoneSets);
     }
+
+    /// <summary>
+    /// M4 / B4 (2026-11-10): each day row's ACTIVE delivery zones. Only
+    /// Active = 1 rows gate a booking, so an inactive row and a missing row
+    /// are the same coverage and do not count as a difference.
+    /// </summary>
+    private static List<DayZoneSetDto> BuildDayZoneSets(
+        IEnumerable<(int DayRowId, int DayOfWeek, IEnumerable<BulkZoneSchedule> Zones)> days) =>
+        days
+            .OrderBy(d => d.DayOfWeek).ThenBy(d => d.DayRowId)
+            .Select(d => new DayZoneSetDto(
+                d.DayRowId,
+                d.DayOfWeek,
+                (d.Zones ?? Enumerable.Empty<BulkZoneSchedule>())
+                    .Where(z => z.Active == true)
+                    .Select(z => z.Zone).Distinct().OrderBy(z => z).ToList()))
+            .ToList();
+
+    private static bool ZoneSetsDiffer(List<DayZoneSetDto> sets) =>
+        sets.Select(s => string.Join(",", s.ActiveZones)).Distinct().Count() > 1;
+
+    private static readonly string[] DayAbbrev = { "?", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+
+    private static string DescribeDayZoneSets(List<DayZoneSetDto> sets) =>
+        string.Join("; ", sets.Select(s =>
+            $"{(s.DayOfWeek is >= 1 and <= 7 ? DayAbbrev[s.DayOfWeek] : $"day {s.DayOfWeek}")}: "
+            + (s.ActiveZones.Count == 0 ? "no active zones" : string.Join(",", s.ActiveZones))));
 
     private static string FormatTime(TimeSpan? t) =>
         t.HasValue ? t.Value.ToString(@"hh\:mm") : null;

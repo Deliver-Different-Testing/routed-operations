@@ -262,6 +262,13 @@ export interface ScheduleGroup {
    *  client to a default schedule, so the two are independent (spec 6.1).
    *  Optional for legacy payloads; absent reads as true. */
   isDefault?: boolean;
+  /** M4/B4: true when the operating days do not all have the same active
+   *  delivery zones. A zone save would then flatten them, so the server
+   *  refuses it unless applyZonesToAllDays is sent. Optional for older
+   *  payloads; absent reads as false. */
+  zonesDifferByDay?: boolean;
+  /** M4/B4: active delivery zones per operating day row, Monday first. */
+  dayZoneSets?: Array<{ dayRowId: number; dayOfWeek: number; activeZones: number[] }>;
 }
 
 export interface LookupItem {
@@ -358,6 +365,9 @@ export interface ScheduleGroupUpsertBody {
    *  picker so the backend null-guard preserves seeded zones (see
    *  ScheduleService.SaveAsync). */
   zones: Array<{ zone: number; active: boolean | null }> | null;
+  /** M4/B4: required (true) to save `zones` on a schedule whose days
+   *  currently have different zones. The server refuses the save otherwise. */
+  applyZonesToAllDays?: boolean;
   /** Same null-means-leave-alone contract as zones. */
   pickupZones?: Array<{ zone: number; active: boolean | null }> | null;
   /** Steve F7 (2026-09-20): same null-vs-empty semantics as `zones`. */
@@ -481,7 +491,9 @@ export const scheduleService = {
    *  Use this instead of filtering `lookups.clients` client-side -
    *  the lookups payload is capped and can miss codes that fall
    *  outside the alphabetic cutoff on large tenants. */
-  searchClients: (q: string, limit = 50) =>
+  //  S3: includeInactive also lists inactive accounts, named with an
+  //  " (inactive)" suffix by the server. Only the schedule modals ask for it.
+  searchClients: (q: string, limit = 50, includeInactive = false) =>
     request<{ response: LookupItem[] }>(
-      `/schedules/clients${buildQuery({ q: q || undefined, limit })}`),
+      `/schedules/clients${buildQuery({ q: q || undefined, limit, includeInactive: includeInactive ? 'true' : undefined })}`),
 };

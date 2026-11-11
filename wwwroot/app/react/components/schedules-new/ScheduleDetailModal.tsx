@@ -560,6 +560,10 @@ export function ScheduleDetailModal({
   // operator only edits e.g. the description on a schedule that has
   // its delivery geography stored as zone rows.
   const [seededZonesJson, setSeededZonesJson] = useState<string | null>(null);
+  // M4/B4: explicit operator choice to give every day the same zone set when
+  // the days currently differ. Off by default; the server refuses the save
+  // without it.
+  const [applyZonesToAllDays, setApplyZonesToAllDays] = useState(false);
   const [seededLinehaulsJson, setSeededLinehaulsJson] = useState<string | null>(null);
 
   const currentSnapshot = useMemo(
@@ -681,6 +685,7 @@ export function ScheduleDetailModal({
     // F7: cache canonical seed for zones + linehauls. Compared against
     // current derived on save to decide null (preserve) vs [...] (replace).
     setSeededZonesJson(JSON.stringify(initialDerived.zones));
+    setApplyZonesToAllDays(false);
     setSeededLinehaulsJson(JSON.stringify(initialDerived.linehauls.map(canonicalLinehaul)));
     setInitialSnapshot(JSON.stringify({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
@@ -1025,6 +1030,15 @@ export function ScheduleDetailModal({
       );
       return;
     }
+    // M4/B4: the days have different delivery zones and the operator changed
+    // the zone picker. Saving would give every day the same set, so require
+    // the explicit choice. The server enforces the same rule.
+    if (data.zonesDifferByDay && zonesDirty && !applyZonesToAllDays) {
+      setSaveError(
+        'The days of this schedule have different delivery zones. Tick "Apply this zone set to all days" on the Route tab, or undo the zone change.',
+      );
+      return;
+    }
     setSaveError(null);
 
     const body: ScheduleGroupUpsertBody = {
@@ -1098,6 +1112,7 @@ export function ScheduleDetailModal({
       zones: zonesDirty
         ? derived.zones.map((z) => ({ zone: z, active: true }))
         : null,
+      ...(zonesDirty && applyZonesToAllDays ? { applyZonesToAllDays: true } : {}),
       linehauls: linehaulsDirty ? derived.linehauls : null,
       // Client link rows are managed via the Clients tab attach/detach
       // endpoints, not upsert. Preserve the current set so the backend
@@ -1567,6 +1582,8 @@ export function ScheduleDetailModal({
               onLegsChange={setFormLegs}
               lookups={lookups}
               readOnly={isOverride}
+              applyZonesToAllDays={applyZonesToAllDays}
+              onApplyZonesToAllDaysChange={setApplyZonesToAllDays}
               overrideMode={isOverride ? {
                 ovCollSpeedId, setOvCollSpeedId,
                 ovCollZoneGroupId, setOvCollZoneGroupId,
@@ -2096,6 +2113,9 @@ interface RouteTabProps {
    *  whole route + Advanced block is disabled, and the "Override values"
    *  panel renders below for the collection + delivery leg-scope deltas. */
   readOnly?: boolean;
+  /** M4/B4: operator's explicit choice to flatten differing day zones. */
+  applyZonesToAllDays?: boolean;
+  onApplyZonesToAllDaysChange?: (v: boolean) => void;
   overrideMode?: {
     ovCollSpeedId: number | null;
     setOvCollSpeedId: (v: number | null) => void;
@@ -2114,7 +2134,49 @@ interface RouteTabProps {
   } | null;
 }
 
-function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = false, overrideMode = null }: RouteTabProps) {
+const DAY_ABBREV = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+/**
+ * M4/B4 warning. Shown when the operating days do not share one active
+ * delivery zone set (each weekday row carries its own BulkZoneSchedule rows).
+ * The zone picker shows one day's set, so saving a change would copy it to
+ * every day; the checkbox is the operator saying that is intended.
+ */
+function DayZonesDifferBanner({
+  sets, applyAll, onApplyAllChange, readOnly,
+}: {
+  sets: Array<{ dayRowId: number; dayOfWeek: number; activeZones: number[] }>;
+  applyAll: boolean;
+  onApplyAllChange?: (v: boolean) => void;
+  readOnly: boolean;
+}) {
+  return (
+    <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 space-y-2" data-testid="day-zones-differ-banner">
+      <p className="font-semibold">The days of this schedule have different delivery zones.</p>
+      <ul className="list-disc pl-5">
+        {sets.map((s) => (
+          <li key={s.dayRowId}>
+            {DAY_ABBREV[s.dayOfWeek] ?? `Day ${s.dayOfWeek}`}: {s.activeZones.length > 0 ? s.activeZones.join(', ') : 'no active zones'}
+          </li>
+        ))}
+      </ul>
+      <p>The zone picker below shows one day only. Leaving the zones untouched keeps each day as it is. Changing them replaces every day&apos;s zones with the one set, so it needs the box ticked.</p>
+      {!readOnly && (
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={applyAll}
+            onChange={(e) => onApplyAllChange?.(e.target.checked)}
+            data-testid="apply-zones-to-all-days"
+          />
+          Apply this zone set to all days
+        </label>
+      )}
+    </div>
+  );
+}
+
+function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = false, overrideMode = null, applyZonesToAllDays = false, onApplyZonesToAllDaysChange }: RouteTabProps) {
   const [advOpen, setAdvOpen] = useState(false);
   return (
     <div className="space-y-4">
@@ -2135,6 +2197,14 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
           (legs.find((l) => l.type === 'depot') as DepotLeg | undefined)?.clientAddress === true
         }
       />
+      {data?.zonesDifferByDay && (
+        <DayZonesDifferBanner
+          sets={data.dayZoneSets ?? []}
+          applyAll={applyZonesToAllDays}
+          onApplyAllChange={onApplyZonesToAllDaysChange}
+          readOnly={readOnly}
+        />
+      )}
       <div className={readOnly ? 'pointer-events-none opacity-60' : undefined}>
         <ChainBuilder
           legs={legs}
@@ -2340,11 +2410,15 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
                 onChange={(e) => advanced.onApplyPickupCutoffChange(e.target.checked)}
                 className="accent-brand-cyan"
               />
-              Apply pickup cutoff (courier must arrive by N hours before delivery)
+              {/* N5 (2026-11-10): the booking procs apply this as MINUTES,
+                  DATEADD(MINUTE, -@PickupCutoff, @ScheduleDateTime), the
+                  same as Client Manager's "Pickup Minutes Before Start
+                  Time". It was labelled hours, so 3 meant 3 minutes. */}
+              Apply pickup cutoff (collection is set N minutes before the run start time)
             </label>
             {advanced.applyPickupCutoff && (
               <label className="block text-xs">
-                Pickup cutoff (hours)
+                Pickup cutoff (minutes before start time)
                 <input
                   type="number"
                   min={0}
@@ -2789,9 +2863,11 @@ function RosterTab({ data }: { data: ScheduleGroup }) {
     queryFn: () => recurringRouteService.list().then((r) => r.response),
     staleTime: 30_000,
   });
+  // data.scheduleId is the HEADER id; a route binding holds a DAY-ROW id,
+  // so comparing those two only matched by accident (N3). Header to header.
   const boundRoutes = useMemo<RecurringRoute[]>(
     () => (routesQuery.data ?? []).filter((r) =>
-      r.schedules.some((s) => s.scheduleId === data.scheduleId),
+      r.schedules.some((s) => s.headerId === data.scheduleId),
     ),
     [routesQuery.data, data.scheduleId],
   );
