@@ -1404,11 +1404,16 @@ public class ScheduleServiceTests : IDisposable
         //
         // 74 live schedules on Urgent production could not convert, so this
         // was reachable on all of them.
+        //
+        // Since 2026-11-11 only a dropped row that something else still holds
+        // is blanked (an unreferenced one is deleted, pinned below), so a job
+        // on Tuesday's row keeps this test on the blanking path.
         var svc = NewSvcWithSeed(out var seed, out var opts);
         using (seed)
         {
             var create = ValidRequest();            // Monday and Tuesday
             var created = await svc.UpsertAsync(create);
+            await PlantJobOnDayAsync(seed, created.ScheduleId, dayOfWeek: 2);
 
             var drop = ValidRequest();              // Monday only
             drop.ScheduleId = created.ScheduleId;
@@ -1609,8 +1614,11 @@ public class ScheduleServiceTests : IDisposable
     {
         // The same flaw, reached through ClearDayRowPayload rather than the
         // template: the dropped day kept its restored window, so the weekday the
-        // operator removed stayed bookable.
+        // operator removed stayed bookable. Only a referenced row is blanked,
+        // so the Tuesday row carries a job.
         var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+        using (var plant = CockpitTestHarness.Context(opts))
+            await PlantJobOnDayAsync(plant, scheduleId, dayOfWeek: 2);
 
         var drop = ValidRequest();
         drop.ScheduleId = scheduleId;
@@ -1625,6 +1633,111 @@ public class ScheduleServiceTests : IDisposable
         Assert.Null(dropped.StartTime);
         Assert.Null(dropped.EndTime);
         Assert.Null(dropped.PostcodeGroupId);
+    }
+
+    // ─── 2026-11-11: an unticked day nothing references is deleted ───
+    //
+    // Urgent prod, schedules 2920 / 2921: the operator unticked Mon/Wed/Fri,
+    // the rows were blanked, uspScheduleConvert counted the blank rows as days
+    // and refused with WindowVariesByDay, and with no detail row the compat
+    // view emitted them with NULL StartTime / Region. Bulk Import's
+    // GET /api/Clients/{id}/Settings maps both as non-nullable and returned 500
+    // on every upload. A row nothing holds is now deleted, so the days left
+    // agree and the convert has nothing to trip over.
+
+    /// <summary>A tblBulkJob row pointing at one day row of the schedule, the
+    /// cheapest outside reference the Sqlite model has.</summary>
+    private static async Task PlantJobOnDayAsync(DbContext db, int scheduleId, short dayOfWeek)
+    {
+        var ctx = (DespatchContext)db;
+        var dayRowId = ctx.TblBulkRunScheduleDays
+            .Single(r => r.ScheduleId == scheduleId && r.DayOfWeek == dayOfWeek)
+            .BulkRunScheduleId;
+        var date = new DateTime(2026, 11, 10);
+        ctx.TblBulkJobs.Add(new TblBulkJob
+        {
+            JobNumber = "J-DROP", ClientId = 1, ClientCode = "C",
+            BookDate = date, BookTime = date, JobStatus = 0, Speed = 1,
+            FromAddress = "F", ToAddress = "T", RunOrder = 1,
+            ScheduleId = dayRowId,
+        });
+        await ctx.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task UpsertAsync_deletes_an_unticked_day_row_nothing_references()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());   // Monday and Tuesday
+
+            var drop = ValidRequest();                             // Monday only
+            drop.ScheduleId = created.ScheduleId;
+            drop.DayWindows = new List<DayWindowUpsertRequest>
+            {
+                new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            };
+            await svc.UpsertAsync(drop);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var rows = read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == created.ScheduleId).ToList();
+            var only = Assert.Single(rows);
+            Assert.Equal((short)1, only.DayOfWeek);
+            Assert.NotNull(only.StartTime);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_on_a_collapsed_schedule_deletes_an_unticked_day_nothing_references()
+    {
+        var (svc, opts, scheduleId) = await NewCollapsedScheduleAsync();
+
+        var drop = ValidRequest();
+        drop.ScheduleId = scheduleId;
+        drop.DayWindows = new List<DayWindowUpsertRequest>
+        {
+            new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+        };
+        await svc.UpsertAsync(drop);
+
+        using var read = CockpitTestHarness.Context(opts);
+        Assert.DoesNotContain(read.TblBulkRunScheduleDays.ToList(),
+            r => r.ScheduleId == scheduleId && r.DayOfWeek == 2);
+        Assert.Single(read.TblBulkRunScheduleDays.Where(r => r.ScheduleId == scheduleId).ToList());
+    }
+
+    [Fact]
+    public async Task UpsertAsync_deleting_an_unticked_day_removes_its_zone_rows_too()
+    {
+        // The zone rows have a NO ACTION foreign key on the day row, so the
+        // delete only works because the save removes them in the same batch.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            var tuesday = seed.TblBulkRunScheduleDays
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 2);
+            seed.BulkZoneSchedules.Add(new BulkZoneSchedule
+            {
+                ScheduleId = tuesday.BulkRunScheduleId, Zone = 9, Active = true,
+            });
+            await seed.SaveChangesAsync();
+
+            var drop = ValidRequest();
+            drop.ScheduleId = created.ScheduleId;
+            drop.DayWindows = new List<DayWindowUpsertRequest>
+            {
+                new() { DayOfWeek = 1, StartTime = "08:00", EndTime = "17:00", CutoffDay = 1, CutoffTime = "15:00" },
+            };
+            await svc.UpsertAsync(drop);
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.DoesNotContain(read.TblBulkRunScheduleDays.ToList(),
+                r => r.BulkRunScheduleId == tuesday.BulkRunScheduleId);
+            Assert.DoesNotContain(read.BulkZoneSchedules.ToList(),
+                z => z.ScheduleId == tuesday.BulkRunScheduleId);
+        }
     }
 
     // ─── N2: a header with two live day rows on one weekday ───
