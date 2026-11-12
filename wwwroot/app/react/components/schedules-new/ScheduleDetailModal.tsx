@@ -16,7 +16,8 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
-import { ChainBuilder, deriveOriginFromLegs, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
+import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE, INACTIVE_DEPOT_OVERRIDE_MESSAGE } from '../../lib/depotOptions';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
@@ -37,6 +38,7 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
+import { copyMondayToOtherDays } from '../../lib/copyMondayToDays';
 import { clientsService, type ClientGeocodeResult } from '../../services/clientsService';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
@@ -471,6 +473,9 @@ export function ScheduleDetailModal({
   // configured and could not be changed. State lives here rather than in
   // ClientsTab because it ships in the Save body with everything else.
   const [formIsDefault, setFormIsDefault] = useState(true);
+  // D2: hide same-lane defaults from this schedule's clients. Only shown,
+  // and only sent as true, on a schedule for specific clients.
+  const [formBlockDefaults, setFormBlockDefaults] = useState(false);
   // F13 (Steve 2026-09-20): client-facing display copy. Empty string is
   // saved as NULL so the backend can distinguish "cleared" from "unset".
   const [formDisplayName, setFormDisplayName] = useState('');
@@ -571,6 +576,7 @@ export function ScheduleDetailModal({
       name: formName, description: formDescription, autoBook: formAutoBook,
       isActive: formIsActive,
       isDefault: formIsDefault,
+      blockDefaults: formBlockDefaults,
       displayName: formDisplayName, displayDescription: formDisplayDescription,
       occurrencesAhead: formOccurrencesAhead,
       legs: formLegs, days: formDays,
@@ -584,7 +590,7 @@ export function ScheduleDetailModal({
       postcodeIds: formPostcodeIds,
       polygonIds: formPolygonIds,
     }),
-    [formName, formDescription, formAutoBook, formIsActive, formIsDefault,
+    [formName, formDescription, formAutoBook, formIsActive, formIsDefault, formBlockDefaults,
      formDisplayName, formDisplayDescription, formOccurrencesAhead,
      formLegs, formDays,
      formPickupPostcodeGroupId, formParentSpeedId, formDeliveryState,
@@ -639,6 +645,7 @@ export function ScheduleDetailModal({
     // once the API ships it, data.isDefault is always present.
     const seedIsDefault = data.isDefault
       ?? (data.legacyClientId == null && data.clientIds.length === 0);
+    const seedBlockDefaults = data.blockDefaults === true;
     const seedDisplayName = data.displayName ?? '';
     const seedDisplayDescription = data.displayDescription ?? '';
     const seedLegs = seedLegsFromDto(data);
@@ -666,6 +673,7 @@ export function ScheduleDetailModal({
     setFormAutoBook(seedAutoBook);
     setFormIsActive(seedIsActive);
     setFormIsDefault(seedIsDefault);
+    setFormBlockDefaults(seedBlockDefaults);
     setFormDisplayName(seedDisplayName);
     setFormDisplayDescription(seedDisplayDescription);
     setFormOccurrencesAhead(seedOccurrencesAhead);
@@ -691,6 +699,7 @@ export function ScheduleDetailModal({
       name: seedName, description: seedDescription, autoBook: seedAutoBook,
       isActive: seedIsActive,
       isDefault: seedIsDefault,
+      blockDefaults: seedBlockDefaults,
       displayName: seedDisplayName, displayDescription: seedDisplayDescription,
       occurrencesAhead: seedOccurrencesAhead,
       legs: seedLegs, days: seedDays,
@@ -1009,6 +1018,14 @@ export function ScheduleDetailModal({
     // upsert validations entirely (name / region / days apply to the
     // base schedule; overrides layer on top).
     if (isOverride && overrideMode) {
+      // #3 (Kevin, 12 Nov): an override carries no depot, but it still sits
+      // on the base schedule's route, so the same inactive-depot block
+      // applies. formLegs here are the base legs (Route is read-only in
+      // override mode); the fix has to happen on the base schedule.
+      if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(formLegs))) {
+        setSaveError(INACTIVE_DEPOT_OVERRIDE_MESSAGE);
+        return;
+      }
       setSaveError(null);
       ovSaveMut.mutate(buildOverridePutBody());
       return;
@@ -1019,6 +1036,7 @@ export function ScheduleDetailModal({
     }
     const enabledDays = formDays.filter((d) => d.enabled);
     if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
+    if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(formLegs))) { setSaveError(INACTIVE_DEPOT_MESSAGE); return; }
     // Spec 6.1 rule 3, operator-facing half. The backend refuses this too;
     // catching it here names the fix in the operator's own terms instead of
     // surfacing a server error after a round trip. legacyClientId counts as
@@ -1056,6 +1074,9 @@ export function ScheduleDetailModal({
       // boolean every save, not omit-to-leave-alone: the operator can see
       // which one is selected, so the save should mean it.
       isDefault: formIsDefault,
+      // D2. Explicit every save, like isDefault; never true on a default
+      // (the server would clear it anyway).
+      blockDefaults: !formIsDefault && formBlockDefaults,
       // Blank means leave it alone. Only applies once the schedule has
       // collapsed, because the value lives on the detail row; the backend
       // ignores it on an old-shape schedule rather than failing, and the
@@ -1573,6 +1594,8 @@ export function ScheduleDetailModal({
               overrideMode={overrideMode}
               isDefault={formIsDefault}
               onIsDefaultChange={setFormIsDefault}
+              blockDefaults={formBlockDefaults}
+              onBlockDefaultsChange={setFormBlockDefaults}
             />
           )}
           {tab === 'route' && (
@@ -1676,11 +1699,15 @@ interface ClientsTabProps {
    *  disabled reading derived from how many clients were configured. */
   isDefault: boolean;
   onIsDefaultChange: (next: boolean) => void;
+  /** D2: the "hide default schedules" switch, shown on a schedule for
+   *  specific clients only. */
+  blockDefaults: boolean;
+  onBlockDefaultsChange: (next: boolean) => void;
 }
 
 function ClientsTab({
   data, onAttachClients, onOpenSchedule, onOpenOverride, overrideMode,
-  isDefault, onIsDefaultChange,
+  isDefault, onIsDefaultChange, blockDefaults, onBlockDefaultsChange,
 }: ClientsTabProps) {
   const qc = useQueryClient();
   const auth = useAuth();
@@ -1834,6 +1861,24 @@ function ClientsTab({
             testId="who-can-book-specific-clients"
           />
         </div>
+        {!isDefault && (
+          <label className="mt-3 flex items-start gap-2 text-sm" data-testid="block-defaults-row">
+            <input
+              type="checkbox"
+              checked={blockDefaults}
+              onChange={(e) => onBlockDefaultsChange(e.target.checked)}
+              className="mt-0.5 accent-brand-cyan"
+              data-testid="block-defaults-checkbox"
+            />
+            <span>
+              <span className="text-text-primary">Hide default schedules for linked clients on this lane</span>
+              <span className="block text-xs text-text-muted">
+                While this schedule is active, its clients stop seeing the default schedules with the
+                same delivery depot, origin depot and speed.
+              </span>
+            </span>
+          </label>
+        )}
         <p className="mt-2 text-xs text-text-muted">
           Takes effect on Save, with the rest of the schedule.
         </p>
@@ -2078,7 +2123,7 @@ interface RouteTabProps {
   legs: Leg[];
   onLegsChange: (legs: Leg[]) => void;
   lookups: {
-    depots: { id: number; name: string }[];
+    depots: { id: number; name: string; active?: boolean }[];
     speeds: { id: number; name: string }[];
     postcodeGroups: { id: number; name: string; depotId: number | null }[];
     storageStates: { id: number; label: string }[];
@@ -2658,6 +2703,22 @@ function DaysTab({ days, onChange, scheduleId, readOnly = false, overrideMode = 
             : 'cut-off is the exact day + time bookings close for this day\'s collection'}
         </span>
       </div>
+      {!overrideMode && !readOnly && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => onChange(copyMondayToOtherDays(days))}
+            disabled={!days[0]?.enabled || !days.some((d, i) => i > 0 && d.enabled)}
+            title={days[0]?.enabled
+              ? 'Copy Monday\'s cut-off, collection and delivery onto the other ticked days. The cut-off day moves with each day.'
+              : 'Tick Monday first'}
+            className="px-2 py-1 text-xs rounded border border-border hover:bg-surface-light disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="days-tab-copy-monday"
+          >
+            Copy Monday to other days
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-7 gap-2">
         {[1, 2, 3, 4, 5, 6, 7].map((n) => {
           const i = n - 1;
@@ -2687,21 +2748,6 @@ function DaysTab({ days, onChange, scheduleId, readOnly = false, overrideMode = 
               </label>
               {showBaseDetails && (
                 <div className="mt-1 space-y-1">
-                  <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Window</span>
-                  <input
-                    type="time"
-                    value={d.startTime}
-                    onChange={(e) => patch(i, { startTime: e.target.value })}
-                    disabled={readOnly}
-                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
-                  />
-                  <input
-                    type="time"
-                    value={d.endTime}
-                    onChange={(e) => patch(i, { endTime: e.target.value })}
-                    disabled={readOnly}
-                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
-                  />
                   {/* F11 Phase C (2026-09-24): absolute cutoff pair.
                       Labelled + matched to the Window inputs' shape so
                       operators know they're editing the cut-off day+time,
@@ -2732,6 +2778,29 @@ function DaysTab({ days, onChange, scheduleId, readOnly = false, overrideMode = 
                     disabled={readOnly}
                     className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
                     title="Cut-off time"
+                  />
+                  {/* M12 / R1: the day reads in the order things happen:
+                      cut-off, collection, delivery. StartTime is the
+                      collection instant (ScheduleAvailabilityService's
+                      NextCollectionAt is the day at StartTime); EndTime
+                      closes the window. */}
+                  <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Collection</span>
+                  <input
+                    type="time"
+                    value={d.startTime}
+                    onChange={(e) => patch(i, { startTime: e.target.value })}
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
+                    title="Collection time"
+                  />
+                  <span className="block text-[10px] uppercase tracking-wide text-text-muted mt-1">Delivery</span>
+                  <input
+                    type="time"
+                    value={d.endTime}
+                    onChange={(e) => patch(i, { endTime: e.target.value })}
+                    disabled={readOnly}
+                    className={`w-full text-xs border border-border rounded px-1 ${readOnly ? 'bg-surface-light cursor-not-allowed' : ''}`}
+                    title="Delivery time"
                   />
                 </div>
               )}

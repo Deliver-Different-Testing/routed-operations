@@ -179,6 +179,12 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
     public async Task<IActionResult> GetUsZoneGroups() =>
         Ok(new { response = await svc.GetZoneGroupsAsync() });
 
+    /// <summary>Driver location lists (tblClearListArea) for the zone group
+    /// form's Clear-List Area picker, ordered by Order then Name.</summary>
+    [HttpGet("clear-list-areas")]
+    public async Task<IActionResult> GetClearListAreas() =>
+        Ok(new { response = await svc.GetClearListAreasAsync() });
+
     // ─── POSTCODE GROUP WRITES ─────────────────────────────────────────────
 
     [HttpPost("postcode-groups")]

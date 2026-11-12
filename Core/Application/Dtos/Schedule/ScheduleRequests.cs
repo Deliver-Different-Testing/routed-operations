@@ -161,6 +161,15 @@ public class ScheduleGroupUpsertRequest
     /// gets an override row instead, which this never touches.
     /// </summary>
     public byte? OccurrencesAhead { get; set; }
+
+    /// <summary>
+    /// D2: hide same-lane default schedules (same delivery depot, origin
+    /// depot and speed) from the clients linked to this schedule. Null
+    /// leaves it alone on update and means false on create. Only kept on a
+    /// non-default schedule; a save that leaves the schedule default
+    /// clears it.
+    /// </summary>
+    public bool? BlockDefaults { get; set; }
 }
 
 /// <summary>
@@ -215,6 +224,12 @@ public class ScheduleCopyRequest
     /// region could book a half-edited copy (#2910 on Urgent prod).
     /// </summary>
     public bool? IsDefault { get; set; }
+    /// <summary>
+    /// D4: whether the copy starts active. Null falls back to
+    /// ScheduleService.CopyStartsActiveDefault (false), so a half-edited copy
+    /// is not bookable until someone switches it on.
+    /// </summary>
+    public bool? IsActive { get; set; }
 }
 
 public class DayWindowUpsertRequest

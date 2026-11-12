@@ -29,6 +29,15 @@ export function postcodeGroupLabel(isUs: boolean, plural = false): string {
   return plural ? 'Postcode Groups' : 'Postcode Group';
 }
 
+/** Zone groups (and the zone names under them) exist on US and AU tenants,
+ *  where each group points at a driver location list. NZ has none. Takes the
+ *  CountryCode claim (user.countryCode), not the bootstrap's, which reports AU
+ *  as "NZ". */
+export function tenantHasZoneGroups(countryCode: string | null | undefined): boolean {
+  const c = (countryCode ?? '').toUpperCase();
+  return c === 'US' || c === 'AU';
+}
+
 export function stateLabel(isUs: boolean): string {
   return isUs ? 'State' : 'Region';
 }

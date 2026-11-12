@@ -164,6 +164,9 @@ export interface ScheduleGroupSummary {
    *  (spec 6.1). Optional for legacy payloads that pre-date the field;
    *  treat an absent value as true, which is what the backend defaults. */
   isDefault?: boolean;
+  /** D2: this non-default schedule hides same-lane defaults (same delivery
+   *  depot, origin depot and speed) from its linked clients. Absent = false. */
+  blockDefaults?: boolean;
 }
 
 export interface ScheduleGroup {
@@ -269,6 +272,8 @@ export interface ScheduleGroup {
   zonesDifferByDay?: boolean;
   /** M4/B4: active delivery zones per operating day row, Monday first. */
   dayZoneSets?: Array<{ dayRowId: number; dayOfWeek: number; activeZones: number[] }>;
+  /** D2: see ScheduleGroupSummary.blockDefaults. Absent = false. */
+  blockDefaults?: boolean;
 }
 
 export interface LookupItem {
@@ -309,8 +314,14 @@ export interface ZoneOption {
   groupLabel: string;
 }
 
+/** A depot in the schedule lookups. Inactive depots are included so a saved
+ *  one still has a name; the selects hide them otherwise (lib/depotOptions). */
+export interface DepotLookupItem extends LookupItem {
+  active?: boolean;
+}
+
 export interface ScheduleLookups {
-  depots: LookupItem[];
+  depots: DepotLookupItem[];
   speeds: LookupItem[];
   couriers: LookupItem[];
   /** Active clients for the multi-client picker (capped at 500 per tenant). */
@@ -434,6 +445,10 @@ export interface ScheduleGroupUpsertBody {
    *  schedule has nowhere to store it. Sets the SCHEDULE's value; a
    *  client needing a different number gets an override instead. */
   occurrencesAhead?: number | null;
+  /** D2: hide same-lane defaults from this schedule's clients. Omit to leave
+   *  it alone. Only kept on a non-default schedule; the server clears it
+   *  when the schedule is (or becomes) a default. */
+  blockDefaults?: boolean;
 }
 
 export interface ScheduleCopyBody {

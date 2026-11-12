@@ -764,7 +764,8 @@ public class ScheduleService(
                     detailsByScheduleId.TryGetValue(header.ScheduleId, out var det),
                     det?.OccurrencesAhead,
                     header.OriginType ?? "depot",
-                    header.IsDefault);
+                    header.IsDefault,
+                    header.BlockDefaults);
             });
 
         // "All live headers" mode. Used by /api/v2/schedules (Steve's
@@ -1189,10 +1190,12 @@ public class ScheduleService(
 
     public async Task<ScheduleLookupsDto> GetLookupsAsync()
     {
+        // Every depot, with its flag. The selects hide inactive ones unless one
+        // is already the field's value; filtering here instead left a schedule
+        // on a retired depot showing a blank select.
         var depots = await Context.TblBulkRegions.AsNoTracking()
-            .Where(r => r.Active ?? true)
             .OrderBy(r => r.Name)
-            .Select(r => new LookupItemDto(r.BulkRegionId, r.Name))
+            .Select(r => new DepotLookupDto(r.BulkRegionId, r.Name, r.Active ?? true))
             .ToListAsync();
 
         var speeds = await Context.TucJobTypes.AsNoTracking()
@@ -1445,6 +1448,10 @@ public class ScheduleService(
             // would otherwise be refused on the value the schedule had before
             // the save. Null leaves it alone, so a pre-6.1 caller is unchanged.
             if (req.IsDefault.HasValue) header.IsDefault = req.IsDefault.Value;
+            // D2: null leaves it alone. A default schedule never carries it,
+            // so turning a schedule default also clears it.
+            if (req.BlockDefaults.HasValue) header.BlockDefaults = req.BlockDefaults.Value;
+            if (header.IsDefault) header.BlockDefaults = false;
             // Spec 2.1: a default schedule cannot start at a client address,
             // because "the client" is not defined for a schedule every client
             // can book. Enforced here rather than in the UI so the API cannot
@@ -1473,6 +1480,8 @@ public class ScheduleService(
                 // contract ("create always makes a default") is preserved for
                 // callers that do not send the field.
                 IsDefault = req.IsDefault ?? true,
+                // D2: only a non-default schedule can hide defaults.
+                BlockDefaults = req.BlockDefaults == true && !(req.IsDefault ?? true),
                 LegacyClientId = null,
                 CreatedUtc = DateTime.UtcNow,
                 CreatedBy = "RoutedOps",
@@ -1616,7 +1625,7 @@ public class ScheduleService(
 
             // Only now, so EF compares against what the unconvert really left
             // in the database. See SyncDayRowsAsync.
-            var (existing, guardDays) = await SyncDayRowsAsync(header, req, name);
+            var (existing, guardDays, zoneSeed) = await SyncDayRowsAsync(header, req, name);
 
             await Context.SaveChangesAsync();
 
@@ -1654,7 +1663,35 @@ public class ScheduleService(
                         Context.TblBulkScheduleLinehauls.Add(leg);
                     }
             }
-            if (req.Zones != null || req.PickupZones != null || req.Linehauls != null)
+            // Weekday zones: an added day copies the zone rows of the day
+            // SyncDayRowsAsync picked, for each kind the request leaves alone.
+            var seededZones = false;
+            foreach (var row in zoneSeed.Rows)
+            {
+                if (req.Zones == null)
+                    foreach (var (zone, active) in zoneSeed.Zones)
+                    {
+                        Context.BulkZoneSchedules.Add(new BulkZoneSchedule
+                        {
+                            ScheduleId = row.BulkRunScheduleId,
+                            Zone = zone,
+                            Active = active,
+                        });
+                        seededZones = true;
+                    }
+                if (req.PickupZones == null)
+                    foreach (var (zone, active) in zoneSeed.PickupZones)
+                    {
+                        Context.BulkPickupZoneSchedules.Add(new BulkPickupZoneSchedule
+                        {
+                            ScheduleId = row.BulkRunScheduleId,
+                            Zone = zone,
+                            Active = active,
+                        });
+                        seededZones = true;
+                    }
+            }
+            if (req.Zones != null || req.PickupZones != null || req.Linehauls != null || seededZones)
                 await Context.SaveChangesAsync();
 
             // Convert-on-save (collapse plan 4.1, decided 8 Oct). The write
@@ -1739,10 +1776,11 @@ public class ScheduleService(
     /// blanked here, and a blanked one makes uspScheduleConvert refuse with
     /// WindowVariesByDay on its own.
     /// </summary>
-    private async Task<(List<TblBulkRunScheduleDay> Rows, List<ScheduleConvertGuard.Day> GuardDays)> SyncDayRowsAsync(
+    private async Task<(List<TblBulkRunScheduleDay> Rows, List<ScheduleConvertGuard.Day> GuardDays, AddedDayZoneSeed ZoneSeed)> SyncDayRowsAsync(
         BulkRunScheduleHeader header, ScheduleGroupUpsertRequest req, string name)
     {
         var guardDays = new List<ScheduleConvertGuard.Day>();
+        var addedRows = new List<TblBulkRunScheduleDay>();
         // The WRITE entity, not the view. 20261009177000 turned
         // dbo.tblBulkRunSchedule into a view (IS_UPDATABLE = NO), so every
         // write in this method targets tblBulkRunScheduleDay. Reads elsewhere
@@ -1896,11 +1934,31 @@ public class ScheduleService(
             existing.Remove(row);
         }
 
+        // Weekday zones (2026-11-12): the day an added weekday copies its
+        // zones from. Picked now, before the loop below rewrites the rows: a
+        // live row the request keeps, Monday first, else the earliest weekday.
+        // When the existing days share one set this is that set; when they
+        // differ it is Monday's (or the first day's). A dropped live row is
+        // the fallback when the save keeps none, e.g. Mon moved to Tue.
+        var zoneSource = existing.Where(r => r.StartTime != null)
+                .OrderBy(r => r.DayOfWeek == 1 ? 0 : 1).ThenBy(r => r.DayOfWeek)
+                .FirstOrDefault()
+            ?? droppedRows.Where(r => r.StartTime != null)
+                .OrderBy(r => r.DayOfWeek == 1 ? 0 : 1).ThenBy(r => r.DayOfWeek)
+                .FirstOrDefault();
+
         foreach (var w in req.DayWindows)
         {
             var row = w.Id.HasValue
                 ? existing.FirstOrDefault(r => r.BulkRunScheduleId == w.Id.Value)
                 : existing.FirstOrDefault(r => r.DayOfWeek == w.DayOfWeek);
+            // A blanked row (no window) being ticked back on had its zones
+            // deleted when it was dropped, so it is an added day too. Only
+            // when it really has none left, so nothing is doubled.
+            if (row != null && row.StartTime == null
+                && !zonesByDayRow.ContainsKey(row.BulkRunScheduleId)
+                && !pickupZonesByDayRow.ContainsKey(row.BulkRunScheduleId))
+                addedRows.Add(row);
             if (row == null)
             {
                 row = new TblBulkRunScheduleDay
@@ -1928,6 +1986,7 @@ public class ScheduleService(
                 };
                 Context.TblBulkRunScheduleDays.Add(row);
                 existing.Add(row);
+                addedRows.Add(row);
             }
             else if (!string.Equals(row.Name, name, StringComparison.Ordinal))
             {
@@ -1991,8 +2050,31 @@ public class ScheduleService(
                 Context.TblBulkScheduleLinehauls.RemoveRange(lhs);
         }
 
-        return (existing, guardDays);
+        // Only matters when the request leaves a zone kind alone (null). A
+        // request that sends Zones / PickupZones writes them onto every row,
+        // added ones included, in phase 2 of UpsertAsync.
+        var seed = new AddedDayZoneSeed(
+            addedRows,
+            zoneSource != null && zonesByDayRow.TryGetValue(zoneSource.BulkRunScheduleId, out var srcZ)
+                ? srcZ.Select(z => (z.Zone, z.Active)).ToList()
+                : new List<(int, bool?)>(),
+            zoneSource != null && pickupZonesByDayRow.TryGetValue(zoneSource.BulkRunScheduleId, out var srcP)
+                ? srcP.Select(z => (z.Zone, z.Active)).ToList()
+                : new List<(int, bool)>());
+        return (existing, guardDays, seed);
     }
+
+    /// <summary>
+    /// Weekday zones (2026-11-12). Day rows a save added (new weekday, or a
+    /// blanked row ticked back on) and the zone rows to give them when the
+    /// request leaves zones alone. Before this an added day got no zone rows
+    /// at all, so it was not bookable for any postcode until someone opened
+    /// the zones editor and saved with "apply to all days".
+    /// </summary>
+    private sealed record AddedDayZoneSeed(
+        List<TblBulkRunScheduleDay> Rows,
+        List<(int Zone, bool? Active)> Zones,
+        List<(int Zone, bool Active)> PickupZones);
 
     /// <summary>
     /// Every convert-on-save goes through here, so ScheduleConvertGuard cannot
@@ -2479,11 +2561,13 @@ public class ScheduleService(
             CreatedBy = "RoutedOps",
             DisplayName = source.DisplayName,
             DisplayDescription = source.DisplayDescription,
-            // TODO D4: IsActive is deliberately NOT copied and not set, so the
-            // entity default (true) applies and a copy of an inactive schedule
-            // starts active. Whether a copy should start inactive is D4, still
-            // open (REPORT 2026-11-06 Q8, tied to N6). Change it there, along
-            // with CopyAsync_leaves_IsActive_as_it_was_pending_D4.
+            // D4 (decided 2026-11-12): a copy starts inactive unless the
+            // caller ticks Activate, so a half-edited copy is not bookable.
+            // The source's own IsActive is not consulted.
+            IsActive = req.IsActive ?? CopyStartsActiveDefault,
+            // D2: the lane switch comes along, but only onto a non-default
+            // copy; on a default it means nothing (UpsertAsync clears it).
+            BlockDefaults = source.BlockDefaults && !copyIsDefault,
             OriginType = copiedOriginType,
             // Only 'client' carries an origin region; 'depot' never has one
             // and 'direct' forces it null (its dispatch region is the day
@@ -3094,7 +3178,8 @@ public class ScheduleService(
             convertRefusalReasons,
             header.IsDefault,
             ZoneSetsDiffer(dayZoneSets),
-            dayZoneSets);
+            dayZoneSets,
+            header.BlockDefaults);
     }
 
     /// <summary>
@@ -3490,9 +3575,12 @@ public class ScheduleService(
 
     /// <summary>Add member schedules to a bundle. Idempotent.</summary>
     /// <param name="linkExistingClients">When true, every client already on the
-    /// bundle (linked to at least one non-default member) is also linked to
-    /// each newly added non-default member, so the bundle stays whole
-    /// (SCHEDULE-BUNDLES-UI-2026-10-16 section 4). Idempotent.</param>
+    /// bundle (linked to at least one live member) is also linked to each
+    /// newly added member, so the bundle stays whole
+    /// (SCHEDULE-BUNDLES-UI-2026-10-16 section 4). Idempotent. Defaults are
+    /// included on both sides since B3 (2026-11-12), the same rule as
+    /// AttachClientsToBundleAsync, so adding a default member does not leave
+    /// every client at "on n of m".</param>
     public async Task<int> AddBundleMembersAsync(int bundleId, IEnumerable<int> scheduleIds, bool linkExistingClients = false)
     {
         var ids = (scheduleIds ?? Array.Empty<int>()).Where(v => v > 0).Distinct().ToList();
@@ -3521,8 +3609,8 @@ public class ScheduleService(
         if (toAdd.Count == 0) return 0;
 
         // Clients on the bundle BEFORE the new members join: anyone linked to
-        // an existing non-default member. Read first so the new members do
-        // not count themselves.
+        // an existing live member. Read first so the new members do not
+        // count themselves.
         var clientsOnBundle = new List<int>();
         if (linkExistingClients)
         {
@@ -3530,13 +3618,13 @@ public class ScheduleService(
                 .Where(m => m.BundleId == bundleId)
                 .Select(m => m.ScheduleId)
                 .ToListAsync();
-            var existingNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => existingMemberIds.Contains(h.ScheduleId) && h.RetiredUtc == null && !h.IsDefault)
+            var existingLive = await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => existingMemberIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
                 .Select(h => h.ScheduleId)
                 .ToListAsync();
-            if (existingNonDefault.Count > 0)
+            if (existingLive.Count > 0)
                 clientsOnBundle = await Context.ScheduleClients.AsNoTracking()
-                    .Where(sc => existingNonDefault.Contains(sc.ScheduleId))
+                    .Where(sc => existingLive.Contains(sc.ScheduleId))
                     .Select(sc => sc.ClientId)
                     .Distinct()
                     .ToListAsync();
@@ -3546,18 +3634,15 @@ public class ScheduleService(
 
         if (clientsOnBundle.Count > 0)
         {
+            // toAdd ids are all live (checked above).
             var newIds = toAdd.Select(m => m.ScheduleId).ToList();
-            var newNonDefault = await Context.BulkRunScheduleHeaders.AsNoTracking()
-                .Where(h => newIds.Contains(h.ScheduleId) && !h.IsDefault)
-                .Select(h => h.ScheduleId)
-                .ToListAsync();
             var alreadyLinked = await Context.ScheduleClients.AsNoTracking()
-                .Where(sc => newNonDefault.Contains(sc.ScheduleId) && clientsOnBundle.Contains(sc.ClientId))
+                .Where(sc => newIds.Contains(sc.ScheduleId) && clientsOnBundle.Contains(sc.ClientId))
                 .Select(sc => new { sc.ScheduleId, sc.ClientId })
                 .ToListAsync();
             var linkedSet = new HashSet<(int, int)>(alreadyLinked.Select(x => (x.ScheduleId, x.ClientId)));
             var now = DateTime.UtcNow;
-            foreach (var sid in newNonDefault)
+            foreach (var sid in newIds)
                 foreach (var cid in clientsOnBundle)
                     if (!linkedSet.Contains((sid, cid)))
                         Context.ScheduleClients.Add(new ScheduleClient
@@ -3578,7 +3663,8 @@ public class ScheduleService(
     /// One bundle with its live members and the clients linked to them,
     /// for the bundle modal (SCHEDULE-BUNDLES-UI-2026-10-16 section 4).
     /// A client is "on the bundle" when it has a link row on at least one
-    /// non-default live member; OnMembers / OfMembers carry the coverage.
+    /// live member, defaults included since B3 (2026-11-12); OnMembers /
+    /// OfMembers carry the coverage.
     /// </summary>
     public async Task<ScheduleBundleDetailDto> GetBundleDetailAsync(int bundleId)
     {
@@ -3598,11 +3684,15 @@ public class ScheduleService(
                 .OrderBy(h => h.Name)
                 .ToListAsync();
 
-        var nonDefaultIds = headers.Where(h => !h.IsDefault).Select(h => h.ScheduleId).ToList();
-        var links = nonDefaultIds.Count == 0
+        // B3 (2026-11-12): every live member counts, defaults included,
+        // because AttachClientsToBundleAsync now links defaults too. Reading
+        // non-default members only would hide a client attached to a bundle
+        // of defaults, so the attach would look like it did nothing.
+        var memberLiveIds = headers.Select(h => h.ScheduleId).ToList();
+        var links = memberLiveIds.Count == 0
             ? new List<ScheduleClient>()
             : await Context.ScheduleClients.AsNoTracking()
-                .Where(sc => nonDefaultIds.Contains(sc.ScheduleId))
+                .Where(sc => memberLiveIds.Contains(sc.ScheduleId))
                 .ToListAsync();
 
         var linksBySchedule = links.GroupBy(l => l.ScheduleId).ToDictionary(g => g.Key, g => g.Count());
@@ -3653,7 +3743,7 @@ public class ScheduleService(
                 byId.TryGetValue(g.Key, out var c) && !string.IsNullOrWhiteSpace(c.Code) ? c.Code : $"#{g.Key}",
                 byId.TryGetValue(g.Key, out var c2) ? c2.Name : null,
                 g.Select(l => l.ScheduleId).Distinct().Count(),
-                nonDefaultIds.Count))
+                memberLiveIds.Count))
             .OrderByDescending(c => c.OnMembers)
             .ThenBy(c => c.Code)
             .ToList();
@@ -3666,6 +3756,11 @@ public class ScheduleService(
     /// Remove one client from every member of a bundle. Deletes the
     /// tblScheduleClient rows only, the same as DetachClientAsync does for a
     /// single schedule, so the two paths stay consistent. Returns rows removed.
+    ///
+    /// B3 (2026-11-12): applies DetachClientAsync's spec 6.1 rule 3 guard to
+    /// every member. If this client is the only one on a live non-default
+    /// member with no LegacyClientId, nothing is removed and the refusal
+    /// names those schedules; before, the member was left bookable by nobody.
     /// </summary>
     public async Task<int> DetachClientFromBundleAsync(int bundleId, int clientId)
     {
@@ -3680,6 +3775,32 @@ public class ScheduleService(
             .Where(sc => memberIds.Contains(sc.ScheduleId) && sc.ClientId == clientId)
             .ToListAsync();
         if (rows.Count == 0) return 0;
+
+        var linkedIds = rows.Select(r => r.ScheduleId).Distinct().ToList();
+        var guarded = await Context.BulkRunScheduleHeaders.AsNoTracking()
+            .Where(h => linkedIds.Contains(h.ScheduleId) && h.RetiredUtc == null
+                     && !h.IsDefault && h.LegacyClientId == null)
+            .Select(h => new { h.ScheduleId, h.Name })
+            .ToListAsync();
+        if (guarded.Count > 0)
+        {
+            var guardedIds = guarded.Select(g => g.ScheduleId).ToList();
+            var withOthers = await Context.ScheduleClients.AsNoTracking()
+                .Where(sc => guardedIds.Contains(sc.ScheduleId) && sc.ClientId != clientId)
+                .Select(sc => sc.ScheduleId)
+                .Distinct()
+                .ToListAsync();
+            var last = guarded.Where(g => !withOthers.Contains(g.ScheduleId))
+                .OrderBy(g => g.Name)
+                .ToList();
+            if (last.Count > 0)
+                throw new InvalidOperationException(
+                    "This is the only client on "
+                    + string.Join(", ", last.Select(g => $"'{g.Name}' (#{g.ScheduleId})"))
+                    + ", a schedule for specific clients. Set it to all clients, or add another "
+                    + "client to it, before removing this one from the bundle.");
+        }
+
         Context.ScheduleClients.RemoveRange(rows);
         await Context.SaveChangesAsync();
         InvalidateListSummaryCache();
@@ -3698,12 +3819,27 @@ public class ScheduleService(
         return 1;
     }
 
+    /// <summary>Message for a bundle attach when the bundle has no live
+    /// member, which is all the operator can act on.</summary>
     /// <summary>
-    /// Attach one or more clients to every non-default member schedule
-    /// of a bundle. Default members (IsDefault = 1) are skipped per
-    /// Steve's brief section 2 semantics: the link table is the sole
-    /// record of who uses what, and defaults do not need per-client
-    /// rows. Returns the total number of link rows added.
+    /// D4 (2026-11-12): whether a copied schedule starts active when the
+    /// caller does not say. False, so a copy is not bookable until someone
+    /// switches it on (the copy dialog's Activate box).
+    /// </summary>
+    public const bool CopyStartsActiveDefault = false;
+
+    public const string EmptyBundleAttachMessage =
+        "This bundle has no schedules yet. Add a schedule to the bundle before adding clients.";
+
+    /// <summary>
+    /// Attach one or more clients to every live member schedule of a
+    /// bundle, defaults included. Returns the number of link rows added.
+    ///
+    /// B3 (Schedules NEW November feedback, 2026-11-12): default members
+    /// used to be skipped, so on a bundle of defaults the attach returned 0
+    /// and wrote nothing. Under spec 6.1 a link row on a default means
+    /// "configured for this client" (it ranks first within its speed and
+    /// is the hook an override hangs off), so there is something to link.
     /// </summary>
     public async Task<int> AttachClientsToBundleAsync(int bundleId, IEnumerable<int> clientIds)
     {
@@ -3714,28 +3850,27 @@ public class ScheduleService(
             .Where(m => m.BundleId == bundleId)
             .Select(m => m.ScheduleId)
             .ToListAsync();
-        if (memberScheduleIds.Count == 0)
-            throw new InvalidOperationException($"Bundle {bundleId} has no members.");
 
-        var nonDefaultMembers = await Context.BulkRunScheduleHeaders.AsNoTracking()
-            .Where(h => memberScheduleIds.Contains(h.ScheduleId)
-                     && h.RetiredUtc == null
-                     && !h.IsDefault)
-            .Select(h => h.ScheduleId)
-            .ToListAsync();
+        var liveMembers = memberScheduleIds.Count == 0
+            ? new List<int>()
+            : await Context.BulkRunScheduleHeaders.AsNoTracking()
+                .Where(h => memberScheduleIds.Contains(h.ScheduleId) && h.RetiredUtc == null)
+                .Select(h => h.ScheduleId)
+                .ToListAsync();
 
-        if (nonDefaultMembers.Count == 0) return 0;
+        if (liveMembers.Count == 0)
+            throw new InvalidOperationException(EmptyBundleAttachMessage);
 
         // Skip pairs that already exist to keep the operation idempotent.
         var existing = await Context.ScheduleClients.AsNoTracking()
-            .Where(sc => nonDefaultMembers.Contains(sc.ScheduleId) && ids.Contains(sc.ClientId))
+            .Where(sc => liveMembers.Contains(sc.ScheduleId) && ids.Contains(sc.ClientId))
             .Select(sc => new { sc.ScheduleId, sc.ClientId })
             .ToListAsync();
         var existingSet = new HashSet<(int, int)>(existing.Select(x => (x.ScheduleId, x.ClientId)));
 
         var now = DateTime.UtcNow;
         var toAdd = new List<ScheduleClient>();
-        foreach (var sid in nonDefaultMembers)
+        foreach (var sid in liveMembers)
         {
             foreach (var cid in ids)
             {

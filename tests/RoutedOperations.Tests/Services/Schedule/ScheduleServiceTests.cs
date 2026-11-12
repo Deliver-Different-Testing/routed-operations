@@ -1116,17 +1116,18 @@ public class ScheduleServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task CopyAsync_leaves_IsActive_as_it_was_pending_D4()
+    public async Task CopyAsync_starts_inactive_unless_asked_D4()
     {
-        // Pins CURRENT behaviour on purpose. D4 (should a copy start
-        // inactive?) is not settled, and Q8 ties it to N6. When D4 is
-        // decided this test is the one to change, deliberately.
+        // D4 (2026-11-12): a copy is a half-edited schedule until someone has
+        // checked it, so it must not be bookable straight away. Copied from an
+        // ACTIVE source, so the test cannot pass by inheriting the source's
+        // flag. Before D4 the entity default (true) applied and this was true.
         var svc = NewSvc();
         var src = ValidRequest();
         src.Name = "Source";
-        src.IsActive = false;
+        src.IsActive = true;
         var source = await svc.UpsertAsync(src);
-        Assert.False(source.IsActive);
+        Assert.True(source.IsActive);
 
         var copy = await svc.CopyAsync(new ScheduleCopyRequest
         {
@@ -1134,7 +1135,233 @@ public class ScheduleServiceTests : IDisposable
             NewName = "Source (copy)",
         });
 
+        Assert.False(copy.IsActive);
+    }
+
+    [Fact]
+    public async Task CopyAsync_starts_active_when_the_dialog_ticks_Activate_D4()
+    {
+        // From an INACTIVE source, so the explicit choice is what wins.
+        var svc = NewSvc();
+        var src = ValidRequest();
+        src.Name = "Source";
+        src.IsActive = false;
+        var source = await svc.UpsertAsync(src);
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = source.ScheduleId,
+            NewName = "Source (copy)",
+            IsActive = true,
+        });
+
         Assert.True(copy.IsActive);
+    }
+
+    // --- D2: BlockDefaults, the per-schedule "hide same-lane defaults" switch ---
+    //
+    // The availability functions (parallel DB run) read the header column; the
+    // app's job is to store it, show it, and carry it on copy. A default
+    // schedule never carries it: hiding defaults is something a client-specific
+    // schedule does for its own clients.
+
+    private static ScheduleGroupUpsertRequest SpecificRequest(string name, bool? blockDefaults)
+    {
+        var r = ValidRequest();
+        r.Name = name;
+        r.IsDefault = false;
+        r.ClientCodes = new List<string> { "AAA" };
+        r.BlockDefaults = blockDefaults;
+        return r;
+    }
+
+    [Fact]
+    public async Task UpsertAsync_stores_BlockDefaults_on_a_specific_schedule_and_leaves_it_on_null_D2()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var created = await svc.UpsertAsync(SpecificRequest("Specific", true));
+            Assert.True(created.BlockDefaults);
+
+            // A save that does not mention the field keeps it.
+            var edit = SpecificRequest("Specific", null);
+            edit.ScheduleId = created.ScheduleId;
+            edit.Zones = null;
+            Assert.True((await svc.UpsertAsync(edit)).BlockDefaults);
+
+            // And an explicit false clears it.
+            edit.BlockDefaults = false;
+            Assert.False((await svc.UpsertAsync(edit)).BlockDefaults);
+
+            using var read = CockpitTestHarness.Context(opts);
+            Assert.False(read.BulkRunScheduleHeaders.Single(h => h.ScheduleId == created.ScheduleId).BlockDefaults);
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_never_keeps_BlockDefaults_on_a_default_schedule_D2()
+    {
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var asDefault = ValidRequest();
+            asDefault.BlockDefaults = true;
+            Assert.False((await svc.UpsertAsync(asDefault)).BlockDefaults);
+
+            // Turning a blocking schedule into a default clears the switch.
+            var created = await svc.UpsertAsync(SpecificRequest("Specific", true));
+            Assert.True(created.BlockDefaults);
+            var toDefault = SpecificRequest("Specific", null);
+            toDefault.ScheduleId = created.ScheduleId;
+            toDefault.IsDefault = true;
+            toDefault.Zones = null;
+            Assert.False((await svc.UpsertAsync(toDefault)).BlockDefaults);
+        }
+    }
+
+    [Fact]
+    public async Task ListSummary_reports_BlockDefaults_for_the_list_badge_D2()
+    {
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var blocking = await svc.UpsertAsync(SpecificRequest("Blocking", true));
+            var plain = await svc.UpsertAsync(SpecificRequest("Plain", false));
+
+            var summaries = await svc.ListSummaryAsync(
+                clientId: null, includeClientSpecific: false, includeAllLive: true);
+
+            Assert.True(summaries.Single(s => s.ScheduleId == blocking.ScheduleId).BlockDefaults);
+            Assert.False(summaries.Single(s => s.ScheduleId == plain.ScheduleId).BlockDefaults);
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_carries_BlockDefaults_onto_a_specific_copy_only_D2()
+    {
+        var svc = NewSvcWithSeed(out var seed, out _);
+        using (seed)
+        {
+            seed.TucClients.Add(new TucClient { UcclId = 41, UcclCode = "AAA", UcclName = "Client A" });
+            await seed.SaveChangesAsync();
+
+            var source = await svc.UpsertAsync(SpecificRequest("Blocking", true));
+
+            var specificCopy = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = source.ScheduleId,
+                NewName = "Blocking (copy)",
+                ClientCodes = new List<string> { "AAA" },
+            });
+            Assert.True(specificCopy.BlockDefaults);
+
+            var defaultCopy = await svc.CopyAsync(new ScheduleCopyRequest
+            {
+                SourceScheduleId = source.ScheduleId,
+                NewName = "Blocking (default copy)",
+                IsDefault = true,
+            });
+            Assert.False(defaultCopy.BlockDefaults);
+        }
+    }
+
+    // --- Weekday zones: a day added by a save gets the zones the others have ---
+    //
+    // Zones hang off day rows. A save that ticks a new weekday and leaves the
+    // zones alone (Zones = null, which is what the modal sends when the zone
+    // editor was not touched) used to create the day row with NO zone rows, so
+    // the new day delivered nowhere.
+
+    private static ScheduleGroupUpsertRequest AddWednesday(ScheduleGroupDto current)
+    {
+        var edit = ValidRequest();
+        edit.ScheduleId = current.ScheduleId;
+        edit.Zones = null;
+        edit.PickupZones = null;
+        edit.DayWindows = current.DayWindows
+            .Select(d => new DayWindowUpsertRequest
+            {
+                Id = d.Id, DayOfWeek = d.DayOfWeek, StartTime = "08:00", EndTime = "17:00",
+                CutoffDay = d.DayOfWeek, CutoffTime = "15:00",
+            })
+            .Append(new DayWindowUpsertRequest
+            {
+                DayOfWeek = 3, StartTime = "08:00", EndTime = "17:00", CutoffDay = 3, CutoffTime = "15:00",
+            })
+            .ToList();
+        return edit;
+    }
+
+    [Fact]
+    public async Task UpsertAsync_gives_an_added_weekday_the_zones_the_other_days_share()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var create = ValidRequest();
+            create.PickupZones = new List<ScheduleZoneUpsertRequest> { new() { Zone = 7, Active = true } };
+            var created = await svc.UpsertAsync(create);
+
+            await svc.UpsertAsync(AddWednesday(created));
+
+            using var read = CockpitTestHarness.Context(opts);
+            var wedId = read.TblBulkRunScheduleDays
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 3).BulkRunScheduleId;
+            // The inactive row comes too, so the day matches its siblings exactly.
+            Assert.Equal(new[] { "1:True", "2:False" },
+                read.BulkZoneSchedules.Where(z => z.ScheduleId == wedId)
+                    .OrderBy(z => z.Zone).AsEnumerable().Select(z => $"{z.Zone}:{z.Active}").ToArray());
+            Assert.Equal(new[] { 7 },
+                read.BulkPickupZoneSchedules.Where(z => z.ScheduleId == wedId).Select(z => z.Zone).ToArray());
+            // The existing days are untouched.
+            Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, created.ScheduleId, 1));
+            Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, created.ScheduleId, 2));
+        }
+    }
+
+    [Fact]
+    public async Task UpsertAsync_gives_an_added_weekday_Mondays_zones_when_the_days_differ()
+    {
+        var (svc, opts, scheduleId) = await NewScheduleWithDifferentTuesdayZonesAsync();
+        var current = await svc.GetDetailAsync(scheduleId);
+
+        await svc.UpsertAsync(AddWednesday(current));
+
+        Assert.Equal(new[] { 1 }, ActiveZonesOn(opts, scheduleId, 3));   // Monday's, not Tuesday's {3}
+        Assert.Equal(new[] { 3 }, ActiveZonesOn(opts, scheduleId, 2));   // Tuesday keeps its own
+    }
+
+    [Fact]
+    public async Task UpsertAsync_writes_the_sent_zones_on_an_added_weekday_not_a_copy()
+    {
+        // A save that DOES send zones (apply to all days) is the operator's
+        // explicit set; the seed must not add rows on top of it.
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var created = await svc.UpsertAsync(ValidRequest());
+            var edit = AddWednesday(created);
+            edit.Zones = new List<ScheduleZoneUpsertRequest> { new() { Zone = 5, Active = true } };
+            edit.ApplyZonesToAllDays = true;
+
+            await svc.UpsertAsync(edit);
+
+            using var read = CockpitTestHarness.Context(opts);
+            var wedId = read.TblBulkRunScheduleDays
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 3).BulkRunScheduleId;
+            Assert.Equal(new[] { 5 },
+                read.BulkZoneSchedules.Where(z => z.ScheduleId == wedId).Select(z => z.Zone).ToArray());
+        }
     }
 
     [Fact]

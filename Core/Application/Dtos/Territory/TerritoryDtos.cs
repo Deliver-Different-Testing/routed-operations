@@ -219,6 +219,13 @@ public record ZoneGroupDto(
     int? ClearListAreaId,
     int ZoneNameCount);
 
+/// <summary>A driver location list (tblClearListArea) as the zone group
+/// form's Clear-List Area picker shows it.</summary>
+public record ClearListAreaDto(
+    int Id,
+    string Code,
+    string Name);
+
 /// <summary>Polygon binding view - the subset of tblBulkRunPolygon
 /// columns the Zone Groups tab needs to list "polygons bound to this
 /// zone" and to render binding state chips.</summary>

@@ -282,7 +282,7 @@ export default function SchedulesNew() {
           </div>
 
           {mountedViews.has('groups') && (
-            <div className={viewHidden('groups')}><ZoneGroupsTab /></div>
+            <div className={viewHidden('groups')}><ZoneGroupsTab onOpenSchedule={openBase} /></div>
           )}
           {mountedViews.has('zones') && (
             <div className={viewHidden('zones')}><ZonesTab /></div>
@@ -494,10 +494,17 @@ function SchedulesTab({
     queryFn: () => scheduleService.lookups().then((r) => r.response),
     staleTime: 5 * 60_000,
   });
+  // Every depot, inactive ones included: a filter has to reach schedules that
+  // still sit on a retired depot. The picker marks them "(inactive)". The
+  // filter matches by name, so a name shared with an active depot is not marked.
+  const inactiveDepotNames = useMemo(() => {
+    const depots = lookupsQuery.data?.depots ?? [];
+    const activeNames = new Set(depots.filter((d) => d.active !== false).map((d) => d.name));
+    return new Set(depots.filter((d) => d.active === false && !activeNames.has(d.name)).map((d) => d.name));
+  }, [lookupsQuery.data]);
   const depotOptions = useMemo(() => {
     if (lookupsQuery.data?.depots?.length) {
-      return lookupsQuery.data.depots
-        .map((d) => d.name)
+      return Array.from(new Set(lookupsQuery.data.depots.map((d) => d.name)))
         .filter((n) => !!n)
         .sort((a, b) => a.localeCompare(b));
     }
@@ -573,6 +580,7 @@ function SchedulesTab({
             placeholder="All depots"
             panelTitle="Filter by depot"
             triggerWidth="w-44"
+            inactive={inactiveDepotNames}
           />
         </div>
 
@@ -1077,7 +1085,8 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
   );
 }
 
-function ClientChips({ row }: { row: ScheduleGroupSummary }) {
+/** Exported for its render test (D2 badge). */
+export function ClientChips({ row }: { row: ScheduleGroupSummary }) {
   // Spec 6.1 rule 4. This used to read "clientCount === 0 && legacyClientId
   // == null", which is the same inference the modal made and is wrong for a
   // default that has clients configured on it: the row dropped the "All
@@ -1127,6 +1136,15 @@ function ClientChips({ row }: { row: ScheduleGroupSummary }) {
       ))}
       {overflow > 0 && (
         <span className="text-[10px] text-text-muted">+{overflow}</span>
+      )}
+      {row.blockDefaults && (
+        <span
+          className="text-[10px] font-medium bg-warning-bg text-warning border border-warning/30 px-1.5 py-px rounded"
+          title="D2: these clients do not see the default schedules on this lane (same delivery depot, origin depot and speed) while this schedule is active."
+          data-testid={`row-${row.scheduleId}-hides-defaults`}
+        >
+          Hides defaults
+        </span>
       )}
     </div>
   );
