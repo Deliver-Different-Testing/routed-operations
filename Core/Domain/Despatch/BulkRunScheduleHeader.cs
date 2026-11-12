@@ -115,6 +115,16 @@ public partial class BulkRunScheduleHeader
     public int? OriginRegionId { get; set; }
 
     /// <summary>
+    /// D2 (Marcus, 6 Nov 2026, option 3): when true on a live, active,
+    /// NON-default schedule, the availability functions drop the default
+    /// schedules with the same delivery depot (Region), origin depot and
+    /// speed for every client linked to this schedule. Meaningless on a
+    /// default schedule. Column added by the parallel DB migration
+    /// (BIT NOT NULL DEFAULT 0); that migration must deploy before this app.
+    /// </summary>
+    public bool BlockDefaults { get; set; }
+
+    /// <summary>
     /// SQL rowversion, ticks on any change to the header row or its
     /// override rows. App-side cache keyed on
     /// (ScheduleId, ClientId, OverridesVersion) survives across

@@ -23,7 +23,7 @@ namespace RoutedOperations.Core.Application.Utilities;
 /// </summary>
 public static class TenantConnectionCache
 {
-    public const string AppName = "RoutedOperations";
+    private const string AppName = "RoutedOperations";
 
     /// <summary>This application's own cache key for a tenant.</summary>
     public static string Key(string? tenantId) => $"{tenantId}-{AppName}-Connection";

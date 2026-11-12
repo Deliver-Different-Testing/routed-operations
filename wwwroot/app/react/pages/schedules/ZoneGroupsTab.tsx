@@ -2,7 +2,9 @@
 import { useToast } from '../../context/ToastContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { useAuth } from '../../context/AuthContext';
-import { depotLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
+import { depotLabel, postcodeGroupLabel, postcodePluralLabel, tenantHasZoneGroups } from '../../lib/tenantLabels';
+import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
+import { depotSettingsUrl, driverLocationListUrl } from '../../lib/settingsLinks';
 import {
   territoryService,
   postcodeGroupScope,
@@ -10,6 +12,7 @@ import {
   type PostcodeGroup,
   type ZoneNameRow,
   type ZoneGroupRow,
+  type ClearListArea,
   type PostcodeGroupUpsertBody,
   type PostcodeGroupDuplicateBody,
   type ZoneNameUpsertBody,
@@ -28,7 +31,11 @@ import { PostcodeGroupDetailModal, type ScheduleSide } from '../../components/te
 // ZonesTab: white rounded-xl container, surface-cream header row,
 // kebab-menu row actions, cyan pill "Add" buttons.
 
-export function ZoneGroupsTab() {
+export function ZoneGroupsTab({ onOpenSchedule }: {
+  /** Z7: open a schedule listed in the group detail. Schedules NEW passes
+   *  its base-edit opener; the legacy Schedules page passes nothing. */
+  onOpenSchedule?: (scheduleId: number) => void;
+} = {}) {
   const toast = useToast();
   const askConfirm = useConfirm();
   const user = useAuth();
@@ -39,6 +46,10 @@ export function ZoneGroupsTab() {
   const groupPlural = postcodeGroupLabel(tenantIsUs, true);
   const groupSingular = postcodeGroupLabel(tenantIsUs, false);
   const depotSingular = depotLabel(tenantIsUs, false);
+  // Zone Groups + Zone Names: US and AU (CountryCode claim). NZ has neither
+  // and keeps the Rating Zones section instead.
+  const hasZoneGroups = tenantHasZoneGroups(user.countryCode);
+  const zonePrefix = tenantIsUs ? 'US ' : '';
   const [bootstrap, setBootstrap] = useState<TerritoryBootstrap | null>(null);
   const [loading, setLoading] = useState(false);
   // Non-US tenants (NZ/AU) rate by ZoneName too (Settings > Pricing > Zone
@@ -46,6 +57,9 @@ export function ZoneGroupsTab() {
   // separately so the bootstrap shape, and the US-only screens that read it,
   // stay as they are. Used only to bind polygons to a rating zone.
   const [ratingZoneNames, setRatingZoneNames] = useState<ZoneNameRow[]>([]);
+  // Driver location lists (tblClearListArea) a zone group can point at. Loaded
+  // with the tab so the grid can show "code - name" instead of a bare id.
+  const [clearListAreas, setClearListAreas] = useState<ClearListArea[]>([]);
 
   const [editingPg, setEditingPg] = useState<PostcodeGroup | 'new' | null>(null);
   // Z1: name / depot / client search over the loaded group list. The list is
@@ -78,19 +92,23 @@ export function ZoneGroupsTab() {
     try {
       const res = await territoryService.bootstrap();
       setBootstrap(res.response);
-      if (!tenantIsUs) {
+      if (!hasZoneGroups) {
         // Optional extra: a failure here must not fail the whole tab.
         try {
           const zn = await territoryService.usZoneNames();
           setRatingZoneNames(zn.response ?? []);
         } catch { setRatingZoneNames([]); }
+      } else {
+        // Optional too: without it the grid falls back to the bare id.
+        try {
+          const areas = await territoryService.clearListAreas();
+          setClearListAreas(areas.response ?? []);
+        } catch { setClearListAreas([]); }
       }
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
-
-  const isUs = bootstrap?.countryCode === 'US';
 
   const deletePg = async (g: PostcodeGroup) => {
     if (!(await askConfirm({ message: `Delete "${g.name}"?`, confirmLabel: 'Delete', danger: true }))) return;
@@ -231,20 +249,20 @@ export function ZoneGroupsTab() {
       </section>
       )}
 
-      {/* ── Zone Groups (US only) - the ZoneGroup entity, different from
+      {/* ── Zone Groups (US and AU) - the ZoneGroup entity, different from
              postcode groups above. Groups multiple Zone Names into a
              rating tier. ─────────────────────────────────────────────── */}
-      {isUs && (
+      {hasZoneGroups && (
         <section>
           <div className="flex items-center justify-between mb-2 gap-2">
             <div>
               <p className="text-xs text-text-secondary">
-                <span className="font-semibold text-text-primary">US Zone Groups</span>
+                <span className="font-semibold text-text-primary">{zonePrefix}Zone Groups</span>
                 <span className="mx-2 text-text-muted">·</span>
                 {bootstrap?.zoneGroups.length ?? 0} group{(bootstrap?.zoneGroups.length ?? 0) === 1 ? '' : 's'}
               </p>
               <p className="text-[11px] text-text-muted mt-0.5">
-                US-only, and it does NOT affect booking. Groups <em>zone names</em> (below)
+                {tenantIsUs ? 'US-only, and it' : 'It'} does NOT affect booking. Groups <em>zone names</em> (below)
                 for despatch views and clear lists. The groups above are the ones that
                 decide which schedules a client is offered.
               </p>
@@ -264,8 +282,9 @@ export function ZoneGroupsTab() {
               { key: 'zoneNames', label: 'Zone Names', sortable: true, align: 'right',
                 sortValue: (g) => g.zoneNameCount,
                 render: (g) => <span className="text-text-primary font-semibold">{g.zoneNameCount}</span> },
-              { key: 'clearList', label: 'Clear-List Area', sortable: true, sortValue: (g) => g.clearListAreaId ?? 0,
-                render: (g) => <span className="text-text-secondary">{g.clearListAreaId ?? '-'}</span> },
+              { key: 'clearList', label: 'Clear-List Area', sortable: true,
+                sortValue: (g) => clearListAreaLabel(clearListAreas, g.clearListAreaId) ?? '',
+                render: (g) => <span className="text-text-secondary">{clearListAreaLabel(clearListAreas, g.clearListAreaId) ?? '-'}</span> },
               { key: 'actions', label: 'Actions', align: 'right',
                 render: (g) => (
                   <RowActionsMenu
@@ -293,7 +312,7 @@ export function ZoneGroupsTab() {
              in Settings > Pricing > Zone Rates; this only binds polygons to
              them. Shown only when the tenant has zone names, so a tenant
              with none sees no empty section. */}
-      {!tenantIsUs && ratingZoneNames.length > 0 && (
+      {!hasZoneGroups && ratingZoneNames.length > 0 && (
         <section>
           <div className="mb-2">
             <p className="text-xs text-text-secondary">
@@ -331,18 +350,18 @@ export function ZoneGroupsTab() {
         </section>
       )}
 
-      {/* ── Zone Names (US only) ───────────────────────────────────────── */}
-      {isUs && (
+      {/* ── Zone Names (US and AU) ─────────────────────────────────────── */}
+      {hasZoneGroups && (
         <section>
           <div className="flex items-center justify-between mb-2 gap-2">
             <div>
               <p className="text-xs text-text-secondary">
-                <span className="font-semibold text-text-primary">US Zone Names</span>
+                <span className="font-semibold text-text-primary">{zonePrefix}Zone Names</span>
                 <span className="mx-2 text-text-muted">·</span>
                 {bootstrap?.zoneNames.length ?? 0} name{(bootstrap?.zoneNames.length ?? 0) === 1 ? '' : 's'}
               </p>
               <p className="text-[11px] text-text-muted mt-0.5">
-                US-only. The named containers zips bind to (Zones tab → "Zone Name" column). Each zone name may belong to a US Zone Group above.
+                {tenantIsUs ? 'US-only. ' : ''}The named containers zips bind to (Zones tab → "Zone Name" column). Each zone name may belong to a {zonePrefix}Zone Group above.
               </p>
             </div>
             <button
@@ -359,16 +378,19 @@ export function ZoneGroupsTab() {
                 render: (n) => <span className="font-medium text-text-primary">{n.name}</span> },
               { key: 'zoneGroup', label: 'Zone Group', sortable: true, sortValue: (n) => n.zoneGroupName ?? '',
                 render: (n) => <span className="text-text-secondary">{n.zoneGroupName ?? '-'}</span> },
-              { key: 'location', label: 'Location', sortable: true, sortValue: (n) => n.locationName ?? '',
+              { key: 'location', label: depotSingular, sortable: true, sortValue: (n) => n.locationName ?? '',
                 render: (n) => <span className="text-text-secondary">{n.locationName ?? '-'}</span> },
-              { key: 'zips', label: 'Zips', sortable: true, align: 'right', sortValue: (n) => n.zipCount,
+              { key: 'zips', label: postcodePluralLabel(tenantIsUs), sortable: true, align: 'right', sortValue: (n) => n.zipCount,
                 render: (n) => <span className="text-text-primary font-semibold">{n.zipCount}</span> },
               { key: 'actions', label: 'Actions', align: 'right',
                 render: (n) => (
                   <RowActionsMenu
                     actions={[
                       { label: 'Edit', onClick: () => setEditingZn(n) },
-                      { label: 'Paste ZIPs', onClick: () => setPastingZips(n) },
+                      // US only: the paste pads every entry to a 5-digit ZIP
+                      // (TerritoryService.PasteZoneZipsAsync), which would
+                      // corrupt 4-digit AU postcodes.
+                      ...(tenantIsUs ? [{ label: 'Paste ZIPs', onClick: () => setPastingZips(n) }] : []),
                       { label: 'Bind Polygons', onClick: () => setBindingTarget({ kind: 'zoneName', id: n.id, label: n.name ?? '' }) },
                       { label: 'Delete', onClick: () => deleteZn(n), danger: true },
                     ]}
@@ -390,6 +412,7 @@ export function ZoneGroupsTab() {
           groupId={detailPg.id}
           initialSide={detailPg.side}
           onClose={() => setDetailPg(null)}
+          onOpenSchedule={onOpenSchedule}
           onEdit={() => {
             const row = (bootstrap?.postcodeGroups ?? []).find((g) => g.id === detailPg.id);
             setDetailPg(null);
@@ -429,6 +452,7 @@ export function ZoneGroupsTab() {
       {editingZg !== null && (
         <ZoneGroupEditModal
           row={editingZg === 'new' ? null : editingZg}
+          areas={clearListAreas}
           onClose={() => setEditingZg(null)}
           onSaved={async () => { setEditingZg(null); await load(); }}
         />
@@ -479,6 +503,7 @@ function PostcodeGroupDuplicateModal({
   }));
 
   const save = async () => {
+    if (hasInactiveDepot(bootstrap?.depots ?? [], [form.depotId])) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     setSaving(true);
     try {
       const res = await territoryService.duplicatePostcodeGroup(row.id, form);
@@ -533,7 +558,7 @@ function PostcodeGroupDuplicateModal({
           <select className={INPUT_CLASS} value={form.depotId ?? ''}
             onChange={(e) => setForm({ ...form, depotId: e.target.value ? Number(e.target.value) : null })}>
             <option value="">-</option>
-            {(bootstrap?.depots ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {depotOptions(bootstrap?.depots ?? [], form.depotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
         </Fld>
         <Fld label="Client Code (optional)">
@@ -563,6 +588,7 @@ function PostcodeGroupEditModal({
     clientId: null,
   }));
   const save = async () => {
+    if (hasInactiveDepot(bootstrap?.depots ?? [], [form.depotId])) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     setSaving(true);
     try {
       if (row) await territoryService.updatePostcodeGroup(row.id, form);
@@ -596,7 +622,7 @@ function PostcodeGroupEditModal({
           <select className={INPUT_CLASS} value={form.depotId ?? ''}
             onChange={(e) => setForm({ ...form, depotId: e.target.value ? Number(e.target.value) : null })}>
             <option value="">-</option>
-            {(bootstrap?.depots ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {depotOptions(bootstrap?.depots ?? [], form.depotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
         </Fld>
         <Fld label="Client Code (optional)">
@@ -620,6 +646,7 @@ function ZoneNameEditModal({
     locationId: row?.locationId ?? null,
   }));
   const save = async () => {
+    if (hasInactiveDepot(bootstrap?.depots ?? [], [form.locationId])) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     setSaving(true);
     try {
       if (row) await territoryService.updateZoneName(row.id, form);
@@ -660,17 +687,27 @@ function ZoneNameEditModal({
           <select className={INPUT_CLASS} value={form.locationId ?? ''}
             onChange={(e) => setForm({ ...form, locationId: e.target.value ? Number(e.target.value) : null })}>
             <option value="">-</option>
-            {(bootstrap?.depots ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {depotOptions(bootstrap?.depots ?? [], form.locationId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
+          {form.locationId != null && <SettingsLink href={depotSettingsUrl(form.locationId)} label="Open depot in Settings" />}
         </Fld>
       </div>
     </Modal>
   );
 }
 
-function ZoneGroupEditModal({
-  row, onClose, onSaved,
-}: { row: ZoneGroupRow | null; onClose: () => void; onSaved: () => void; }) {
+/** "code - name" for a driver location list id, the bare id when the list is
+ *  not in the loaded set, null when there is no id. */
+function clearListAreaLabel(areas: ClearListArea[], id: number | null): string | null {
+  if (id == null) return null;
+  const a = areas.find((x) => x.id === id);
+  if (!a) return String(id);
+  return [a.code, a.name].filter(Boolean).join(' - ') || String(id);
+}
+
+export function ZoneGroupEditModal({
+  row, areas, onClose, onSaved,
+}: { row: ZoneGroupRow | null; areas: ClearListArea[]; onClose: () => void; onSaved: () => void; }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<ZoneGroupUpsertBody>(() => ({
@@ -707,9 +744,22 @@ function ZoneGroupEditModal({
           <input className={INPUT_CLASS} value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })} />
         </Fld>
-        <Fld label="Clear-List Area Id">
-          <input type="number" className={INPUT_CLASS} value={form.clearListAreaId ?? ''}
-            onChange={(e) => setForm({ ...form, clearListAreaId: e.target.value ? Number(e.target.value) : null })} />
+        <Fld label="Driver Location List">
+          <select className={INPUT_CLASS} value={form.clearListAreaId ?? ''} data-testid="zg-clear-list-area"
+            onChange={(e) => setForm({ ...form, clearListAreaId: e.target.value ? Number(e.target.value) : null })}>
+            <option value="">-</option>
+            {/* A saved id with no matching list (deleted in Configurator)
+                stays selected and visible, so saving does not silently clear it. */}
+            {form.clearListAreaId != null && !areas.some((a) => a.id === form.clearListAreaId) && (
+              <option value={form.clearListAreaId}>#{form.clearListAreaId} (missing)</option>
+            )}
+            {areas.map((a) => (
+              <option key={a.id} value={a.id}>{clearListAreaLabel(areas, a.id)}</option>
+            ))}
+          </select>
+          {form.clearListAreaId != null && areas.some((a) => a.id === form.clearListAreaId) && (
+            <SettingsLink href={driverLocationListUrl(form.clearListAreaId)} label="Open driver location list in Settings" />
+          )}
         </Fld>
       </div>
     </Modal>
@@ -731,6 +781,18 @@ function CountLink({ value, title, onClick }: { value: number; title: string; on
     >
       {value}
     </button>
+  );
+}
+
+/** Link out to the matching Configurator settings page. Renders nothing when
+ *  there is no Configurator host for this origin (see lib/settingsLinks). */
+function SettingsLink({ href, label }: { href: string | null; label: string }) {
+  if (!href) return null;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+      className="inline-block mt-1 text-[11px] text-brand-cyan underline underline-offset-2">
+      {label}
+    </a>
   );
 }
 

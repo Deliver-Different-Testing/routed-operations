@@ -22,15 +22,20 @@ public class TerritoryService(
     public async Task<TerritoryBootstrapDto> GetBootstrapAsync()
     {
         var isUs = IsUsTenant();
-        Log.Information("TerritoryService.GetBootstrap: isUs={IsUs}", isUs);
+        var hasZoneGroups = HasZoneGroups();
+        Log.Information("TerritoryService.GetBootstrap: isUs={IsUs} hasZoneGroups={HasZoneGroups}", isUs, hasZoneGroups);
 
         var depots = await GetDepotsAsync();
         var postcodeGroups = await GetPostcodeGroupsAsync();
 
         var nzPostcodes = isUs ? new List<NzPostcodeDto>() : await GetNzPostcodesAsync();
         var usZipZones = isUs ? await GetUsZipZonesAsync() : new List<UsZipZoneDto>();
-        var zoneNames = isUs ? await GetZoneNamesAsync() : new List<ZoneNameDto>();
-        var zoneGroups = isUs ? await GetZoneGroupsAsync() : new List<ZoneGroupDto>();
+        // Zone groups and the zone names under them are US and AU (Kevin, 12
+        // Nov): an AU tenant points its zone groups at driver location lists
+        // exactly the way US does (Crisis staging: 15 groups, every one with a
+        // ClearListAreaId). NZ stays without them.
+        var zoneNames = hasZoneGroups ? await GetZoneNamesAsync() : new List<ZoneNameDto>();
+        var zoneGroups = hasZoneGroups ? await GetZoneGroupsAsync() : new List<ZoneGroupDto>();
 
         return new TerritoryBootstrapDto(
             isUs ? "US" : "NZ",
@@ -539,11 +544,32 @@ public class TerritoryService(
                 g.ZoneNames.Count))
             .ToListAsync();
 
+    /// <summary>
+    /// Driver location lists for the zone group form's Clear-List Area
+    /// picker, in the tenant's own order. Not tenant-gated: NZ tenants carry
+    /// the table too, and the list is just whatever is there.
+    /// </summary>
+    public async Task<List<ClearListAreaDto>> GetClearListAreasAsync() =>
+        await Context.TblClearListAreas.AsNoTracking()
+            .OrderBy(a => a.Order)
+            .ThenBy(a => a.Name)
+            .Select(a => new ClearListAreaDto(a.ClearListAreaId, a.Code, a.Name))
+            .ToListAsync();
+
     private bool IsUsTenant()
     {
         var countryCode = httpContextAccessor.HttpContext?.User
             .FindFirstValue("CountryCode");
         return string.Equals(countryCode, "US", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Tenants that use ZoneGroup / ZoneName: US and AU.</summary>
+    private bool HasZoneGroups()
+    {
+        var countryCode = httpContextAccessor.HttpContext?.User
+            .FindFirstValue("CountryCode");
+        return string.Equals(countryCode, "US", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(countryCode, "AU", StringComparison.OrdinalIgnoreCase);
     }
 
     // ─── POSTCODE GROUP WRITES ─────────────────────────────────────────────

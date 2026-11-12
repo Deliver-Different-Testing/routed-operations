@@ -5,7 +5,7 @@ namespace RoutedOperations.Tests.Services.RecurringLinehaul;
 
 /// <summary>
 /// Covers GetLookupsAsync - the depot + courier picker feed for the Linehaul modal.
-/// Active-only + alphabetically ordered on both sides. Depot code / hint fields
+/// Depots: all, with an Active flag. Couriers: active-only. Both alphabetical. Depot code / hint fields
 /// resolve from raw columns without extra plumbing.
 /// </summary>
 public class RecurringLinehaulServiceLookupsTests
@@ -18,18 +18,24 @@ public class RecurringLinehaulServiceLookupsTests
     }
 
     [Fact]
-    public async Task GetLookupsAsync_ReturnsOnlyActiveDepots()
+    public async Task GetLookupsAsync_ReturnsInactiveDepotsFlagged()
     {
+        // Inactive depots come back so a run already on one still names it;
+        // the UI hides them from the select unless they are the current value.
+        // A null Active reads as active, the same as ScheduleService.GetLookupsAsync
+        // and the Depots tab, so the two lookups agree on the same depot.
         var svc = NewSvc(out var seed);
         seed.TblBulkRegions.AddRange(
             new TblBulkRegion { BulkRegionId = 1, Name = "Auckland", Active = true },
-            new TblBulkRegion { BulkRegionId = 2, Name = "Retired", Active = false });
+            new TblBulkRegion { BulkRegionId = 2, Name = "Retired", Active = false },
+            new TblBulkRegion { BulkRegionId = 3, Name = "Unknown", Active = null });
         await seed.SaveChangesAsync();
 
         var lookups = await svc.GetLookupsAsync();
 
-        Assert.Single(lookups.Depots);
-        Assert.Equal("Auckland", lookups.Depots[0].Name);
+        Assert.Equal(
+            new[] { (1, true), (2, false), (3, true) },
+            lookups.Depots.Select(d => (d.Id, d.Active)).OrderBy(t => t.Id).ToArray());
     }
 
     [Fact]

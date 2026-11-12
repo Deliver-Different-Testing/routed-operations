@@ -10,6 +10,7 @@ import { AssignableTargets } from '@/services/recurringRouteService';
 import { useAuth } from '@/context/AuthContext';
 import { rateScheduleService, ReportingSpeed } from '@/services/rateScheduleService';
 import { useSharedTargets } from './SharedTargetsContext';
+import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '@/lib/depotOptions';
 import {
   linehaulService,
   extractLinehaulError,
@@ -404,13 +405,15 @@ function LinehaulEditModal({
 
   const sameDepot = fromDepotId > 0 && fromDepotId === toDepotId;
   const despatchBeforeStart = !!startTime && !!despatchTime && despatchTime < startTime;
+  const inactiveDepot = hasInactiveDepot(lookups.depots, [fromDepotId, toDepotId]);
   const valid = runName.trim().length > 0 && fromDepotId > 0 && toDepotId > 0
-    && !sameDepot && !despatchBeforeStart && !flightSpeedMissing;
+    && !sameDepot && !despatchBeforeStart && !flightSpeedMissing && !inactiveDepot;
 
   const blockingReason =
     runName.trim().length === 0 ? 'Enter a run name.'
     : fromDepotId <= 0 || toDepotId <= 0 ? 'Choose both depots.'
     : sameDepot ? 'From and To depots must be different.'
+    : inactiveDepot ? INACTIVE_DEPOT_MESSAGE
     : despatchBeforeStart ? 'Despatch time must be at or after the start time.'
     : noFlightSpeeds ? 'No Flight service level exists for this tenant - switch to Road or add one.'
     : flightSpeedMissing ? 'Choose a Flight service level.'
@@ -486,7 +489,7 @@ function LinehaulEditModal({
               <select value={fromDepotId} onChange={(e) => setFromDepotId(Number(e.target.value))}
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-brand-cyan focus:outline-none">
                 <option value={0}>- Select -</option>
-                {lookups.depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {depotOptions(lookups.depots, fromDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </div>
             <div>
@@ -494,7 +497,7 @@ function LinehaulEditModal({
               <select value={toDepotId} onChange={(e) => setToDepotId(Number(e.target.value))}
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-brand-cyan focus:outline-none">
                 <option value={0}>- Select -</option>
-                {lookups.depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {depotOptions(lookups.depots, toDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </div>
           </div>

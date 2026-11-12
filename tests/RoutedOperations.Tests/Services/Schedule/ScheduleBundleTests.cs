@@ -12,12 +12,13 @@ namespace RoutedOperations.Tests.Services.Schedule;
 /// <summary>
 /// Bundle modal reads and writes (SCHEDULE-BUNDLES-UI-2026-10-16):
 ///   * GetBundleDetailAsync - members with depot / speed / days, clients
-///     with "on n of m" coverage over non-default members only.
+///     with "on n of m" coverage over every live member (non-default
+///     only until B3, 2026-11-12).
 ///   * DetachClientFromBundleAsync - link rows removed on every member,
 ///     other clients untouched.
 ///   * AddBundleMembersAsync(linkExistingClients: true) - the clients
-///     already on the bundle get a link row on the new non-default member
-///     and nothing on a new default member.
+///     already on the bundle get a link row on every new member, defaults
+///     included since B3 (2026-11-12).
 /// InMemory, like ListSummaryAsync's test: the detail read seeds the
 /// tblBulkRunSchedule view entity directly, which a relational provider
 /// refuses.
@@ -31,6 +32,8 @@ public class ScheduleBundleTests
     private const int Zimmer = 101;
     private const int Stryker = 103;
     private const int NuVasive = 104;
+    private const string EmptyBundleMessage =
+        "This bundle has no schedules yet. Add a schedule to the bundle before adding clients.";
 
     private static ScheduleService NewSvc(out DynamicDespatchDbContext seed)
     {
@@ -123,15 +126,16 @@ public class ScheduleBundleTests
         Assert.Equal("8am", chc.SpeedName);
         Assert.Equal(new[] { 1, 3 }, chc.ActiveDays);
 
-        // Coverage counts non-default members only (2), never the default.
+        // B3: coverage counts every live member (3), the default included,
+        // because a bundle attach now links the default too.
         Assert.Equal(3, d.Clients.Count);
         var zim = d.Clients.Single(c => c.ClientId == Zimmer);
         Assert.Equal("ZIM", zim.Code);
         Assert.Equal(2, zim.OnMembers);
-        Assert.Equal(2, zim.OfMembers);
+        Assert.Equal(3, zim.OfMembers);
         var nuva = d.Clients.Single(c => c.ClientId == NuVasive);
         Assert.Equal(1, nuva.OnMembers);
-        Assert.Equal(2, nuva.OfMembers);
+        Assert.Equal(3, nuva.OfMembers);
         // Fully covered clients sort first, then by code.
         Assert.Equal(new[] { "STRY", "ZIM", "NUVA" }, d.Clients.Select(c => c.Code).ToArray());
     }
@@ -160,7 +164,7 @@ public class ScheduleBundleTests
     }
 
     [Fact]
-    public async Task AddBundleMembersAsync_with_linkExistingClients_links_bundle_clients_to_the_new_specific_member_only()
+    public async Task AddBundleMembersAsync_with_linkExistingClients_links_bundle_clients_to_every_new_member()
     {
         var svc = NewSvc(out var seed);
         await SeedBundleAsync(seed);
@@ -178,8 +182,12 @@ public class ScheduleBundleTests
         Assert.Equal(
             new[] { Zimmer, Stryker, NuVasive }.OrderBy(x => x),
             links.Where(l => l.ScheduleId == NewSpecific).Select(l => l.ClientId).OrderBy(x => x));
-        // ...and none on the new default.
-        Assert.DoesNotContain(links, l => l.ScheduleId == NewDefault);
+        // ...and, since B3 (2026-11-12), on the new default too, the same
+        // rule as a bundle attach. Before B3 the default got nothing and
+        // every client then read "on n of m".
+        Assert.Equal(
+            new[] { Zimmer, Stryker, NuVasive }.OrderBy(x => x),
+            links.Where(l => l.ScheduleId == NewDefault).Select(l => l.ClientId).OrderBy(x => x));
         Assert.StartsWith("RoutedOps:bundle-member-link:", links.First(l => l.ScheduleId == NewSpecific).CreatedBy);
     }
 
@@ -197,7 +205,135 @@ public class ScheduleBundleTests
         Assert.Equal(1, added);
         Assert.DoesNotContain(await seed.ScheduleClients.AsNoTracking().ToListAsync(), l => l.ScheduleId == NewSpecific);
         var d = await svc.GetBundleDetailAsync(BundleId);
-        Assert.All(d.Clients, c => Assert.Equal(3, c.OfMembers));
-        Assert.Equal(2, d.Clients.Single(c => c.ClientId == Zimmer).OnMembers);   // now "on 2 of 3"
+        Assert.All(d.Clients, c => Assert.Equal(4, c.OfMembers));
+        Assert.Equal(2, d.Clients.Single(c => c.ClientId == Zimmer).OnMembers);   // now "on 2 of 4"
+    }
+
+    // ── B3 (Schedules NEW November feedback, Nisa 3.1) ──────────────────
+    // Under spec 6.1 a link row on a default means "configured for this
+    // client" (ranks first within its speed, hook for an override), so a
+    // bundle whose members are all defaults is an ordinary bundle and a
+    // client must be attachable to it.
+
+    /// <summary>A bundle whose only members are defaults. Before B3 the
+    /// attach returned 0 and wrote nothing, so Nisa's "add client" did
+    /// nothing at all.</summary>
+    [Fact]
+    public async Task AttachClientsToBundleAsync_links_the_client_to_default_members()
+    {
+        var svc = NewSvc(out var seed);
+        seed.TucClients.Add(new TucClient { UcclId = Zimmer, UcclCode = "ZIM", UcclName = "Zimmer Biomet" });
+        Header(seed, DefaultSched, "AKL 8am", isDefault: true);
+        Header(seed, 1002, "AKL Overnight", isDefault: true);
+        seed.BulkRunScheduleBundles.Add(new BulkRunScheduleBundle
+        {
+            BundleId = BundleId, Name = "Defaults", IsActive = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "seed",
+        });
+        seed.BulkRunScheduleBundleMembers.Add(new BulkRunScheduleBundleMember { BundleId = BundleId, ScheduleId = DefaultSched });
+        seed.BulkRunScheduleBundleMembers.Add(new BulkRunScheduleBundleMember { BundleId = BundleId, ScheduleId = 1002 });
+        await seed.SaveChangesAsync();
+
+        var added = await svc.AttachClientsToBundleAsync(BundleId, new[] { Zimmer });
+
+        Assert.Equal(2, added);
+        var links = await seed.ScheduleClients.AsNoTracking().ToListAsync();
+        Assert.Equal(new[] { DefaultSched, 1002 }, links.Where(l => l.ClientId == Zimmer).Select(l => l.ScheduleId).OrderBy(x => x));
+        // Idempotent: a second attach adds nothing.
+        Assert.Equal(0, await svc.AttachClientsToBundleAsync(BundleId, new[] { Zimmer }));
+        // And the bundle modal shows the client, on 2 of 2 members.
+        var d = await svc.GetBundleDetailAsync(BundleId);
+        var zim = Assert.Single(d.Clients);
+        Assert.Equal(2, zim.OnMembers);
+        Assert.Equal(2, zim.OfMembers);
+    }
+
+    /// <summary>Mixed bundle: the attach now covers the default member too.</summary>
+    [Fact]
+    public async Task AttachClientsToBundleAsync_on_a_mixed_bundle_links_every_live_member()
+    {
+        var svc = NewSvc(out var seed);
+        await SeedBundleAsync(seed);
+        const int Smith = 105;
+        seed.TucClients.Add(new TucClient { UcclId = Smith, UcclCode = "SMI", UcclName = "Smith" });
+        await seed.SaveChangesAsync();
+
+        var added = await svc.AttachClientsToBundleAsync(BundleId, new[] { Smith });
+
+        Assert.Equal(3, added);
+        var onSmith = (await seed.ScheduleClients.AsNoTracking().Where(l => l.ClientId == Smith).ToListAsync())
+            .Select(l => l.ScheduleId).OrderBy(x => x);
+        Assert.Equal(new[] { DefaultSched, MedicalWlg, MedicalChc }, onSmith);
+        Assert.StartsWith("RoutedOps:bundle-attach:", (await seed.ScheduleClients.AsNoTracking().FirstAsync(l => l.ClientId == Smith)).CreatedBy);
+    }
+
+    /// <summary>No members at all, or only retired ones: one clear message
+    /// instead of "Bundle 7 has no members." or a silent 0.</summary>
+    [Fact]
+    public async Task AttachClientsToBundleAsync_on_an_empty_bundle_says_so()
+    {
+        var svc = NewSvc(out var seed);
+        seed.BulkRunScheduleBundles.Add(new BulkRunScheduleBundle
+        {
+            BundleId = BundleId, Name = "Medical Nationwide", IsActive = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "seed",
+        });
+        await seed.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.AttachClientsToBundleAsync(BundleId, new[] { Zimmer }));
+        Assert.Equal(EmptyBundleMessage, ex.Message);
+
+        // A bundle whose only member is retired is empty too.
+        seed.BulkRunScheduleHeaders.Add(new BulkRunScheduleHeader
+        {
+            ScheduleId = 1020, Name = "Gone", IsDefault = false, IsActive = true,
+            CreatedUtc = DateTime.UtcNow, CreatedBy = "seed", RetiredUtc = DateTime.UtcNow,
+        });
+        seed.BulkRunScheduleBundleMembers.Add(new BulkRunScheduleBundleMember { BundleId = BundleId, ScheduleId = 1020 });
+        await seed.SaveChangesAsync();
+        ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.AttachClientsToBundleAsync(BundleId, new[] { Zimmer }));
+        Assert.Equal(EmptyBundleMessage, ex.Message);
+    }
+
+    /// <summary>Spec 6.1 rule 3, the same rule DetachClientAsync applies to
+    /// one schedule: a non-default schedule with no LegacyClientId needs at
+    /// least one client. Before this guard, removing NuVasive from a bundle
+    /// where it was the only client on a member left that member bookable
+    /// by nobody. The refusal is all-or-nothing and names the schedule.</summary>
+    [Fact]
+    public async Task DetachClientFromBundleAsync_refuses_to_remove_the_last_client_of_a_specific_member()
+    {
+        var svc = NewSvc(out var seed);
+        await SeedBundleAsync(seed);
+        const int MedicalHam = 1011;
+        Header(seed, MedicalHam, "Medical HAM 8am", isDefault: false);
+        Link(seed, MedicalHam, NuVasive);   // NuVasive is the only client here
+        seed.BulkRunScheduleBundleMembers.Add(new BulkRunScheduleBundleMember { BundleId = BundleId, ScheduleId = MedicalHam });
+        await seed.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.DetachClientFromBundleAsync(BundleId, NuVasive));
+        Assert.Contains("Medical HAM 8am", ex.Message);
+        Assert.Contains("#1011", ex.Message);
+
+        // Nothing removed anywhere, including the member where it was not the last.
+        var nuva = await seed.ScheduleClients.AsNoTracking().Where(l => l.ClientId == NuVasive).ToListAsync();
+        Assert.Equal(new[] { MedicalChc, MedicalHam }, nuva.Select(l => l.ScheduleId).OrderBy(x => x));
+    }
+
+    /// <summary>The guard does not fire on a default member: a default is
+    /// bookable by every client whether or not anyone is linked.</summary>
+    [Fact]
+    public async Task DetachClientFromBundleAsync_removes_the_only_link_on_a_default_member()
+    {
+        var svc = NewSvc(out var seed);
+        await SeedBundleAsync(seed);
+        Link(seed, DefaultSched, NuVasive);
+        await seed.SaveChangesAsync();
+
+        var removed = await svc.DetachClientFromBundleAsync(BundleId, NuVasive);
+
+        Assert.Equal(2, removed);   // DefaultSched + MedicalChc
+        Assert.DoesNotContain(await seed.ScheduleClients.AsNoTracking().ToListAsync(), l => l.ClientId == NuVasive);
     }
 }

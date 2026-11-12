@@ -37,4 +37,9 @@ public partial class DespatchContext
     // reference data; used by the Recurring Routes Linehaul port to detect
     // "flight-grouped" speeds without hard-coding numeric GroupingId values.
     public virtual DbSet<TucJobTypeGrouping> TucJobTypeGroupings { get; set; }
+
+    // tblClearListArea: driver location lists, read-only reference data for
+    // the zone group form's Clear-List Area picker (12 Nov). Table
+    // pre-existing on every tenant; RO adds no schema.
+    public virtual DbSet<TblClearListArea> TblClearListAreas { get; set; }
 }

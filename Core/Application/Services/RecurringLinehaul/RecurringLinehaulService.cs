@@ -40,10 +40,19 @@ public class RecurringLinehaulService(
 
     public async Task<RecurringLinehaulLookupsDto> GetLookupsAsync()
     {
+        // Every depot with its flag; the run modal hides inactive ones unless
+        // one is the run's current value. A null Active reads as active, the
+        // same as the schedule lookups and the Depots tab (TerritoryService).
+        // tblBulkRegion.Active is NOT NULL DEFAULT 1 on every tenant, so this
+        // only matters if the EF model's bool? ever meets a null.
         var depots = await Context.TblBulkRegions.AsNoTracking()
-            .Where(d => d.Active == true)
             .OrderBy(d => d.Name)
-            .Select(d => new RecurringLinehaulDepotLookupDto { Id = d.BulkRegionId, Name = d.Name ?? string.Empty })
+            .Select(d => new RecurringLinehaulDepotLookupDto
+            {
+                Id = d.BulkRegionId,
+                Name = d.Name ?? string.Empty,
+                Active = d.Active ?? true,
+            })
             .ToListAsync();
 
         var couriers = await Context.TucCouriers.AsNoTracking()

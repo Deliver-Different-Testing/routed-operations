@@ -12,6 +12,7 @@ import {
 } from '../../services/scheduleService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
 import { depotLabel, postcodeGroupLabel, postcodeLabel, postcodePluralLabel } from '../../lib/tenantLabels';
+import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 import { ClientMultiPicker } from './ClientMultiPicker';
 import { ScheduleCoverageMap } from './ScheduleCoverageMap';
 import { LinehaulRunModal } from './LinehaulRunModal';
@@ -195,6 +196,12 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
     }));
 
   const save = async () => {
+    const depotIds = [
+      form.pickupDepotId,
+      form.regionId,
+      ...form.linehauls.flatMap((l) => [l.fromClientAddress ? null : l.fromDepotId, l.toDepotId]),
+    ];
+    if (hasInactiveDepot(lookups?.depots ?? [], depotIds)) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     setSaving(true);
     try {
       const res = await scheduleService.upsert(form);
@@ -253,14 +260,14 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
               <select className={INPUT_CLASS} value={form.pickupDepotId ?? ''}
                 onChange={(e) => setForm((f) => ({ ...f, pickupDepotId: e.target.value ? Number(e.target.value) : null }))}>
                 <option value="">Collect from Client Address</option>
-                {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {depotOptions(depots, form.pickupDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </Field>
             <Field label={`Destination ${depotSingular}`} required>
               <select className={INPUT_CLASS} value={form.regionId || ''}
                 onChange={(e) => setForm((f) => ({ ...f, regionId: Number(e.target.value) }))}>
                 <option value="">Choose a {depotSingular.toLowerCase()}...</option>
-                {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {depotOptions(depots, form.regionId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
               </select>
             </Field>
           </div>
@@ -551,14 +558,14 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                     disabled={l.fromClientAddress === true}
                     onChange={(e) => updateLinehaul(i, { fromDepotId: e.target.value ? Number(e.target.value) : null })}>
                     <option value="">From Depot *</option>
-                    {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    {depotOptions(depots, l.fromDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
                   </select>
                 </Field>
                 <Field label="To Depot">
                   <select className={INPUT_CLASS} value={l.toDepotId ?? ''}
                     onChange={(e) => updateLinehaul(i, { toDepotId: e.target.value ? Number(e.target.value) : null })}>
                     <option value="">To Depot *</option>
-                    {depots.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    {depotOptions(depots, l.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
                   </select>
                 </Field>
                 <Field

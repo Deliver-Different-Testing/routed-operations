@@ -170,6 +170,14 @@ export interface ZoneGroupRow {
   zoneNameCount: number;
 }
 
+/** One driver location list (tblClearListArea). A zone group points at one
+ *  through clearListAreaId. Ordered by the operator's Order, then Name. */
+export interface ClearListArea {
+  id: number;
+  code: string | null;
+  name: string | null;
+}
+
 export interface TerritoryBootstrap {
   /** "NZ" | "US". Frontend switches tab content by this. */
   countryCode: 'NZ' | 'US' | string;
@@ -332,6 +340,7 @@ export const territoryService = {
   usZipZones: () => request<{ response: UsZipZone[] }>('/territory/us/zip-zones'),
   usZoneNames: () => request<{ response: ZoneNameRow[] }>('/territory/us/zone-names'),
   usZoneGroups: () => request<{ response: ZoneGroupRow[] }>('/territory/us/zone-groups'),
+  clearListAreas: () => request<{ response: ClearListArea[] }>('/territory/clear-list-areas'),
 
   createPostcodeGroup: (b: PostcodeGroupUpsertBody) =>
     write<PostcodeGroup, PostcodeGroupUpsertBody>('/territory/postcode-groups', 'POST', b),

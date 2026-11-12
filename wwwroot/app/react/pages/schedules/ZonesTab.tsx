@@ -15,6 +15,7 @@ import { Modal } from '../../components/common/Modal';
 import { Button } from '../../components/common/Button';
 import { DataTable, type DataTableColumn } from '../../components/common/DataTable';
 import { depotLabel, postcodeLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
+import { depotFilterOptions, depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 
 // Tenant-switched Zones tab. NZ path edits BulkZonePostcode rows; US path
 // edits ZoneZip rows. The two sub-grids share the same shell (search,
@@ -105,8 +106,8 @@ export function ZonesTab() {
               className="border border-border rounded-lg px-2 py-1.5 text-xs bg-surface-white focus:outline-none focus:ring-1 focus:ring-brand-cyan"
             >
               <option value="">All {depotLabel(tenantIsUs, true).toLowerCase()}</option>
-              {(bootstrap?.depots ?? []).map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
+              {depotFilterOptions(bootstrap?.depots ?? []).map((d) => (
+                <option key={d.id} value={d.id}>{d.label}</option>
               ))}
             </select>
           )}
@@ -250,6 +251,7 @@ function NzPostcodeEditModal({
   }));
 
   const save = async () => {
+    if (hasInactiveDepot(bootstrap?.depots ?? [], [form.depotId])) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
     setSaving(true);
     try {
       if (row) await territoryService.updateNzPostcode(row.id, form);
@@ -288,7 +290,7 @@ function NzPostcodeEditModal({
           <select className={INPUT_CLASS} value={form.depotId ?? ''}
             onChange={(e) => setForm({ ...form, depotId: e.target.value ? Number(e.target.value) : null })}>
             <option value="">-</option>
-            {(bootstrap?.depots ?? []).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {depotOptions(bootstrap?.depots ?? [], form.depotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
         </Fld>
         <Fld label={groupSingular}>
