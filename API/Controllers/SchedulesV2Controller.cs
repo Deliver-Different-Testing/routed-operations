@@ -708,7 +708,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
 
     /// <summary>
     /// POST /api/v2/schedule-bundles/{bundleId}/clients - attach clients
-    /// to every non-default member schedule of the bundle. Body
+    /// to every live member schedule of the bundle, defaults included (B3). Body
     /// `{ clientIds: int[] }`. Idempotent (already-attached pairs
     /// skipped). Returns the total number of link rows added.
     /// </summary>
@@ -759,6 +759,8 @@ public class CopyScheduleRequest
     public bool CopyClientLinks { get; set; }
     /// <summary>Null or false: the copy is client-specific. True: a default.</summary>
     public bool? IsDefault { get; set; }
+    /// <summary>D4: null or false, the copy starts inactive. True: active.</summary>
+    public bool? IsActive { get; set; }
 
     public ScheduleCopyRequest ToServiceRequest(int sourceScheduleId) => new()
     {
@@ -773,6 +775,7 @@ public class CopyScheduleRequest
         // never inherits a 40-client source's links.
         CopyClientLinks = CopyClientLinks,
         IsDefault = IsDefault,
+        IsActive = IsActive,
     };
 }
 

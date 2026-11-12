@@ -31,7 +31,11 @@ import { PostcodeGroupDetailModal, type ScheduleSide } from '../../components/te
 // ZonesTab: white rounded-xl container, surface-cream header row,
 // kebab-menu row actions, cyan pill "Add" buttons.
 
-export function ZoneGroupsTab() {
+export function ZoneGroupsTab({ onOpenSchedule }: {
+  /** Z7: open a schedule listed in the group detail. Schedules NEW passes
+   *  its base-edit opener; the legacy Schedules page passes nothing. */
+  onOpenSchedule?: (scheduleId: number) => void;
+} = {}) {
   const toast = useToast();
   const askConfirm = useConfirm();
   const user = useAuth();
@@ -408,6 +412,7 @@ export function ZoneGroupsTab() {
           groupId={detailPg.id}
           initialSide={detailPg.side}
           onClose={() => setDetailPg(null)}
+          onOpenSchedule={onOpenSchedule}
           onEdit={() => {
             const row = (bootstrap?.postcodeGroups ?? []).find((g) => g.id === detailPg.id);
             setDetailPg(null);

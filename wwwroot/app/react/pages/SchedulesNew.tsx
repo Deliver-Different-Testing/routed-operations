@@ -282,7 +282,7 @@ export default function SchedulesNew() {
           </div>
 
           {mountedViews.has('groups') && (
-            <div className={viewHidden('groups')}><ZoneGroupsTab /></div>
+            <div className={viewHidden('groups')}><ZoneGroupsTab onOpenSchedule={openBase} /></div>
           )}
           {mountedViews.has('zones') && (
             <div className={viewHidden('zones')}><ZonesTab /></div>
@@ -1085,7 +1085,8 @@ function SourceTag({ source }: { source: 'override' | 'shared' | 'default' }) {
   );
 }
 
-function ClientChips({ row }: { row: ScheduleGroupSummary }) {
+/** Exported for its render test (D2 badge). */
+export function ClientChips({ row }: { row: ScheduleGroupSummary }) {
   // Spec 6.1 rule 4. This used to read "clientCount === 0 && legacyClientId
   // == null", which is the same inference the modal made and is wrong for a
   // default that has clients configured on it: the row dropped the "All
@@ -1135,6 +1136,15 @@ function ClientChips({ row }: { row: ScheduleGroupSummary }) {
       ))}
       {overflow > 0 && (
         <span className="text-[10px] text-text-muted">+{overflow}</span>
+      )}
+      {row.blockDefaults && (
+        <span
+          className="text-[10px] font-medium bg-warning-bg text-warning border border-warning/30 px-1.5 py-px rounded"
+          title="D2: these clients do not see the default schedules on this lane (same delivery depot, origin depot and speed) while this schedule is active."
+          data-testid={`row-${row.scheduleId}-hides-defaults`}
+        >
+          Hides defaults
+        </span>
       )}
     </div>
   );

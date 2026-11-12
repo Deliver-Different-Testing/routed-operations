@@ -25,6 +25,8 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
   const tenantId = auth.currentTenantId ?? 0;
   const [newName, setNewName] = useState('');
   const [copyClientLinks, setCopyClientLinks] = useState(false);
+  // D4: a copy starts inactive unless the operator ticks Activate.
+  const [activate, setActivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,12 +36,13 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
       setNewName('');
     }
     setCopyClientLinks(false);
+    setActivate(false);
     setError(null);
   }, [source]);
 
   const copyMut = useMutation({
     mutationFn: (name: string) =>
-      schedulesV2Service.copy(source!.scheduleId, name, [], { copyClientLinks }),
+      schedulesV2Service.copy(source!.scheduleId, name, [], { copyClientLinks, isActive: activate }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: schedulesV2Keys.listAll(tenantId) });
       onSuccess?.();
@@ -124,10 +127,20 @@ export function CopyScheduleModal({ source, onClose, onSuccess }: Props) {
             </span>
           </label>
 
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={activate}
+              onChange={(e) => setActivate(e.target.checked)}
+            />
+            <span className="text-text-primary">Activate the copy now</span>
+          </label>
+
           <p className="text-xs text-text-muted italic">
             The copy inherits the source's day windows, linehauls, zones, delivery route, display
             name and booking settings. It is created for specific clients, not as a default, so
-            nobody can book it until you link a client or set it to all clients.
+            nobody can book it until you link a client or set it to all clients. It also starts
+            inactive unless you tick Activate, so it cannot be booked while you check it.
           </p>
         </div>
       )}
