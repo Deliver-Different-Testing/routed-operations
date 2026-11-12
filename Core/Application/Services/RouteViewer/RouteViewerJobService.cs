@@ -230,11 +230,16 @@ public class RouteViewerJobService(
                 @ClientID = @ClientID,
                 @RunDate = @RunDate,
                 @Regions = @Regions,
-                @ClientIDs = @ClientIDs",
+                @ClientIDs = @ClientIDs,
+                @NpAgentId = @NpAgentId",
             SpParam.Of("@ClientID", effectiveClientId),
             SpParam.Of("@RunDate", request.RunDate),
             SpParam.Of("@Regions", request.RegionIds),
-            SpParam.Of("@ClientIDs", effectiveClientIds))
+            SpParam.Of("@ClientIDs", effectiveClientIds),
+            // NP leak K1 (2026-11-13, migration 20261113140200): NP sessions
+            // pass their agent so the SP keeps only their jobs; admin NULL = all.
+            // B2: branch scope (BranchIds) joins here once B2 lands.
+            SpParam.Of("@NpAgentId", scope.IsAdmin ? null : scope.NpAgentId))
             .ToListAsync();
 
         return rows.Select(r => new BulkJobDto
@@ -263,12 +268,17 @@ public class RouteViewerJobService(
             Speed = r.Speed,
             SpeedID = r.SpeedID,
             OurRef = r.OurRef,
-            PickUpLatitude = (decimal?)r.PickUpLatitude,
-            PickUpLongitude = (decimal?)r.PickUpLongitude,
-            ToLat = (decimal?)r.DeliveryLatitude,
-            ToLng = (decimal?)r.DeliveryLongitude,
+            PickUpLatitude = ParseCoord(r.PickUpLatitude),
+            PickUpLongitude = ParseCoord(r.PickUpLongitude),
+            ToLat = ParseCoord(r.DeliveryLatitude),
+            ToLng = ParseCoord(r.DeliveryLongitude),
         }).ToList();
     }
+
+    // tblBulkJob lat/lng columns are nvarchar(50); blank or junk -> null.
+    private static decimal? ParseCoord(string? raw) =>
+        decimal.TryParse(raw, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
 
     /// <summary>Exact column shape of RVW_stpPrintJobsV2 output. Kept
     /// separate from BulkJobDto so EF's strict FromSql column-match
@@ -297,10 +307,13 @@ public class RouteViewerJobService(
         public string? Speed { get; set; }
         public int? SpeedID { get; set; }
         public string? OurRef { get; set; }
-        public double? PickUpLatitude { get; set; }
-        public double? PickUpLongitude { get; set; }
-        public double? DeliveryLatitude { get; set; }
-        public double? DeliveryLongitude { get; set; }
+        // nvarchar(50) in the SP output (tblBulkJob columns). Typed as
+        // double these threw InvalidCast for every caller once a row had a
+        // coordinate. Parsed in ParseCoord.
+        public string? PickUpLatitude { get; set; }
+        public string? PickUpLongitude { get; set; }
+        public string? DeliveryLatitude { get; set; }
+        public string? DeliveryLongitude { get; set; }
     }
 
     /// <summary>
@@ -345,10 +358,36 @@ public class RouteViewerJobService(
     {
         if (string.IsNullOrWhiteSpace(mobile)) return null;
 
-        return await Context.Database.SqlQueryRaw<ClientIntelDto>(
+        // NP leak K6 (2026-11-13): an NP may read intel only for a mobile
+        // that belongs to one of its own jobs (Kevin's call: scope by
+        // mobile, not a blanket NP block, so the NP's own Detail pane keeps
+        // its intel box). Throws NpLabelScopeException -> 403; admin no-op.
+        // B2: branch scope check joins here once B2 lands.
+        await scopeGuard.EnsureMobileInScopeAsync(mobile);
+
+        // EXEC is not composable (FirstOrDefaultAsync threw for every
+        // caller) and the SP emits Dog / DeliveryPhoto / Notes only.
+        var rows = await Context.Database.SqlQueryRaw<RawClientIntelRow>(
             @"EXEC dbo.RVW_stpClientIntel @Mobile",
             SpParam.Of("@Mobile", mobile))
-            .FirstOrDefaultAsync();
+            .ToListAsync();
+        var r = rows.FirstOrDefault();
+        if (r == null) return null;
+        return new ClientIntelDto
+        {
+            Mobile = mobile,
+            Dog = r.Dog ?? false,
+            Notes = r.Notes,
+            HasPhoto = r.DeliveryPhoto is { Length: > 0 },
+        };
+    }
+
+    /// <summary>Exact column shape of RVW_stpClientIntel.</summary>
+    private class RawClientIntelRow
+    {
+        public bool? Dog { get; set; }
+        public byte[]? DeliveryPhoto { get; set; }
+        public string? Notes { get; set; }
     }
 
     /// <summary>GET /api/runviewer/jobs/client-intel-images?mobile= -
@@ -357,6 +396,8 @@ public class RouteViewerJobService(
     public async Task<List<ClientIntelImageDto>> GetClientIntelImagesAsync(string mobile)
     {
         if (string.IsNullOrWhiteSpace(mobile)) return new List<ClientIntelImageDto>();
+        // NP leak K6: same mobile scope as GetClientIntelAsync. B2: see above.
+        await scopeGuard.EnsureMobileInScopeAsync(mobile);
         try
         {
             return await s3PhotoReader.GetClientIntelPhotosAsync(mobile);

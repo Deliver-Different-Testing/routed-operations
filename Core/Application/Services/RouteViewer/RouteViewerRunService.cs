@@ -678,8 +678,8 @@ public class RouteViewerRunService(
     /// <summary>
     /// GET /api/runviewer/runs/job-siblings?jobId= - returns the family
     /// of related jobs for the Detail Related-tabs strip. NP-scoped -
-    /// caller passes the anchor jobId and the SP returns siblings only
-    /// within the same NP scope.
+    /// the anchor must be in the caller's NP scope, and NP callers get
+    /// only the siblings whose tucJob.NpAgentId is theirs (K7).
     /// </summary>
     public async Task<List<SiblingJobDto>> GetJobSiblingsAsync(int jobId)
     {
@@ -696,9 +696,9 @@ public class RouteViewerRunService(
         // MapRawBulkJobRowToDto). Guard the anchor explicitly, the same
         // way GetBulkJobAsync does at RouteViewerJobService.cs:49.
         // Kevin's call 2026-10-01 (D7): app-side guard rather than adding
-        // @NpAgentId to RVW_stpJobSiblings, because filtering siblings by
-        // agent can return a partial family, which is the wrong semantic
-        // for a siblings view. See NP-PAY-PART4-TODO.md T13.
+        // @NpAgentId to RVW_stpJobSiblings. D7 also kept the whole family
+        // unfiltered; that part is superseded 2026-11-13 (K7, below).
+        // See NP-PAY-PART4-TODO.md T13.
         //
         // CRITICAL: @JobID here is tucJob.ucjbID (the LIVE job id),
         // NOT tblBulkJob.BulkJobID. If the caller passes 0 / negative /
@@ -731,6 +731,22 @@ public class RouteViewerRunService(
             // family root missing). Empty family = no tabs to render.
             logger.LogDebug("JobSiblings early-return for jobId={JobId}: {Msg}", jobId, ex.Message);
             return new List<SiblingJobDto>();
+        }
+
+        // NP leak K7 (2026-11-13, Kevin's call, supersedes D7 above): a family
+        // can mix NpAgentIds (e.g. an NP-owned DEL leg under Urgent-owned
+        // linehaul legs), and the anchor guard alone returned the foreign
+        // legs with their full job payload. NP sessions keep only the legs
+        // whose tucJob.NpAgentId is theirs; a partial family is accepted.
+        // B2: branch scope filter joins here once B2 lands.
+        if (!scope.IsAdmin)
+        {
+            var familyIds = raw.Select(r => r.JobID).Where(id => id > 0).Distinct().ToList();
+            var ownIds = (await Context.TucJobs
+                .Where(j => familyIds.Contains(j.UcjbId) && j.NpAgentId == scope.NpAgentId)
+                .Select(j => j.UcjbId)
+                .ToListAsync()).ToHashSet();
+            raw = raw.Where(r => ownIds.Contains(r.JobID)).ToList();
         }
 
         // RVW_stpJobSiblings emits `CAST(NULL as int) AS BulkJobID` for

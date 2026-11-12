@@ -229,9 +229,12 @@ describe('routeViewerService - couriers', () => {
 });
 
 describe('routeViewerService - scans / events', () => {
-  it('getScanDetail GETs /runviewer/scans/detail', async () => {
-    server.use(wrapGet('/api/runviewer/scans/detail', []));
+  it('getScanDetail GETs /runviewer/scans/detail with bulkJobId', async () => {
+    let seen!: URL;
+    server.use(wrapGet('/api/runviewer/scans/detail', [], (u) => (seen = u)));
     await routeViewerService.getScanDetail(1);
+    expect(seen.searchParams.get('bulkJobId')).toBe('1');
+    expect(seen.searchParams.get('jobId')).toBeNull();
   });
 
   it('getBulkScanJobs GETs /runviewer/scans', async () => {

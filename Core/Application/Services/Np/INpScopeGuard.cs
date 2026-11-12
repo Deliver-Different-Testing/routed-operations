@@ -47,4 +47,12 @@ public interface INpScopeGuard
     /// delegate to EnsureRouteInScopeAsync(-runId). No-op for admin scope.
     /// </summary>
     Task EnsureRunInScopeAsync(int runId);
+    /// <summary>
+    /// Throws NpLabelScopeException unless the mobile number belongs to
+    /// at least one non-void job in the current NP scope (matched on
+    /// tblBulkJob.ProofOfDeliveryMobile / DeliverToPhone, NpAgentId read
+    /// from tucJob via TblBulkJob.JobId). Gates the
+    /// mobile-keyed Client Intel reads. No-op for admin scope.
+    /// </summary>
+    Task EnsureMobileInScopeAsync(string mobile);
 }

@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
 namespace RoutedOperations.API.Controllers;
@@ -47,21 +48,37 @@ public class RunViewerScanController(
         [FromQuery] int rootJobId,
         [FromQuery] DateTime? runDate)
     {
-        var detail = await scanService.GetRoutedShipmentDetailAsync(rootJobId, runDate);
-        if (detail == null) return NotFound();
-        return Ok(new { response = detail });
+        try
+        {
+            var detail = await scanService.GetRoutedShipmentDetailAsync(rootJobId, runDate);
+            if (detail == null) return NotFound();
+            return Ok(new { response = detail });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
-    /// <summary>GET /api/runviewer/scans/detail?runDate=&scan=&rootJobId=
-    /// Scan Detail panel rows for a selected job.</summary>
+    /// <summary>GET /api/runviewer/scans/detail?runDate=&scan=&rootJobId=&bulkJobId=
+    /// Scan Detail panel rows for a selected job. bulkJobId is used by the
+    /// Runs / Print Manager / Linehaul detail box.</summary>
     [HttpGet("detail")]
     public async Task<IActionResult> GetScanDetail(
         [FromQuery] DateTime? runDate,
         [FromQuery] string? scan,
-        [FromQuery] int? rootJobId)
+        [FromQuery] int? rootJobId,
+        [FromQuery] int? bulkJobId = null)
     {
-        var rows = await scanService.GetScanDetailAsync(runDate, scan, rootJobId);
-        return Ok(new { response = rows });
+        try
+        {
+            var rows = await scanService.GetScanDetailAsync(runDate, scan, rootJobId, bulkJobId);
+            return Ok(new { response = rows });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>GET /api/runviewer/scans/item-progress?rootJobId= -
@@ -69,8 +86,15 @@ public class RunViewerScanController(
     [HttpGet("item-progress")]
     public async Task<IActionResult> GetItemProgress([FromQuery] int rootJobId)
     {
-        var rows = await scanService.GetItemProgressAsync(rootJobId);
-        return Ok(new { response = rows });
+        try
+        {
+            var rows = await scanService.GetItemProgressAsync(rootJobId);
+            return Ok(new { response = rows });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/scans/remove-missing - admin bulk
