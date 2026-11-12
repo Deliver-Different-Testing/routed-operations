@@ -150,7 +150,10 @@ public record ScheduleGroupDto(
     bool ZonesDifferByDay = false,
     /// <summary>Per live day row, its active delivery zones. Lets the modal
     /// say which days differ and how.</summary>
-    List<DayZoneSetDto> DayZoneSets = null);
+    List<DayZoneSetDto> DayZoneSets = null,
+    /// <summary>D2: header BlockDefaults. True on a non-default schedule
+    /// hides same-lane defaults from its linked clients.</summary>
+    bool BlockDefaults = false);
 
 /// <summary>One live day row's active delivery zones (M4 / B4).</summary>
 public record DayZoneSetDto(
@@ -342,7 +345,9 @@ public record ScheduleGroupSummaryDto(
     /// mislabelled every default that had a client configured on it (spec
     /// 6.1). Optional so positional callers keep compiling.
     /// </summary>
-    bool IsDefault = true);
+    bool IsDefault = true,
+    /// <summary>D2: header BlockDefaults, for the list badge.</summary>
+    bool BlockDefaults = false);
 
 /// <summary>
 /// One nested override-row entry under a base schedule in the Schedules
@@ -402,7 +407,7 @@ public record ScheduleBundleMemberDto(
     int[] ActiveDays);
 
 /// <summary>
-/// One client "on the bundle": linked to at least one non-default member.
+/// One client "on the bundle": linked to at least one live member (defaults included since B3, 2026-11-12).
 /// OnMembers / OfMembers show partial coverage (a client attached before a
 /// schedule joined the bundle) so the modal can offer "Complete".
 /// </summary>

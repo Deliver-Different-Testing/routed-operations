@@ -200,3 +200,75 @@ describe('Schedule detail modal - who can book this schedule (spec 6.1)', () => 
     expect(lastPut).toBeNull();          // nothing was sent
   });
 });
+
+// D2 (Marcus, 6 Nov, option 3): a schedule for specific clients can hide the
+// same-lane defaults from its clients. The switch only means something on a
+// non-default schedule, so it is only offered there, and it has to reach the
+// PUT body or the availability functions never see it.
+describe('Schedule detail modal - hide default schedules (D2)', () => {
+  it('is not offered on a default schedule', async () => {
+    installHandlers(detail());
+    renderModal();
+    await screen.findByTestId('who-can-book-all-clients');
+    expect(screen.queryByTestId('block-defaults-checkbox')).toBeNull();
+  });
+
+  it('reads the header flag and ships the change in the save body', async () => {
+    installHandlers(detail({ isDefault: false, blockDefaults: true }));
+    const user = userEvent.setup();
+    renderModal();
+
+    const box = await screen.findByTestId('block-defaults-checkbox');
+    expect(box).toBeChecked();
+    await user.click(box);
+
+    const save = screen.getByRole('button', { name: /^Save/ });
+    await waitFor(() => expect(save).toBeEnabled());
+    await user.click(save);
+
+    await waitFor(() => expect(lastPut).not.toBeNull());
+    expect(lastPut!.blockDefaults).toBe(false);
+  });
+});
+
+// M12 / R1: Operating days read in the order things happen, and Monday can be
+// copied to the other ticked days (the cut-off day shift itself is pinned in
+// lib/copyMondayToDays.test.ts).
+describe('Schedule detail modal - operating days (M12)', () => {
+  const twoDays = {
+    dayWindows: [
+      { id: 9001, dayOfWeek: 1, startTime: '13:00', endTime: '20:00', cutoffDay: 7, cutoffTime: '11:00' },
+      { id: 9002, dayOfWeek: 3, startTime: '08:00', endTime: '17:00', cutoffDay: 3, cutoffTime: '06:00' },
+    ],
+  };
+
+  it('labels each day cut-off, then collection, then delivery', async () => {
+    installHandlers(detail(twoDays));
+    const user = userEvent.setup();
+    renderModal();
+    await user.click(await screen.findByRole('button', { name: 'Operating days' }));
+
+    const titles = screen.getAllByTitle(/^(Cut-off day|Cut-off time|Collection time|Delivery time)$/)
+      .slice(0, 4)
+      .map((el) => el.getAttribute('title'));
+    expect(titles).toEqual(['Cut-off day', 'Cut-off time', 'Collection time', 'Delivery time']);
+  });
+
+  it('copies Monday onto Wednesday, shifting the cut-off day, and saves it', async () => {
+    installHandlers(detail(twoDays));
+    const user = userEvent.setup();
+    renderModal();
+    await user.click(await screen.findByRole('button', { name: 'Operating days' }));
+    await user.click(screen.getByTestId('days-tab-copy-monday'));
+
+    const save = screen.getByRole('button', { name: /^Save/ });
+    await waitFor(() => expect(save).toBeEnabled());
+    await user.click(save);
+
+    await waitFor(() => expect(lastPut).not.toBeNull());
+    const wed = (lastPut!.dayWindows as Array<Record<string, unknown>>).find((d) => d.dayOfWeek === 3)!;
+    // Monday closes the Sunday before (7); Wednesday then closes Tuesday (2).
+    expect(wed).toMatchObject({ id: 9002, startTime: '13:00', endTime: '20:00', cutoffDay: 2, cutoffTime: '11:00' });
+  });
+});
+

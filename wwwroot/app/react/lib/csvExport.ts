@@ -66,9 +66,7 @@ function quoteCsv(value: string): string {
  * prefix ensures Excel opens the file correctly.
  */
 export function downloadCsv(rows: (string | number | null | undefined)[][], filename: string): void {
-  const csv = rows
-    .map((r) => r.map((v) => quoteCsv(v == null ? '' : String(v))).join(','))
-    .join('\r\n');
+  const csv = rowsToCsv(rows);
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -78,4 +76,12 @@ export function downloadCsv(rows: (string | number | null | undefined)[][], file
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/** The CSV text downloadCsv writes (no BOM), split out so a caller can test
+ *  its columns and escaping without a Blob. */
+export function rowsToCsv(rows: (string | number | null | undefined)[][]): string {
+  return rows
+    .map((r) => r.map((v) => quoteCsv(v == null ? '' : String(v))).join(','))
+    .join('\r\n');
 }

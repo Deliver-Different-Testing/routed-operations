@@ -257,12 +257,13 @@ export const schedulesV2Service = {
 
   /** POST /api/v2/schedules/{id}/copy - clone a schedule. The copy is
    *  client-specific (not a default) unless isDefault is true. With
-   *  clientIds empty, copyClientLinks brings the source's clients across. */
+   *  clientIds empty, copyClientLinks brings the source's clients across.
+   *  D4: the copy starts inactive unless isActive is true. */
   copy: (
     scheduleId: number,
     newName: string,
     clientIds: number[] = [],
-    opts: { copyClientLinks?: boolean; isDefault?: boolean } = {},
+    opts: { copyClientLinks?: boolean; isDefault?: boolean; isActive?: boolean } = {},
   ) =>
     request<{ response: { scheduleId: number } }>(
       `/v2/schedules/${scheduleId}/copy`,
@@ -273,6 +274,7 @@ export const schedulesV2Service = {
           clientIds,
           copyClientLinks: opts.copyClientLinks ?? false,
           ...(opts.isDefault !== undefined ? { isDefault: opts.isDefault } : {}),
+          isActive: opts.isActive ?? false,
         }),
       },
     ).then((r) => r.response),

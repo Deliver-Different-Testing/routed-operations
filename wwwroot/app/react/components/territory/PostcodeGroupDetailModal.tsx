@@ -4,7 +4,10 @@ import { Button } from '../common/Button';
 import { StatusBadge } from '../common/StatusBadge';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { useConfirm } from '../../context/ConfirmContext';
 import { depotLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
+import { downloadCsv } from '../../lib/csvExport';
+import { zoneGroupCsvFileName, zoneGroupCsvRows } from '../../lib/zoneGroupExport';
 import { ZoneGroupMapPanel } from './ZoneGroupMapPanel';
 import {
   territoryService,
@@ -46,6 +49,9 @@ interface Props {
    *  Delivery or Pickup count on the list, so the list they land on is
    *  the one whose number they clicked (Steve, 22 Oct). */
   initialSide?: ScheduleSide;
+  /** Z7: open a listed schedule in Schedules NEW. Omitted by hosts that
+   *  have no schedule editor, in which case the rows stay plain text. */
+  onOpenSchedule?: (scheduleId: number) => void;
 }
 
 /**
@@ -61,9 +67,10 @@ interface Props {
  * US) but the server hands back one shape, so nothing here branches.
  */
 export function PostcodeGroupDetailModal({
-  groupId, onClose, onEdit, onBindPolygons, initialSide = 'all',
+  groupId, onClose, onEdit, onBindPolygons, initialSide = 'all', onOpenSchedule,
 }: Props) {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const user = useAuth();
   const groupSingular = postcodeGroupLabel(user.isUsTenant, false);
   const depotSingular = depotLabel(user.isUsTenant, false);
@@ -150,6 +157,53 @@ export function PostcodeGroupDetailModal({
     } finally {
       setPasting(false);
     }
+  };
+
+  // Z4: move one NZ postcode to another zone of this group. The PUT on
+  // /territory/nz/postcodes/{id} overwrites the whole row
+  // (TerritoryService.UpdateNzPostcodeAsync), so the current row is read
+  // fresh from the server and sent back with only Zone changed. A move
+  // changes the rate on every schedule that ticks either zone, which is why
+  // the paste path refuses to do it silently; here it is asked for, so it
+  // is confirmed instead.
+  const [movingId, setMovingId] = useState<number | null>(null);
+  const movePostcode = async (memberId: number, code: string, fromZone: number, toZone: number) => {
+    if (toZone === fromZone) return;
+    const ok = await askConfirm({
+      title: `Move ${memberWord} ${code}`,
+      message: `Move ${code} from zone ${fromZone} to zone ${toZone}? Every schedule that uses this ${groupSingular.toLowerCase()} rates ${code} by its zone, so the price for ${code} changes on all of them.`,
+      confirmLabel: 'Move',
+    });
+    if (!ok) return;
+    setMovingId(memberId);
+    try {
+      const all = await territoryService.nzPostcodes();
+      const row = all.response.find((p) => p.id === memberId);
+      if (!row) throw new Error(`${code} was not found. Reload and try again.`);
+      await territoryService.updateNzPostcode(memberId, {
+        postCode: row.postCode,
+        zone: toZone,
+        depotId: row.depotId,
+        postcodeGroupId: row.postcodeGroupId,
+        fromSiteId: row.fromSiteId,
+        name: row.name,
+        fromLatLng: row.fromLatLng,
+      });
+      toast.show(`${code} moved to zone ${toZone}.`, 'success');
+      await load();
+    } catch (e) {
+      toast.show((e as Error).message, 'error');
+    } finally {
+      setMovingId(null);
+    }
+  };
+
+  const exportCsv = () => {
+    if (!detail) return;
+    downloadCsv(
+      zoneGroupCsvRows(detail.zones),
+      zoneGroupCsvFileName(detail.group.name, detail.group.id),
+    );
   };
 
   const g = detail?.group ?? null;
@@ -244,6 +298,15 @@ export function PostcodeGroupDetailModal({
                 Zones <span className="font-normal text-text-muted">- {detail.zones.length}</span>
               </h4>
               {detail.zones.some((z) => z.members.length > 0) && (
+                <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  data-testid="pg-export-csv"
+                  className="text-xs text-brand hover:underline"
+                  onClick={exportCsv}
+                >
+                  Export CSV
+                </button>
                 <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
                   <input
                     type="checkbox"
@@ -253,6 +316,7 @@ export function PostcodeGroupDetailModal({
                   />
                   Show suburb names
                 </label>
+                </div>
               )}
             </div>
             {detail.zones.length === 0 ? (
@@ -330,6 +394,21 @@ export function PostcodeGroupDetailModal({
                                         <span className="font-mono text-text-primary">{m.code}</span>
                                         {showSuburbs && m.suburb && (
                                           <span className="text-text-muted">{m.suburb}</span>
+                                        )}
+                                        {/* Z4: NZ only. US zips live in ZoneZip and keep their own editor. */}
+                                        {!user.isUsTenant && detail.zones.length > 1 && (
+                                          <select
+                                            data-testid={`pg-move-${m.id}`}
+                                            aria-label={`Zone for ${m.code}`}
+                                            className="ml-1 rounded border border-border bg-surface text-[11px]"
+                                            value={z.zone}
+                                            disabled={movingId != null}
+                                            onChange={(e) => movePostcode(m.id, m.code, z.zone, Number(e.target.value))}
+                                          >
+                                            {detail.zones.map((o) => (
+                                              <option key={o.zone} value={o.zone}>Zone {o.zone}</option>
+                                            ))}
+                                          </select>
                                         )}
                                       </span>
                                     ))}
@@ -454,9 +533,15 @@ export function PostcodeGroupDetailModal({
                   </thead>
                   <tbody>
                     {shownSchedules.map((s) => (
-                      <tr key={s.scheduleId} className="border-t border-border-light">
+                      <tr
+                        key={s.scheduleId}
+                        data-testid={`pg-schedule-${s.scheduleId}`}
+                        className={`border-t border-border-light${onOpenSchedule ? ' cursor-pointer hover:bg-surface-light' : ''}`}
+                        onClick={onOpenSchedule ? () => { onClose(); onOpenSchedule(s.scheduleId); } : undefined}
+                        title={onOpenSchedule ? 'Open this schedule' : undefined}
+                      >
                         <td className="px-3 py-1.5">
-                          <span className="font-medium text-text-primary">{s.name}</span>
+                          <span className={`font-medium text-text-primary${onOpenSchedule ? ' hover:underline' : ''}`}>{s.name}</span>
                           <span className="text-text-muted ml-1">#{s.scheduleId}</span>
                         </td>
                         <td className="px-3 py-1.5">

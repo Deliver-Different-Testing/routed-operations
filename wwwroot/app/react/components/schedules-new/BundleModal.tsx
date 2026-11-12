@@ -15,8 +15,11 @@ import { useConfirm } from '../../context/ConfirmContext';
 // A bundle is the same idea as a rate card in Settings: a named set of
 // schedules that a new client of a given profile is dropped onto in one
 // go. The bundle never holds clients itself; adding one writes a
-// tblScheduleClient row per non-default member and skips defaults
-// because every client already books those.
+// tblScheduleClient row on every live member, defaults included (B3,
+// 2026-11-12). On a default the row means "configured for this client"
+// (spec 6.1): it ranks first within its speed and is the hook an
+// override hangs off. Before B3 defaults were skipped, so a client could
+// not be added to a bundle of defaults at all.
 //
 // Layout: schedules on the left (searchable add, no ids typed), clients
 // on the right with coverage ("On n of m" when a client joined before a
@@ -110,7 +113,6 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
   const d = detail.data;
   const members = d?.members ?? [];
   const clients = d?.clients ?? [];
-  const nonDefaultCount = members.filter((m) => !m.isDefault).length;
   const memberIds = useMemo(() => new Set(members.map((m) => m.scheduleId)), [members]);
   const clientHints = useMemo(() => {
     const map = new Map<number, ClientHint>();
@@ -133,7 +135,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
     if (clients.length > 0) {
       link = await confirm({
         title: 'Link the bundle\'s clients?',
-        message: `${clients.length} client${clients.length === 1 ? ' is' : 's are'} on this bundle. Link ${clients.length === 1 ? 'it' : 'them'} to "${row.name}" as well? (A default schedule needs no link; answering No leaves the clients showing "on n of m" until you press Complete.)`,
+        message: `${clients.length} client${clients.length === 1 ? ' is' : 's are'} on this bundle. Link ${clients.length === 1 ? 'it' : 'them'} to "${row.name}" as well? (Answering No leaves the clients showing "on n of m" until you press Complete.)`,
         confirmLabel: 'Yes, link them',
         cancelLabel: 'No, just add the schedule',
       });
@@ -154,7 +156,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
   const handleRemoveClient = async (clientId: number, code: string) => {
     const ok = await confirm({
       title: 'Remove client from bundle?',
-      message: `Remove ${code} from every schedule in this bundle? This deletes its link rows on the ${nonDefaultCount} client-specific member${nonDefaultCount === 1 ? '' : 's'}; default members are unaffected because every client books them anyway.`,
+      message: `Remove ${code} from every schedule in this bundle? This deletes its link rows on all ${members.length} member${members.length === 1 ? '' : 's'}. A default stays bookable by every client; it just stops being configured for ${code}.`,
       confirmLabel: 'Remove',
       danger: true,
     });
@@ -334,7 +336,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                 <ClientMultiPicker
                   selected={pickedClients}
                   onChange={setPickedClients}
-                  placeholder={nonDefaultCount === 0 ? 'No client-specific members' : 'Add clients...'}
+                  placeholder={members.length === 0 ? 'Add a schedule first' : 'Add clients...'}
                   hintsById={clientHints}
                   triggerWidth="flex-1"
                   panelTitle="Clients to add"
@@ -342,9 +344,9 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                 />
                 <button
                   type="button"
-                  disabled={pickedClients.length === 0 || nonDefaultCount === 0 || attachMut.isPending}
+                  disabled={pickedClients.length === 0 || members.length === 0 || attachMut.isPending}
                   onClick={() => attachMut.mutate(pickedClients)}
-                  title={nonDefaultCount === 0 ? 'Every member is a default; there is nothing to link a client to.' : undefined}
+                  title={members.length === 0 ? 'This bundle has no schedules yet. Add a schedule before adding clients.' : undefined}
                   className="px-3 py-1 text-xs font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90 disabled:bg-brand-cyan/40 disabled:text-brand-dark/60 disabled:cursor-not-allowed"
                 >
                   {attachMut.isPending ? 'Adding...' : `Add${pickedClients.length > 0 ? ` ${pickedClients.length}` : ''}`}
@@ -359,7 +361,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                       <div className="flex-1 min-w-0">
                         <div className="text-sm truncate">{c.name ?? c.code}</div>
                         <div className={`text-[11px] ${full ? 'text-text-muted' : 'text-warning'}`}>
-                          {full ? `On all ${c.ofMembers} client schedule${c.ofMembers === 1 ? '' : 's'}` : `On ${c.onMembers} of ${c.ofMembers} client schedules`}
+                          {full ? `On all ${c.ofMembers} schedule${c.ofMembers === 1 ? '' : 's'}` : `On ${c.onMembers} of ${c.ofMembers} schedules`}
                         </div>
                       </div>
                       {!full && (
@@ -386,16 +388,17 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                 })}
                 {clients.length === 0 && (
                   <li className="px-2 py-4 text-xs text-text-muted italic">
-                    {nonDefaultCount === 0
-                      ? 'All members are defaults, so every client books them already.'
+                    {members.length === 0
+                      ? 'This bundle has no schedules yet. Add a schedule before adding clients.'
                       : 'No clients linked yet.'}
                   </li>
                 )}
               </ul>
               <p className="text-[11px] text-text-muted mt-2">
-                Adding a client links it to each of the {nonDefaultCount} client-specific schedule{nonDefaultCount === 1 ? '' : 's'} here;
-                the {members.length - nonDefaultCount} default{members.length - nonDefaultCount === 1 ? '' : 's'} need no link.
-                "On n of m" means the client was added before a schedule joined the bundle.
+                Adding a client links it to every schedule here. On a schedule for specific clients the link
+                lets the client book it. On a default (all clients) it marks the schedule as configured for that
+                client, so it ranks first within its speed and can carry an override; it never hides the
+                client&apos;s other defaults. "On n of m" means the client was added before a schedule joined the bundle.
               </p>
             </section>
           </div>
