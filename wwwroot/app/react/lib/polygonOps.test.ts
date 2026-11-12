@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   type LatLng,
   addRegion,
+  boundaryArc,
+  chainLengthMetres,
   cutRegion,
   keepRegion,
   snapToNearestEdge,
@@ -20,6 +22,69 @@ const SQUARE: LatLng[] = [
   { lat: 10, lng: 10 },
   { lat: 10, lng: 0 },
 ];
+
+describe('boundaryArc (follow boundary)', () => {
+  // A small, slightly irregular hexagon near Auckland so metre lengths are
+  // realistic. Indices: 0..5, closed implicitly.
+  const HEX: LatLng[] = [
+    { lat: -36.850, lng: 174.760 },
+    { lat: -36.852, lng: 174.765 },
+    { lat: -36.856, lng: 174.766 },
+    { lat: -36.860, lng: 174.762 },
+    { lat: -36.858, lng: 174.756 },
+    { lat: -36.853, lng: 174.755 },
+  ];
+  const at = (i: number) => HEX[i];
+  const onEdge = (i: number, t: number): LatLng => {
+    const a = HEX[i], b = HEX[(i + 1) % HEX.length];
+    return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
+  };
+
+  it('returns the vertices between two vertex positions, shorter way round', () => {
+    expect(boundaryArc(HEX, 0, 2, at(0), at(2))).toEqual([HEX[1]]);
+    // 0 -> 4 is shorter going backwards through 5.
+    expect(boundaryArc(HEX, 0, 4, at(0), at(4))).toEqual([HEX[5]]);
+    // Reverse direction of the same pair.
+    expect(boundaryArc(HEX, 4, 0, at(4), at(0))).toEqual([HEX[5]]);
+  });
+
+  it('neighbouring vertices and a single shared edge yield no intermediates', () => {
+    expect(boundaryArc(HEX, 1, 2, at(1), at(2))).toEqual([]);
+    expect(boundaryArc(HEX, 2, 1, at(2), at(1))).toEqual([]);
+    expect(boundaryArc(HEX, 3.2, 3.8, onEdge(3, 0.2), onEdge(3, 0.8))).toEqual([]);
+    expect(boundaryArc(HEX, 3.8, 3.2, onEdge(3, 0.8), onEdge(3, 0.2))).toEqual([]);
+    expect(boundaryArc(HEX, 2, 2, at(2), at(2))).toEqual([]);
+  });
+
+  it('handles edge positions on both ends, including across the ring closure', () => {
+    // From the middle of edge 0-1 to the middle of edge 2-3: vertices 1, 2.
+    expect(boundaryArc(HEX, 0.5, 2.5, onEdge(0, 0.5), onEdge(2, 0.5))).toEqual([HEX[1], HEX[2]]);
+    // From a vertex to the edge after it: nothing between.
+    expect(boundaryArc(HEX, 1, 1.5, at(1), onEdge(1, 0.5))).toEqual([]);
+    // From the middle of edge 5-0 back to vertex 4: crosses the closure, via 5.
+    expect(boundaryArc(HEX, 5.5, 4, onEdge(5, 0.5), at(4))).toEqual([HEX[5]]);
+    // From the middle of edge 5-0 forward to vertex 1: via 0.
+    expect(boundaryArc(HEX, 5.5, 1, onEdge(5, 0.5), at(1))).toEqual([HEX[0]]);
+  });
+
+  it('picks the shorter arc by length when the vertex counts tie', () => {
+    // Stretch the ring so the forward way (through 1, 2) is much longer
+    // than the backward way (through 5, 4) between vertices 0 and 3.
+    const stretched: LatLng[] = HEX.map((p, i) => (i === 1 || i === 2)
+      ? { lat: p.lat, lng: p.lng + 0.05 } : p);
+    expect(boundaryArc(stretched, 0, 3, stretched[0], stretched[3])).toEqual([stretched[5], stretched[4]]);
+  });
+
+  it('chainLengthMetres sums segment lengths and is zero for fewer than two points', () => {
+    expect(chainLengthMetres([])).toBe(0);
+    expect(chainLengthMetres([at(0)])).toBe(0);
+    const d01 = chainLengthMetres([at(0), at(1)]);
+    const d12 = chainLengthMetres([at(1), at(2)]);
+    expect(chainLengthMetres([at(0), at(1), at(2)])).toBeCloseTo(d01 + d12, 6);
+    expect(d01).toBeGreaterThan(400);
+    expect(d01).toBeLessThan(600);
+  });
+});
 
 const OVERLAPPING: LatLng[] = [
   { lat: 5, lng: 5 },
