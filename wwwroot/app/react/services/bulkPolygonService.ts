@@ -69,6 +69,11 @@ export interface BulkPolygon {
   /** Resolved BulkZonePostcodeGroup.Name for the postcodeGroupId binding.
    *  Null when unbound or the referenced row was deleted. */
   postcodeGroupName: string | null;
+  /** Polygon Builder layer (2026-11-12). Stored in tblBulkRunPolygon.TagLocation.
+   *  Null = no layer. A drawing aid only: groups the sidebar and drives
+   *  show / hide; nothing downstream reads it. Optional because older
+   *  fixtures omit it. */
+  layer?: string | null;
 }
 
 /** Parse the comma-delimited PartiallyIncludedZips string (with sentinel
@@ -88,6 +93,7 @@ export interface CreateBulkPolygonBody {
   points: PolygonPoint[];
   sourceType?: number;
   sourceCode?: string | null;
+  layer?: string | null;
 }
 
 export interface UpdateBulkPolygonShapeBody {
@@ -98,6 +104,8 @@ export interface UpdateBulkPolygonShapeBody {
 
 export interface UpdateBulkPolygonMetaBody {
   name: string;
+  /** Blank or null clears the layer. */
+  layer?: string | null;
 }
 
 export const bulkPolygonService = {
