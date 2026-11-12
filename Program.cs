@@ -3,7 +3,7 @@ using System.Security.AccessControl;
 using System.Threading.Tasks;
 using FluentValidation;
 using FluentValidation.AspNetCore;
-using RoutedOperations.API.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http;
@@ -541,9 +541,25 @@ builder.Services.AddStackExchangeRedisCache(redisCacheConfig =>
 // derives its DataProtection purpose string from the scheme name, so a mismatch
 // makes cookies from other apps undecryptable and every request lands as
 // unauthenticated no matter how good the cookie looks in the browser.
-// Where HubBaseUrl is set this also registers the MCP agent pass (see AppAuthentication).
-builder.Services.AddAppAuthentication(domain,
-    AppAuthentication.AgentAccessOptionsFrom(builder.Configuration));
+builder.Services.AddAuthentication("Identity.Application")
+    .AddCookie("Identity.Application", options =>
+    {
+        options.Cookie.Name = ".AspNet.SharedCookie";
+        options.ExpireTimeSpan = TimeSpan.FromMinutes(20);
+        options.SlidingExpiration = true;
+        options.AccessDeniedPath = "/Forbidden/";
+        options.Events = new CookieAuthenticationEvents
+        {
+            OnRedirectToLogin = context =>
+            {
+                context.HttpContext.Response.Redirect(
+                    Environment.GetEnvironmentVariable("PublicPath") ?? string.Empty);
+                return Task.CompletedTask;
+            }
+        };
+        options.Cookie.HttpOnly = true;
+        options.Cookie.Domain = domain;
+    });
 
 builder.Services.AddSession(options =>
 {
