@@ -26,6 +26,7 @@ public class RouteViewerRunServiceTests
         accessorX.HttpContext.Returns(new DefaultHttpContext());
         var sut = new RouteViewerRunService(factory, resolver,
             guard ?? Substitute.For<INpScopeGuard>(), tz, accessorX,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerRunService>.Instance);
         return (sut, resolver);
     }

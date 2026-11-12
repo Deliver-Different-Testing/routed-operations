@@ -27,6 +27,7 @@ public class RouteViewerAssignmentServiceTests
         resolver.ResolveAsync().Returns(scope);
         var guard = Substitute.For<INpScopeGuard>();
         var sut = new RouteViewerAssignmentService(factory, resolver, guard,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerAssignmentService>.Instance);
         return (sut, seed, resolver, guard);
     }

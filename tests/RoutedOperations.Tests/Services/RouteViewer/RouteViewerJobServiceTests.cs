@@ -26,6 +26,7 @@ public class RouteViewerJobServiceTests
         var s3 = Substitute.For<IAmazonS3>();
         var reader = new S3PhotoReader(s3, NullLogger<S3PhotoReader>.Instance);
         var sut = new RouteViewerJobService(factory, resolver, guard, reader,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerJobService>.Instance);
         return (sut, guard, resolver, s3);
     }

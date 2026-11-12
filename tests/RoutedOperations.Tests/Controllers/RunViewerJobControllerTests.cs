@@ -31,6 +31,7 @@ public class RunViewerJobControllerTests
         var s3 = Substitute.For<Amazon.S3.IAmazonS3>();
         var reader = new S3PhotoReader(s3, NullLogger<S3PhotoReader>.Instance);
         var svc = new RouteViewerJobService(factory, resolver, guard, reader,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerJobService>.Instance);
         var controller = new RunViewerJobController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

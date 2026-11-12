@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -16,6 +17,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerEventService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerEventService> logger) : BaseService(contextFactory)
 {
     // NOTE: S3PhotoReader was injected here initially - dropped because
@@ -50,6 +52,10 @@ public class RouteViewerEventService(
             SpParam.Of("@EventDate", request.RunDate),
             SpParam.Of("@IncludeClosed", request.IncludeClosed))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only their branches' rows.
+        var branch = await branchGuard.GetRowFilterAsync();
+        raw = branch.FilterJobs(raw, r => r.ClientID, r => r.CourierID);
 
         return raw.Select(r => new EventDto
         {
@@ -106,10 +112,23 @@ public class RouteViewerEventService(
         if (!scope.IsAdmin) return new List<EventJobDto>();
 
         // Tenant SP (1 param, verified): @ClientID only.
-        return await Context.Database.SqlQueryRaw<EventJobDto>(
+        var rows = await Context.Database.SqlQueryRaw<EventJobDto>(
             @"EXEC dbo.RVW_stpEventJobs @ClientID = @ClientID",
             SpParam.Of("@ClientID", clientId))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only their branches' rows.
+        // The SP row has no ClientID, so read it from tblBulkJob.
+        var branch = await branchGuard.GetRowFilterAsync();
+        if (branch.IsUnrestricted || rows.Count == 0) return rows;
+        var bulkIds = rows.Select(r => r.BulkJobId).Distinct().ToList();
+        var clientByBulk = await Context.TblBulkJobs
+            .Where(b => bulkIds.Contains(b.BulkJobId))
+            .Select(b => new { b.BulkJobId, b.ClientId })
+            .ToDictionaryAsync(b => b.BulkJobId, b => (int?)b.ClientId);
+        return branch.FilterJobs(rows,
+            r => clientByBulk.TryGetValue(r.BulkJobId, out var c) ? c : null,
+            r => r.CourierId);
     }
 
     /// <summary>GET /api/runviewer/events/direct-link?eventId=&clientId=

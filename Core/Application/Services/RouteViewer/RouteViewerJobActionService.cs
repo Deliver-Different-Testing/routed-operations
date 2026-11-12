@@ -131,6 +131,8 @@ public class RouteViewerJobActionService(
     /// only; the SP takes the operator's UserName for audit.</summary>
     public async Task SendSmsToRunAsync(int runId, string message)
     {
+        // Branches B2: run-level action guards the whole run (NP + branch).
+        await scopeGuard.EnsureRunInScopeAsync(runId);
         var userName = ResolveUserName();
         logger.LogInformation("RVW_stpMessageRun runId={RunId} msgLen={MsgLen} user={User}",
             runId, message?.Length ?? 0, userName);
@@ -435,8 +437,9 @@ public class RouteViewerJobActionService(
     /// outside the caller's NP scope. No-op for admin sessions.</summary>
     private async Task GuardByJobAsync(int jobId)
     {
-        var scope = await scopeResolver.ResolveAsync();
-        if (scope.IsAdmin) return;
+        // No IsAdmin short-circuit here any more: the NP guard already
+        // no-ops for admin scope, and the injected guard also runs the
+        // branch check, which DOES apply to (branch-limited) staff.
         // NP scope walks tucJob for the anchor; if the row is void /
         // out of scope the guard throws. Job actions on synthetic
         // negative ids (Route Runs) never reach here because the SPs
@@ -449,8 +452,7 @@ public class RouteViewerJobActionService(
 
     private async Task GuardByBulkJobAsync(int bulkJobId)
     {
-        var scope = await scopeResolver.ResolveAsync();
-        if (scope.IsAdmin) return;
+        // See GuardByJobAsync: the guard handles admin vs NP vs branch.
         if (bulkJobId <= 0) return;
         await scopeGuard.EnsureBulkJobInScopeAsync(bulkJobId);
     }

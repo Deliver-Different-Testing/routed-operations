@@ -16,6 +16,7 @@ public class RouteViewerScanServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
         var sut = new RouteViewerScanService(factory, resolver,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerScanService>.Instance);
         return (sut, resolver);
     }

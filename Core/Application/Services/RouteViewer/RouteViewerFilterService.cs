@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Http;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using DeliverDifferent.AccessControl;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -24,6 +25,7 @@ public class RouteViewerFilterService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
     IHttpContextAccessor httpContextAccessor,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerFilterService> logger) : BaseService(contextFactory)
 {
     /// <summary>
@@ -59,7 +61,11 @@ public class RouteViewerFilterService(
             SpParam.Of("@ContactID", contactId))
             .ToListAsync();
 
-        return raw.Select(r => new LookupDto { id = r.ClientID, label = r.ClientCode }).ToList();
+        // Branches B2: branch-limited staff see only their branches' rows.
+        var branch = await branchGuard.GetRowFilterAsync();
+        return branch.FilterClients(
+            raw.Select(r => new LookupDto { id = r.ClientID, label = r.ClientCode }).ToList(),
+            c => c.id);
     }
 
     /// <summary>GET /api/runviewer/filters/speeds - service-level

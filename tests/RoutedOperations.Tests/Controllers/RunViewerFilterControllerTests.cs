@@ -28,6 +28,7 @@ public class RunViewerFilterControllerTests
         // contact now comes from this claim, not the query string).
         var accessor = ControllerTestHarness.Accessor(clientTypeId: "4", contactId: "12");
         var svc = new RouteViewerFilterService(factory, resolver, accessor,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerFilterService>.Instance);
         var controller = new RunViewerFilterController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

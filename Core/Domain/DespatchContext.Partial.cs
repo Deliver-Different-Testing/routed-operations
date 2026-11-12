@@ -42,4 +42,8 @@ public partial class DespatchContext
     // the zone group form's Clear-List Area picker (12 Nov). Table
     // pre-existing on every tenant; RO adds no schema.
     public virtual DbSet<TblClearListArea> TblClearListAreas { get; set; }
+
+    // tblBranch: Branches programme B2 staff visibility (12 Nov). Read-only;
+    // queried only for branch-limited users. See TblBranch.cs.
+    public virtual DbSet<TblBranch> TblBranches { get; set; }
 }

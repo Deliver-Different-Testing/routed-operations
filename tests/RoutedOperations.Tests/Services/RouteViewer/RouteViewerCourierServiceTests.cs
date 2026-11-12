@@ -17,6 +17,7 @@ public class RouteViewerCourierServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
         return new RouteViewerCourierService(factory, resolver,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerCourierService>.Instance);
     }
 

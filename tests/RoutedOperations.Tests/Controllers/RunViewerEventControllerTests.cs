@@ -52,6 +52,7 @@ public class RunViewerEventControllerTests : IDisposable
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
         var svc = new RouteViewerEventService(factory, resolver,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerEventService>.Instance);
         var controller = new RunViewerEventController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -26,6 +27,7 @@ public class RouteViewerRunService(
     INpScopeGuard scopeGuard,
     SqlTimeZoneNormalizer tzNormalizer,
     IHttpContextAccessor httpContextAccessor,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerRunService> logger) : BaseService(contextFactory)
 {
     /// <summary>
@@ -133,10 +135,46 @@ public class RouteViewerRunService(
             SpParam.Of("@NpAgentId", scope.NpAgentId))
             .ToListAsync();
 
-        return rawPrimary
+        var runs = rawPrimary
             .Select(r => MapBulkRun(r, isMissing: false))
             .Concat(rawMissing.Select(MapMissingRun))
             .ToList();
+
+        // Branches B2: a branch-limited user sees a run if ANY job on it is
+        // in their branches. Opening the run's jobs shows only those jobs
+        // (GetBulkRunJobsAsync); a whole-run write still needs EVERY job in
+        // scope (IBranchScopeGuard.EnsureRunInScopeAsync, NP parity).
+        return await FilterRunsByBranchAsync(runs);
+    }
+
+    private async Task<List<BulkRunDto>> FilterRunsByBranchAsync(List<BulkRunDto> runs)
+    {
+        var branch = await branchGuard.GetRowFilterAsync();
+        if (branch.IsUnrestricted || runs.Count == 0) return runs;
+
+        var bulkRunIds = runs.Where(r => r.Id > 0).Select(r => (int?)r.Id).Distinct().ToList();
+        var routeIds = runs.Where(r => r.Id < 0).Select(r => (int?)(-r.Id)).Distinct().ToList();
+
+        var bulkRunJobs = await (
+            from jr in Context.TblBulkJobRuns.Where(jr => bulkRunIds.Contains(jr.RunId))
+            join b in Context.TblBulkJobs on jr.BulkJobId equals b.BulkJobId
+            select new { RunId = jr.RunId!.Value, ClientId = (int?)b.ClientId, b.CourierId }
+        ).Distinct().ToListAsync();
+        var routeJobs = await Context.TucJobs
+            .Where(j => routeIds.Contains(j.RouteId) && !j.UcjbVoid)
+            .Select(j => new { RouteId = j.RouteId!.Value, ClientId = j.UcjbClientId, CourierId = j.UcjbCourierId })
+            .Distinct()
+            .ToListAsync();
+
+        var visibleRuns = bulkRunJobs
+            .Where(x => branch.IsJobVisible(x.ClientId, x.CourierId))
+            .Select(x => x.RunId)
+            .Concat(routeJobs
+                .Where(x => branch.IsJobVisible(x.ClientId, x.CourierId))
+                .Select(x => -x.RouteId))
+            .ToHashSet();
+
+        return runs.Where(r => visibleRuns.Contains(r.Id)).ToList();
     }
 
     private static BulkRunDto MapMissingRun(RawMissingRunRow r) => new()
@@ -304,6 +342,8 @@ public class RouteViewerRunService(
             SpParam.Of("@NpAgentId", scope.NpAgentId))
             .ToListAsync();
 
+        // Branches B2: branch-limited staff see only their branches' rows.
+        raw = (await branchGuard.GetRowFilterAsync()).FilterJobs(raw, r => r.ClientID, r => r.CourierID);
         return raw.Select(r => MapRawBulkJobRowToDto(r, r.BulkJobID ?? 0)).ToList();
     }
 

@@ -26,6 +26,7 @@ public class RouteViewerFilterServiceTests
             User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")),
         });
         var sut = new RouteViewerFilterService(factory, resolver, accessor,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerFilterService>.Instance);
         return (sut, seed);
     }

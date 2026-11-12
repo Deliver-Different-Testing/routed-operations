@@ -22,6 +22,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -32,6 +33,7 @@ public class RouteViewerJobService(
     INpScopeResolver scopeResolver,
     INpScopeGuard scopeGuard,
     S3PhotoReader s3PhotoReader,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerJobService> logger) : BaseService(contextFactory)
 {
     /// <summary>
@@ -237,6 +239,8 @@ public class RouteViewerJobService(
             SpParam.Of("@ClientIDs", effectiveClientIds))
             .ToListAsync();
 
+        // Branches B2: branch-limited staff see only their branches' rows.
+        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
         return rows.Select(r => new BulkJobDto
         {
             JobId = r.JobID ?? 0,
@@ -429,7 +433,7 @@ public class RouteViewerJobService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        return await Context.Database.SqlQueryRaw<BulkJobDto>(
+        var linehaulRows = await Context.Database.SqlQueryRaw<BulkJobDto>(
             @"EXEC dbo.RVW_stpLinehaulJobs
                 @DepotID, @Name, @RunDate, @ClientID,
                 @SpeedIds, @ClientIds, @NpAgentId",
@@ -441,6 +445,9 @@ public class RouteViewerJobService(
             SpParam.Of("@ClientIds", effectiveClientIds),
             SpParam.Of("@NpAgentId", scope.NpAgentId))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only their branches' rows.
+        return (await branchGuard.GetRowFilterAsync()).FilterJobs(linehaulRows, r => r.ClientId, r => r.CourierId);
     }
 
     /// <summary>GET /api/runviewer/jobs/search-data - topbar search
@@ -456,7 +463,7 @@ public class RouteViewerJobService(
         Context.Database.SetCommandTimeout(90);
         try
         {
-            return await Context.Database.SqlQueryRaw<BulkJobDto>(
+            var searchRows = await Context.Database.SqlQueryRaw<BulkJobDto>(
                 // Named, not positional. The SP declares exactly
                 // (@RunDate, @ClientID, @Regions, @ClientIDs, @SpeedIDs) and has
                 // no @Group at all, so the previous 6-argument positional call
@@ -475,6 +482,9 @@ public class RouteViewerJobService(
                 SpParam.Of("@ClientIDs", request.ClientIds),
                 SpParam.Of("@SpeedIDs", request.SpeedIds))
                 .ToListAsync();
+
+            // Branches B2: branch-limited staff see only their branches' rows.
+            return (await branchGuard.GetRowFilterAsync()).FilterJobs(searchRows, r => r.ClientId, r => r.CourierId);
         }
         finally
         {

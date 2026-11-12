@@ -25,6 +25,7 @@ public class RunViewerAssignmentControllerTests
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
         var guard = Substitute.For<INpScopeGuard>();
         var svc = new RouteViewerAssignmentService(factory, resolver, guard,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerAssignmentService>.Instance);
         var controller = new RunViewerAssignmentController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -20,6 +21,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerScanService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerScanService> logger) : BaseService(contextFactory)
 {
     /// <summary>GET /api/runviewer/scans - Bulk-mode Scan Manager grid.
@@ -49,6 +51,8 @@ public class RouteViewerScanService(
             SpParam.Of("@Regions", request.RegionIds),
             SpParam.Of("@ClientIDs", request.ClientIds))
             .ToListAsync();
+        // Branches B2: branch-limited staff see only their branches' rows.
+        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
         return rows.Select(r => new BulkScanJobDto
         {
             BulkJobId = r.BulkJobID,
@@ -127,6 +131,8 @@ public class RouteViewerScanService(
             SpParam.Of("@Regions", request.RegionIds),
             SpParam.Of("@ClientIDs", effectiveClientIds))
             .ToListAsync();
+        // Branches B2: branch-limited staff see only their branches' rows.
+        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
         return rows.Select(r => new RoutedScanJobDto
         {
             JobId = r.JobID,

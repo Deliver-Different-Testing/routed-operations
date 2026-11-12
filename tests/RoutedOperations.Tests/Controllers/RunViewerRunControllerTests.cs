@@ -32,6 +32,7 @@ public class RunViewerRunControllerTests
         accessor.HttpContext.Returns(new DefaultHttpContext());
         var svc = new RouteViewerRunService(factory, resolver,
             Substitute.For<INpScopeGuard>(), tz, accessor,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerRunService>.Instance);
         var controller = new RunViewerRunController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

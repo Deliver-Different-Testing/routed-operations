@@ -21,6 +21,7 @@ public class RouteViewerEventServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
         var sut = new RouteViewerEventService(factory, resolver,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerEventService>.Instance);
         return (sut, seed);
     }

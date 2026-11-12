@@ -408,9 +408,24 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.HistoricAr
 builder.Services.AddScoped<
     RoutedOperations.Core.Application.Services.Np.INpScopeResolver,
     RoutedOperations.Core.Application.Services.Np.NpScopeResolver>();
+// Branches B2 (12 Nov 2026): INpScopeGuard resolves to NpAndBranchScopeGuard,
+// which runs the NP check and then the branch check, so every existing guard
+// call site also enforces staff branch visibility. List endpoints use
+// IBranchScopeGuard.GetRowFilterAsync. Option B (job visible via its
+// courier's branch) is the Branches:JobVisibleViaCourierBranch switch.
+builder.Services.Configure<RoutedOperations.Core.Application.Services.Branches.BranchVisibilityOptions>(
+    builder.Configuration.GetSection(
+        RoutedOperations.Core.Application.Services.Branches.BranchVisibilityOptions.SectionName));
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Branches.IBranchScopeResolver,
+    RoutedOperations.Core.Application.Services.Branches.BranchScopeResolver>();
+builder.Services.AddScoped<
+    RoutedOperations.Core.Application.Services.Branches.IBranchScopeGuard,
+    RoutedOperations.Core.Application.Services.Branches.BranchScopeGuard>();
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.Np.NpScopeGuard>();
 builder.Services.AddScoped<
     RoutedOperations.Core.Application.Services.Np.INpScopeGuard,
-    RoutedOperations.Core.Application.Services.Np.NpScopeGuard>();
+    RoutedOperations.Core.Application.Services.Branches.NpAndBranchScopeGuard>();
 
 // Route Viewer P1 (2026-08-07) - read-side services. Scoped lifetime;
 // each service extends BaseService for lazy DynamicDespatchDbContext.

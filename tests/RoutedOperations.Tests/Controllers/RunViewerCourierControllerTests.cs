@@ -27,6 +27,7 @@ public class RunViewerCourierControllerTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
         var svc = new RouteViewerCourierService(factory, resolver,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerCourierService>.Instance);
         var controller = new RunViewerCourierController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

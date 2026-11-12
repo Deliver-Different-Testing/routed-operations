@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -21,6 +22,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerCourierService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerCourierService> logger) : BaseService(contextFactory)
 {
     /// <summary>GET /api/runviewer/couriers?runDate= - all active
@@ -38,7 +40,9 @@ public class RouteViewerCourierService(
             SpParam.Of("@RunDate", runDate))
             .ToListAsync();
 
-        return raw.Select(MapCourier).ToList();
+        // Branches B2: branch-limited staff see only their branches' rows.
+        var branch = await branchGuard.GetRowFilterAsync();
+        return branch.FilterCouriers(raw.Select(MapCourier).ToList(), c => c.CourierId);
     }
 
     /// <summary>GET /api/runviewer/couriers/search?q= - typeahead
@@ -58,11 +62,13 @@ public class RouteViewerCourierService(
             SpParam.Of("@SearchTerm", searchTerm))
             .ToListAsync();
 
-        return raw.Select(r => new CourierListDto
+        // Branches B2: branch-limited staff see only their branches' rows.
+        var branch = await branchGuard.GetRowFilterAsync();
+        return branch.FilterCouriers(raw.Select(r => new CourierListDto
         {
             CourierId = r.ID,
             Name = r.Text,
-        }).ToList();
+        }).ToList(), c => c.CourierId);
     }
 
     private class RawCourierSearchRow
@@ -100,6 +106,10 @@ public class RouteViewerCourierService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return null;
 
+        // Branches B2: the job must be in the caller's branches.
+        try { await branchGuard.EnsureTucJobInScopeAsync(jobId); }
+        catch (BranchScopeException) { return null; }
+
         return await Context.Database.SqlQueryRaw<CourierPositionDto>(
             @"EXEC dbo.MAP_stpCourierGPS_LastPositionToday_ByJobID @JobID",
             SpParam.Of("@JobID", jobId))
@@ -116,13 +126,17 @@ public class RouteViewerCourierService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<AvailableCourierPositionDto>();
 
-        return await Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
+        var rows = await Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
             @"EXEC dbo.MAP_stpEnvelope @MinLng, @MinLat, @MaxLng, @MaxLat",
             SpParam.Of("@MinLng", minLng),
             SpParam.Of("@MinLat", minLat),
             SpParam.Of("@MaxLng", maxLng),
             SpParam.Of("@MaxLat", maxLat))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only their branches' rows.
+        var branch = await branchGuard.GetRowFilterAsync();
+        return branch.FilterCouriers(rows, c => c.CourierId);
     }
 
     /// <summary>GET /api/runviewer/couriers/route?code&start&end - GPS

@@ -40,11 +40,15 @@ public class RouteViewerJobActionServiceTests
     // -------- job-status mutations --------
 
     [Fact]
-    public async Task ActivateAsync_Admin_SkipsGuardButThrowsOnSp()
+    public async Task ActivateAsync_Admin_StillHitsGuard_ForBranchCheck()
     {
+        // Branches B2: staff (NP admin scope) used to skip the guard. The
+        // registered INpScopeGuard now also runs the branch check, which
+        // applies to branch-limited staff, so the service always calls it;
+        // the NP half still no-ops for admin scope inside the guard.
         var (sut, guard, _) = NewSvc(new NpScope(true, null));
         await Assert.ThrowsAnyAsync<Exception>(() => sut.ActivateAsync(1));
-        await guard.DidNotReceive().EnsureTucJobInScopeAsync(Arg.Any<int>());
+        await guard.Received(1).EnsureTucJobInScopeAsync(1);
     }
 
     [Fact]
