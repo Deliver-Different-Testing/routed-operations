@@ -1,8 +1,8 @@
 // tblBranch: a tenant's operating branch (Branches programme, B0 schema in
 // dbmigrationsv2; master spec BRANCHES-SCOPE-2026-10-28 section 3). Routed Ops
-// reads only the two columns the B2 visibility rule needs: which branch is the
-// tenant default (a client or courier with a NULL BranchId belongs to it) and
-// whether it is active. READ ONLY here; branches are maintained in Settings.
+// reads only what the B2 visibility rule needs: which branch is the tenant
+// default (a client or courier with a NULL BranchId belongs to it), whether it
+// is active, and the site it maps to (suburb -> site -> branch). READ ONLY here; branches are maintained in Settings.
 //
 // Schema dependency: the table only exists once B0 script 1 has run. Routed Ops
 // queries it only for a branch-restricted user (a non-empty BranchIds claim),
@@ -26,4 +26,10 @@ public class TblBranch
 
     [Column("Active")]
     public bool Active { get; set; }
+
+    /// <summary>tblBranch.SiteId (B0 decision 12): the site this branch maps
+    /// to. A job leg whose pickup or delivery suburb sits on this site is in
+    /// this branch (master spec section 4.1, 12 Nov).</summary>
+    [Column("SiteId")]
+    public int? SiteId { get; set; }
 }

@@ -54,8 +54,11 @@ public class RouteViewerEventService(
             .ToListAsync();
 
         // Branches B2: branch-limited staff see only their branches' rows.
-        var branch = await branchGuard.GetRowFilterAsync();
-        raw = branch.FilterJobs(raw, r => r.ClientID, r => r.CourierID);
+        // Rows carry BulkJobID; the family rule needs the live tucJob id.
+        var jobByBulk = await LiveJobIdsByBulkJobAsync(raw.Select(r => r.BulkJobID ?? 0));
+        raw = await branchGuard.FilterJobRowsAsync(raw,
+            r => r.BulkJobID.HasValue && jobByBulk.TryGetValue(r.BulkJobID.Value, out var j) ? j : null,
+            r => r.ClientID, r => r.CourierID);
 
         return raw.Select(r => new EventDto
         {
@@ -118,17 +121,31 @@ public class RouteViewerEventService(
             .ToListAsync();
 
         // Branches B2: branch-limited staff see only their branches' rows.
-        // The SP row has no ClientID, so read it from tblBulkJob.
+        // The SP row has no ClientID / tucJob id, so read them from tblBulkJob.
         var branch = await branchGuard.GetRowFilterAsync();
         if (branch.IsUnrestricted || rows.Count == 0) return rows;
         var bulkIds = rows.Select(r => r.BulkJobId).Distinct().ToList();
-        var clientByBulk = await Context.TblBulkJobs
+        var bulkRows = await Context.TblBulkJobs
             .Where(b => bulkIds.Contains(b.BulkJobId))
-            .Select(b => new { b.BulkJobId, b.ClientId })
-            .ToDictionaryAsync(b => b.BulkJobId, b => (int?)b.ClientId);
-        return branch.FilterJobs(rows,
-            r => clientByBulk.TryGetValue(r.BulkJobId, out var c) ? c : null,
+            .Select(b => new { b.BulkJobId, b.ClientId, b.JobId })
+            .ToDictionaryAsync(b => b.BulkJobId);
+        return await branchGuard.FilterJobRowsAsync(rows,
+            r => bulkRows.TryGetValue(r.BulkJobId, out var b) ? b.JobId : null,
+            r => bulkRows.TryGetValue(r.BulkJobId, out var b) ? b.ClientId : null,
             r => r.CourierId);
+    }
+
+    // tblBulkJob.BulkJobID -> tucJob id, for the branch family rule. Empty
+    // for an unrestricted caller (no DB access).
+    private async Task<Dictionary<int, int?>> LiveJobIdsByBulkJobAsync(IEnumerable<int> bulkJobIds)
+    {
+        if ((await branchGuard.GetRowFilterAsync()).IsUnrestricted) return new Dictionary<int, int?>();
+        var ids = bulkJobIds.Where(i => i > 0).Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<int, int?>();
+        return await Context.TblBulkJobs
+            .Where(b => ids.Contains(b.BulkJobId))
+            .Select(b => new { b.BulkJobId, b.JobId })
+            .ToDictionaryAsync(b => b.BulkJobId, b => b.JobId);
     }
 
     /// <summary>GET /api/runviewer/events/direct-link?eventId=&clientId=

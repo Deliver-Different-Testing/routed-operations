@@ -240,7 +240,7 @@ public class RouteViewerJobService(
             .ToListAsync();
 
         // Branches B2: branch-limited staff see only their branches' rows.
-        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
+        rows = await branchGuard.FilterJobRowsAsync(rows, r => r.JobID, r => r.ClientID, _ => null);
         return rows.Select(r => new BulkJobDto
         {
             JobId = r.JobID ?? 0,
@@ -447,7 +447,7 @@ public class RouteViewerJobService(
             .ToListAsync();
 
         // Branches B2: branch-limited staff see only their branches' rows.
-        return (await branchGuard.GetRowFilterAsync()).FilterJobs(linehaulRows, r => r.ClientId, r => r.CourierId);
+        return await branchGuard.FilterJobRowsAsync(linehaulRows, r => r.JobId, r => r.ClientId, r => r.CourierId);
     }
 
     /// <summary>GET /api/runviewer/jobs/search-data - topbar search
@@ -484,7 +484,7 @@ public class RouteViewerJobService(
                 .ToListAsync();
 
             // Branches B2: branch-limited staff see only their branches' rows.
-            return (await branchGuard.GetRowFilterAsync()).FilterJobs(searchRows, r => r.ClientId, r => r.CourierId);
+            return await branchGuard.FilterJobRowsAsync(searchRows, r => r.JobId, r => r.ClientId, r => r.CourierId);
         }
         finally
         {

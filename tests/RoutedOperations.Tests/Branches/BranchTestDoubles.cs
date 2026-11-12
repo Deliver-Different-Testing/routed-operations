@@ -10,6 +10,7 @@ internal static class BranchTestDoubles
     {
         var guard = Substitute.For<IBranchScopeGuard>();
         guard.GetRowFilterAsync().Returns(BranchRowFilter.Unrestricted);
+        guard.IsRunFullyVisibleAsync(Arg.Any<int>()).Returns(true);
         return guard;
     }
 

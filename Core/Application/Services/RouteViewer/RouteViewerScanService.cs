@@ -52,7 +52,7 @@ public class RouteViewerScanService(
             SpParam.Of("@ClientIDs", request.ClientIds))
             .ToListAsync();
         // Branches B2: branch-limited staff see only their branches' rows.
-        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
+        rows = await branchGuard.FilterJobRowsAsync(rows, r => r.JobID, r => r.ClientID, _ => null);
         return rows.Select(r => new BulkScanJobDto
         {
             BulkJobId = r.BulkJobID,
@@ -132,7 +132,7 @@ public class RouteViewerScanService(
             SpParam.Of("@ClientIDs", effectiveClientIds))
             .ToListAsync();
         // Branches B2: branch-limited staff see only their branches' rows.
-        rows = (await branchGuard.GetRowFilterAsync()).FilterJobs(rows, r => r.ClientID, _ => null);
+        rows = await branchGuard.FilterJobRowsAsync(rows, r => r.JobID, r => r.ClientID, _ => null);
         return rows.Select(r => new RoutedScanJobDto
         {
             JobId = r.JobID,

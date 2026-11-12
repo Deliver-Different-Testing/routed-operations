@@ -411,11 +411,8 @@ builder.Services.AddScoped<
 // Branches B2 (12 Nov 2026): INpScopeGuard resolves to NpAndBranchScopeGuard,
 // which runs the NP check and then the branch check, so every existing guard
 // call site also enforces staff branch visibility. List endpoints use
-// IBranchScopeGuard.GetRowFilterAsync. Option B (job visible via its
-// courier's branch) is the Branches:JobVisibleViaCourierBranch switch.
-builder.Services.Configure<RoutedOperations.Core.Application.Services.Branches.BranchVisibilityOptions>(
-    builder.Configuration.GetSection(
-        RoutedOperations.Core.Application.Services.Branches.BranchVisibilityOptions.SectionName));
+// the BranchScopeGuardExtensions helpers. Rule: master spec section 4.1
+// (12 Nov) - client, courier or address on any leg makes the family visible.
 builder.Services.AddScoped<
     RoutedOperations.Core.Application.Services.Branches.IBranchScopeResolver,
     RoutedOperations.Core.Application.Services.Branches.BranchScopeResolver>();

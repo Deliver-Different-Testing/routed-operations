@@ -31,7 +31,7 @@ public class RouteViewerAssignmentServiceBranchTests
     [Fact]
     public async Task SearchCouriers_Restricted_OnlyBranchCouriers()
     {
-        var sut = await NewSvc(BranchRowFilter.Restricted(Array.Empty<int>(), new[] { 2, 4 }, false), couriers: 5);
+        var sut = await NewSvc(BranchRowFilter.Restricted(Array.Empty<int>(), new[] { 2, 4 }), couriers: 5);
 
         var result = await sut.SearchCouriersAsync(1, null, 50);
 
@@ -41,7 +41,7 @@ public class RouteViewerAssignmentServiceBranchTests
     [Fact]
     public async Task AssignableTargets_Restricted_OnlyBranchCouriers()
     {
-        var sut = await NewSvc(BranchRowFilter.Restricted(Array.Empty<int>(), new[] { 3 }, false), couriers: 5);
+        var sut = await NewSvc(BranchRowFilter.Restricted(Array.Empty<int>(), new[] { 3 }), couriers: 5);
 
         var result = await sut.GetAssignableTargetsAsync(1);
 
