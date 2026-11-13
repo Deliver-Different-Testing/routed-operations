@@ -67,6 +67,16 @@ describe('boundaryArc (follow boundary)', () => {
     expect(boundaryArc(HEX, 5.5, 1, onEdge(5, 0.5), at(1))).toEqual([HEX[0]]);
   });
 
+  it('a WKT-closed ring (last vertex repeats the first) never emits the seam twice', () => {
+    const CLOSED: LatLng[] = [...HEX, HEX[0]];
+    // Middle of edge 5-0 (edge 5-6 in the closed ring) to vertex 1: via 0, once.
+    expect(boundaryArc(CLOSED, 5.5, 1, onEdge(5, 0.5), at(1))).toEqual([HEX[0]]);
+    // Snapped to the closing copy (index 6) behaves like vertex 0.
+    expect(boundaryArc(CLOSED, 6, 2, at(0), at(2))).toEqual([HEX[1]]);
+    // Vertex 5 to vertex 2 across the seam: 0, 1 with no duplicate.
+    expect(boundaryArc(CLOSED, 5, 2, at(5), at(2))).toEqual([HEX[0], HEX[1]]);
+  });
+
   it('picks the shorter arc by length when the vertex counts tie', () => {
     // Stretch the ring so the forward way (through 1, 2) is much longer
     // than the backward way (through 5, 4) between vertices 0 and 3.

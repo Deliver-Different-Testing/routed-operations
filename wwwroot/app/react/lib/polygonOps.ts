@@ -298,19 +298,6 @@ function closestPointOnSegment(p: LatLng, a: LatLng, b: LatLng): LatLng {
   return { lat: ay + t * dy, lng: (ax + t * dx) / lngScale };
 }
 
-/**
- * Snap a dragged vertex onto the nearest edge of any neighbouring shape,
- * when one is within `toleranceMetres`.
- *
- * Returns null when nothing is close enough, so the caller can leave the
- * vertex exactly where the operator put it. Snapping silently at a large
- * radius would be worse than overlapping: it moves work the operator did not
- * ask to move.
- *
- * `others` is every OTHER polygon's rings. The caller decides what counts as
- * a neighbour; the spec says shapes in the same zone group, which is the set
- * whose overlap the server would refuse anyway.
- */
 // ─── Follow boundary (Polygon Builder, 2026-11-12) ──────────────────
 //
 // When two consecutive clicks in point-by-point drawing both snap to the
@@ -341,7 +328,14 @@ export function boundaryArc(
   fromPoint: LatLng,
   toPoint: LatLng,
 ): LatLng[] {
-  const n = ring.length;
+  // WKT rings (postcode boundaries) repeat the first vertex at the end.
+  // Drop that closing copy so an arc across the seam does not emit the
+  // same point twice. Positions stay valid: vertex n-1 (the copy) maps to
+  // vertex 0 through mod, and edge n-2 -> n-1 becomes edge n-2 -> 0.
+  const last = ring[ring.length - 1];
+  const closed = ring.length > 1 && last.lat === ring[0].lat && last.lng === ring[0].lng;
+  const pts = closed ? ring.slice(0, -1) : ring;
+  const n = pts.length;
   if (n < 2) return [];
   const mod = (x: number) => ((x % n) + n) % n;
 
@@ -355,7 +349,7 @@ export function boundaryArc(
     let k = Math.floor(fromPos) + 1;
     let offset = k - fromPos;
     while (offset < forwardSpan - 1e-9) {
-      forward.push(ring[mod(k)]);
+      forward.push(pts[mod(k)]);
       k += 1;
       offset += 1;
     }
@@ -367,7 +361,7 @@ export function boundaryArc(
     let k = Math.ceil(fromPos) - 1;
     let offset = fromPos - k;
     while (offset < backwardSpan - 1e-9) {
-      backward.push(ring[mod(k)]);
+      backward.push(pts[mod(k)]);
       k -= 1;
       offset += 1;
     }
@@ -381,6 +375,19 @@ export function boundaryArc(
   return forwardLen <= backwardLen ? forward : backward;
 }
 
+/**
+ * Snap a dragged vertex onto the nearest edge of any neighbouring shape,
+ * when one is within `toleranceMetres`.
+ *
+ * Returns null when nothing is close enough, so the caller can leave the
+ * vertex exactly where the operator put it. Snapping silently at a large
+ * radius would be worse than overlapping: it moves work the operator did not
+ * ask to move.
+ *
+ * `others` is every OTHER polygon's rings. The caller decides what counts as
+ * a neighbour; the spec says shapes in the same zone group, which is the set
+ * whose overlap the server would refuse anyway.
+ */
 export function snapToNearestEdge(
   point: LatLng,
   others: LatLng[][][],
