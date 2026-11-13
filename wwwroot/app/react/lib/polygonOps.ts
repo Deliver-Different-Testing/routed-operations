@@ -298,6 +298,83 @@ function closestPointOnSegment(p: LatLng, a: LatLng, b: LatLng): LatLng {
   return { lat: ay + t * dy, lng: (ax + t * dx) / lngScale };
 }
 
+// ─── Follow boundary (Polygon Builder, 2026-11-12) ──────────────────
+//
+// When two consecutive clicks in point-by-point drawing both snap to the
+// same ring (a postcode boundary or another saved polygon), the new polygon
+// should run along that ring between the two clicks instead of cutting a
+// straight chord. A position on a ring is a fractional index: vertex i is
+// `i`, a point on the edge from vertex i to vertex i+1 is `i + t` with
+// 0 < t < 1. Rings are closed implicitly (last vertex joins the first).
+
+/** Total length in metres of a chain of points, in order. */
+export function chainLengthMetres(points: LatLng[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += metresBetween(points[i - 1], points[i]);
+  return total;
+}
+
+/**
+ * Vertices of `ring` strictly between two positions, going the shorter way
+ * round. Endpoints are NOT included (the caller already has the snapped
+ * points). Both candidate directions are measured through `fromPoint` and
+ * `toPoint` so that a pair of positions on the same edge, or on neighbouring
+ * vertices, yields an empty list rather than the whole ring.
+ */
+export function boundaryArc(
+  ring: LatLng[],
+  fromPos: number,
+  toPos: number,
+  fromPoint: LatLng,
+  toPoint: LatLng,
+): LatLng[] {
+  // WKT rings (postcode boundaries) repeat the first vertex at the end.
+  // Drop that closing copy so an arc across the seam does not emit the
+  // same point twice. Positions stay valid: vertex n-1 (the copy) maps to
+  // vertex 0 through mod, and edge n-2 -> n-1 becomes edge n-2 -> 0.
+  const last = ring[ring.length - 1];
+  const closed = ring.length > 1 && last.lat === ring[0].lat && last.lng === ring[0].lng;
+  const pts = closed ? ring.slice(0, -1) : ring;
+  const n = pts.length;
+  if (n < 2) return [];
+  const mod = (x: number) => ((x % n) + n) % n;
+
+  // Forward (increasing index) distance from fromPos to toPos, in index units.
+  const forwardSpan = mod(toPos - fromPos);
+  const backwardSpan = n - forwardSpan;
+
+  const forward: LatLng[] = [];
+  if (forwardSpan > 0) {
+    // First integer strictly after fromPos.
+    let k = Math.floor(fromPos) + 1;
+    let offset = k - fromPos;
+    while (offset < forwardSpan - 1e-9) {
+      forward.push(pts[mod(k)]);
+      k += 1;
+      offset += 1;
+    }
+  }
+
+  const backward: LatLng[] = [];
+  if (backwardSpan > 0 && backwardSpan < n) {
+    // First integer strictly before fromPos.
+    let k = Math.ceil(fromPos) - 1;
+    let offset = fromPos - k;
+    while (offset < backwardSpan - 1e-9) {
+      backward.push(pts[mod(k)]);
+      k -= 1;
+      offset += 1;
+    }
+  } else if (backwardSpan >= n) {
+    // forwardSpan is 0: same position both ends. Nothing to follow.
+    return [];
+  }
+
+  const forwardLen = chainLengthMetres([fromPoint, ...forward, toPoint]);
+  const backwardLen = chainLengthMetres([fromPoint, ...backward, toPoint]);
+  return forwardLen <= backwardLen ? forward : backward;
+}
+
 /**
  * Snap a dragged vertex onto the nearest edge of any neighbouring shape,
  * when one is within `toleranceMetres`.

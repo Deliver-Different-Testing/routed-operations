@@ -22,7 +22,13 @@ import {
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
-import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge } from '../lib/polygonOps';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc } from '../lib/polygonOps';
+import {
+  NO_LAYER, type VisibilityState,
+  groupByLayer, isLayerHidden, isPolygonVisible, layerNames, layerOf, loadVisibility,
+  polygonColour, revealPolygon, saveVisibility, setShowPostcodes, showAllLayers, soloLayer,
+  toggleLayerHidden, togglePolygonHidden,
+} from '../lib/polygonLayers';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -68,6 +74,9 @@ const MAX_AUTO_SHAPES_IN_VIEWPORT = 300;
 const AUTO_SHAPE_FETCH_BATCH_SIZE = 50;
 
 type Mode = 'view' | 'drawing' | 'lassoing' | 'rectangling' | 'circling' | 'pending' | { edit: number };
+/** Which ring a snapped point sits on and where (fractional index: vertex i
+ *  is `i`, a point on edge i -> i+1 is `i + t`). See boundaryArc. */
+interface SnapRing { key: string; path: LatLng[]; pos: number; }
 /** Vertex count used to approximate a drawn circle as a polygon. 32 is
  *  smooth enough to read as a circle at typical dispatch zoom levels. */
 const CIRCLE_APPROX_SIDES = 32;
@@ -148,8 +157,25 @@ export default function PolygonBuilder() {
   // and rebuild on those state deltas via a dedicated effect (see
   // below). snapTo now iterates cached LatLng[][] arrays with zero
   // parsing on the hot path.
-  const parsedZipShapesRef = useRef<LatLng[][]>([]);
-  const parsedCoverageShapesRef = useRef<{ id: number; path: LatLng[] }[]>([]);
+  // Each entry carries a stable `key` so follow-boundary (2026-11-12) can
+  // tell whether two consecutive clicks landed on the same ring. Zip rings
+  // key on zipPolygonId, coverage rings on polygonId + ring index.
+  const parsedZipShapesRef = useRef<{ key: string; path: LatLng[] }[]>([]);
+  const parsedCoverageShapesRef = useRef<{ id: number; key: string; path: LatLng[] }[]>([]);
+
+  // ── Layers + visibility (2026-11-12) ──────────────────────────────────
+  // Per-browser preference: which layers / polygons are hidden and whether
+  // postcode boundaries auto-load. Hidden shapes are not drawn, not
+  // clickable and not snap targets. Persisted to localStorage per origin.
+  const [visibility, setVisibility] = useState<VisibilityState>(() =>
+    loadVisibility(typeof window !== 'undefined' ? window.localStorage : null));
+  const showPostcodesRef = useRef(visibility.showPostcodes);
+  showPostcodesRef.current = visibility.showPostcodes;
+  useEffect(() => {
+    saveVisibility(typeof window !== 'undefined' ? window.localStorage : null, visibility);
+  }, [visibility]);
+  // Inline "move to layer" editor on a sidebar row: polygonId + draft text.
+  const [layerEditing, setLayerEditing] = useState<{ polygonId: number; value: string } | null>(null);
 
   // Zip picker state.
   const [loadedShapes, setLoadedShapes] = useState<ZipPolygonShape[]>([]);
@@ -161,6 +187,11 @@ export default function PolygonBuilder() {
   const [polygons, setPolygons] = useState<BulkPolygon[]>([]);
   const [mode, setMode] = useState<Mode>('view');
   const [drawingVertices, setDrawingVertices] = useState<LatLng[]>([]);
+  // Point-by-point drawing bookkeeping (2026-11-12). One entry per click:
+  // how many vertices that click added (1, or 1 + the followed boundary
+  // vertices) and which ring it snapped to, so the next click can follow
+  // the same ring and Undo removes a whole click at a time.
+  const drawingClicksRef = useRef<Array<{ count: number; snap: SnapRing | null }>>([]);
   const [selectedPolygons, setSelectedPolygons] = useState<Set<number>>(new Set());
 
   const [zipSaveOpen, setZipSaveOpen] = useState(false);
@@ -455,10 +486,10 @@ export default function PolygonBuilder() {
   // each mousemove was parsing 300 WKT strings and re-materialising
   // ~30k LatLng objects.
   useEffect(() => {
-    const parsed: LatLng[][] = [];
+    const parsed: { key: string; path: LatLng[] }[] = [];
     loadedShapes.forEach((s) => {
       const p = parseWktPolygon(s.wkt);
-      if (p && p.length >= 3) parsed.push(p);
+      if (p && p.length >= 3) parsed.push({ key: `zip:${s.zipPolygonId}`, path: p });
     });
     parsedZipShapesRef.current = parsed;
   }, [loadedShapes]);
@@ -468,13 +499,16 @@ export default function PolygonBuilder() {
     // targets include holes and disjoint pieces, not just the outer.
     // Same `id` may repeat if a polygon has multiple rings - snapTo
     // treats them all as candidate snap targets against the current
-    // cursor, which is what we want.
-    parsedCoverageShapesRef.current = polygons.flatMap((poly) =>
-      pointsToLatLngRings(poly.points)
-        .filter((ring) => ring.length >= 3)
-        .map((path) => ({ id: poly.polygonId, path })),
-    );
-  }, [polygons]);
+    // cursor, which is what we want. Hidden polygons are left out: you
+    // cannot snap to what you cannot see.
+    parsedCoverageShapesRef.current = polygons
+      .filter((poly) => isPolygonVisible(visibility, poly))
+      .flatMap((poly) =>
+        pointsToLatLngRings(poly.points)
+          .filter((ring) => ring.length >= 3)
+          .map((path, ringIndex) => ({ id: poly.polygonId, key: `poly:${poly.polygonId}:${ringIndex}`, path })),
+      );
+  }, [polygons, visibility]);
 
   // Load bulk polygons on mount.
   useEffect(() => {
@@ -564,12 +598,38 @@ export default function PolygonBuilder() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
+  /** Move a polygon to a layer (blank = no layer). Name is sent unchanged;
+   *  the meta endpoint carries both. */
+  const commitLayer = async (p: BulkPolygon, value: string) => {
+    const layer = value.trim();
+    try {
+      const res = await bulkPolygonService.updateMeta(p.polygonId, {
+        name: p.name, layer: layer.length === 0 ? null : layer,
+      });
+      setPolygons((prev) => prev.map((x) => (x.polygonId === p.polygonId ? res.response : x)));
+      setLayerEditing(null);
+      toast.show(layer.length === 0
+        ? `"${p.name}" removed from its layer.`
+        : `"${p.name}" moved to layer "${layer}".`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+  };
+
   // Sync zip overlays.
   useEffect(() => {
     const g = (window as any).google;
     if (!mapRef.current || !g?.maps) return;
     const selectedSet = new Set(selected.map((s) => s.zipPolygonId));
     const loadedIds = new Set(loadedShapes.map((s) => s.zipPolygonId));
+
+    // Postcode boundaries switched off (2026-11-12): take every boundary
+    // off the map and draw none. The shapes stay in loadedShapes so
+    // switching back on is instant, and the snap cache still lists them
+    // only while they are shown (see parsedZipShapesRef below).
+    if (!visibility.showPostcodes) {
+      zipOverlaysRef.current.forEach((poly) => poly.setMap(null));
+      zipOverlaysRef.current.clear();
+      return;
+    }
 
     zipOverlaysRef.current.forEach((poly, id) => {
       if (!loadedIds.has(id)) { poly.setMap(null); zipOverlaysRef.current.delete(id); }
@@ -642,14 +702,17 @@ export default function PolygonBuilder() {
     // polygon. Coverage-polygon effect below already has `mode` in deps
     // and works correctly; this is the counterpart fix for zip overlays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedShapes, selected, mode]);
+  }, [loadedShapes, selected, mode, visibility.showPostcodes]);
 
   // Sync coverage-polygon overlays.
   useEffect(() => {
     const g = (window as any).google;
     if (!mapRef.current || !g?.maps) return;
     const editingId = typeof mode === 'object' ? mode.edit : null;
-    const activeIds = new Set(polygons.map((p) => p.polygonId));
+    // Hidden layers / polygons (2026-11-12) come off the map entirely. The
+    // one being edited is always shown by the edit-mode overlay instead.
+    const shown = polygons.filter((p) => isPolygonVisible(visibility, p));
+    const activeIds = new Set(shown.map((p) => p.polygonId));
 
     polygonOverlaysRef.current.forEach((poly, id) => {
       if (!activeIds.has(id) || id === editingId) {
@@ -658,14 +721,16 @@ export default function PolygonBuilder() {
       }
     });
 
-    polygons.forEach((p, idx) => {
+    shown.forEach((p) => {
       if (p.polygonId === editingId) return;
       // Multi-ring aware: setPaths accepts LatLng[][] for both single- and
       // multi-piece polygons (Google Maps infers hole vs new piece from
       // winding order). Single-ring polygons come out as [outer].
       const rings = pointsToLatLngRings(p.points);
       if (rings.length === 0 || rings[0].length < 3) return;
-      const color = POLYGON_PALETTE[idx % POLYGON_PALETTE.length];
+      // Colour keyed on the polygon, not its position in the list, so a
+      // shape keeps its colour when others are added, removed or hidden.
+      const color = polygonColour(p, POLYGON_PALETTE);
       const isSelected = selectedPolygons.has(p.polygonId);
       let poly = polygonOverlaysRef.current.get(p.polygonId);
       if (!poly) {
@@ -695,7 +760,7 @@ export default function PolygonBuilder() {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [polygons, selectedPolygons, mode]);
+  }, [polygons, selectedPolygons, mode, visibility]);
 
   const toggleZip = (shape: ZipPolygonShape) => {
     setSelected((prev) =>
@@ -814,6 +879,9 @@ export default function PolygonBuilder() {
     const map = mapRef.current;
     const g = (window as any).google;
     if (!map || !g?.maps) return;
+    // Postcode boundaries switched off: no auto-load, so a pan does not
+    // pull WKT bodies the operator has asked not to see.
+    if (!showPostcodesRef.current) return;
     if (currentZoom < INDIVIDUAL_PILL_MIN_ZOOM) return;
     const bounds = map.getBounds();
     if (!bounds) return;
@@ -1460,9 +1528,9 @@ export default function PolygonBuilder() {
     return p ? { x: p.x, y: p.y } : null;
   };
 
-  const snapTo = (raw: LatLng): { point: LatLng; kind: 'vertex' | 'edge' | null } => {
+  const snapTo = (raw: LatLng): { point: LatLng; kind: 'vertex' | 'edge' | null; ring: SnapRing | null } => {
     const clickPx = latLngToPixel(raw.lat, raw.lng);
-    if (!clickPx) return { point: raw, kind: null };
+    if (!clickPx) return { point: raw, kind: null, ring: null };
 
     // PERF: read PRE-PARSED shapes from the cache refs. WKT parsing +
     // point-to-LatLng conversion happens once per state change in the
@@ -1473,24 +1541,33 @@ export default function PolygonBuilder() {
     const currentMode = modeRef.current;
     const editingId = typeof currentMode === 'object' ? currentMode.edit : null;
 
-    const shapes: LatLng[][] = [];
-    // Zip boundary shapes - all get snapped to.
-    for (const ring of parsedZipShapesRef.current) shapes.push(ring);
+    // Every candidate ring carries a key so follow-boundary can tell
+    // whether two clicks hit the same ring. The in-progress polygon has
+    // no key: snapping back onto it closes the loop, it is never followed.
+    const shapes: { key: string | null; path: LatLng[] }[] = [];
+    // Zip boundary shapes - all get snapped to, but only while shown.
+    if (showPostcodesRef.current) {
+      for (const entry of parsedZipShapesRef.current) shapes.push(entry);
+    }
     // Coverage polygons - skip the one currently being edited so its own
     // vertices don't act as snap targets for themselves.
     for (const entry of parsedCoverageShapesRef.current) {
       if (entry.id === editingId) continue;
-      shapes.push(entry.path);
+      shapes.push({ key: entry.key, path: entry.path });
     }
     // In-progress polygon vertices are snap targets too (close-the-loop).
-    if (currentDrawingVertices.length > 0) shapes.push(currentDrawingVertices);
+    if (currentDrawingVertices.length > 0) shapes.push({ key: null, path: currentDrawingVertices });
 
-    for (const ring of shapes) {
-      for (const v of ring) {
+    const ringAt = (s: { key: string | null; path: LatLng[] }, pos: number): SnapRing | null =>
+      s.key ? { key: s.key, path: s.path, pos } : null;
+
+    for (const s of shapes) {
+      for (let i = 0; i < s.path.length; i++) {
+        const v = s.path[i];
         const px = latLngToPixel(v.lat, v.lng);
         if (!px) continue;
         const d = Math.hypot(px.x - clickPx.x, px.y - clickPx.y);
-        if (d < SNAP_PIXELS) return { point: v, kind: 'vertex' };
+        if (d < SNAP_PIXELS) return { point: v, kind: 'vertex', ring: ringAt(s, i) };
       }
     }
     if (currentDrawingVertices.length >= 3) {
@@ -1498,12 +1575,13 @@ export default function PolygonBuilder() {
       const px = latLngToPixel(first.lat, first.lng);
       if (px) {
         const d = Math.hypot(px.x - clickPx.x, px.y - clickPx.y);
-        if (d < SNAP_PIXELS) return { point: first, kind: 'vertex' };
+        if (d < SNAP_PIXELS) return { point: first, kind: 'vertex', ring: null };
       }
     }
 
-    let best: { point: LatLng; dist: number } | null = null;
-    for (const ring of shapes) {
+    let best: { point: LatLng; dist: number; ring: SnapRing | null } | null = null;
+    for (const s of shapes) {
+      const ring = s.path;
       for (let i = 0; i < ring.length; i++) {
         const a = ring[i];
         const b = ring[(i + 1) % ring.length];
@@ -1516,12 +1594,12 @@ export default function PolygonBuilder() {
           const t = segmentT(aPx, bPx, proj);
           const lat = a.lat + (b.lat - a.lat) * t;
           const lng = a.lng + (b.lng - a.lng) * t;
-          best = { point: { lat, lng }, dist: d };
+          best = { point: { lat, lng }, dist: d, ring: ringAt(s, i + t) };
         }
       }
     }
-    if (best) return { point: best.point, kind: 'edge' };
-    return { point: raw, kind: null };
+    if (best) return { point: best.point, kind: 'edge', ring: best.ring };
+    return { point: raw, kind: null, ring: null };
   };
 
   // Freehand lasso: mousedown starts recording, mousemove appends (RAF-
@@ -1896,7 +1974,20 @@ export default function PolygonBuilder() {
       // reflect the current snap target). Only mousemove is rAF-throttled.
       const raw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
       const snap = snapTo(raw);
-      setDrawingVertices((p) => [...p, snap.point]);
+      // Follow boundary (2026-11-12): when this click and the previous one
+      // both snapped to the same ring, run the new polygon along that ring
+      // between them (shorter way round) instead of a straight chord. Alt
+      // held = straight chord on purpose.
+      const prev = drawingClicksRef.current[drawingClicksRef.current.length - 1];
+      const prevVertex = drawingVerticesRef.current[drawingVerticesRef.current.length - 1];
+      const altHeld = Boolean((e.domEvent as MouseEvent | undefined)?.altKey);
+      let added: LatLng[] = [snap.point];
+      if (!altHeld && prev?.snap && snap.ring && prev.snap.key === snap.ring.key && prevVertex) {
+        const arc = boundaryArc(snap.ring.path, prev.snap.pos, snap.ring.pos, prevVertex, snap.point);
+        added = [...arc, snap.point];
+      }
+      drawingClicksRef.current.push({ count: added.length, snap: snap.ring });
+      setDrawingVertices((p) => [...p, ...added]);
     });
     const moveListener = map.addListener('mousemove', (e: any) => {
       pendingRaw = { lat: e.latLng.lat(), lng: e.latLng.lng() };
@@ -1955,21 +2046,35 @@ export default function PolygonBuilder() {
     drawPreviewMarkersRef.current = [];
   };
 
-  // startDraw (click-to-add-vertex flow) removed 2026-08-05. Toolbar +
-  // right-click menu + keyboard shortcut all dropped. The mode ===
-  // 'drawing' effect below stays in the file as dead code because
-  // nothing sets the mode anymore, but it's cheap to leave for a
-  // possible future re-enable and removing it would balloon the diff.
+  // Point-by-point drawing. Removed from the toolbar 2026-08-05 (George:
+  // slower than the drag tools), brought back 2026-11-12 (Steve) because
+  // it is the only tool that snaps to existing boundaries, and now also
+  // follows them between clicks (see the click listener above). Finishing
+  // lands in pending mode like every other tool, so the draft gets the
+  // same Add / Cut / Clip / Split + Undo before it is named and saved.
+  const startPoints = () => {
+    drawingClicksRef.current = [];
+    setDrawingVertices([]);
+    setMode('drawing');
+  };
   const cancelDraw = () => {
+    drawingClicksRef.current = [];
     setDrawingVertices([]);
     setMode('view');
   };
-  const undoVertex = () => setDrawingVertices((p) => p.slice(0, -1));
+  /** Undo one CLICK, not one vertex: a click that followed a boundary added
+   *  several vertices and they go together. */
+  const undoVertex = () => {
+    const last = drawingClicksRef.current.pop();
+    const count = last?.count ?? 1;
+    setDrawingVertices((p) => p.slice(0, Math.max(0, p.length - count)));
+  };
   const finishDraw = () => {
     if (drawingVertices.length < 3) {
       toast.show('A polygon needs at least 3 points.', 'error');
       return;
     }
+    drawingClicksRef.current = [];
     setPendingPolygon([drawingVertices]);
     setDrawingVertices([]);
     setMode('pending');
@@ -2052,12 +2157,14 @@ export default function PolygonBuilder() {
       // Edit mode: L / R / C flip the boolean-op input shape (picker) -
       // they do NOT drop the operator into a fresh-polygon session,
       // which was the confusing pre-2026-08-06 behaviour.
-      // 'P' (vertex polygon) shortcut removed 2026-08-05 alongside the
-      // toolbar item; the drag-based tools cover the same use cases.
+      // 'P' (point-by-point polygon) was removed 2026-08-05 and brought
+      // back 2026-11-12: it is the one tool that snaps to and follows
+      // existing boundaries.
       if (mode === 'view') {
         if (e.key === 'l' || e.key === 'L') { e.preventDefault(); startLasso(); return; }
         if (e.key === 'r' || e.key === 'R') { e.preventDefault(); startRect(); return; }
         if (e.key === 'c' || e.key === 'C') { e.preventDefault(); startCircle(); return; }
+        if (e.key === 'p' || e.key === 'P') { e.preventDefault(); startPoints(); return; }
       } else if (editingId != null) {
         if (e.key === 'l' || e.key === 'L') { e.preventDefault(); setEditShapeInput('freehand'); return; }
         if (e.key === 'r' || e.key === 'R') { e.preventDefault(); setEditShapeInput('rect'); return; }
@@ -2364,7 +2471,8 @@ export default function PolygonBuilder() {
             // the operator did not ask to move would be worse than the
             // overlap it prevents.
             const neighbours = polygons
-              .filter((other) => other.polygonId !== mode.edit && other.active)
+              .filter((other) => other.polygonId !== mode.edit && other.active
+                && isPolygonVisible(visibility, other))
               .map((other) => pointsToLatLngRings(other.points));
             const snapped = snapToNearestEdge(
               workingRings[ri][vi], neighbours, SNAP_TOLERANCE_METRES);
@@ -2612,7 +2720,7 @@ export default function PolygonBuilder() {
         {mode === 'drawing' ? (
           <>
             <span className="text-text-muted">
-              Click to add points ({drawingVertices.length}). Esc cancels, Enter finishes, Del undoes last vertex.
+              Click to add points ({drawingVertices.length}). The cursor snaps to {zipShortLower} boundaries and other polygons; two clicks on the same boundary follow it (hold Alt for a straight line). Esc cancels, Enter finishes, Del undoes the last click.
             </span>
             <Button variant="neutral" size="sm" onClick={undoVertex} disabled={drawingVertices.length === 0}>Undo</Button>
             <Button variant="neutral" size="sm" onClick={cancelDraw}>Cancel</Button>
@@ -2784,6 +2892,14 @@ export default function PolygonBuilder() {
               title="Open the rating postcode / ZIP drawer (read-only Client Manager data).">
               View Zones
             </Button>
+            <Button variant="neutral" size="sm"
+              onClick={() => setVisibility((v) => setShowPostcodes(v, !v.showPostcodes))}
+              aria-pressed={visibility.showPostcodes}
+              title={visibility.showPostcodes
+                ? `${zipShortLower} boundaries are shown and auto-load as you pan. Click to hide them and stop loading more.`
+                : `${zipShortLower} boundaries are hidden. Click to show them again.`}>
+              {visibility.showPostcodes ? `Hide ${zipShortLower} boundaries` : `Show ${zipShortLower} boundaries`}
+            </Button>
             <Button variant="neutral" size="sm" onClick={clearAll}
               disabled={loadedShapes.length === 0 && selected.length === 0}>
               Clear {zipShortLower}s
@@ -2807,6 +2923,7 @@ export default function PolygonBuilder() {
               onStartLasso={startLasso}
               onStartRect={startRect}
               onStartCircle={startCircle}
+              onStartPoints={startPoints}
             />
           </>
         )}
@@ -2873,25 +2990,86 @@ export default function PolygonBuilder() {
             </div>
 
             <div>
-              <div className="text-text-secondary text-[10px] uppercase tracking-wide mb-1">
-                Coverage polygons ({polygons.length})
+              <div className="flex items-center gap-1 mb-1">
+                <span className="text-text-secondary text-[10px] uppercase tracking-wide flex-1">
+                  Coverage polygons ({polygons.length})
+                </span>
+                {(visibility.hiddenLayers.length > 0 || visibility.hiddenPolygons.length > 0) && (
+                  <button type="button"
+                    onClick={() => setVisibility((v) => showAllLayers(v))}
+                    className="text-[9px] font-semibold text-brand-purple hover:underline"
+                    title="Show every layer and polygon again">
+                    Show all
+                  </button>
+                )}
               </div>
               {polygons.length === 0 && (
                 <div className="text-text-muted italic text-[10px]">
                   None yet. Click "+ Draw new polygon" or "Use as starting shape" on a loaded {zipShortLower}.
                 </div>
               )}
-              <ul className="space-y-1">
-                {polygons.map((p, idx) => {
-                  const color = POLYGON_PALETTE[idx % POLYGON_PALETTE.length];
+              {/* Layer names offered by every layer input on the page. */}
+              <datalist id="pb-layer-names">
+                {layerNames(polygons).map((l) => <option key={l} value={l} />)}
+              </datalist>
+              {/* Grouped by layer (2026-11-12). Each layer header has a show /
+                  hide toggle and "Only"; each polygon has its own toggle.
+                  Hidden shapes stay in the list, greyed, so they can be
+                  found and shown again. */}
+              <ul className="space-y-2">
+                {groupByLayer(polygons).map((group) => {
+                  const layerHidden = isLayerHidden(visibility, group.layer);
+                  const layerLabel = group.layer === NO_LAYER ? 'No layer' : group.layer;
+                  const shownCount = group.polygons.filter((p) => isPolygonVisible(visibility, p)).length;
+                  return (
+                    <li key={group.layer === NO_LAYER ? '\u0000no-layer' : group.layer}
+                      data-testid="pb-layer-group" data-layer={group.layer}>
+                      <div className={`flex items-center gap-1 px-1 py-0.5 rounded bg-surface-cream/60 ${layerHidden ? 'opacity-60' : ''}`}>
+                        <button type="button"
+                          onClick={() => setVisibility((v) => toggleLayerHidden(v, group.layer))}
+                          aria-pressed={!layerHidden}
+                          aria-label={`${layerHidden ? 'Show' : 'Hide'} layer ${layerLabel}`}
+                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-white text-text-secondary"
+                          title={layerHidden ? `Show layer "${layerLabel}"` : `Hide layer "${layerLabel}"`}>
+                          {layerHidden ? <IconEyeOff /> : <IconEye />}
+                        </button>
+                        <span className="flex-1 truncate font-semibold text-[11px]" title={layerLabel}>
+                          {layerLabel}
+                        </span>
+                        <span className="text-[9px] text-text-muted" title={`${shownCount} of ${group.polygons.length} shown`}>
+                          {shownCount === group.polygons.length ? group.polygons.length : `${shownCount}/${group.polygons.length}`}
+                        </span>
+                        <button type="button"
+                          onClick={() => setVisibility((v) => soloLayer(v, group.layer, polygons))}
+                          className="text-[9px] font-semibold text-brand-purple hover:underline px-1"
+                          title={`Show only "${layerLabel}" and hide every other layer`}>
+                          Only
+                        </button>
+                      </div>
+                      <ul className="space-y-1 mt-1">
+                {group.polygons.map((p) => {
+                  const color = polygonColour(p, POLYGON_PALETTE);
                   const isChecked = selectedPolygons.has(p.polygonId);
                   const isEditing = editingId === p.polygonId;
+                  const isShown = isPolygonVisible(visibility, p);
+                  const selfHidden = visibility.hiddenPolygons.includes(p.polygonId);
                   return (
                     <li key={p.polygonId}
-                      className={`px-2 py-1 rounded border ${isEditing ? 'border-warning bg-warning/10' : 'border-border-light'}`}>
+                      data-testid="pb-polygon-row" data-hidden={!isShown}
+                      className={`px-2 py-1 rounded border ${isEditing ? 'border-warning bg-warning/10' : 'border-border-light'} ${isShown ? '' : 'opacity-50'}`}>
                       <label className="flex items-center gap-1.5">
                         <input type="checkbox" checked={isChecked}
                           onChange={() => togglePolygonSelected(p.polygonId)} />
+                        <button type="button"
+                          onClick={() => setVisibility((v) => togglePolygonHidden(v, p.polygonId))}
+                          aria-pressed={!selfHidden}
+                          aria-label={`${selfHidden ? 'Show' : 'Hide'} polygon ${p.name}`}
+                          className="w-4 h-4 flex items-center justify-center rounded hover:bg-surface-cream text-text-secondary"
+                          title={selfHidden
+                            ? 'Show this polygon on the map'
+                            : (isShown ? 'Hide this polygon from the map' : 'Hidden because its layer is hidden. Click to hide it on its own too.')}>
+                          {selfHidden ? <IconEyeOff /> : <IconEye />}
+                        </button>
                         <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
                         <button
                           type="button"
@@ -2904,13 +3082,40 @@ export default function PolygonBuilder() {
                               next.add(p.polygonId);
                               return next;
                             });
-                            // Also pan / zoom the map to bring the shape into view.
+                            // Also pan / zoom the map to bring the shape into view,
+                            // showing it (and its layer) if it was hidden.
+                            setVisibility((v) => revealPolygon(v, p));
                             zoomToPolygon(p);
                           }}
                           className="flex-1 truncate font-medium text-left hover:underline"
                           title="Click to select this polygon and zoom the map to it"
                         >{p.name}</button>
                       </label>
+                      {/* Layer chip + inline "move to layer" editor. */}
+                      <div className="ml-5 mt-0.5 flex items-center gap-1">
+                        {layerEditing?.polygonId === p.polygonId ? (
+                          <form className="flex items-center gap-1"
+                            onSubmit={(e) => { e.preventDefault(); void commitLayer(p, layerEditing.value); }}>
+                            <input type="text" list="pb-layer-names" autoFocus
+                              aria-label={`Layer for ${p.name}`}
+                              value={layerEditing.value}
+                              onChange={(e) => setLayerEditing({ polygonId: p.polygonId, value: e.target.value })}
+                              onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setLayerEditing(null); } }}
+                              placeholder="Layer name (blank = none)"
+                              className="text-[10px] border border-border rounded px-1 py-0.5 w-36" />
+                            <button type="submit" className="text-[10px] px-1.5 py-0.5 rounded bg-brand-cyan text-white">Save</button>
+                            <button type="button" onClick={() => setLayerEditing(null)}
+                              className="text-[10px] px-1 py-0.5 text-text-muted hover:text-text-primary">Cancel</button>
+                          </form>
+                        ) : (
+                          <button type="button"
+                            onClick={() => setLayerEditing({ polygonId: p.polygonId, value: layerOf(p) })}
+                            className="text-[9px] px-1.5 py-0.5 rounded border border-border text-text-muted hover:text-text-primary"
+                            title="Move this polygon to a layer (type a new name or pick an existing one)">
+                            {layerOf(p) === NO_LAYER ? '+ Layer' : `Layer: ${layerOf(p)}`}
+                          </button>
+                        )}
+                      </div>
                       {p.sourceType === 1 && p.sourceCode && (
                         <div className="ml-5 mt-0.5">
                           <span className="inline-block px-1.5 py-0.5 rounded bg-brand-cyan/20 text-brand-dark text-[9px] font-semibold">
@@ -3135,6 +3340,10 @@ export default function PolygonBuilder() {
                     </li>
                   );
                 })}
+                      </ul>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           </div>
@@ -3167,12 +3376,14 @@ export default function PolygonBuilder() {
           onStartLasso={() => { setContextMenu(null); startLasso(); }}
           onStartRect={() => { setContextMenu(null); startRect(); }}
           onStartCircle={() => { setContextMenu(null); startCircle(); }}
+          onStartPoints={() => { setContextMenu(null); startPoints(); }}
           maxEditVertices={MAX_EDIT_HANDLE_VERTICES}
         />
       )}
 
       {openSaveModal && pendingPolygon && pendingPolygon.length > 0 && (
         <SaveNewPolygonModal rings={pendingPolygon}
+          layers={layerNames(polygons)}
           onCancel={() => setOpenSaveModal(false)}
           onCreated={onPolygonCreated} />
       )}
@@ -3219,13 +3430,22 @@ interface SaveNewPolygonProps {
   // producing multiple pieces) round-trip through save with every piece
   // intact. Fresh single-drag polygons come in as [oneRing].
   rings: LatLng[][];
+  /** Existing layer names, offered as suggestions. */
+  layers?: string[];
   onCancel: () => void;
   onCreated: (created: BulkPolygon) => void;
 }
 
-function SaveNewPolygonModal({ rings, onCancel, onCreated }: SaveNewPolygonProps) {
+/** Remembers the last layer typed in this browser so a run of shapes for
+ *  the same layer does not need it retyped. */
+const LAST_LAYER_KEY = 'polygonBuilder.lastLayer';
+
+function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNewPolygonProps) {
   const toast = useToast();
   const [name, setName] = useState('');
+  const [layer, setLayer] = useState(() => {
+    try { return window.localStorage.getItem(LAST_LAYER_KEY) ?? ''; } catch { return ''; }
+  });
   const [saving, setSaving] = useState(false);
   const totalVerts = rings.reduce((n, r) => n + r.length, 0);
 
@@ -3243,13 +3463,16 @@ function SaveNewPolygonModal({ rings, onCancel, onCreated }: SaveNewPolygonProps
       // Centroid is stamped off ring 0 - matches the single-outer-ring
       // convention used by saved polygons + edit-mode commitShape.
       const centroid = polygonCentroid(rings[0]);
+      const layerTrimmed = layer.trim();
       const res = await bulkPolygonService.create({
         name: trimmed,
         centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
         points,
         sourceType: 0,
         sourceCode: null,
+        layer: layerTrimmed.length === 0 ? null : layerTrimmed,
       });
+      try { window.localStorage.setItem(LAST_LAYER_KEY, layerTrimmed); } catch { /* preference only */ }
       onCreated(res.response);
       const zips = parsePartiallyIncludedZips(res.response.partiallyIncludedZips);
       const zipTrailer = zips.length === 0
@@ -3274,6 +3497,14 @@ function SaveNewPolygonModal({ rings, onCancel, onCreated }: SaveNewPolygonProps
         <Field label="Name">
           <input type="text" value={name} onChange={(e) => setName(e.target.value)}
             className={INPUT_CLASS} autoFocus placeholder="e.g. Zimmer AM Med Auckland" />
+        </Field>
+        <Field label="Layer (optional)">
+          <input type="text" list="pb-save-layer-names" value={layer}
+            onChange={(e) => setLayer(e.target.value)}
+            className={INPUT_CLASS} placeholder="e.g. AD. Groups the sidebar; each layer can be hidden or shown alone." />
+          <datalist id="pb-save-layer-names">
+            {layers.map((l) => <option key={l} value={l} />)}
+          </datalist>
         </Field>
         <p className="text-[11px] text-text-muted italic">
           The shape is saved to tblBulkRunPolygon and can be attached to one or more Routes later.
@@ -3690,6 +3921,7 @@ interface PolygonContextMenuProps {
   onStartLasso: () => void;
   onStartRect: () => void;
   onStartCircle: () => void;
+  onStartPoints: () => void;
   maxEditVertices: number;
 }
 
@@ -3757,12 +3989,10 @@ function PolygonContextMenu(props: PolygonContextMenuProps) {
       )}
       {state.target.kind === 'mapBackground' && (
         <>
-          {/* "Draw new polygon (P)" entry removed 2026-08-05 with the
-              Vertex Polygon tool. Lasso is now the primary freehand
-              polygon tool. */}
           <MenuItem label="Freehand lasso (L)" onClick={props.onStartLasso} />
           <MenuItem label="Draw rectangle (R)" onClick={props.onStartRect} />
           <MenuItem label="Draw circle (C)" onClick={props.onStartCircle} />
+          <MenuItem label="Draw by points, snaps to boundaries (P)" onClick={props.onStartPoints} />
         </>
       )}
     </div>
@@ -3850,9 +4080,10 @@ interface DrawingToolsMenuProps {
   onStartLasso: () => void;
   onStartRect: () => void;
   onStartCircle: () => void;
+  onStartPoints: () => void;
 }
 
-function DrawingToolsMenu({ onStartLasso, onStartRect, onStartCircle }: DrawingToolsMenuProps) {
+function DrawingToolsMenu({ onStartLasso, onStartRect, onStartCircle, onStartPoints }: DrawingToolsMenuProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -3877,17 +4108,15 @@ function DrawingToolsMenu({ onStartLasso, onStartRect, onStartCircle }: DrawingT
   const fire = (fn: () => void) => { setOpen(false); fn(); };
 
   // 2026-08-05 (George feedback): "Vertex polygon" (click-to-add-vertex)
-  // dropped from the toolbar. It felt unusable compared to the drag-based
-  // tools even after the snap-cache + rAF perf fixes - the click-to-add
-  // UX is fundamentally slower than lasso/rect/circle. Operators can
-  // still get per-vertex precision by drawing with any of the three
-  // remaining tools and then reshaping in edit mode (every vertex is a
-  // draggable handle there). The `mode === 'drawing'` code path stays
-  // in the file for now in case a future affordance re-enables it.
+  // dropped from the toolbar as slower than the drag-based tools.
+  // 2026-11-12 (Steve): back as "Draw by points". It is the only tool that
+  // snaps to postcode boundaries and other polygons, and it now follows a
+  // boundary between two clicks, which the drag tools cannot do.
   const items: Array<{ label: string; shortcut: string; onClick: () => void; icon: React.ReactNode; primary?: boolean }> = [
     { label: 'Freehand lasso', shortcut: 'L', onClick: onStartLasso, icon: <IconLasso />, primary: true },
     { label: 'Rectangle',      shortcut: 'R', onClick: onStartRect,   icon: <IconRect /> },
     { label: 'Circle',         shortcut: 'C', onClick: onStartCircle, icon: <IconCircle /> },
+    { label: 'Draw by points (snaps to boundaries)', shortcut: 'P', onClick: onStartPoints, icon: <IconPolygon /> },
   ];
   return (
     <div ref={wrapRef} className="relative">
@@ -3947,6 +4176,18 @@ const IconPolygon = () => (
     <circle cx="12" cy="13" r="1.1" fill="currentColor" />
     <circle cx="4" cy="13" r="1.1" fill="currentColor" />
     <circle cx="2" cy="6" r="1.1" fill="currentColor" />
+  </svg>
+);
+const IconEye = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M1.5 8 C3.5 4.5 6 3 8 3 C10 3 12.5 4.5 14.5 8 C12.5 11.5 10 13 8 13 C6 13 3.5 11.5 1.5 8 Z" />
+    <circle cx="8" cy="8" r="2.2" />
+  </svg>
+);
+const IconEyeOff = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M1.5 8 C3.5 4.5 6 3 8 3 C10 3 12.5 4.5 14.5 8 C12.5 11.5 10 13 8 13 C6 13 3.5 11.5 1.5 8 Z" />
+    <path d="M2.5 13.5 L13.5 2.5" />
   </svg>
 );
 const IconPencil = () => (
