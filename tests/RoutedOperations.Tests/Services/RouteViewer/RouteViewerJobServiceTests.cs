@@ -128,6 +128,16 @@ public class RouteViewerJobServiceTests
     }
 
     [Fact]
+    public async Task GetClientIntelAsync_Np_ForeignMobile_Throws()
+    {
+        // NP leak K6 (2026-11-13): intel only for a mobile on the NP's own jobs.
+        var (sut, guard, _, _) = NewSvc(new NpScope(false, 42));
+        guard.EnsureMobileInScopeAsync("0271234567").Returns<Task>(_ => throw new NpLabelScopeException("x"));
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.GetClientIntelAsync("0271234567"));
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.GetClientIntelImagesAsync("0271234567"));
+    }
+
+    [Fact]
     public async Task GetClientIntelImagesAsync_EmptyMobile_ReturnsEmptyList()
     {
         var (sut, _, _, _) = NewSvc(new NpScope(true, null));

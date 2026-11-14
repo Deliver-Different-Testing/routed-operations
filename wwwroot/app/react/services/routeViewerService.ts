@@ -403,7 +403,10 @@ export const routeViewerService = {
   // -----------------------------------------------------------------
   // Scans / events
   // -----------------------------------------------------------------
-  getScanDetail: (jobId: number) =>
+  /** Detail-box scan history. The selected id is a tblBulkJob.BulkJobId;
+   *  the server resolves job number + book date from it (the old `jobId`
+   *  query param was not bound by the API, so the box was always empty). */
+  getScanDetail: (bulkJobId: number) =>
     unwrap<Array<{
       scanId?: number;
       scanDateTime?: string | null;
@@ -423,7 +426,7 @@ export const routeViewerService = {
       scanType?: string;
       courierName?: string;
     }>>(
-      `/runviewer/scans/detail${buildQuery({ jobId })}`,
+      `/runviewer/scans/detail${buildQuery({ bulkJobId })}`,
     ),
 
   /** Print Manager grid. Wraps RVW_stpPrintJobsV2 via

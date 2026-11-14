@@ -20,6 +20,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerScanService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    INpScopeGuard scopeGuard,
     ILogger<RouteViewerScanService> logger) : BaseService(contextFactory)
 {
     /// <summary>GET /api/runviewer/scans - Bulk-mode Scan Manager grid.
@@ -107,8 +108,10 @@ public class RouteViewerScanService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        // SP signature (verified 2026-08-11 via sys.parameters): 4 params
-        // @ClientID / @RunDate / @Regions / @ClientIDs.
+        // SP signature: @ClientID / @RunDate / @Regions / @ClientIDs /
+        // @NpAgentId (added 2026-11-13, migration 20261113140200, NP leak K2).
+        // NP sessions pass their agent; the SP keeps only shipments whose
+        // ROOT tucJob.NpAgentId matches. Admin passes NULL = all.
         // SP output columns (verified via sp_describe_first_result_set):
         // ClientID, ClientCode, JobNumber, JobID, DeliveryDate, ReadyTime,
         // ToAddress, ToSuburb, Items, ScannedItems, ExpectedItems, Totes,
@@ -121,11 +124,14 @@ public class RouteViewerScanService(
                 @ClientID = @ClientID,
                 @RunDate = @RunDate,
                 @Regions = @Regions,
-                @ClientIDs = @ClientIDs",
+                @ClientIDs = @ClientIDs,
+                @NpAgentId = @NpAgentId",
             SpParam.Of("@ClientID", effectiveClientId),
             SpParam.Of("@RunDate", request.RunDate),
             SpParam.Of("@Regions", request.RegionIds),
-            SpParam.Of("@ClientIDs", effectiveClientIds))
+            SpParam.Of("@ClientIDs", effectiveClientIds),
+            // B2: branch scope (BranchIds) joins here once B2 lands.
+            SpParam.Of("@NpAgentId", scope.IsAdmin ? null : scope.NpAgentId))
             .ToListAsync();
         return rows.Select(r => new RoutedScanJobDto
         {
@@ -187,20 +193,116 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return null;
 
-        return await Context.Database.SqlQueryRaw<RoutedShipmentDetailDto>(
+        // NP leak K3 (2026-11-13): the root job must be in the caller's NP
+        // scope. Throws NpLabelScopeException -> 403; no-op for admin.
+        // B2: branch scope check joins here once B2 lands.
+        await scopeGuard.EnsureTucJobInScopeAsync(rootJobId);
+
+        // EXEC is not composable, so FirstOrDefaultAsync (which wraps the
+        // EXEC in a SELECT TOP 1) threw for every caller. Materialise first.
+        var rows = await Context.Database.SqlQueryRaw<RawRoutedShipmentDetailRow>(
             @"EXEC dbo.RVW_stpRoutedShipmentDetail @RootJobID, @RunDate",
             SpParam.Of("@RootJobID", rootJobId),
             SpParam.Of("@RunDate", runDate))
-            .FirstOrDefaultAsync();
+            .ToListAsync();
+        var r = rows.FirstOrDefault();
+        if (r == null) return null;
+        return new RoutedShipmentDetailDto
+        {
+            RootJobId = r.RootJobID,
+            JobNumber = r.JobNumber,
+            ClientCode = r.ClientCode,
+            ToAddress = r.ToAddress,
+            Totes = r.Totes,
+            Mismatches = r.Mismatches,
+            Legs = r.Legs,
+            Exceptions = r.Exceptions,
+            OpenTasks = r.OpenTasks,
+        };
+    }
+
+    /// <summary>C# port of dbo.UTL_fncGetBulkJob_BaseJobNumber (the app DB
+    /// login has no EXECUTE on the function): text before the first "LH",
+    /// else before the first "DEL", else the whole string. Case-insensitive
+    /// like PATINDEX under the default CI collation.</summary>
+    public static string BaseJobNumber(string scan)
+    {
+        var lh = scan.IndexOf("LH", StringComparison.OrdinalIgnoreCase);
+        if (lh >= 0) return scan[..lh];
+        var del = scan.IndexOf("DEL", StringComparison.OrdinalIgnoreCase);
+        if (del >= 0) return scan[..del];
+        return scan;
+    }
+
+    /// <summary>Exact column shape of RVW_stpRoutedShipmentDetail.</summary>
+    private class RawRoutedShipmentDetailRow
+    {
+        public int RootJobID { get; set; }
+        public string? JobNumber { get; set; }
+        public string? ClientCode { get; set; }
+        public string? ToAddress { get; set; }
+        public string? Totes { get; set; }
+        public string? Mismatches { get; set; }
+        public string? Legs { get; set; }
+        public string? Exceptions { get; set; }
+        public string? OpenTasks { get; set; }
     }
 
     /// <summary>GET /api/runviewer/scans/detail?runDate=&scan=&rootJobId=
     /// Scan Detail panel rows (Time / Scan / Location / By columns).
-    /// Routed mode passes rootJobId; Bulk mode passes only scan.</summary>
-    public async Task<List<BulkScanDetailDto>> GetScanDetailAsync(DateTime? runDate, string? scan, int? rootJobId)
+    /// Routed mode passes rootJobId; Bulk mode passes only scan. The
+    /// Runs / Print Manager / Linehaul detail box passes bulkJobId, which
+    /// resolves to (job number, book date) the way legacy
+    /// homeControl.loadScanDetailForJob called it.</summary>
+    public async Task<List<BulkScanDetailDto>> GetScanDetailAsync(DateTime? runDate, string? scan, int? rootJobId, int? bulkJobId = null)
     {
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<BulkScanDetailDto>();
+
+        var scanFromBulkJob = false;
+        if (bulkJobId is > 0)
+        {
+            // NP leak K4: the bulk job must be in scope (no-op for admin).
+            await scopeGuard.EnsureBulkJobInScopeAsync(bulkJobId.Value);
+            var bulk = await Context.TblBulkJobs
+                .Where(b => b.BulkJobId == bulkJobId.Value)
+                .Select(b => new { b.JobNumber, b.BookDate })
+                .FirstOrDefaultAsync();
+            if (bulk == null) return new List<BulkScanDetailDto>();
+            scan = bulk.JobNumber;
+            runDate ??= bulk.BookDate.Date;
+            scanFromBulkJob = true;
+        }
+
+        if (!scope.IsAdmin)
+        {
+            // NP leak K4 (2026-11-13). RVW_stpScanDetail filters tblBulkScan
+            // by the job number derived from @Scan and tblScan by the family
+            // of @RootJobID, so both inputs must be in scope:
+            //  - rootJobId: the root tucJob must belong to the NP;
+            //  - scan (caller-supplied): the SP matches tblBulkScan.Scan
+            //    LIKE base + '%', base = UTL_fncGetBulkJob_BaseJobNumber(scan).
+            //    The base must be the exact job number of tucJob row(s) that
+            //    all belong to the NP; anything else (partial prefix, item
+            //    barcode, unknown) is refused. The RO UI never sends a raw
+            //    scan (Scan Manager sends rootJobId, the detail box sends
+            //    bulkJobId), so this only closes the direct-API path.
+            //    A scan derived from bulkJobId above is already guarded.
+            // B2: branch scope check joins here once B2 lands.
+            if (string.IsNullOrWhiteSpace(scan)) scan = null;
+            if (rootJobId == null && scan == null) return new List<BulkScanDetailDto>();
+            if (rootJobId != null)
+                await scopeGuard.EnsureTucJobInScopeAsync(rootJobId.Value);
+            if (scan != null && !scanFromBulkJob)
+            {
+                var baseNumber = BaseJobNumber(scan);
+                var exists = baseNumber.Length > 0
+                    && await Context.TucJobs.AnyAsync(j => j.UcjbNumber == baseNumber);
+                if (!exists)
+                    throw new NpLabelScopeException("Scan is outside your NP scope.");
+                await scopeGuard.EnsureTucJobByNumberInScopeAsync(baseNumber);
+            }
+        }
 
         // Column-shape note: RVW_stpScanDetail emits BulkScanID (not
         // ScanId) and does NOT project IsNpAgent. Materialise into a
@@ -256,10 +358,39 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<RoutedItemProgressDto>();
 
-        return await Context.Database.SqlQueryRaw<RoutedItemProgressDto>(
+        // NP leak K5 (2026-11-13): root job must be in scope. No-op for admin.
+        // B2: branch scope check joins here once B2 lands.
+        await scopeGuard.EnsureTucJobInScopeAsync(rootJobId);
+
+        // The SP emits RootJobID / ToteBarcode / LinehaulRunId, not the DTO's
+        // JobId / Tote / ScanTime, so direct materialisation threw for every
+        // caller. Map through the raw SP shape.
+        var rows = await Context.Database.SqlQueryRaw<RawItemProgressRow>(
             @"EXEC dbo.RVW_stpScanManagerItemProgress @RootJobID",
             SpParam.Of("@RootJobID", rootJobId))
             .ToListAsync();
+        return rows.Select(r => new RoutedItemProgressDto
+        {
+            JobId = r.RootJobID,
+            ItemBarcode = r.ItemBarcode,
+            Leg = r.Leg,
+            State = r.State,
+            Tote = r.ToteBarcode,
+            IsCurrent = r.IsCurrent ?? false,
+            ScanTime = null,
+        }).ToList();
+    }
+
+    /// <summary>Exact column shape of RVW_stpScanManagerItemProgress.</summary>
+    private class RawItemProgressRow
+    {
+        public int RootJobID { get; set; }
+        public string? ItemBarcode { get; set; }
+        public string? Leg { get; set; }
+        public int? LinehaulRunId { get; set; }
+        public string? State { get; set; }
+        public string? ToteBarcode { get; set; }
+        public bool? IsCurrent { get; set; }
     }
 
     /// <summary>POST /api/runviewer/scans/remove-missing - purges

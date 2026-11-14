@@ -130,8 +130,15 @@ public class RunViewerJobController(
     {
         if (string.IsNullOrWhiteSpace(mobile))
             return BadRequest(new { message = "mobile is required." });
-        var intel = await jobService.GetClientIntelAsync(mobile);
-        return Ok(new { response = intel });
+        try
+        {
+            var intel = await jobService.GetClientIntelAsync(mobile);
+            return Ok(new { response = intel });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>GET /api/runviewer/jobs/client-intel-images?mobile= -
@@ -141,8 +148,15 @@ public class RunViewerJobController(
     {
         if (string.IsNullOrWhiteSpace(mobile))
             return BadRequest(new { message = "mobile is required." });
-        var images = await jobService.GetClientIntelImagesAsync(mobile);
-        return Ok(new { response = images });
+        try
+        {
+            var images = await jobService.GetClientIntelImagesAsync(mobile);
+            return Ok(new { response = images });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>GET /api/runviewer/jobs/pod-photos?bulkJobId= - POD

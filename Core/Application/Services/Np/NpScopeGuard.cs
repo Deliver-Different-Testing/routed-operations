@@ -125,4 +125,29 @@ public class NpScopeGuard(
         if (mixed)
             throw new NpLabelScopeException($"Run {runId} has jobs outside your NP scope.");
     }
+
+    public async Task EnsureMobileInScopeAsync(string mobile)
+    {
+        var scope = await scopeResolver.ResolveAsync();
+        if (scope.IsAdmin) return;
+
+        var trimmed = mobile?.Trim();
+        if (string.IsNullOrEmpty(trimmed) || scope.NpAgentId == null)
+            throw new NpLabelScopeException("Mobile is outside your NP scope.");
+
+        // The mobile is in scope when ANY non-void bulk job carrying it
+        // belongs to the NP, judged on tucJob.NpAgentId via TblBulkJob.JobId
+        // like EnsureBulkJobInScopeAsync (see header).
+        await using var context = await contextFactory.CreateDbContextAsync();
+        var inScope = await (
+            from b in context.TblBulkJobs
+            where !b.Void
+               && (b.ProofOfDeliveryMobile == trimmed || b.DeliverToPhone == trimmed)
+            join j in context.TucJobs on b.JobId equals (int?)j.UcjbId
+            select j.NpAgentId
+        ).AnyAsync(np => np == scope.NpAgentId);
+
+        if (!inScope)
+            throw new NpLabelScopeException("Mobile is outside your NP scope.");
+    }
 }
