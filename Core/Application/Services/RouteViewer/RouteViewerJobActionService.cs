@@ -359,27 +359,9 @@ public class RouteViewerJobActionService(
             Direction = ParameterDirection.Output,
         };
 
-        await Context.Database.ExecuteSqlRawAsync(
-            @"EXEC dbo.WS_stpBulkJob_Update
-                @ClientID = @ClientID,
-                @JobNumber = @JobNumber,
-                @Quantity = @Quantity,
-                @Notes = @Notes,
-                @ClientRefA = @ClientRefA,
-                @ClientRefB = @ClientRefB,
-                @OurRef = @OurRef,
-                @Message = @Message OUTPUT",
-            SpParam.Of("@ClientID", current.ClientId),
-            SpParam.Of("@JobNumber", current.JobNumber),
-            // Unset fields go as NULL so the SP's own
-            // IF ISNULL(@X, '') <> '' guards skip them. Sending the current
-            // value instead is what made the SP append it to itself.
-            SpParam.Of("@Quantity", patch.Quantity),
-            SpParam.Of("@Notes", patch.Notes),
-            SpParam.Of("@ClientRefA", patch.RefA),
-            SpParam.Of("@ClientRefB", patch.RefB),
-            SpParam.Of("@OurRef", patch.OurRef),
-            spMessage);
+        var (sql, parameters) = BuildUpdateTextFieldsCommand(
+            bulkJobId, current.ClientId, current.JobNumber, patch, spMessage);
+        await Context.Database.ExecuteSqlRawAsync(sql, parameters);
 
         var abortReason = spMessage.Value as string;
         if (!string.IsNullOrWhiteSpace(abortReason))
@@ -392,6 +374,41 @@ public class RouteViewerJobActionService(
             throw new InvalidOperationException(abortReason.Trim());
         }
     }
+
+    /// <summary>EXEC text + parameters for <see cref="UpdateTextFieldsAsync"/>.
+    /// @BulkJobID (#819, needs migration 20261117140100) makes the SP edit
+    /// the row the operator opened; without it the SP looked the job up by
+    /// ClientID + JobNumber and could pick the same number imported for
+    /// another day. Public static rather than internal because this repo
+    /// avoids InternalsVisibleTo.</summary>
+    public static (string Sql, object[] Parameters) BuildUpdateTextFieldsCommand(
+        int bulkJobId, int clientId, string jobNumber,
+        UpdateJobTextFieldsRequest patch, SqlParameter message) =>
+        (@"EXEC dbo.WS_stpBulkJob_Update
+                @ClientID = @ClientID,
+                @JobNumber = @JobNumber,
+                @Quantity = @Quantity,
+                @Notes = @Notes,
+                @ClientRefA = @ClientRefA,
+                @ClientRefB = @ClientRefB,
+                @OurRef = @OurRef,
+                @Message = @Message OUTPUT,
+                @BulkJobID = @BulkJobID",
+        new object[]
+        {
+            SpParam.Of("@ClientID", clientId),
+            SpParam.Of("@JobNumber", jobNumber),
+            // Unset fields go as NULL so the SP's own
+            // IF ISNULL(@X, '') <> '' guards skip them. Sending the current
+            // value instead is what made the SP append it to itself.
+            SpParam.Of("@Quantity", patch.Quantity),
+            SpParam.Of("@Notes", patch.Notes),
+            SpParam.Of("@ClientRefA", patch.RefA),
+            SpParam.Of("@ClientRefB", patch.RefB),
+            SpParam.Of("@OurRef", patch.OurRef),
+            message,
+            SpParam.Of("@BulkJobID", bulkJobId),
+        });
 
     public async Task AddBulkJobNoteAsync(int bulkJobId, string notes)
     {

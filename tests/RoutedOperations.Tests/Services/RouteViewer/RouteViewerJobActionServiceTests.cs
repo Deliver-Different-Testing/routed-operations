@@ -258,6 +258,29 @@ public class RouteViewerJobActionServiceTests
             sut.UpdateTextFieldsAsync(9999, new UpdateJobTextFieldsRequest { Notes = "new" }));
     }
 
+    [Fact]
+    public void UpdateTextFieldsCommand_PassesTheEditedRowsBulkJobId()
+    {
+        // #819 / E5: the SP used to find the job by ClientID + JobNumber
+        // alone, so a number re-imported for another day could edit the
+        // wrong row. The row the user is editing must reach the SP by id.
+        var message = new Microsoft.Data.SqlClient.SqlParameter("@Message", System.Data.SqlDbType.NVarChar, 1000)
+        {
+            Direction = System.Data.ParameterDirection.Output,
+        };
+        var (sql, parameters) = RouteViewerJobActionService.BuildUpdateTextFieldsCommand(
+            20262, 16867, "FED123", new UpdateJobTextFieldsRequest { Quantity = 2 }, message);
+
+        Assert.Contains("@BulkJobID = @BulkJobID", sql);
+        var bulkJobId = parameters.OfType<Microsoft.Data.SqlClient.SqlParameter>()
+            .Single(p => p.ParameterName == "@BulkJobID");
+        Assert.Equal(20262, bulkJobId.Value);
+        // still sent: the SP's not-found check is BulkJobID AND ClientID
+        Assert.Equal(16867, parameters.OfType<Microsoft.Data.SqlClient.SqlParameter>()
+            .Single(p => p.ParameterName == "@ClientID").Value);
+        Assert.Same(message, parameters.Single(p => ReferenceEquals(p, message)));
+    }
+
     // -------- user name resolution (indirect via SP audit param) --------
 
     [Fact]

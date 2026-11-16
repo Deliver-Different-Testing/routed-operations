@@ -16,7 +16,8 @@ public sealed record BookableScheduleRow(
     int? SpeedId,
     short? DayOfWeek,
     TimeSpan? StartTime,
-    int CutoffHours);
+    int CutoffHours,
+    int? ClientId = null);
 
 /// <summary>
 /// Loads the schedule day rows a client can actually book, applying the
@@ -51,7 +52,8 @@ public static class BookableSchedules
                 s.SpeedId,
                 s.DayOfWeek,
                 s.StartTime,
-                s.CutoffHours))
+                s.CutoffHours,
+                s.ClientId))
             .ToListAsync(ct);
 
         if (rows.Count == 0) return rows;
