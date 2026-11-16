@@ -550,14 +550,28 @@ public class AddressService(
             Longitude = null,
         };
 
+    // Depot preference when a postcode is covered by several depots
+    // (#1017). Higher wins. BookableSchedules.LoadAsync only returns the
+    // client's own rows and default (ClientId NULL) rows.
+    private static class ScheduleRank
+    {
+        public const int NoSchedule = 0;
+        public const int DefaultSchedule = 1;
+        public const int OwnSchedule = 2;
+    }
+
     // Postcode -> depot map for Bulk Import Step 5 (NZ). BulkZonePostcode is
     // a rating table (zone rows per depot), so one postcode can carry rows
     // for several depots - e.g. airline depots set up for air-freight
     // rating cover postcodes that a delivery depot also covers. Each
     // postcode is resolved to ONE depot here so the wizard's grouping no
     // longer depends on SQL row order:
-    //   1. depots with a bookable schedule for the client (when clientId
-    //      is supplied),
+    //   1. (when clientId is supplied) depots where the client has its OWN
+    //      bookable schedule, then depots with only a default (ClientId
+    //      NULL) schedule, then depots with none - see ScheduleRank. A
+    //      default schedule must not tie with the client's own: airline
+    //      depots (Qantas / AZAP Christchurch) carry defaults and lower
+    //      zones and took WOOP's 8083 from Christchurch (#1017),
     //   2. then the lowest Zone (closest rating zone),
     //   3. then the lowest depot id.
     // Inactive depots are excluded. Depots that end up owning postcodes
@@ -593,7 +607,9 @@ public class AddressService(
 
         // Null clientId keeps the old behaviour: every depot counts as
         // serviced, only the deterministic de-duplication applies.
-        HashSet<int> scheduledDepotIds = null;
+        // depotId -> ScheduleRank (OwnSchedule / DefaultSchedule); a depot
+        // missing from the map has no bookable schedule for the client.
+        Dictionary<int, int> depotScheduleRank = null;
         if (clientId.HasValue && !scope.IsStaff
             && !await scope.CanActForClientAsync(Context, contactId, clientId.Value))
         {
@@ -601,17 +617,22 @@ public class AddressService(
         }
         if (clientId.HasValue)
         {
-            scheduledDepotIds = (await BookableSchedules.LoadAsync(Context, clientId.Value))
+            depotScheduleRank = (await BookableSchedules.LoadAsync(Context, clientId.Value))
                 .Where(s => s.Region.HasValue)
-                .Select(s => s.Region.Value)
-                .ToHashSet();
+                .GroupBy(s => s.Region.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Max(s => s.ClientId.HasValue ? ScheduleRank.OwnSchedule : ScheduleRank.DefaultSchedule));
         }
-        bool HasSchedules(int depotId) => scheduledDepotIds == null || scheduledDepotIds.Contains(depotId);
+        bool HasSchedules(int depotId) => depotScheduleRank == null || depotScheduleRank.ContainsKey(depotId);
+        int RankOf(int depotId) => depotScheduleRank == null
+            ? ScheduleRank.NoSchedule
+            : depotScheduleRank.GetValueOrDefault(depotId, ScheduleRank.NoSchedule);
 
         var owners = postcodeDepots
             .GroupBy(p => p.PostCode)
             .Select(g => g
-                .OrderByDescending(p => HasSchedules(p.DepotId))
+                .OrderByDescending(p => RankOf(p.DepotId))
                 .ThenBy(p => p.Zone)
                 .ThenBy(p => p.DepotId)
                 .First());
