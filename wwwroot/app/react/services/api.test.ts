@@ -15,7 +15,27 @@ describe('modelStateMessage', () => {
         'jobs[2].FromContact': ['From Contact is required.'],
       },
     };
-    expect(modelStateMessage(body)).toBe('From Contact is required. (3 rows)');
+    expect(modelStateMessage(body)).toBe('From Contact is required. (rows 1, 2, 3)');
+  });
+
+  // The operator fixes the sheet, so name the rows. jobs[n] is the n-th job
+  // in the request, which is sheet record n+1 on a one-depot import.
+  it('names the row a per-job message came from, counting from 1', () => {
+    const body = { errors: { 'Jobs[3].ToContact': ["'To Contact' must not be empty."] } };
+    expect(modelStateMessage(body)).toBe("'To Contact' must not be empty. (row 4)");
+  });
+
+  it('lists at most ten rows and says how many more', () => {
+    const errors: Record<string, string[]> = {};
+    for (let i = 0; i < 13; i++) errors[`jobs[${i}].Quantity`] = ['Quantity must be a whole number from 1 to 32767.'];
+    expect(modelStateMessage({ errors })).toBe(
+      'Quantity must be a whole number from 1 to 32767. (rows 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 +3 more)'
+    );
+  });
+
+  it('keeps a plain count for a repeated message that is not tied to a row', () => {
+    const body = { errors: { A: ['Same problem.'], B: ['Same problem.'] } };
+    expect(modelStateMessage(body)).toBe('Same problem. (2 rows)');
   });
 
   it('does not add a count for a single occurrence', () => {

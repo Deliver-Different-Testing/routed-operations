@@ -233,6 +233,56 @@ describe('FixZipCodesModal - NZ suburbs', () => {
     // And the modal shouldn't list it as bad any more.
     expect(screen.queryByText(/Mount Eden \(1024\)/)).not.toBeInTheDocument();
   });
+
+  // #333. The suburbs API pads postcodes to 4 digits but Excel drops the
+  // leading zero, so a sheet "624" never matched an alias row's "0624" and
+  // the row was flagged. And the server strips macrons from the sheet
+  // value, so "Ōtāhuhu" books fine against "Otahuhu", but the modal flagged
+  // it because it compared the raw text.
+  it('matches an alias when the sheet dropped the leading zero of the postcode', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [
+            { id: 1, name: 'Devonport', city: null, postCode: '0624', alias: 'Devenport' },
+            { id: 2, name: 'Auckland', city: null, postCode: '1010', alias: null },
+          ],
+        })
+      )
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'Devenport', ToPostCode: '624' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip: 'devenport|624', corrected: 'Devonport' })
+    );
+  });
+
+  it('matches a suburb written with macrons to the reference name without them', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [{ id: 1, name: 'Otahuhu', city: null, postCode: '1062', alias: null }],
+        })
+      )
+    );
+    const s = seed({
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'Ōtāhuhu', ToPostCode: '1062' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={vi.fn()} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+  });
 });
 
 describe('FixZipCodesModal - US zip codes', () => {

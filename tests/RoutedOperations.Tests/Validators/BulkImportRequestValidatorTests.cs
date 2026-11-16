@@ -610,6 +610,40 @@ public class BulkImportRequestValidatorTests
         result.ShouldHaveValidationErrorFor("Jobs[0].Quantity");
     }
 
+    // #319: a crafted or stale request with Qty 0 used to book a job priced at
+    // 0 with no items, and a negative Qty threw inside the rating service (a
+    // 500). Both now come back as a 400 naming the row. Null still means 1.
+    [Theory]
+    [InlineData((short)0, true)]
+    [InlineData((short)-3, true)]
+    [InlineData((short)1, false)]
+    [InlineData((short)32767, false)]
+    public void Quantity_must_be_at_least_one(short qty, bool fails)
+    {
+        var sut = new BulkImportRequestValidator(NzTenant());
+        var req = ValidNzRequest();
+        var job = ValidNzJob();
+        job.Quantity = qty;
+        req.Jobs = new[] { job };
+
+        var result = sut.TestValidate(req);
+
+        if (fails) result.ShouldHaveValidationErrorFor("Jobs[0].Quantity");
+        else result.ShouldNotHaveValidationErrorFor("Jobs[0].Quantity");
+    }
+
+    [Fact]
+    public void Quantity_left_out_is_still_valid()
+    {
+        var sut = new BulkImportRequestValidator(UsTenant());
+        var req = ValidUsRequest();
+        var job = ValidUsJob();
+        job.Quantity = null;
+        req.Jobs = new[] { job };
+
+        sut.TestValidate(req).ShouldNotHaveValidationErrorFor("Jobs[0].Quantity");
+    }
+
     [Fact]
     public void CourierPercentageOverride_OutOfRange_Fails()
     {

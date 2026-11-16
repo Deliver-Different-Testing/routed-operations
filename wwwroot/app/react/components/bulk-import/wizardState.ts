@@ -44,10 +44,12 @@ export interface DepotBucket {
   // the bucket so the operator can see them, but it cannot be ticked or
   // imported.
   noService?: boolean;
-  // NZ: source row index -> postcode to send instead of the raw one. Set
-  // only for rows the raw postcode left unmatched but the geocoder's
-  // suggested postcode (fixedPostCodes) placed in this depot, so the job is
-  // booked against the postcode it was grouped by.
+  // Source row index -> postcode (NZ) or zip (US) to send instead of what
+  // buildJobs produced. NZ: set only for rows the raw postcode left unmatched
+  // but the geocoder's suggested postcode (fixedPostCodes) placed in this
+  // depot, so the job is booked against the postcode it was grouped by.
+  // US (#332): set for rows whose own zip matched this depot while fixedZips
+  // holds a different value for that zip, so the sheet zip is sent unchanged.
   postCodeOverrides?: Record<number, string>;
 }
 
@@ -548,8 +550,16 @@ export interface UrgentFieldsClientOverrides {
 
 export interface RequiredFieldProblems {
   unmapped: string[];
-  // record is the 1-based row of the first blank cell in that field's column.
-  blank: { label: string; record: number }[];
+  // records are the 1-based rows of every blank cell in that field's column.
+  blank: { label: string; records: number[] }[];
+}
+
+// Records named in one wizard message before the rest are counted (#316, #319).
+export const RECORDS_LISTED = 10;
+
+function recordList(records: string[]): string {
+  const more = records.length - RECORDS_LISTED;
+  return records.slice(0, RECORDS_LISTED).join(', ') + (more > 0 ? ` +${more} more` : '');
 }
 
 /**
@@ -570,18 +580,53 @@ export function requiredFieldProblems(
       problems.unmapped.push(field.label);
       continue;
     }
-    const index = rows.findIndex((row) => row[column] == null || String(row[column]).trim() === '');
-    if (index >= 0) problems.blank.push({ label: field.label, record: index + 1 });
+    const records: number[] = [];
+    rows.forEach((row, i) => {
+      if (row[column] == null || String(row[column]).trim() === '') records.push(i + 1);
+    });
+    if (records.length > 0) problems.blank.push({ label: field.label, records });
   }
   return problems;
 }
 
 export function requiredFieldLines(problems: RequiredFieldProblems): string[] {
-  const lines = problems.blank.map((b) => `${b.label} is required: record ${b.record} is blank`);
+  const lines = problems.blank.map((b) =>
+    b.records.length === 1
+      ? `${b.label} is required: record ${b.records[0]} is blank`
+      : `${b.label} is required: records ${recordList(b.records.map(String))} are blank`
+  );
   if (problems.unmapped.length > 0) {
     lines.unshift(`Please map required column(s): ${problems.unmapped.join(', ')}.`);
   }
   return lines;
+}
+
+/**
+ * #319. True when a Quantity cell holds something other than a whole number
+ * from 1 to 32767. A blank cell is fine: the job books 1. Same rule as the
+ * server's BulkQuantity, which refuses the rest with a 400 or a failed row.
+ */
+export function quantityCellProblem(cell: string | null | undefined): boolean {
+  const text = (cell ?? '').trim();
+  if (text === '') return false;
+  if (!/^[+-]?\d+$/.test(text)) return true;
+  const n = Number(text);
+  return n < 1 || n > 32767;
+}
+
+/** The records whose Quantity cell would be refused, or null when there are none. */
+export function quantityProblemLine(
+  mapping: Record<string, string>,
+  rows: Record<string, string>[]
+): string | null {
+  const column = mapping.quantity;
+  if (!column) return null;
+  const bad: string[] = [];
+  rows.forEach((row, i) => {
+    if (quantityCellProblem(row[column])) bad.push(`record ${i + 1} ('${String(row[column]).trim()}')`);
+  });
+  if (bad.length === 0) return null;
+  return `Quantity must be a whole number from 1 to 32767: ${recordList(bad)}`;
 }
 
 // Keys added by urgentFieldsFor when a truck speed is in play.
