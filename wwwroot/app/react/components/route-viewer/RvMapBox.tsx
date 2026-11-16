@@ -31,7 +31,9 @@ import { RvBox } from './RvBox';
 // next toggle flip.
 
 interface MapPin {
-  runId: number;
+  /** Run List row key (lib/runViewerSelection runRowKey). Two courier
+   *  rows of one split run are separate groups (#311/#326). */
+  runKey: string;
   bulkJobId: number;
   lat: number;
   lng: number;
@@ -54,14 +56,16 @@ interface Props {
   /** Tier-2 item 15 palette. When 2+ runs selected, pins for each run
    *  use the mapped colour instead of the default pickup/delivery
    *  blue/green. */
-  runColorMap?: Record<number, string>;
+  runColorMap?: Record<string, string>;
+  /** Row key of the drilled run (runJobs). */
+  primaryRunKey?: string;
   /** Only populated when 2+ runs are selected. Full runJobs from every
    *  additional run so we can pin all of them together (Tier-2 item
    *  15 + item 8 multi-run overlay). */
-  extraRunJobs?: Array<{ runId: number; jobs: BulkJob[] }>;
+  extraRunJobs?: Array<{ runKey: string; jobs: BulkJob[] }>;
 }
 
-export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, extraRunJobs }: Props) {
+export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, primaryRunKey, extraRunJobs }: Props) {
   const user = useAuth();
   const [allCouriers, setAllCouriers] = useState(false);
   const [allRuns, setAllRuns] = useState(false);
@@ -144,15 +148,15 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
     const wantDelivery = viewMode !== 'Inbound';
 
     // Primary run: drilled runJobs.
-    const primaryRunId = runJobs[0]?.bulkRunId ?? 0;
-    const pushGroup = (runId: number, jobs: BulkJob[]) => {
+    const primaryKey = primaryRunKey ?? String(runJobs[0]?.bulkRunId ?? 0);
+    const pushGroup = (runKey: string, jobs: BulkJob[]) => {
       for (const j of jobs) {
         if (wantDelivery) {
           const lat = num(j.toLat ?? j.deliveryLatitude);
           const lng = num(j.toLng ?? j.deliveryLongitude);
           if (lat != null && lng != null) {
             out.push({
-              runId,
+              runKey,
               bulkJobId: j.bulkJobId,
               lat, lng,
               status: j.jobStatus,
@@ -169,7 +173,7 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
           const plng = num(j.pickUpLongitude);
           if (plat != null && plng != null) {
             out.push({
-              runId,
+              runKey,
               bulkJobId: j.bulkJobId,
               lat: plat, lng: plng,
               status: j.jobStatus,
@@ -183,30 +187,29 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
         }
       }
     };
-    pushGroup(primaryRunId, runJobs);
-    for (const group of extraRunJobs ?? []) pushGroup(group.runId, group.jobs);
+    pushGroup(primaryKey, runJobs);
+    for (const group of extraRunJobs ?? []) pushGroup(group.runKey, group.jobs);
     return out;
-  }, [runJobs, extraRunJobs, viewMode]);
+  }, [runJobs, primaryRunKey, extraRunJobs, viewMode]);
 
   // Build the delivery-side polylines. One polyline per run ordered by
   // runOrder. Only draws when we have >= 2 delivery pins for the run
   // (a single pin has no polyline). Matches legacy behaviour.
   const polylineData = useMemo(() => {
-    const byRun: Record<number, MapPin[]> = {};
+    const byRun: Record<string, MapPin[]> = {};
     for (const p of pinsPayload) {
       if (p.kind !== 'delivery') continue;
-      if (!byRun[p.runId]) byRun[p.runId] = [];
-      byRun[p.runId].push(p);
+      if (!byRun[p.runKey]) byRun[p.runKey] = [];
+      byRun[p.runKey].push(p);
     }
-    const paths: Array<{ runId: number; path: Array<{ lat: number; lng: number }>; colour: string }> = [];
-    for (const [rid, pins] of Object.entries(byRun)) {
+    const paths: Array<{ runKey: string; path: Array<{ lat: number; lng: number }>; colour: string }> = [];
+    for (const [runKey, pins] of Object.entries(byRun)) {
       if (pins.length < 2) continue;
       const sorted = pins.slice().sort((a, b) => (a.runOrder ?? 999) - (b.runOrder ?? 999));
-      const runId = Number(rid);
       paths.push({
-        runId,
+        runKey,
         path: sorted.map((p) => ({ lat: p.lat, lng: p.lng })),
-        colour: runColorMap?.[runId] ?? '#16a34a',
+        colour: runColorMap?.[runKey] ?? '#16a34a',
       });
     }
     return paths;
@@ -233,7 +236,7 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
       // the pickup/delivery distinction stays legible, unless the whole
       // pin group has been tinted.
       let colour: string;
-      const runTint = runColorMap?.[p.runId];
+      const runTint = runColorMap?.[p.runKey];
       if (p.status === 'C') colour = '#c7c7c7';
       else if (p.status === 'V') colour = '#eab308';
       else if (runTint) colour = runTint;

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { RvRunList, type ViewMode } from './RvRunList';
 import type { BulkRun } from '../../services/routeViewerService';
+import { runRowKey } from '../../lib/runViewerSelection';
 
 // Minimal DataTransfer stub - jsdom doesn't ship one. We store
 // mime->value pairs in a plain map, expose `types` via a getter,
@@ -38,6 +39,7 @@ const mkRun = (over: Partial<BulkRun> = {}): BulkRun => ({
   isMissing: false,
   preAssigned: 0,
   isActive: 1,
+  courierId: null,
   courierName: 'Kev',
   courierCode: 'KEV',
   courierPercentageFormatted: null,
@@ -94,7 +96,7 @@ describe('RvRunList', () => {
     });
     const user = userEvent.setup();
     await user.click(screen.getByText('RUN-5'));
-    expect(props.onSelect).toHaveBeenCalledWith(5, expect.any(Object));
+    expect(props.onSelect).toHaveBeenCalledWith('5||0', expect.any(Object));
   });
 
   it('switches view mode when Inbound clicked', async () => {
@@ -171,7 +173,7 @@ describe('RvRunList', () => {
     const { container } = renderWithProviders(
       <RvRunList
         runs={[mkRun({ id: 9 })]}
-        selectedIds={[9]}
+        selectedIds={['9||0']}
         onSelect={vi.fn()}
         viewMode="Combined"
         onViewModeChange={vi.fn()}
@@ -192,7 +194,7 @@ describe('RvRunList', () => {
     });
     fireEvent.dragOver(row, { dataTransfer: dt });
     fireEvent.drop(row, { dataTransfer: dt });
-    expect(onDropRunJobs).toHaveBeenCalledWith(42, 11, [1001, 1002]);
+    expect(onDropRunJobs).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }), 11, [1001, 1002]);
   });
 
   it('does NOT call onDropRunJobs when the payload JSON is malformed', () => {
@@ -221,7 +223,7 @@ describe('RvRunList', () => {
     const row = screen.getByText('TARGET').closest('tr')!;
     const dt = makeDT({ 'application/rv-courier-code': 'KEV' });
     fireEvent.drop(row, { dataTransfer: dt });
-    expect(onDropCourier).toHaveBeenCalledWith(42, 'KEV');
+    expect(onDropCourier).toHaveBeenCalledWith(expect.objectContaining({ id: 42 }), 'KEV');
     expect(onDropRunJobs).not.toHaveBeenCalled();
   });
 
@@ -237,5 +239,41 @@ describe('RvRunList', () => {
     });
     fireEvent.drop(row, { dataTransfer: dt });
     expect(onDropRunJobs).not.toHaveBeenCalled();
+  });
+
+  // #311 / #326: run 41 with jobs on driver C7 and jobs on nobody comes back
+  // as two rows with id 41. Each half must select, highlight and take drops
+  // on its own; before, both halves answered to the bare id 41.
+  describe('split run (one run id, two courier rows)', () => {
+    const held = mkRun({ id: 41, name: 'RUN41', courierId: 7, courierCode: 'C7', courierName: 'Driver Seven' });
+    const unheld = mkRun({ id: 41, name: 'RUN41', courierId: null, courierCode: null, courierName: null });
+
+    it('selects the half that was clicked, not the run id', async () => {
+      const props = renderList({ runs: [held, unheld] });
+      const rows = screen.getAllByText('RUN41').map((el) => el.closest('tr')!);
+      await userEvent.setup().click(rows[1]);
+      expect(props.onSelect).toHaveBeenCalledWith(runRowKey(unheld), expect.any(Object));
+    });
+
+    it('highlights only the selected half', () => {
+      const { container } = renderWithProviders(
+        <RvRunList
+          runs={[held, unheld]}
+          selectedIds={[runRowKey(unheld)]}
+          onSelect={vi.fn()}
+          viewMode="Combined"
+          onViewModeChange={vi.fn()}
+        />,
+      );
+      expect(container.querySelectorAll('tr.bg-brand-cyan\\/20')).toHaveLength(1);
+    });
+
+    it('hands a courier drop the row it landed on, so the from-courier is that half', () => {
+      const onDropCourier = vi.fn();
+      renderList({ runs: [held, unheld], onDropCourier });
+      const rows = screen.getAllByText('RUN41').map((el) => el.closest('tr')!);
+      fireEvent.drop(rows[1], { dataTransfer: makeDT({ 'application/rv-courier-code': 'NEW' }) });
+      expect(onDropCourier).toHaveBeenCalledWith(expect.objectContaining({ id: 41, courierId: null }), 'NEW');
+    });
   });
 });

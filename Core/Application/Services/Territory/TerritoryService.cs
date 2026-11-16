@@ -1099,6 +1099,9 @@ public class TerritoryService(
 
     public async Task<UsZipZoneDto> CreateUsZipZoneAsync(UsZipZoneUpsertRequest req)
     {
+        // #980: a new row starts with LastModified = Created, as AdminManager does.
+        var now = DateTime.UtcNow;
+        var who = CurrentUser();
         var entity = new Domain.Despatch.ZoneZip
         {
             Zip = req.Zip,
@@ -1107,8 +1110,10 @@ public class TerritoryService(
             ZoneZipGroupId = req.ZoneZipGroupId,
             ApplyCongestion = req.ApplyCongestion,
             ClientId = req.ClientId,
-            Created = DateTime.UtcNow,
-            CreatedBy = CurrentUser(),
+            Created = now,
+            CreatedBy = who,
+            LastModified = now,
+            LastModifiedBy = who,
         };
         Context.ZoneZips.Add(entity);
         await Context.SaveChangesAsync();
@@ -1162,13 +1167,18 @@ public class TerritoryService(
     public async Task<ZoneNameDto> CreateZoneNameAsync(ZoneNameUpsertRequest req)
     {
         RequireName(req.Name);
+        // #980: a new row starts with LastModified = Created, as AdminManager does.
+        var now = DateTime.UtcNow;
+        var who = CurrentUser();
         var entity = new Domain.Despatch.ZoneName
         {
             ZoneName1 = req.Name.Trim(),
             ZoneGroupId = req.ZoneGroupId,
             LocationId = req.LocationId,
-            Created = DateTime.UtcNow,
-            CreatedBy = CurrentUser(),
+            Created = now,
+            CreatedBy = who,
+            LastModified = now,
+            LastModifiedBy = who,
         };
         Context.ZoneNames.Add(entity);
         await Context.SaveChangesAsync();
@@ -1215,12 +1225,17 @@ public class TerritoryService(
     public async Task<ZoneGroupDto> CreateZoneGroupAsync(ZoneGroupUpsertRequest req)
     {
         RequireName(req.Name);
+        // #980: a new row starts with LastModified = Created, as AdminManager does.
+        var now = DateTime.UtcNow;
+        var who = CurrentUser();
         var entity = new Domain.Despatch.ZoneGroup
         {
             Name = req.Name.Trim(),
             ClearListAreaId = req.ClearListAreaId,
-            Created = DateTime.UtcNow,
-            CreatedBy = CurrentUser(),
+            Created = now,
+            CreatedBy = who,
+            LastModified = now,
+            LastModifiedBy = who,
         };
         Context.ZoneGroups.Add(entity);
         await Context.SaveChangesAsync();

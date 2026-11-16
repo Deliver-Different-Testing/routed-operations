@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkRun } from '../../services/routeViewerService';
+import { runRowKey } from '../../lib/runViewerSelection';
 import { RvBox } from './RvBox';
 
 // Slimmed 6-column run-list variant used by Pre Assigned / Returns /
@@ -22,18 +23,20 @@ type Variant = 'preAssigned' | 'returns' | 'exceptions';
 interface Props {
   variant: Variant;
   runs: BulkRun[];
-  selectedIds: number[];
-  onSelect: (id: number, mods: { ctrl: boolean; shift: boolean }) => void;
-  onContextMenu?: (e: React.MouseEvent, id: number) => void;
+  /** Selected row keys (runRowKey). #311 / #326: a run pre-assigned to
+   *  two drivers is two rows with one run id. */
+  selectedIds: string[];
+  onSelect: (key: string, mods: { ctrl: boolean; shift: boolean }) => void;
+  onContextMenu?: (e: React.MouseEvent, run: BulkRun) => void;
   /** Audit item 19: per-run tint keyed by run id, populated only when
    *  the operator has 2+ runs selected. Matches the primary Run List
    *  tint behaviour (RvRunList) so rows across Pre Assigned / Returns /
    *  Exceptions line up with the same-coloured map pins. */
-  runColorMap?: Record<number, string>;
+  runColorMap?: Record<string, string>;
   /** Reports the filtered id list every time it changes so the parent
    *  can drive Up/Down arrow-key navigation over the same rows the
    *  operator sees. */
-  onVisibleRunsChange?: (ids: number[]) => void;
+  onVisibleRunsChange?: (keys: string[]) => void;
 }
 
 const TITLES: Record<Variant, string> = {
@@ -101,7 +104,7 @@ export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextM
   const lastVisibleKey = useRef<string>('');
   useEffect(() => {
     if (!onVisibleRunsChange) return;
-    const ids = sorted.map((r) => r.id);
+    const ids = sorted.map(runRowKey);
     const key = ids.join(',');
     if (key === lastVisibleKey.current) return;
     lastVisibleKey.current = key;
@@ -128,16 +131,17 @@ export function RvRunListLite({ variant, runs, selectedIds, onSelect, onContextM
         </thead>
         <tbody>
           {sorted.map((r) => {
-            const selected = selectedIds.includes(r.id);
+            const rowKey = runRowKey(r);
+            const selected = selectedIds.includes(rowKey);
             // Only tint when the row is one of the currently-selected
             // runs; unselected rows keep the default hover behaviour so
             // the operator can still tell which extra rows exist.
-            const tint = selected ? runColorMap?.[r.id] : undefined;
+            const tint = selected ? runColorMap?.[rowKey] : undefined;
             return (
               <tr
-                key={r.id}
-                onClick={(e) => onSelect(r.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
-                onContextMenu={onContextMenu ? (e) => onContextMenu(e, r.id) : undefined}
+                key={rowKey}
+                onClick={(e) => onSelect(rowKey, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
+                onContextMenu={onContextMenu ? (e) => onContextMenu(e, r) : undefined}
                 style={tint ? { backgroundColor: tint + '33' /* 20% alpha */, borderLeft: `4px solid ${tint}` } : undefined}
                 className={`cursor-pointer border-b border-border/50 ${
                   tint ? '' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
