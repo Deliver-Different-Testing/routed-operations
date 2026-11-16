@@ -89,7 +89,7 @@ M0 found that NZ rating never sees polygon 30. `UTL_fncJob_ExceleratorRate` read
 |---|---|---|
 | D1 | A caller with **no coordinates** hits a partly-covered postcode | **Decided (Steve, 16 Nov): no fallback.** Every job has coordinates, so every job path passes them. A partly-covered postcode never matches without a point, and the 10% floor goes from availability entirely. |
 | D2 | Postcode is a member of a *different* group by postcode | **Decided (Steve, 16 Nov): yes.** The polygon still adds its own group (per-group rule 1). Inside one group the postcode zone still wins. |
-| D3 | Rating for NZ zones via polygon | Out of scope here. NZ zone rating (`UCL_fncT_GetBulkZone`) doesn't read polygons. Flag if Marcus's corridor needs a different price, not just availability. |
+| D3 | Rating for NZ zones via polygon | **Decided (Steve, 16 Nov): in scope.** See 4.5 and M2b. Rating must price the zone the polygon gave. |
 
 ## 6. Read-only checks for M0 (Urgent prod)
 
