@@ -53,7 +53,7 @@ Rule 2, per end, inside the new function:
 ```
 
 - One clustered-PK seek on `BulkRunPolygonZip (Zip, PolygonId)` per end, and `STIntersects` only on partial candidates. Nothing per schedule row, no scalar UDF (remember the 14 Oct rates timeout).
-- **Per-group rule 1 (D2):** run rule 2 for every group where the postcode has *no* `bulkzonepostcode` row, not only when it has none anywhere. Inside one group the postcode zone still wins, so the polygon-versus-postcode pricing conflict still can't arise.
+- **Per-group rule 1 (D2, decided):** run rule 2 for every group where the postcode has *no* `bulkzonepostcode` row, not only when it has none anywhere. Inside one group the postcode zone still wins, so the polygon-versus-postcode pricing conflict still can't arise.
 - Both zip spellings stay matched (`IN (@ZipText, RIGHT('0000'+@ZipText,4))`).
 - `DD_fncJob_GetClientAvailableBulkRunSchedule` (US) is out of scope. It doesn't read `BulkZonePolygon`.
 
@@ -79,7 +79,7 @@ The api log shows `GetSchedulerRates` and `POST /API/UrgentAPI/Job` already carr
 | # | Question | Recommendation |
 |---|---|---|
 | D1 | A caller with **no coordinates** hits a partly-covered postcode | **Decided (Steve, 16 Nov): no fallback.** Every job has coordinates, so every job path passes them. A partly-covered postcode never matches without a point, and the 10% floor goes from availability entirely. |
-| D2 | Postcode is a member of a *different* group by postcode | Polygon still adds its own group (per-group rule 1). Recommended. Otherwise a polygon can't extend a regional run into a postcode that a metro group already owns. |
+| D2 | Postcode is a member of a *different* group by postcode | **Decided (Steve, 16 Nov): yes.** The polygon still adds its own group (per-group rule 1). Inside one group the postcode zone still wins. |
 | D3 | Rating for NZ zones via polygon | Out of scope here. NZ zone rating (`UCL_fncT_GetBulkZone`) doesn't read polygons. Flag if Marcus's corridor needs a different price, not just availability. |
 
 ## 6. Read-only checks for M0 (Urgent prod)
@@ -113,7 +113,7 @@ WHERE CAST(z.PostCode AS varchar(10)) IN (SELECT Zip FROM dbo.BulkRunPolygonZip 
 
 | M | Title | Done when |
 |---|---|---|
-| M0 | Confirm facts | Section 6 run on Urgent prod and results posted. Entry-point list for 4.2 agreed. D2 confirmed with Steve (D1 decided). |
+| M0 | Confirm facts | Section 6 run on Urgent prod and results posted. Entry-point list for 4.2 agreed. D1 and D2 decided by Steve 16 Nov. |
 | M1 | Availability `...At` function | New function plus wrapper migration on a branch. Per-group rule 1, IsFull / point test, collision header names the real baseline. |
 | M2 | Coordinates through quote and booking | Entry points from M0 pass From/To lat/lng. Quote and insert give the same schedule for the same address. |
 | M3 | Panel shows touched postcodes | DTO carries `BulkRunPolygonZip` rows. Panel shows fully/partly lists and map shading. |
