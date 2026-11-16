@@ -293,6 +293,44 @@ public class BulkImportServiceV2JobFactoryTests
     // Seed the minimum for the `client` anonymous type projection in Import
     // to return a non-null row. Contact link required for non-internal, but
     // clientTypeId="4" (tenant staff) bypasses that.
+    // "Invalid suburb(s)." on its own gave the operator nothing to look for in
+    // a file of hundreds of rows. The message now names each row the server
+    // could not place and the suburb and postcode it was given, so the row can
+    // be found and fixed. The client-site origin carries no pickup suburb on
+    // NZ, so the pickup side is reported too.
+    [Fact]
+    public async Task Import_Routed_Nz_UnknownSuburb_NamesTheRowAndTheValue()
+    {
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "NZ", clientTypeId: "4", timeZone: "UTC");
+        SeedMinimalClient(seed, 5, speedId: 1);
+        seed.TucSuburbs.Add(new TucSuburb { UcsuId = 1, UcsuName = "Ponsonby", PostCode = "1011" });
+        await seed.SaveChangesAsync();
+
+        var req = new BulkImportRequest
+        {
+            ClientId = 5,
+            SpeedId = 1,
+            BookDate = DateTime.UtcNow.AddDays(10),
+            JobType = "routed",
+            RouteFromClientSite = true,
+            Jobs = new List<BulkImportJobCreateDto>
+            {
+                new() { JobNumber = "J1", FromAddress = "1 Pick St", ToAddress = "T", ToContact = "C", ToSuburb = "Ponsonby", ToPostCode = "1011" },
+                new() { JobNumber = "J2", FromAddress = "1 Pick St", ToAddress = "T", ToContact = "C", ToSuburb = "Nowhereville", ToPostCode = "614" },
+            }
+        };
+        var resp = await svc.Import(contactId: 1, req);
+
+        Assert.False(resp.Success);
+        var msg = Assert.Single(resp.Messages).Message;
+        Assert.StartsWith("Invalid suburb(s)", msg);
+        Assert.Contains("row 2", msg);
+        Assert.Contains("'Nowhereville'", msg);
+        Assert.Contains("614", msg);
+        // Row 1's delivery suburb resolved, so it is reported for pickup only.
+        Assert.DoesNotContain("'Ponsonby'", msg);
+    }
+
     private static void SeedMinimalClient(DynamicDespatchDbContext seed, int clientId, int speedId)
     {
         seed.TucClients.Add(new TucClient

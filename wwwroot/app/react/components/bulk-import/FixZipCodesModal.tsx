@@ -18,6 +18,25 @@ function suburbToZipCodeDto(s: { id: number; name: string; city: string | null }
   };
 }
 
+// #333. Match key for a suburb name or zip: lower case with diacritics
+// removed, so a sheet "Ōtāhuhu" matches the reference "Otahuhu". The server
+// strips macrons from the sheet value too (BulkImportJobFactory), so a row
+// that matches here also books there.
+function matchKey(value: string): string {
+  return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+// #333. The suburbs API pads postcodes to 4 digits but Excel drops the
+// leading zero ("624" for "0624"). Same padding as nzPostCode in
+// SelectRegionsModal.
+function samePostCode(a: string, b: string): boolean {
+  const pad = (pc: string) => {
+    const digits = pc.replace(/[^0-9]/g, '');
+    return digits ? digits.padStart(4, '0') : pc.trim();
+  };
+  return pad(a) === pad(b);
+}
+
 // Iterative Levenshtein (two-row rolling array). Small strings only - used per
 // bad-suburb across the tenant suburb list, so worst case is O(rows * cols) on
 // a couple hundred suburbs and a handful of bad rows. Cached upstream so the
@@ -102,7 +121,7 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
             if (!raw) continue;
             const canonical = (s.name ?? '').trim();
             for (const part of raw.split(',')) {
-              const a = part.trim().toLowerCase();
+              const a = matchKey(part.trim());
               if (!a) continue;
               // Prefer alias entries whose PostCode matches an actual reference
               // row - later duplicates would silently overwrite so we keep the
@@ -141,7 +160,7 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
     for (const k of known) {
       const raw = (k.zip ?? '').toString().trim();
       if (!raw) continue;
-      canonical.set(raw.toLowerCase(), raw);
+      canonical.set(matchKey(raw), raw);
     }
     const primaryCol = state.mapping[isUs ? 'toZipCode' : 'toSuburb'];
     const pcCol = isUs ? null : state.mapping['toPostCode'];
@@ -156,7 +175,7 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       seen.add(storeKey);
       // Skip when the operator has already picked an explicit replacement.
       if (state.fixedZips[storeKey]) continue;
-      const canon = canonical.get(v.toLowerCase());
+      const canon = canonical.get(matchKey(v));
       if (canon && canon !== v) {
         dispatch({ type: 'SET_FIXED_ZIP', badZip: storeKey, corrected: canon });
         continue;
@@ -167,9 +186,9 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       // canonical row's postcode matches the row's postcode; if postcodes
       // disagree we treat it as a real conflict and leave it flagged for
       // the operator to resolve.
-      if (!isUs && !canonical.has(v.toLowerCase())) {
-        const aliasHit = aliasIndex.get(v.toLowerCase());
-        if (aliasHit && (!pc || !aliasHit.postCode || aliasHit.postCode === pc)) {
+      if (!isUs && !canonical.has(matchKey(v))) {
+        const aliasHit = aliasIndex.get(matchKey(v));
+        if (aliasHit && (!pc || !aliasHit.postCode || samePostCode(aliasHit.postCode, pc))) {
           dispatch({ type: 'SET_FIXED_ZIP', badZip: storeKey, corrected: aliasHit.name });
         }
       }
@@ -189,7 +208,7 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
     if (!primaryCol || !state.parsed) return [] as Array<{ display: string; storeKey: string }>;
     const knownSet = new Set(
       known
-        .map((k) => (k.zip ?? '').toString().trim().toLowerCase())
+        .map((k) => matchKey((k.zip ?? '').toString().trim()))
         .filter((z) => z.length > 0)
     );
     const seen = new Set<string>();
@@ -205,14 +224,14 @@ export function FixZipCodesModal({ open, state, dispatch, onBack, onNext, onCanc
       // If the reference list is empty (no data for this tenant) skip the
       // check entirely and treat every value as fine.
       if (knownSet.size === 0) continue;
-      if (knownSet.has(v.toLowerCase())) continue;
+      if (knownSet.has(matchKey(v))) continue;
       // NZ alias match: if the value matches a canonical suburb's alias
       // and postcodes agree (or either side is unknown) it is NOT bad -
       // buildJobs will rewrite it to the canonical name at submit via
       // the auto-normalize effect above. Skip listing in the modal.
       if (!isUs) {
-        const aliasHit = aliasIndex.get(v.toLowerCase());
-        if (aliasHit && (!pc || !aliasHit.postCode || aliasHit.postCode === pc)) continue;
+        const aliasHit = aliasIndex.get(matchKey(v));
+        if (aliasHit && (!pc || !aliasHit.postCode || samePostCode(aliasHit.postCode, pc))) continue;
       }
       const display = isUs ? v : (pc ? `${v} (${pc})` : v);
       bad.push({ display, storeKey });

@@ -116,19 +116,24 @@ test.describe('Route Viewer run menu uses the on-screen filters (#1001)', () => 
     await expect(page.getByText('Pick a run to see its jobs.')).toBeVisible();
     const before = rec.jobFetches.length;
 
+    // #323 (2026-11-16): with both runs selected the menu assigns every
+    // selected run in one dialog, so both are fetched, each with the filters.
     await runCell(page, 'Burbank to Lab').click({ button: 'right' });
-    await page.getByRole('button', { name: 'Assign Route', exact: true }).click();
+    await page.getByRole('button', { name: 'Assign 2 runs', exact: true }).click();
     await assignToDana(page);
 
-    const menuFetches = rec.jobFetches.slice(before).filter((u) => u.pathname.endsWith('/runs/-15/jobs'));
-    expect(menuFetches.length).toBeGreaterThan(0);
-    const q = menuFetches[0].searchParams;
-    expect(q.get('runDate')).toBe(RUN_DATE);
-    expect(q.get('group')).toBe('Combined');
-    expect(q.get('speedIds')).toBe(String(WILL_CALL_SPEED_ID));
-    expect(q.get('clientIds')).toBe(String(MEDICAL_CLIENT_ID));
-    expect(q.get('courierId')).toBe(String(WILL_CALL_COURIER.courierId));
+    for (const runId of [-15, -14]) {
+      const menuFetches = rec.jobFetches.slice(before).filter((u) => u.pathname.endsWith(`/runs/${runId}/jobs`));
+      expect(menuFetches.length).toBeGreaterThan(0);
+      const q = menuFetches[0].searchParams;
+      expect(q.get('runDate')).toBe(RUN_DATE);
+      expect(q.get('group')).toBe('Combined');
+      expect(q.get('speedIds')).toBe(String(WILL_CALL_SPEED_ID));
+      expect(q.get('clientIds')).toBe(String(MEDICAL_CLIENT_ID));
+      expect(q.get('courierId')).toBe(String(WILL_CALL_COURIER.courierId));
+    }
 
+    // Lab to Burbank has no jobs, so the set is Burbank's filtered rows.
     await expect.poll(() => postsTo(rec, '/api/runviewer/jobs/assign').length).toBe(1);
     expect(postsTo(rec, '/api/runviewer/jobs/assign')[0].jobIds).toEqual([20857, 20866]);
   });

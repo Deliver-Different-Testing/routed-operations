@@ -44,6 +44,15 @@ interface Props {
    *  NP scope guard. Callers with a selected job (job context menu)
    *  should pass it; run-scoped callers can omit and we default to 0. */
   anchorJobId?: number;
+  /** #816: courier-only picker for the run menu's Pre-assign / Re-assign.
+   *  The dialog does not assign jobs; it hands the picked courier's code
+   *  to `onPick`, which returns the success summary. A thrown error (for
+   *  example the SP's "not a current courier") shows inline. */
+  courierAction?: {
+    title: string;
+    submitLabel: string;
+    onPick: (courierCode: string) => Promise<string>;
+  };
   onClose: () => void;
   onSuccess: (summary: string) => void;
 }
@@ -54,9 +63,10 @@ interface PickerRow {
   id: number;
   label: string;
   subtitle?: string;
+  code?: string | null;
 }
 
-export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSuccess }: Props) {
+export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, courierAction, onClose, onSuccess }: Props) {
   const user = useAuth();
   const [bucket, setBucket] = useState<Bucket>('courier');
   const [query, setQuery] = useState('');
@@ -68,8 +78,9 @@ export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSu
   const tokenRef = useRef(0);
   const debounceRef = useRef<number | null>(null);
 
-  // NP users are locked to courier picker.
-  const availableBuckets: Bucket[] = user.isNetworkPartner
+  // NP users (and the courier-only run actions) are locked to the
+  // courier picker.
+  const availableBuckets: Bucket[] = user.isNetworkPartner || courierAction
     ? ['courier']
     : ['courier', 'agent', 'np'];
 
@@ -95,6 +106,7 @@ export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSu
           // with a null tucCourier.Code - render just the name so we
           // don't emit "George Test (null)" in the picker.
           label: c.code ? `${c.name} (${c.code})` : c.name,
+          code: c.code,
         }));
       } else {
         // Agent + NP share one endpoint distinguished by the
@@ -128,6 +140,16 @@ export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSu
     setSubmitting(true);
     setError(null);
     try {
+      if (courierAction) {
+        // The run-level SPs key on the courier code, so a courier without
+        // one cannot be pre-assigned.
+        if (!picked.code) {
+          setError('This courier has no code and cannot be pre-assigned.');
+          return;
+        }
+        onSuccess(await courierAction.onPick(picked.code));
+        return;
+      }
       // Legacy Run Viewer pattern (assignRouteDialogController.js:210):
       // dialog is dumb, caller supplies JobIds. The assign endpoint
       // (POST /api/runviewer/jobs/assign) requires an explicit JobIds
@@ -171,13 +193,15 @@ export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, onClose, onSu
     <Modal
       open
       onClose={onClose}
-      title={user.isNetworkPartner ? 'Assign courier' : 'Assign route'}
+      title={courierAction?.title ?? (user.isNetworkPartner ? 'Assign courier' : 'Assign route')}
       size="md"
       footer={
         <div className="flex justify-end gap-2">
           <Button variant="neutral" onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={submit} disabled={!picked || submitting}>
-            {submitting ? 'Assigning...' : 'Assign'}
+            {submitting
+              ? (courierAction ? 'Saving...' : 'Assigning...')
+              : (courierAction?.submitLabel ?? 'Assign')}
           </Button>
         </div>
       }

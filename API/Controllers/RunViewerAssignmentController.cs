@@ -123,7 +123,14 @@ public class RunViewerAssignmentController(
     {
         if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
             return BadRequest(new { message = "RunId + ToCourierCode required." });
-        await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode);
+        try
+        {
+            await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode);
+        }
+        catch (RunCourierRejectedException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         return Ok(new { response = "ok" });
     }
 
@@ -160,7 +167,14 @@ public class RunViewerAssignmentController(
     {
         if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
             return BadRequest(new { message = "RunId + CourierCode required." });
-        await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
+        try
+        {
+            await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
+        }
+        catch (RunCourierRejectedException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
         return Ok(new { response = "ok" });
     }
 

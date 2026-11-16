@@ -206,7 +206,10 @@ export function CockpitPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalSearch.query, state.jobs]);
 
-  const displayedJobs = (() => {
+  // #1018. Memoised: this filter + sort over every job ran on every render of
+  // the cockpit (each toast, hover and selection), and the fresh array made
+  // the Jobs and Groups panes re-render even when nothing they show changed.
+  const displayedJobs = useMemo(() => {
     // Legacy jobList.tpl: filter:{inBuilder: '!1', Void: '!1'} - jobs already
     // assigned to a run (BulkRunID set) disappear from the Jobs list, so
     // operators see only what's still up for grabs. Void filter is handled
@@ -239,7 +242,7 @@ export function CockpitPage() {
         (j.runName ?? '').toLowerCase().includes(needle)));
     }
     return sortJobs(out, state.jobSort);
-  })();
+  }, [state.runs, state.jobs, state.sizeFilter, state.jobSearch, globalSearch.query, state.jobSort]);
 
   const displayedRuns = (() => {
     let out = state.runs;

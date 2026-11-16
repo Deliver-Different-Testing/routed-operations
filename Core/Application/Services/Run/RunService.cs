@@ -175,9 +175,17 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         // Any job whose id shows up as another job's ParentId is an EH/HD
         // parent - never surfaced to the operator. Kept out of the run's job
         // list so the Run Builder never renders one.
+        //
+        // #1018: only the jobs already loaded can be parents worth knowing
+        // about, so ask about those ids alone (an index seek on
+        // IX_tblBulkJob_ParentID per id). This used to pull every ParentID in
+        // the table (123,235 on Urgent prod, Nov 2026) on every load. The
+        // child is still looked up across the whole table, any day and any
+        // state, so the parents hidden are the same.
+        var loadedJobIds = jobs.Select(j => j.BulkJobId).ToList();
         var parentIds = await Context.TblBulkJobs
             .AsNoTracking()
-            .Where(child => child.ParentId != null)
+            .Where(child => child.ParentId != null && loadedJobIds.Contains(child.ParentId.Value))
             .Select(child => child.ParentId!.Value)
             .Distinct()
             .ToListAsync();

@@ -104,6 +104,7 @@ public class BulkPolygonService(
                 p.UpdatedBy,
                 p.ZoneNameId,
                 p.PostcodeGroupId,
+                p.TagLocation,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
                 AttachedRoutes = p.Routes
                     .Where(r => r.Active)
@@ -127,7 +128,8 @@ public class BulkPolygonService(
             r.ZoneNameId, r.PostcodeGroupId,
             scheduleBindings.TryGetValue(r.PolygonId, out var names) ? names : new List<string>(),
             r.ZoneNameId is int zid && zoneNames.TryGetValue(zid, out var zName) ? zName : null,
-            r.PostcodeGroupId is int gid && groupNames.TryGetValue(gid, out var gName) ? gName : null)).ToList();
+            r.PostcodeGroupId is int gid && groupNames.TryGetValue(gid, out var gName) ? gName : null,
+            NormaliseLayer(r.TagLocation))).ToList();
     }
 
     public async Task<BulkPolygonDto?> GetByIdAsync(int id)
@@ -155,6 +157,7 @@ public class BulkPolygonService(
                 p.UpdatedBy,
                 p.ZoneNameId,
                 p.PostcodeGroupId,
+                p.TagLocation,
                 AttachedRouteCount = p.Routes.Count(r => r.Active),
                 AttachedRoutes = p.Routes
                     .Where(r => r.Active)
@@ -191,13 +194,15 @@ public class BulkPolygonService(
             row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy,
             row.ZoneNameId, row.PostcodeGroupId, scheduleNames,
-            zoneName, groupName);
+            zoneName, groupName, NormaliseLayer(row.TagLocation));
     }
 
     public async Task<BulkPolygonDto> CreateAsync(CreateBulkPolygonRequest req)
     {
         ValidateName(req.Name);
         ValidatePoints(req.Points);
+        var layer = NormaliseLayer(req.Layer);
+        ValidateLayer(layer);
         var createdBy = CurrentUser();
         var wkt = BuildPolygonWkt(req.Points);
 
@@ -216,13 +221,13 @@ public class BulkPolygonService(
                     DECLARE @Geog geography = geography::STGeomFromText(@wkt, 4326).MakeValid();
                     IF @Geog.EnvelopeAngle() > 90 SET @Geog = @Geog.ReorientObject();
                     INSERT INTO dbo.tblBulkRunPolygon
-                        (Name, SourceType, SourceCode,
+                        (Name, SourceType, SourceCode, TagLocation,
                          CentroidLatitude, CentroidLongitude,
                          GeographyData, Active,
                          CreatedUtc, CreatedBy)
                     OUTPUT INSERTED.PolygonId AS Value
                     VALUES
-                        (@name, @sourceType, @sourceCode,
+                        (@name, @sourceType, @sourceCode, @layer,
                          @lat, @lng,
                          @Geog, 1,
                          GETUTCDATE(), @createdBy);
@@ -231,6 +236,7 @@ public class BulkPolygonService(
                     new SqlParameter("@sourceType", req.SourceType),
                     new SqlParameter("@sourceCode",
                         (object?)req.SourceCode?.Trim() ?? DBNull.Value),
+                    new SqlParameter("@layer", (object?)layer ?? DBNull.Value),
                     new SqlParameter("@lat", req.CentroidLatitude),
                     new SqlParameter("@lng", req.CentroidLongitude),
                     new SqlParameter("@wkt", wkt),
@@ -308,16 +314,33 @@ public class BulkPolygonService(
     public async Task<BulkPolygonDto?> UpdateMetaAsync(int id, UpdateBulkPolygonMetaRequest req)
     {
         ValidateName(req.Name);
+        var layer = NormaliseLayer(req.Layer);
+        ValidateLayer(layer);
         var row = await Context.BulkRunPolygons.FirstOrDefaultAsync(p =>
             p.PolygonId == id && p.Active);
         if (row is null) return null;
 
         row.Name = req.Name.Trim();
+        row.TagLocation = layer;
         row.LastModifiedUtc = DateTime.UtcNow;
         row.UpdatedBy = CurrentUser();
         await Context.SaveChangesAsync();
-        Log.Information("BulkRunPolygon {Id} renamed to {Name}", id, row.Name);
+        Log.Information("BulkRunPolygon {Id} renamed to {Name}, layer {Layer}", id, row.Name, layer ?? "(none)");
         return await GetByIdAsync(id);
+    }
+
+    /// <summary>Layer names are trimmed; blank means "no layer" and is stored as NULL so the
+    /// sidebar's no-layer group never splits into "" and NULL.</summary>
+    private static string? NormaliseLayer(string? layer)
+    {
+        var trimmed = layer?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    private static void ValidateLayer(string? layer)
+    {
+        if (layer is not null && layer.Length > 200)
+            throw new InvalidOperationException("Bulk polygon layer is limited to 200 characters.");
     }
 
     /// <summary>Soft delete. Junction rows survive (Active=0 filter on the resolver's join hides them).</summary>

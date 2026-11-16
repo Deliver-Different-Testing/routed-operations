@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkRun } from '../../services/routeViewerService';
+import { runRowKey } from '../../lib/runViewerSelection';
 import { Button } from '../common/Button';
 
 // Run List box for the Route Viewer Home module (master Section 7.5).
@@ -20,11 +21,16 @@ import { Button } from '../common/Button';
 import type { ViewMode } from '../../lib/runViewerViewMode';
 export type { ViewMode };
 
+// #311 / #326: a run split across couriers is several rows with one run id,
+// so selection, tint, menu, drop and visible-order all use the row key
+// (lib/runViewerSelection runRowKey), and the menu / drop handlers get the
+// row itself so the caller knows which courier half was hit.
 interface Props {
   runs: BulkRun[];
-  selectedIds: number[];
-  onSelect: (id: number, mods: { ctrl: boolean; shift: boolean }) => void;
-  onContextMenu?: (e: React.MouseEvent, id: number) => void;
+  /** Selected row keys (runRowKey). */
+  selectedIds: string[];
+  onSelect: (key: string, mods: { ctrl: boolean; shift: boolean }) => void;
+  onContextMenu?: (e: React.MouseEvent, run: BulkRun) => void;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
   isLoading?: boolean;
@@ -32,22 +38,22 @@ interface Props {
    *  only when 2+ runs are selected. Row background uses the tint
    *  instead of the default brand-cyan so operators can match rows
    *  to same-coloured map pins. */
-  runColorMap?: Record<number, string>;
+  runColorMap?: Record<string, string>;
   /** Audit item 13: drop handler for the drag-drop courier-onto-run
    *  flow. Called when the operator drags a row out of the Couriers
    *  box and drops it on a run row here. */
-  onDropCourier?: (runId: number, courierCode: string) => void;
+  onDropCourier?: (run: BulkRun, courierCode: string) => void;
   /** Audit item 20: drop handler for the drag-drop jobs-onto-run flow.
    *  Called when the operator drags one or more selected rows out of
    *  the middle-pane Run Jobs table and drops them on a run row here.
    *  `fromRunId` is the source run so the caller can no-op when the
    *  drop lands on the same run the jobs already belong to. */
-  onDropRunJobs?: (toRunId: number, fromRunId: number, jobIds: number[]) => void;
+  onDropRunJobs?: (toRun: BulkRun, fromRunId: number, jobIds: number[]) => void;
   /** Fires with the id list in the currently-rendered (sort-applied)
    *  order every time that order changes. Parent uses this to drive
    *  Up/Down arrow-key navigation over the same rows the operator
    *  sees, so arrows stay in sync with column-sort clicks. */
-  onVisibleRunsChange?: (ids: number[]) => void;
+  onVisibleRunsChange?: (keys: string[]) => void;
 }
 
 type SortKey = 'Name' | 'area' | 'Jobs' | 'Status' | 'Velocity' | 'AgentName' | 'CourierName';
@@ -136,7 +142,7 @@ export function RvRunList({
   onDropRunJobs,
   onVisibleRunsChange,
 }: Props) {
-  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('Name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -179,7 +185,7 @@ export function RvRunList({
   const lastVisibleKey = useRef<string>('');
   useEffect(() => {
     if (!onVisibleRunsChange) return;
-    const ids = sorted.map((r) => r.id);
+    const ids = sorted.map(runRowKey);
     const key = ids.join(',');
     if (key === lastVisibleKey.current) return;
     lastVisibleKey.current = key;
@@ -224,7 +230,8 @@ export function RvRunList({
           </thead>
           <tbody>
             {sorted.map((run) => {
-              const selected = selectedIds.includes(run.id);
+              const rowKey = runRowKey(run);
+              const selected = selectedIds.includes(rowKey);
               const jobs = jobsCell(run, viewMode);
               // Legacy runList.tpl:40-41 column bindings:
               //   From = fromCities || pickupCity || suburbs || ''
@@ -233,13 +240,13 @@ export function RvRunList({
               //  falls straight to suburbs when fromCities is empty.)
               const fromValue = run.fromCities || firstSuburb(run.suburbs) || '';
               const toValue = run.toLocationName || run.area || '';
-              const tint = selected ? runColorMap?.[run.id] : undefined;
-              const dropHover = dropTargetId === run.id;
+              const tint = selected ? runColorMap?.[rowKey] : undefined;
+              const dropHover = dropTargetId === rowKey;
               return (
                 <tr
-                  key={run.id}
-                  onClick={(e) => onSelect(run.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
-                  onContextMenu={onContextMenu ? (e) => onContextMenu(e, run.id) : undefined}
+                  key={rowKey}
+                  onClick={(e) => onSelect(rowKey, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
+                  onContextMenu={onContextMenu ? (e) => onContextMenu(e, run) : undefined}
                   onDragOver={(onDropCourier || onDropRunJobs) ? (e) => {
                     // Only accept a drag when the payload is one we
                     // recognise (courier row from RvCouriersBox, or a
@@ -252,11 +259,11 @@ export function RvRunList({
                     if (wantsCourier || wantsJobs) {
                       e.preventDefault();
                       e.dataTransfer.dropEffect = 'move';
-                      if (dropTargetId !== run.id) setDropTargetId(run.id);
+                      if (dropTargetId !== rowKey) setDropTargetId(rowKey);
                     }
                   } : undefined}
                   onDragLeave={(onDropCourier || onDropRunJobs) ? () => {
-                    if (dropTargetId === run.id) setDropTargetId(null);
+                    if (dropTargetId === rowKey) setDropTargetId(null);
                   } : undefined}
                   onDrop={(onDropCourier || onDropRunJobs) ? (e) => {
                     e.preventDefault();
@@ -270,7 +277,7 @@ export function RvRunList({
                         try {
                           const parsed = JSON.parse(raw) as { fromRunId: number; jobIds: number[] };
                           if (parsed && Array.isArray(parsed.jobIds) && parsed.jobIds.length > 0) {
-                            onDropRunJobs(run.id, parsed.fromRunId, parsed.jobIds);
+                            onDropRunJobs(run, parsed.fromRunId, parsed.jobIds);
                             return;
                           }
                         } catch { /* malformed payload - fall through */ }
@@ -278,7 +285,7 @@ export function RvRunList({
                     }
                     if (onDropCourier) {
                       const code = e.dataTransfer.getData('application/rv-courier-code');
-                      if (code) onDropCourier(run.id, code);
+                      if (code) onDropCourier(run, code);
                     }
                   } : undefined}
                   style={tint ? { backgroundColor: tint + '33' /* 20% alpha */, borderLeft: `4px solid ${tint}` } : undefined}

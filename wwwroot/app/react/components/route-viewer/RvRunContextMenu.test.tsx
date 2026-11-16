@@ -187,10 +187,11 @@ describe('RvRunContextMenu', () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
-  it('fires pre-assign flow when confirmed + prompt provides courier code', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValueOnce('ACE');
+  it('fires pre-assign with the courier picked in the picker (#816: no prompt)', async () => {
     let hit = 0;
     server.use(
+      http.get('/api/runviewer/couriers/search', () =>
+        HttpResponse.json({ response: [{ courierId: 1, code: 'ACE', name: 'Ace' }] })),
       http.post('/api/runviewer/jobs/preassign-run', () => {
         hit++;
         return HttpResponse.json({ response: 'ok' });
@@ -199,14 +200,13 @@ describe('RvRunContextMenu', () => {
     const props = renderMenu({ runId: 3 });
     const user = userEvent.setup();
     await user.click(screen.getByText('Pre-assign Run'));
-    // Confirm dialog opens
-    const confirmBtn = await screen.findByRole('button', { name: 'OK' });
-    await user.click(confirmBtn);
+    await user.click(await screen.findByText('Ace (ACE)'));
+    await user.click(screen.getByRole('button', { name: 'Pre-assign' }));
     await waitFor(() => expect(hit).toBe(1));
     expect(props.onDone).toHaveBeenCalled();
   });
 
-  it('aborts pre-assign when confirm cancelled', async () => {
+  it('aborts pre-assign when the courier picker is cancelled', async () => {
     let hit = 0;
     server.use(
       http.post('/api/runviewer/jobs/preassign-run', () => {
@@ -249,5 +249,154 @@ describe('RvRunContextMenu', () => {
     const user = userEvent.setup();
     await user.click(screen.getByText(/Send SMS to run/));
     expect(hit).toBe(0);
+  });
+});
+
+// #311/#326, #323, #816: a Run List row is run id + courier + pre-assign
+// flag. The menu acts on the row(s) it was opened for, not on the bare run.
+describe('RvRunContextMenu run rows', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 41, name: 'RUN41', courierId: null as number | null, courierCode: null as string | null,
+    preAssigned: 0, isMissing: false, ...over,
+  });
+  const kay = () => http.get('/api/runviewer/couriers/search', () =>
+    HttpResponse.json({ response: [{ courierId: 9, code: 'K9', name: 'Kay' }] }));
+
+  beforeEach(() => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isNetworkPartner: false };
+  });
+
+  it('Assign Route on the unassigned half of a split run fetches only the jobs nobody holds', async () => {
+    const urls: string[] = [];
+    server.use(
+      http.get('/api/runviewer/runs/:runId/jobs', ({ request }) => {
+        urls.push(request.url);
+        return HttpResponse.json({ response: [{ jobId: 100 }] });
+      }),
+      kay(),
+    );
+    renderMenu({ runId: 41, rows: [row()] } as any);
+    await userEvent.setup().click(screen.getByText('Assign Route'));
+    await screen.findByPlaceholderText(/Search couriers/);
+    const q = new URL(urls[0]).searchParams;
+    expect(q.get('unassignedOnly')).toBe('true');
+    expect(q.get('courierId')).toBeNull();
+    expect(q.get('preAssigned')).toBeNull();
+  });
+
+  it('Assign Route on a pre-assigned row fetches that driver\'s pre-assigned (status 18) jobs', async () => {
+    const urls: string[] = [];
+    server.use(
+      http.get('/api/runviewer/runs/:runId/jobs', ({ request }) => {
+        urls.push(request.url);
+        return HttpResponse.json({ response: [{ jobId: 100 }] });
+      }),
+      kay(),
+    );
+    renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    await userEvent.setup().click(screen.getByText('Assign Route'));
+    await screen.findByPlaceholderText(/Search couriers/);
+    const q = new URL(urls[0]).searchParams;
+    expect(q.get('courierId')).toBe('7');
+    expect(q.get('preAssigned')).toBe('true');
+    expect(q.get('unassignedOnly')).toBeNull();
+  });
+
+  it('Assign Route with two runs selected assigns the jobs of both, each by its own row, in one dialog', async () => {
+    const urls: string[] = [];
+    let sent: any = null;
+    server.use(
+      http.get('/api/runviewer/runs/:runId/jobs', ({ request, params }) => {
+        urls.push(request.url);
+        return HttpResponse.json({
+          response: params.runId === '41' ? [{ jobId: 100 }, { jobId: 101 }] : [{ jobId: 200 }],
+        });
+      }),
+      kay(),
+      http.post('/api/runviewer/jobs/assign', async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json({ response: { succeeded: 3, failed: 0, errors: [], targetType: 'Courier', targetId: 9, displayName: 'Kay' } });
+      }),
+    );
+    const props = renderMenu({
+      runId: 41,
+      rows: [row(), row({ id: 52, name: 'RUN52', courierId: 7, courierCode: 'C7' })],
+    } as any);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Assign 2 runs'));
+    await user.click(await screen.findByText('Kay (K9)'));
+    await user.click(screen.getByRole('button', { name: 'Assign' }));
+    await waitFor(() => expect(props.onDone).toHaveBeenCalled());
+    expect([...sent.jobIds].sort()).toEqual([100, 101, 200]);
+    const run52 = new URL(urls.find((u) => u.includes('/runs/52/'))!).searchParams;
+    expect(run52.get('courierId')).toBe('7');
+    expect(run52.get('unassignedOnly')).toBeNull();
+  });
+
+  it('a pre-assigned row offers Re-assign to another driver and Unassign driver', () => {
+    renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    expect(screen.getByText('Re-assign to another driver')).toBeInTheDocument();
+    expect(screen.getByText('Unassign driver')).toBeInTheDocument();
+  });
+
+  it('Unassign driver unassigns the row\'s own driver without asking for a code', async () => {
+    const prompt = vi.spyOn(window, 'prompt');
+    let sent: any = null;
+    server.use(http.post('/api/runviewer/jobs/unassign-run', async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json({ response: 'ok' });
+    }));
+    const props = renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Unassign driver'));
+    await user.click(await screen.findByRole('button', { name: 'OK' }));
+    await waitFor(() => expect(props.onDone).toHaveBeenCalled());
+    expect(sent).toEqual({ runId: 41, courierCode: 'C7' });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('Re-assign picks the new driver from the courier picker and sends the row\'s driver as from', async () => {
+    const prompt = vi.spyOn(window, 'prompt');
+    let sent: any = null;
+    server.use(kay(), http.post('/api/runviewer/jobs/preassign-run', async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json({ response: 'ok' });
+    }));
+    const props = renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Re-assign to another driver'));
+    await user.click(await screen.findByText('Kay (K9)'));
+    await user.click(screen.getByRole('button', { name: 'Re-assign' }));
+    await waitFor(() => expect(props.onDone).toHaveBeenCalled());
+    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7' });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('Pre-assign Run uses the courier picker and sends the row\'s current driver as from', async () => {
+    const prompt = vi.spyOn(window, 'prompt');
+    let sent: any = null;
+    server.use(kay(), http.post('/api/runviewer/jobs/preassign-run', async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json({ response: 'ok' });
+    }));
+    const props = renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7' })] } as any);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Pre-assign Run'));
+    await user.click(await screen.findByText('Kay (K9)'));
+    await user.click(screen.getByRole('button', { name: 'Pre-assign' }));
+    await waitFor(() => expect(props.onDone).toHaveBeenCalled());
+    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7' });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('shows the server\'s message when the courier code is not known', async () => {
+    server.use(kay(), http.post('/api/runviewer/jobs/preassign-run', () =>
+      HttpResponse.json({ message: "Courier code 'K9' is not a current courier." }, { status: 400 })));
+    renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Re-assign to another driver'));
+    await user.click(await screen.findByText('Kay (K9)'));
+    await user.click(screen.getByRole('button', { name: 'Re-assign' }));
+    expect(await screen.findByText("Courier code 'K9' is not a current courier.")).toBeInTheDocument();
   });
 });

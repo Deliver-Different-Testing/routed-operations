@@ -23,31 +23,26 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<List<BulkJobDto>> GetBulkJobsAsync(
         DateTime? dateTime, string? clientIds, string? regionIds, string? ourRefs, string? speeds)
     {
-        // Phase 1 perf: pre-fetch the set of parent-job IDs in one indexed scan
-        // and materialise them into a HashSet so the main query filters via a
-        // simple `NOT IN` set-compare instead of a correlated `NOT EXISTS`
-        // subquery evaluated per row. Set-lookup is O(1); for typical tenants
-        // the parent set is a few hundred rows so the IN clause stays tractable.
-        //
         // Parents are the pickup leg of a paired pickup/delivery booking;
         // only the delivery children need to appear in the run-build cockpit.
         // Matches the legacy RunBuilder behaviour where parents are auto-
         // assigned to the "9999 ParentJobs" courier and hidden from the
         // operator's selection set.
-        var parentIds = await Context.TblBulkJobs
-            .AsNoTracking()
-            .Where(j => j.ParentId.HasValue)
-            .Select(j => j.ParentId!.Value)
-            .Distinct()
-            .ToListAsync();
-        var parentIdSet = new HashSet<int>(parentIds);
+        //
+        // #1018: a correlated NOT EXISTS, answered per candidate row by an
+        // index seek on IX_tblBulkJob_ParentID, so the check only touches the
+        // day's jobs. This used to pre-fetch every ParentID in the table
+        // (123,235 on Urgent prod, Nov 2026) and send the whole set back to
+        // SQL Server as a NOT IN list, twice per cockpit save. Same result:
+        // a job is hidden when any row in the table, on any day and in any
+        // state, names it as its parent.
 
         // AsNoTracking on the main query - the whole pipeline projects to
         // BulkJobDto, no entity mutation happens downstream in this method.
         var query = Context.TblBulkJobs
             .AsNoTracking()
             .Where(j => !j.Done && !j.Void)
-            .Where(j => !parentIdSet.Contains(j.BulkJobId))
+            .Where(j => !Context.TblBulkJobs.Any(child => child.ParentId == j.BulkJobId))
             // Legacy filter: ISNULL(JobRelationshipTypeID, 0) <> 19 - drops
             // linehaul-sibling rows the operator should never see in the cockpit.
             .Where(j => (j.JobRelationshipTypeId ?? 0) != 19)

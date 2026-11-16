@@ -11,14 +11,16 @@ import { tenantDateFromSpString, tenantTimeFromSpString, tenantTodayYmd } from '
 import { RvFilterBar, type FilterState } from '../../components/route-viewer/RvFilterBar';
 import { RvRunList } from '../../components/route-viewer/RvRunList';
 import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
-import { buildRunFilterIdentity, pruneSelectedRunIds } from '../../lib/runViewerSelection';
+import {
+  buildRunFilterIdentity, pruneSelectedRunIds, rowKeyForJob, runIdOfKey, runRowJobFilters, runRowKey,
+} from '../../lib/runViewerSelection';
 import { resolveRunDropRoute } from '../../lib/runDropTarget';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvRunContextMenu } from '../../components/route-viewer/RvRunContextMenu';
 import { RvJobContextMenu } from '../../components/route-viewer/RvJobContextMenu';
 import { PrintRunSortModeDialog, type PrintRunSortMode } from '../../components/route-viewer/PrintRunSortModeDialog';
 import {
-  buildRunLabelPayload, labelFailureText, runLabelPayloadIsEmpty, NO_LABELS_MESSAGE, type LabelPayload,
+  buildRunLabelPayload, jobLabelTarget, labelFailureText, runLabelPayloadIsEmpty, NO_LABELS_MESSAGE, type LabelPayload,
 } from '../../lib/labelPrint';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
@@ -30,7 +32,7 @@ import { RvClientIntelBox } from '../../components/route-viewer/RvClientIntelBox
 import { RvUtilityActions } from '../../components/route-viewer/RvUtilityActions';
 import { TopUpDialog } from '../../components/route-viewer/TopUpDialog';
 import { DEFAULT_LAYOUT, type CockpitLayout } from '../../lib/layouts';
-import { routeViewerService } from '../../services/routeViewerService';
+import { routeViewerService, type BulkJob, type BulkRun } from '../../services/routeViewerService';
 import { useToast } from '../../context/ToastContext';
 
 // Route Viewer Home / Run Viewer cockpit.
@@ -86,7 +88,10 @@ export default function RunViewer() {
     availableCouriersOnly: (stored as any).availableCouriersOnly ?? false,
   });
   const [viewMode, setViewMode] = useState<ViewMode>((stored as any).viewMode ?? 'Combined');
-  const [selectedRunIds, setSelectedRunIds] = useState<number[]>([]);
+  // #311/#326: selection holds Run List row keys (runRowKey = run id +
+  // courier + pre-assign flag), never bare run ids. A split run is several
+  // rows sharing one id, and each row is selected, tinted and fetched alone.
+  const [selectedRunKeys, setSelectedRunKeys] = useState<string[]>([]);
   // Selection identity for the middle-pane Run Jobs grid uses
   // tucJob.ucjbID (BulkJob.jobId), NOT tblBulkJob.BulkJobID. Synthetic
   // Route runs have no tblBulkJob row so RVW_stpBulkRunJobs emits
@@ -97,7 +102,7 @@ export default function RunViewer() {
   // guaranteed unique per row on both real-bulk and synthetic-route
   // branches, so keying on it fixes both symptoms.
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; runId: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; run: BulkRun } | null>(null);
   const [topUpOpen, setTopUpOpen] = useState(false);
   // Multi-select on the runJobs grid so bulk actions from the job
   // context menu operate on N jobs. Ctrl/Cmd-click toggles; plain
@@ -117,10 +122,10 @@ export default function RunViewer() {
   // sort / filter passes. Arrow keys index into whichever ref matches
   // the currently focused table so navigation lines up with what the
   // operator sees on screen.
-  const runListVisibleRef = useRef<number[]>([]);
-  const preAssignedVisibleRef = useRef<number[]>([]);
-  const returnsVisibleRef = useRef<number[]>([]);
-  const exceptionsVisibleRef = useRef<number[]>([]);
+  const runListVisibleRef = useRef<string[]>([]);
+  const preAssignedVisibleRef = useRef<string[]>([]);
+  const returnsVisibleRef = useRef<string[]>([]);
+  const exceptionsVisibleRef = useRef<string[]>([]);
   // Sibling-tab override for LH1..LH4 / LHP legs that don't have a
   // tblBulkJob row. Clicking their tab sets this to the sibling
   // payload (from RVW_stpJobSiblings); JobDetail renders directly
@@ -178,13 +183,14 @@ export default function RunViewer() {
     return all.filter((r) => r.courierCode === selectedCourierCode);
   }, [runsQuery.data, selectedCourierCode]);
 
-  const singleRunId = selectedRunIds.length === 1 ? selectedRunIds[0] : null;
+  const singleRunKey = selectedRunKeys.length === 1 ? selectedRunKeys[0] : null;
+  const singleRunId = singleRunKey != null ? runIdOfKey(singleRunKey) : null;
   // #1002: the selected run is looked up in the VISIBLE list (courier
   // filter included). Before, it was looked up in runsQuery.data while the
   // job query ran on the bare id, so a run that had dropped out of the
   // list kept showing its jobs under "Run - (select a run)".
-  const singleRun = singleRunId != null
-    ? visibleRuns.find((r) => r.id === singleRunId) ?? null
+  const singleRun = singleRunKey != null
+    ? visibleRuns.find((r) => runRowKey(r) === singleRunKey) ?? null
     : null;
   // Filters the Run Jobs grid is fetched with. Shared with the run-menu
   // Assign Route / Transfer Route flows (#1001 D4) so a run-level action
@@ -203,13 +209,18 @@ export default function RunViewer() {
   // Reno-depot LHPs to surface under a Burbank-only region filter. Query
   // key includes the filters so a filter change refetches instead of
   // serving stale un-scoped rows from cache.
+  //
+  // #311/#326 + Pre Assigned list: the fetch is narrowed to the selected
+  // ROW (its courier, or unassigned only for the NULL-courier row, and its
+  // pre-assign flag), so a pre-assigned row lists its status-18 jobs and
+  // each half of a split run lists only its own jobs.
   const runJobsQuery = useQuery({
     queryKey: [
       'rv-run-jobs', singleRunId, filters.runDate, viewMode,
       filters.regionIds.join(','), filters.speedIds.join(','), filters.clientIds.join(','),
-      filters.courierId ?? 0,
+      filters.courierId ?? 0, singleRunKey,
     ],
-    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, runJobsFilters),
+    queryFn: () => routeViewerService.getRunJobs(singleRunId!, filters.runDate, runRowJobFilters(singleRun!, runJobsFilters)),
     // #1002: only fetch when the selected run is actually in the visible
     // Run List. No run = no fetch = empty grid.
     enabled: singleRun != null,
@@ -220,30 +231,32 @@ export default function RunViewer() {
   // extra runs so the map can render every selected run's pins with
   // its own tint colour. Uses useQueries (not useQuery in a loop) so
   // hook count is stable across selection changes.
-  const extraRunIds = selectedRunIds.length > 1 ? selectedRunIds.slice(1) : [];
+  //
+  // 2026-11-16: every selected row is fetched here (not slice(1)). With 2+
+  // selected the Run Jobs grid is empty, so the first selected run used to
+  // have no pins at all. Each row is fetched with its own scope.
+  const extraRuns = selectedRunKeys.length > 1
+    ? selectedRunKeys
+      .map((k) => visibleRuns.find((r) => runRowKey(r) === k))
+      .filter((r): r is BulkRun => r != null)
+    : [];
   const extraRunJobsQueries = useQueries({
-    queries: extraRunIds.map((rid) => ({
+    queries: extraRuns.map((run) => ({
       // Same tenant-scoped key shape as the primary run's query so a
       // filter change also refetches the extra multi-selected runs; and
       // same forwarded filters so all selected runs' pins are narrowed
       // to the current region / speed / client / courier.
       queryKey: [
-        'rv-run-jobs', rid, filters.runDate, viewMode,
+        'rv-run-jobs', run.id, filters.runDate, viewMode,
         filters.regionIds.join(','), filters.speedIds.join(','), filters.clientIds.join(','),
-        filters.courierId ?? 0,
+        filters.courierId ?? 0, runRowKey(run),
       ],
-      queryFn: () => routeViewerService.getRunJobs(rid, filters.runDate, {
-        group: viewMode,
-        regionIds: filters.regionIds,
-        speedIds: filters.speedIds,
-        clientIds: filters.clientIds,
-        courierId: filters.courierId,
-      }),
+      queryFn: () => routeViewerService.getRunJobs(run.id, filters.runDate, runRowJobFilters(run, runJobsFilters)),
       staleTime: 5_000,
     })),
   });
-  const extraRunJobs = extraRunIds
-    .map((rid, i) => ({ runId: rid, jobs: (extraRunJobsQueries[i]?.data as any[]) ?? [] }))
+  const extraRunJobs = extraRuns
+    .map((run, i) => ({ runKey: runRowKey(run), jobs: (extraRunJobsQueries[i]?.data as any[]) ?? [] }))
     .filter((g) => g.jobs.length > 0);
 
   useAutoPoll(
@@ -266,7 +279,10 @@ export default function RunViewer() {
       // selectedJobId is jobId (tucJob.ucjbID), not bulkJobId - see the
       // state-declaration comment for the reason.
       setSelectedJobId(match.jobId ?? null);
-      if (match.bulkRunId != null) setSelectedRunIds([match.bulkRunId]);
+      const key = match.bulkRunId != null
+        ? rowKeyForJob(runsQuery.data ?? [], match.bulkRunId, match.courierId)
+        : null;
+      if (key != null) setSelectedRunKeys([key]);
       const next = new URLSearchParams(searchParams);
       next.delete('jobNumber');
       setSearchParams(next, { replace: true });
@@ -276,7 +292,7 @@ export default function RunViewer() {
   // Anchor for shift-range selection on the Run List. Set to the id
   // of the last plain-click. Shift+click extends selection from anchor
   // to clicked row (inclusive) using the currently-visible run order.
-  const runAnchorRef = useRef<number | null>(null);
+  const runAnchorRef = useRef<string | null>(null);
 
   // 2026-10-09: drop id-keyed selection when the date or the region changes.
   // Run ids and job ids are both date-scoped, so a selection made on one date
@@ -296,7 +312,7 @@ export default function RunViewer() {
   useEffect(() => {
     if (lastFilterIdentityRef.current === filterIdentity) return;
     lastFilterIdentityRef.current = filterIdentity;
-    setSelectedRunIds([]);
+    setSelectedRunKeys([]);
     setSelectedJobId(null);
     setSelectedJobIds([]);
     setSiblingOverride(null);
@@ -311,27 +327,27 @@ export default function RunViewer() {
   const courierFilterPending = filters.courierId != null && courierListForFilter.isLoading;
   useEffect(() => {
     if (!runsQuery.isSuccess || courierFilterPending) return;
-    const next = pruneSelectedRunIds(selectedRunIds, visibleRuns.map((r) => r.id));
-    if (next === selectedRunIds) return;
-    setSelectedRunIds(next);
+    const next = pruneSelectedRunIds(selectedRunKeys, visibleRuns.map(runRowKey));
+    if (next === selectedRunKeys) return;
+    setSelectedRunKeys(next);
     setSelectedJobId(null);
     setSelectedJobIds([]);
     setSiblingOverride(null);
     setJobCtxMenu(null);
     if (runAnchorRef.current != null && !next.includes(runAnchorRef.current)) runAnchorRef.current = null;
-  }, [runsQuery.isSuccess, courierFilterPending, visibleRuns, selectedRunIds]);
-  const onSelectRun = useCallback((id: number, mods: { ctrl: boolean; shift: boolean }) => {
-    setSelectedRunIds((prev) => {
+  }, [runsQuery.isSuccess, courierFilterPending, visibleRuns, selectedRunKeys]);
+  const onSelectRun = useCallback((id: string, mods: { ctrl: boolean; shift: boolean }) => {
+    setSelectedRunKeys((prev) => {
       if (mods.shift && runAnchorRef.current != null) {
         // Tier-3 item 18: shift-range across the sorted run list. We
         // read the list off runsQuery.data at call time so the range
         // matches whatever the operator currently sees.
         const runs = runsQuery.data ?? [];
-        const anchorIdx = runs.findIndex((r) => r.id === runAnchorRef.current);
-        const clickedIdx = runs.findIndex((r) => r.id === id);
+        const anchorIdx = runs.findIndex((r) => runRowKey(r) === runAnchorRef.current);
+        const clickedIdx = runs.findIndex((r) => runRowKey(r) === id);
         if (anchorIdx >= 0 && clickedIdx >= 0) {
           const [lo, hi] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
-          const ids = runs.slice(lo, hi + 1).map((r) => r.id);
+          const ids = runs.slice(lo, hi + 1).map(runRowKey);
           return ids;
         }
         return prev;
@@ -366,7 +382,7 @@ export default function RunViewer() {
   // the operator just clicked on. Legacy `.activeTable` selector was
   // "whichever table last received a mouse-down" - same idea, typed.
   const onSelectRunFromTable = useCallback((table: FocusedTable) => {
-    return (id: number, mods: { ctrl: boolean; shift: boolean }) => {
+    return (id: string, mods: { ctrl: boolean; shift: boolean }) => {
       setFocusedTable(table);
       onSelectRun(id, mods);
     };
@@ -381,10 +397,11 @@ export default function RunViewer() {
     setJobCtxMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  const onContextMenu = useCallback((e: React.MouseEvent, runId: number) => {
+  const onContextMenu = useCallback((e: React.MouseEvent, run: BulkRun) => {
     e.preventDefault();
-    setSelectedRunIds((prev) => (prev.includes(runId) ? prev : [runId]));
-    setCtxMenu({ x: e.clientX, y: e.clientY, runId });
+    const key = runRowKey(run);
+    setSelectedRunKeys((prev) => (prev.includes(key) ? prev : [key]));
+    setCtxMenu({ x: e.clientX, y: e.clientY, run });
   }, []);
 
   const onFiltersChange = useCallback((next: FilterState) => {
@@ -494,18 +511,21 @@ export default function RunViewer() {
     }
   };
 
-  // Job Detail print: single-job label PDF (Mode 1). Uses the currently
-  // selected tucJob id (selectedJobId), since the backend GET endpoint
-  // keys off ucjbID. Bulk-job-only rows (jobId == 0, synthetic Recurring
-  // Route rows before materialisation) fall through with a toast rather
-  // than firing a call that would 404 on the SP.
-  const doPrintJobReport = async () => {
-    if (!selectedJobId || selectedJobId <= 0) {
-      toast.show('Select a job with a live tucJob row first.', 'error');
+  // Job Detail print (#309): prints the job Job Detail hands over (an LH
+  // leg tab is the leg, not the grid's selected parent). The label kind
+  // comes from lib/labelPrint jobLabelTarget.
+  const doPrintJobReport = async (job: BulkJob) => {
+    const target = jobLabelTarget(job);
+    if (target.kind === 'none') {
+      toast.show('This job has nothing to print yet.', 'error');
       return;
     }
     try {
-      const blob = await routeViewerService.printSingleJobLabelPdf(selectedJobId);
+      const blob = target.kind === 'lhp'
+        ? await routeViewerService.printLhpJobLabelPdf(target.id)
+        : target.kind === 'bulk'
+          ? await routeViewerService.printBulkJobLabelPdf(target.id)
+          : await routeViewerService.printSingleJobLabelPdf(target.id);
       const url = URL.createObjectURL(blob);
       window.open(url, '_blank');
     } catch (e) {
@@ -520,12 +540,12 @@ export default function RunViewer() {
   // unchanged. Order = selection order for stable colour identity
   // across re-renders.
   const runColorMap = useMemo(() => {
-    const map: Record<number, string> = {};
-    if (selectedRunIds.length <= 1) return map;
+    const map: Record<string, string> = {};
+    if (selectedRunKeys.length <= 1) return map;
     const palette = ['#0891b2', '#7c3aed', '#f59e0b', '#dc2626', '#059669', '#d946ef', '#0ea5e9', '#65a30d'];
-    selectedRunIds.forEach((id, i) => { map[id] = palette[i % palette.length]; });
+    selectedRunKeys.forEach((key, i) => { map[key] = palette[i % palette.length]; });
     return map;
-  }, [selectedRunIds]);
+  }, [selectedRunKeys]);
 
   // Tier-2 item 14: Run Jobs grid sort + filter. Cancelled (jobStatus =
   // 'V') and multibox child rows (MultiboxParentID != null) are hidden
@@ -609,7 +629,7 @@ export default function RunViewer() {
   // it depends on `runJobs` which is a downstream memo - moving it up
   // would trip the TDZ warning called out above.
   const moveArrow = useCallback((dir: 1 | -1) => {
-    const idsFor = (t: FocusedTable): number[] => {
+    const idsFor = (t: FocusedTable): string[] => {
       switch (t) {
         case 'runList':      return runListVisibleRef.current;
         case 'preAssigned':  return preAssignedVisibleRef.current;
@@ -635,18 +655,36 @@ export default function RunViewer() {
     }
     const ids = idsFor(focusedTable);
     if (ids.length === 0) return;
-    const curId = selectedRunIds.length === 1 ? selectedRunIds[0] : null;
+    const curId = singleRunKey;
     const cur = curId != null ? ids.indexOf(curId) : -1;
     const next = cur < 0 ? (dir === 1 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, cur + dir));
     const nextId = ids[next];
     if (nextId != null && nextId !== curId) {
       runAnchorRef.current = nextId;
-      setSelectedRunIds([nextId]);
+      setSelectedRunKeys([nextId]);
       setSelectedJobId(null);
       setSelectedJobIds([]);
       setSiblingOverride(null);
     }
-  }, [focusedTable, runJobs, selectedJobId, selectedRunIds]);
+  }, [focusedTable, runJobs, selectedJobId, singleRunKey]);
+
+  // Rows the run menu acts on: the right-clicked row first, then the rest
+  // of the selection when the clicked row is part of it (#323).
+  const ctxMenuRows = useMemo(() => {
+    if (!ctxMenu) return [];
+    const clickedKey = runRowKey(ctxMenu.run);
+    if (!selectedRunKeys.includes(clickedKey)) return [ctxMenu.run];
+    const byKey = new Map((runsQuery.data ?? []).map((r) => [runRowKey(r), r] as const));
+    const rest = selectedRunKeys
+      .filter((k) => k !== clickedKey)
+      .map((k) => byKey.get(k))
+      .filter((r): r is BulkRun => r != null);
+    return [ctxMenu.run, ...rest];
+  }, [ctxMenu, selectedRunKeys, runsQuery.data]);
+  // #1001 D4 shortcut (grid rows instead of a fetch) only when the menu is
+  // for exactly the row the grid shows.
+  const ctxMenuIsGridRow = gridJobsLoaded && ctxMenu != null && ctxMenuRows.length === 1
+    && runRowKey(ctxMenu.run) === singleRunKey;
 
   useHotkeys({
     onArrowUp: () => moveArrow(-1),
@@ -755,7 +793,7 @@ export default function RunViewer() {
                 <RvBox title="Run List">
                   <RvRunList
                     runs={visibleRuns}
-                    selectedIds={selectedRunIds}
+                    selectedIds={selectedRunKeys}
                     onSelect={onSelectRunFromTable('runList')}
                     onContextMenu={onContextMenu}
                     viewMode={viewMode}
@@ -763,23 +801,24 @@ export default function RunViewer() {
                     isLoading={runsQuery.isLoading}
                     runColorMap={runColorMap}
                     onVisibleRunsChange={(ids) => { runListVisibleRef.current = ids; }}
-                    onDropCourier={(runId, courierCode) => {
-                      const run = visibleRuns.find((r) => r.id === runId);
-                      const from = run?.courierCode ?? null;
-                      routeViewerService.preAssignRun(runId, courierCode, from)
+                    onDropCourier={(run, courierCode) => {
+                      // #311/#326 + #816: `from` is the dropped-on ROW's
+                      // courier, so only that half of a split run moves.
+                      const from = run.courierCode ?? null;
+                      routeViewerService.preAssignRun(run.id, courierCode, from)
                         .then(() => {
-                          toast.show(`Pre-assigned ${courierCode} to run ${run?.name ?? runId}.`);
+                          toast.show(`Pre-assigned ${courierCode} to run ${run.name ?? run.id}.`);
                           runsQuery.refetch();
                         })
                         .catch((err) => toast.show(`Assign failed: ${err.message}`));
                     }}
-                    onDropRunJobs={(toRunId, fromRunId, jobIds) => {
-                      const toRun = visibleRuns.find((r) => r.id === toRunId);
+                    onDropRunJobs={(toRun, fromRunId, jobIds) => {
+                      const toRunId = toRun.id;
                       // #1004: a synthetic route run's id is -RouteId, so
                       // the route id is the negated run id. A real bulk run
                       // is not a route and is refused (it used to send
                       // tblBulkRun.ID as a RouteId). Same-run drop = no-op.
-                      const target = resolveRunDropRoute(toRunId, fromRunId, toRun?.name);
+                      const target = resolveRunDropRoute(toRunId, fromRunId, toRun.name);
                       if (target.kind === 'same-run') return;
                       if (target.kind === 'not-a-route') {
                         toast.show(target.message, 'error');
@@ -793,7 +832,7 @@ export default function RunViewer() {
                       })
                         .then((res) => {
                           toast.show(
-                            `Moved ${res.succeeded} job${res.succeeded === 1 ? '' : 's'} to run ${toRun?.name ?? toRunId}.`,
+                            `Moved ${res.succeeded} job${res.succeeded === 1 ? '' : 's'} to run ${toRun.name ?? toRunId}.`,
                           );
                           runsQuery.refetch();
                           if (singleRunId != null) {
@@ -1115,8 +1154,9 @@ export default function RunViewer() {
                       .catch((err) => toast.show(`SendPOD failed: ${err.message}`));
                   }}
                   onTransferRoute={(j) => {
-                    if (j.bulkRunId != null) {
-                      setSelectedRunIds([j.bulkRunId]);
+                    const key = j.bulkRunId != null ? rowKeyForJob(visibleRuns, j.bulkRunId, j.courierId) : null;
+                    if (key != null) {
+                      setSelectedRunKeys([key]);
                       toast.show('Transfer Route: right-click the run in the Run List to open the dialog.');
                     } else {
                       toast.show('Job is not on a run yet - assign to a run first.');
@@ -1144,7 +1184,7 @@ export default function RunViewer() {
                     <RvRunListLite
                       variant="preAssigned"
                       runs={runsQuery.data ?? []}
-                      selectedIds={selectedRunIds}
+                      selectedIds={selectedRunKeys}
                       onSelect={onSelectRunFromTable('preAssigned')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
@@ -1156,7 +1196,7 @@ export default function RunViewer() {
                     <RvRunListLite
                       variant="returns"
                       runs={runsQuery.data ?? []}
-                      selectedIds={selectedRunIds}
+                      selectedIds={selectedRunKeys}
                       onSelect={onSelectRunFromTable('returns')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
@@ -1168,7 +1208,7 @@ export default function RunViewer() {
                     <RvRunListLite
                       variant="exceptions"
                       runs={runsQuery.data ?? []}
-                      selectedIds={selectedRunIds}
+                      selectedIds={selectedRunKeys}
                       onSelect={onSelectRunFromTable('exceptions')}
                       onContextMenu={onContextMenu}
                       runColorMap={runColorMap}
@@ -1192,6 +1232,7 @@ export default function RunViewer() {
                   selectedJobId={selectedRowBulkJobId}
                   viewMode={viewMode}
                   runColorMap={runColorMap}
+                  primaryRunKey={singleRunKey ?? undefined}
                   extraRunJobs={extraRunJobs}
                 />
               </Panel>
@@ -1228,7 +1269,10 @@ export default function RunViewer() {
         <RvRunContextMenu
           x={ctxMenu.x}
           y={ctxMenu.y}
-          runId={ctxMenu.runId}
+          runId={ctxMenu.run.id}
+          // #323: every selected row, the right-clicked one first, each
+          // scoped by its own identity.
+          rows={ctxMenuRows}
           runDate={filters.runDate}
           viewMode={viewMode}
           filters={runJobsFilters}
@@ -1239,10 +1283,10 @@ export default function RunViewer() {
           // right-clicking a run selects it, so before its Run Jobs
           // response lands `runJobs` is [] and the menu would report "No
           // jobs" instead of fetching (regression found 2026-11-09).
-          visibleJobIds={gridJobsLoaded && ctxMenu.runId === singleRun?.id
+          visibleJobIds={ctxMenuIsGridRow
             ? runJobs.map((j) => j.jobId).filter((id) => id > 0)
             : undefined}
-          visibleJobs={gridJobsLoaded && ctxMenu.runId === singleRun?.id ? runJobs : undefined}
+          visibleJobs={ctxMenuIsGridRow ? runJobs : undefined}
           onClose={() => setCtxMenu(null)}
           onDone={() => {
             runsQuery.refetch();

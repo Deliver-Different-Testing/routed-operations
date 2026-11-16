@@ -356,4 +356,88 @@ public class NpScopeGuardTests
 
         await sut.EnsureRunInScopeAsync(7);
     }
+
+    // ---- EnsureMobileInScopeAsync (NP leak K6, 2026-11-13) ----
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_AdminScope_NoOp()
+    {
+        var resolver = ResolverReturning(new NpScope(IsAdmin: true, NpAgentId: null));
+        var factory = Substitute.For<IDbContextFactory<DynamicDespatchDbContext>>();
+        var sut = new NpScopeGuard(resolver, factory);
+
+        await sut.EnsureMobileInScopeAsync("0210000000");
+
+        await factory.DidNotReceive().CreateDbContextAsync();
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_OwnJobByPodMobile_Passes()
+    {
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10, ProofOfDeliveryMobile = "0210000000" });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 42 });
+        await ctx.SaveChangesAsync();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await sut.EnsureMobileInScopeAsync(" 0210000000 ");
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_OwnJobByDeliverToPhone_Passes()
+    {
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10, DeliverToPhone = "0210000000" });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 42 });
+        await ctx.SaveChangesAsync();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await sut.EnsureMobileInScopeAsync("0210000000");
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_ForeignJobOnly_Throws()
+    {
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10, ProofOfDeliveryMobile = "0210000000", NpAgentId = 42 });
+        // tucJob wins over the bulk stamp.
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 99 });
+        await ctx.SaveChangesAsync();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.EnsureMobileInScopeAsync("0210000000"));
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_BulkStampOnly_Throws()
+    {
+        // tblBulkJob.NpAgentId is not authoritative (see guard header).
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = null, ProofOfDeliveryMobile = "0210000000", NpAgentId = 42 });
+        await ctx.SaveChangesAsync();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.EnsureMobileInScopeAsync("0210000000"));
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_VoidOwnJob_Throws()
+    {
+        await using var ctx = NewContext();
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 5, JobId = 10, ProofOfDeliveryMobile = "0210000000", Void = true });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 10, UcjbNumber = "J-10", NpAgentId = 42 });
+        await ctx.SaveChangesAsync();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.EnsureMobileInScopeAsync("0210000000"));
+    }
+
+    [Fact]
+    public async Task EnsureMobileInScopeAsync_UnknownMobile_Throws()
+    {
+        await using var ctx = NewContext();
+        var sut = new NpScopeGuard(ResolverReturning(new NpScope(false, 42)), FactoryFor(ctx));
+
+        await Assert.ThrowsAsync<NpLabelScopeException>(() => sut.EnsureMobileInScopeAsync("0210000000"));
+    }
 }

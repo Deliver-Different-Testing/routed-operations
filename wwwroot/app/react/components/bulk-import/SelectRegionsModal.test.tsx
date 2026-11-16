@@ -352,4 +352,43 @@ describe('SelectRegionsModal - US tenant path', () => {
     await waitFor(() => expect(screen.getByText(/Boston/)).toBeInTheDocument());
     expect(screen.getByText(/Valid ZIP - Rate By Distance/)).toBeInTheDocument();
   });
+
+  // #332 US half. fixedZips is keyed by the zip value, so a suggestion made for
+  // one row rewrote every row with that zip, including rows whose zip already
+  // matched a depot. The sheet zip must win when it matches; the suggestion
+  // only rescues a zip that matches nothing.
+  it('keeps a sheet zip that matches a depot even when a fix was suggested for it', async () => {
+    server.use(
+      http.get('/api/address/locations/zipcodes', () =>
+        HttpResponse.json({
+          ...env,
+          locations: [
+            { id: 1, name: 'Boston', zipCodes: ['02110'] },
+            { id: 2, name: 'Cambridge', zipCodes: ['02139'] },
+          ],
+        })
+      ),
+      http.get('/api/address/zip-polygons', () => HttpResponse.json({ ...env, zones: [] }))
+    );
+    const dispatch = vi.fn();
+    const s = usState([{ ToZipCode: '02110' }, { ToZipCode: '99999' }]);
+    s.fixedZips = { '02110': '02139', '99999': '02139' };
+    renderWithProviders(
+      <SelectRegionsModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'SEED_DEPOTS',
+          depots: [
+            // Row 0 stays in Boston on its own zip, and the bucket pins the
+            // sheet zip so the value-keyed fix is not applied at import.
+            expect.objectContaining({ depotId: 1, jobIndexes: [0], postCodeOverrides: { 0: '02110' } }),
+            // Row 1 matched nothing and is rescued by the suggestion.
+            expect.objectContaining({ depotId: 2, jobIndexes: [1] }),
+          ],
+        })
+      );
+    });
+  });
 });

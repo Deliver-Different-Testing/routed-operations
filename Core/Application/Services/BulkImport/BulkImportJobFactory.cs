@@ -1169,7 +1169,7 @@ public partial class BulkImportServiceV2
             .ToList();
 
         if (IsNzTenant() && jobs.Any(j => string.IsNullOrWhiteSpace(j.FromSuburb) || string.IsNullOrWhiteSpace(j.ToSuburb)))
-            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, "Invalid suburb(s).");
+            return BulkImportResponseUtility.AddMessageAndReturnResponse(response, InvalidSuburbsMessage(request.Jobs, jobs));
 
         var autoJobs = jobs.Where(j => j.JobNumber.Trim().ToUpper() == "AUTOGENERATE").ToList();
         if (autoJobs.Any())
@@ -1472,5 +1472,38 @@ public partial class BulkImportServiceV2
         {
             Log.Error(ex, $"({messageId})({contactId}) [GeocodeJobFromAddress] Error geocoding from address: {ex.Message}");
         }
+    }
+
+    // Rows the server cannot place, named with what the row was given, so the
+    // operator can find them. "Invalid suburb(s)." alone named nothing. Row
+    // numbers count from 1 within this request, which is one depot's rows on a
+    // multi-depot routed import, so the suburb and postcode are what to search
+    // the sheet for. Ten rows at most, then a count.
+    internal const int InvalidSuburbRowsListed = 10;
+
+    private static string InvalidSuburbsMessage(IEnumerable<BulkImportJobCreateDto> requestJobs, List<TblBulkJob> jobs)
+    {
+        var sent = requestJobs.ToList();
+        var problems = new List<string>();
+        for (int i = 0; i < jobs.Count; i++)
+        {
+            var parts = new List<string>();
+            if (string.IsNullOrWhiteSpace(jobs[i].FromSuburb))
+                parts.Add($"pickup {SuburbAndPostCode(sent[i].FromSuburb, sent[i].FromPostCode)}");
+            if (string.IsNullOrWhiteSpace(jobs[i].ToSuburb))
+                parts.Add($"delivery {SuburbAndPostCode(sent[i].ToSuburb, sent[i].ToPostCode)}");
+            if (parts.Count > 0) problems.Add($"row {i + 1} {string.Join(" and ", parts)}");
+        }
+        var listed = string.Join("; ", problems.Take(InvalidSuburbRowsListed));
+        var more = problems.Count > InvalidSuburbRowsListed
+            ? $" (+{problems.Count - InvalidSuburbRowsListed} more rows)"
+            : string.Empty;
+        return $"Invalid suburb(s): {listed}{more}.";
+    }
+
+    private static string SuburbAndPostCode(string? suburb, string? postCode)
+    {
+        var name = string.IsNullOrWhiteSpace(suburb) ? "suburb is blank" : $"'{suburb.Trim()}'";
+        return string.IsNullOrWhiteSpace(postCode) ? name : $"{name} ({postCode.Trim()})";
     }
 }

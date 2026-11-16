@@ -236,6 +236,14 @@ namespace RoutedOperations.Core.Application.Validators
                     //    .InclusiveBetween((short)1, (short)26)
                     //    .When(x => x.Quantity.HasValue);
 
+                    // #319: Qty 0 booked a job priced at 0 with no items, and
+                    // a negative Qty threw in the rating service (a 500).
+                    // Null still means 1 (BulkImportJobFactory: Qty ?? 1).
+                    j.RuleFor(x => x.Quantity)
+                        .InclusiveBetween(BulkQuantity.Min, BulkQuantity.Max)
+                        .When(x => x.Quantity.HasValue)
+                        .WithMessage(BulkQuantity.RangeMessage);
+
                     j.RuleFor(x => x.Quantity)
                         .Equal((short)1)
                         .When(x => x.Quantity.HasValue && !string.IsNullOrWhiteSpace(x.JobNumber) && x.JobNumber.Contains("-")).WithMessage("Multi-box quantity must be 1.");
