@@ -42,14 +42,25 @@ interface LegChip {
   PackedRole?: string | null;
 }
 
-// State -> Tailwind background. Palette mirrors legacy .leg-state.<code>.
-function legTint(state: string | null | undefined): string {
-  const s = (state ?? '').toUpperCase();
-  if (s === 'DONE' || s === 'COMPLETE') return 'bg-emerald-100 text-emerald-800';
-  if (s === 'PARTIAL' || s === 'IN_TRANSIT' || s === 'INTRANSIT') return 'bg-amber-100 text-amber-800';
-  if (s === 'SHORT' || s === 'FAIL' || s === 'FAILED') return 'bg-red-100 text-red-800';
-  if (s === 'PENDING' || s === 'WAITING') return 'bg-slate-100 text-slate-700';
-  return 'bg-slate-100 text-slate-700';
+const TINT_GREEN = 'bg-emerald-100 text-emerald-800';
+const TINT_AMBER = 'bg-amber-100 text-amber-800';
+const TINT_RED = 'bg-red-100 text-red-800';
+const TINT_GREY = 'bg-slate-100 text-slate-700';
+
+// Leg state -> tone (#897). Keys are the lowercase states that
+// RVW_stpScanJobsRouted (Legs JSON State) and RVW_stpScanManagerItemProgress
+// (State) emit. Spec F #897: completed green, picked / packed amber,
+// exception red, pending grey. Anything else falls back to grey.
+const LEG_STATE_TINT: Record<string, string> = {
+  completed: TINT_GREEN,
+  picked: TINT_AMBER,
+  packed: TINT_AMBER,
+  exception: TINT_RED,
+  pending: TINT_GREY,
+};
+
+export function legTint(state: string | null | undefined): string {
+  return LEG_STATE_TINT[(state ?? '').trim().toLowerCase()] ?? TINT_GREY;
 }
 
 function parseLegs(json: string | null): LegChip[] {
@@ -60,21 +71,33 @@ function parseLegs(json: string | null): LegChip[] {
   } catch { return []; }
 }
 
-// Stage-swatch tone map (task #47.1). The Stage column now wraps its text
-// in a small pill whose colour is derived from keywords in the server-side
-// human-readable stage string (RVW_stpScanJobsRouted emits phrases like
-// "Awaiting LHP pickup" / "LH1 - in transit" / "Item -3 short (LH1)" per
-// ScanDto.cs). We match legacy scanControl.js SM_STAGE_COLOR intent:
-// green = done, orange = in-flight, red = exception, grey = default.
-function stageTint(stage: string | null | undefined): string {
+// Stage-swatch tone map (task #47.1, #897). The Stage column wraps its text
+// in a small pill. RVW_stpScanJobsRouted builds Stage from the CurrentLeg's
+// state, so each phrase is mapped back to that state and tinted with the
+// same LEG_STATE_TINT as the chips:
+//   'Completed' / '<Leg> - completed'           -> completed
+//   '<Leg> - exception'                         -> exception
+//   '<Leg> - in transit' / 'DEL - out for delivery' -> picked
+//   '<Leg> - staged at depot'                   -> packed
+//   'Awaiting <Leg> pickup'                     -> pending
+// 'short' / 'missing' wording stays red (reconciliation phrases).
+const STAGE_PHRASE_STATE: Array<[string, string]> = [
+  ['short', 'exception'],
+  ['missing', 'exception'],
+  ['exception', 'exception'],
+  ['complete', 'completed'],
+  ['delivered', 'completed'],
+  ['in transit', 'picked'],
+  ['in-transit', 'picked'],
+  ['out for delivery', 'picked'],
+  ['staged at depot', 'packed'],
+  ['awaiting', 'pending'],
+];
+
+export function stageTint(stage: string | null | undefined): string {
   const s = (stage ?? '').toLowerCase();
-  if (!s) return 'bg-slate-100 text-slate-700';
-  if (s.includes('short') || s.includes('missing')) return 'bg-red-100 text-red-800';
-  if (s.includes('complete') || s.includes('delivered')) return 'bg-emerald-100 text-emerald-800';
-  if (s.includes('in transit') || s.includes('in-transit') || s.includes('pickup') || s.includes('awaiting')) {
-    return 'bg-amber-100 text-amber-800';
-  }
-  return 'bg-slate-100 text-slate-700';
+  const hit = STAGE_PHRASE_STATE.find(([phrase]) => s.includes(phrase));
+  return hit ? legTint(hit[1]) : TINT_GREY;
 }
 
 // Item-progress row shape used for the Tote-column derivation (task #47.2).
@@ -174,7 +197,7 @@ function SortableTh({
 // to its own component so the useQuery hook count stays stable across
 // row list mutations. Loads /api/runviewer/scans/item-progress only
 // when the row is expanded (matches legacy lazy-load pattern).
-function FragmentRow({
+export function FragmentRow({
   row, legs, active, expanded, onSelect, onToggle, onContextMenu,
 }: {
   row: any;
@@ -254,7 +277,9 @@ function FragmentRow({
             {legs.map((l: any, i: number) => (
               <span
                 key={i}
-                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${legTint(l.State)}`}
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${legTint(l.State)} ${
+                  row.currentLeg && l.Leg === row.currentLeg ? 'ring-1 ring-brand-cyan' : ''
+                }`}
                 title={l.LinehaulRunName ? `${l.Leg}: ${l.LinehaulRunName} (${l.State ?? '?'})` : `${l.Leg}: ${l.State ?? '?'}`}
               >
                 {l.Leg}
