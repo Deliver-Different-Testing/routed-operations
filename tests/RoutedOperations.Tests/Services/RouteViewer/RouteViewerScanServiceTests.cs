@@ -1,6 +1,7 @@
 // RouteViewerScanService wraps 6 scan-related SPs. Bulk mode is admin-only;
 // routed / detail / progress branches allow NP with agent id but block
 // degenerate NP. RemoveMissingScanJobs returns false for NP.
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
@@ -203,5 +204,86 @@ public class RouteViewerScanServiceTests
         Assert.Null(req.ClientIds);
         Assert.Null(req.RegionIds);
         Assert.Null(req.SpeedIds);
+    }
+
+    // ---- Deploy-order guard for RVW_stpScanJobsRouted (#896 package F) ----
+    // Migration 20261113140200 added the trailing @NpAgentId parameter and the
+    // routed grid's NP scope depends on RO sending it. These pin the call shape
+    // so dropping or renaming the parameter fails here, not on a tenant.
+
+    [Fact]
+    public async Task GetRoutedScanJobsAsync_Np_SendsNpAgentIdToSp()
+    {
+        var (sut, capture) = NewCapturingSvc(new NpScope(false, 42));
+        await Assert.ThrowsAsync<CapturedSqlException>(() =>
+            sut.GetRoutedScanJobsAsync(new RoutedOperations.Core.Application.Dtos.RouteViewer.BulkRunListRequest()));
+
+        Assert.Contains("RVW_stpScanJobsRouted", capture.CommandText);
+        Assert.Contains("@NpAgentId = @NpAgentId", capture.CommandText);
+        Assert.Equal(42, capture.Parameters["@NpAgentId"]);
+    }
+
+    [Fact]
+    public async Task GetRoutedScanJobsAsync_Admin_SendsNullNpAgentId()
+    {
+        var (sut, capture) = NewCapturingSvc(new NpScope(true, null));
+        await Assert.ThrowsAsync<CapturedSqlException>(() =>
+            sut.GetRoutedScanJobsAsync(new RoutedOperations.Core.Application.Dtos.RouteViewer.BulkRunListRequest()));
+
+        Assert.Contains("@NpAgentId = @NpAgentId", capture.CommandText);
+        Assert.True(capture.Parameters.ContainsKey("@NpAgentId"));
+        Assert.Equal(DBNull.Value, capture.Parameters["@NpAgentId"]);
+    }
+
+    private static (RouteViewerScanService sut, CaptureSqlInterceptor capture) NewCapturingSvc(NpScope scope)
+    {
+        var capture = new CaptureSqlInterceptor();
+        var opts = new DbContextOptionsBuilder<RoutedOperations.Core.Domain.DespatchContext>()
+            .UseSqlServer("Server=none;Database=none")
+            .AddInterceptors(capture)
+            .Options;
+        var factory = RouteViewerTestHarness.Factory(opts);
+        var resolver = Substitute.For<INpScopeResolver>();
+        resolver.ResolveAsync().Returns(scope);
+        var sut = new RouteViewerScanService(factory, resolver, Substitute.For<INpScopeGuard>(),
+            NullLogger<RouteViewerScanService>.Instance);
+        return (sut, capture);
+    }
+
+    private sealed class CapturedSqlException : Exception;
+
+    // Skips the connection open (no server) and records the command EF is
+    // about to run, then aborts before anything is sent.
+    private sealed class CaptureSqlInterceptor :
+        Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor,
+        Microsoft.EntityFrameworkCore.Diagnostics.IDbCommandInterceptor
+    {
+        public string CommandText { get; private set; } = string.Empty;
+        public Dictionary<string, object?> Parameters { get; } = new();
+
+        public Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult ConnectionOpening(
+            System.Data.Common.DbConnection connection,
+            Microsoft.EntityFrameworkCore.Diagnostics.ConnectionEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult result)
+            => Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult.Suppress();
+
+        public ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult> ConnectionOpeningAsync(
+            System.Data.Common.DbConnection connection,
+            Microsoft.EntityFrameworkCore.Diagnostics.ConnectionEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult result,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult.Suppress());
+
+        public ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+            System.Data.Common.DbCommand command,
+            Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            CommandText = command.CommandText;
+            foreach (System.Data.Common.DbParameter p in command.Parameters)
+                Parameters[p.ParameterName] = p.Value;
+            throw new CapturedSqlException();
+        }
     }
 }
