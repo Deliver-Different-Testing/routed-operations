@@ -13,6 +13,7 @@ import {
   autoMapTruckFields,
   autoMatchColumn,
   columnHasTruckSpeed,
+  quantityProblemLine,
   requiredFieldLines,
   requiredFieldProblems,
   truckFieldsEligible,
@@ -188,6 +189,10 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
   const requiredProblems = requiredFieldProblems(visibleFields, state.mapping, parsedRows);
   const missingRequired = [...requiredProblems.unmapped, ...requiredProblems.blank.map((b) => b.label)];
   const requiredLines = requiredFieldLines(requiredProblems);
+  // #319. Quantity is optional, but a cell that is filled must be a whole
+  // number from 1 to 32767. Blocks Next like a blank required field does.
+  const quantityLine = quantityProblemLine(state.mapping, parsedRows);
+  const blockingLines = quantityLine ? [...requiredLines, quantityLine] : requiredLines;
 
   // A row the server would refuse, shown on the step that can still fix it. The
   // on-demand import checks again per row. Routed imports do not run this check.
@@ -224,6 +229,10 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
       toast.show(msg, 'warning');
       return;
     }
+    if (quantityLine) {
+      toast.show(quantityLine, 'warning');
+      return;
+    }
     if (state.importType === 'onDemand' && state.client && !(await checkReferences())) return;
     onNext();
   }
@@ -248,7 +257,7 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
             <Button
               variant="primary"
               onClick={handleNext}
-              disabled={missingRequired.length > 0 || checkingReferences}
+              disabled={missingRequired.length > 0 || quantityLine != null || checkingReferences}
             >
               {checkingReferences ? 'Checking...' : 'Next'}
             </Button>
@@ -683,9 +692,9 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
             Loading client settings...
           </p>
         )}
-        {missingRequired.length > 0 && (
+        {blockingLines.length > 0 && (
           <div className="mt-3 p-2 bg-error/5 border border-error/30 rounded text-xs text-error">
-            {requiredLines.map((line) => (
+            {blockingLines.map((line) => (
               <div key={line}>{line}</div>
             ))}
           </div>

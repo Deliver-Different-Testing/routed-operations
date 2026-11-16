@@ -38,17 +38,23 @@ export class ApiError extends Error {
  * with one entry PER ROW, so a 23-row import produced 23 identical strings
  * and none of the existing fields `request` looks at. The operator then saw
  * "HTTP 400 at /api/bulk-import/import" and had no idea a column was
- * unmapped. Dedupe the messages and say how many fields each one covers.
+ * unmapped. Dedupe the messages and name the rows each one came from
+ * (`jobs[n]` is row n+1 of the request), or count them when the key does not
+ * carry a row.
  */
 export function modelStateMessage(body: unknown): string | undefined {
   const errors = (body as { errors?: Record<string, unknown> } | null)?.errors;
   if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return undefined;
-  const counts = new Map<string, number>();
-  for (const value of Object.values(errors)) {
+  const counts = new Map<string, { n: number; rows: number[] }>();
+  for (const [key, value] of Object.entries(errors)) {
+    const row = /^jobs\[(\d+)\]/i.exec(key);
     const list = Array.isArray(value) ? value : [value];
     for (const entry of list) {
       if (typeof entry !== 'string' || entry.trim() === '') continue;
-      counts.set(entry, (counts.get(entry) ?? 0) + 1);
+      const seen = counts.get(entry) ?? { n: 0, rows: [] };
+      seen.n += 1;
+      if (row && !seen.rows.includes(Number(row[1]) + 1)) seen.rows.push(Number(row[1]) + 1);
+      counts.set(entry, seen);
     }
   }
   if (counts.size === 0) return undefined;
@@ -56,9 +62,22 @@ export function modelStateMessage(body: unknown): string | undefined {
   // and say how many more there are.
   const shown = [...counts.entries()]
     .slice(0, 2)
-    .map(([msg, n]) => (n > 1 ? `${msg} (${n} rows)` : msg));
+    .map(([msg, { n, rows }]) => {
+      if (rows.length > 0) return `${msg} (${rowList(rows)})`;
+      return n > 1 ? `${msg} (${n} rows)` : msg;
+    });
   const remaining = counts.size - shown.length;
   return remaining > 0 ? `${shown.join(' ')} ...and ${remaining} more` : shown.join(' ');
+}
+
+// Rows named in one message before the rest are counted.
+const ROWS_LISTED = 10;
+
+function rowList(rows: number[]): string {
+  const sorted = [...rows].sort((a, b) => a - b);
+  const listed = sorted.slice(0, ROWS_LISTED).join(', ');
+  const more = sorted.length - ROWS_LISTED;
+  return `${sorted.length === 1 ? 'row' : 'rows'} ${listed}${more > 0 ? ` +${more} more` : ''}`;
 }
 
 export async function request<T>(url: string, options?: RequestInit): Promise<T> {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
@@ -234,6 +234,59 @@ describe('GoogleMap', () => {
       makeRun({ id: 11, jobs: [{ bulkJobId: 2, builderIndex: 1 } as any] }),
     ];
     renderWithProviders(<GoogleMap jobs={jobs} selectedRun={null} multiSelectedRuns={multi} />);
+    expect(g.maps.Marker).toHaveBeenCalledTimes(2);
+  });
+
+  // #1018. CockpitPage re-renders on every state change (a search keystroke, a
+  // toast, a reload that brings back the same jobs) and hands the map fresh
+  // arrays and fresh callbacks each time. The map used to clear every marker,
+  // rebuild them and POST a new route polyline on each of those renders.
+  it('does not rebuild markers or the route line when a re-render brings the same pins', async () => {
+    const run = makeRun({
+      jobs: [
+        { bulkJobId: 1, builderIndex: 1 } as any,
+        { bulkJobId: 2, builderIndex: 2 } as any,
+      ],
+    });
+    const jobs = () => [
+      makeJob({ bulkJobId: 1, bulkRunId: 1 }),
+      makeJob({ bulkJobId: 2, bulkRunId: 1, jobNumber: 'J-2' }),
+      makeJob({ bulkJobId: 3, jobNumber: 'J-3' }),
+    ];
+    let polylinePosts = 0;
+    server.use(
+      http.post('/api/routes/polyline', () => {
+        polylinePosts += 1;
+        return HttpResponse.json({ points: [] });
+      }),
+    );
+    const first = vi.fn();
+    const { rerender } = renderWithProviders(
+      <GoogleMap jobs={jobs()} selectedRun={run} onAddToRunFromMap={first} />
+    );
+    await waitFor(() => expect(polylinePosts).toBe(1));
+    const markersAfterFirst = g.maps.Marker.mock.calls.length;
+    expect(markersAfterFirst).toBe(3);
+
+    const latest = vi.fn();
+    rerender(<GoogleMap jobs={jobs()} selectedRun={{ ...run, jobs: [...run.jobs] }} onAddToRunFromMap={latest} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(g.maps.Marker.mock.calls.length).toBe(markersAfterFirst);
+    expect(polylinePosts).toBe(1);
+
+    // The pins were kept, but a click still reaches the callback from the
+    // latest render, not the one the pins were built with.
+    const unassigned = g.maps.Marker.mock.instances[2] as any;
+    const click = unassigned.addListener.mock.calls.find((c: any[]) => c[0] === 'click')[1];
+    click();
+    expect(latest).toHaveBeenCalledWith(3, 1);
+    expect(first).not.toHaveBeenCalled();
+  });
+
+  it('still rebuilds the markers when a pin really changes', () => {
+    const { rerender } = renderWithProviders(<GoogleMap jobs={[makeJob({ bulkJobId: 1 })]} selectedRun={null} />);
+    expect(g.maps.Marker).toHaveBeenCalledTimes(1);
+    rerender(<GoogleMap jobs={[makeJob({ bulkJobId: 1, deliveryLatitude: '-36.90' })]} selectedRun={null} />);
     expect(g.maps.Marker).toHaveBeenCalledTimes(2);
   });
 });

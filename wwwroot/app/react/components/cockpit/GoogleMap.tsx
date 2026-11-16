@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BulkJob, Run } from '../../types';
 import { Panel } from '../common/Panel';
 import { Button } from '../common/Button';
@@ -98,6 +98,19 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
   // tiny fixed-position popup below.
   const [mapMenu, setMapMenu] = useState<{ clientX: number; clientY: number; lat: number; lng: number } | null>(null);
 
+  // #1018. CockpitPage re-renders on every state change and passes fresh
+  // arrays and callbacks each time, which used to clear and rebuild every
+  // marker and POST a new route polyline. The marker effect now runs only
+  // when the pins themselves change. The click handlers read the run and
+  // callbacks from this ref, so they still act on the latest render.
+  const latestRef = useRef({ selectedRun, onPinClick, onPinContextMenu, onAddToRunFromMap });
+  latestRef.current = { selectedRun, onPinClick, onPinContextMenu, onAddToRunFromMap };
+  const pins = useMemo(
+    () => buildPins(jobs, selectedRun, multiSelectedRuns ?? []),
+    [jobs, selectedRun, multiSelectedRuns]
+  );
+  const pinsKey = `${selectedRun?.id ?? ''}|${JSON.stringify(pins)}`;
+
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
 
@@ -165,7 +178,7 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     };
   }, [ready]);
 
-  // Re-render markers when jobs / selected run changes.
+  // Re-render markers when the pins change (see pinsKey above).
   useEffect(() => {
     if (!mapRef.current) return;
     const g = (window as any).google;
@@ -181,8 +194,8 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     directionsTokenRef.current += 1;
     const myToken = directionsTokenRef.current;
 
-    const pins = buildPins(jobs, selectedRun, multiSelectedRuns ?? []);
     if (pins.length === 0) return;
+    const { selectedRun } = latestRef.current;
 
     const bounds = new g.maps.LatLngBounds();
     pins.forEach((p) => {
@@ -204,14 +217,15 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
         // still editable (not locked, not the Void Jobs run), fire the
         // add directly instead of the standard select. The context menu
         // is still available on right-click for multi-run picking.
+        const { selectedRun: run, onAddToRunFromMap, onPinClick } = latestRef.current;
         if (
           p.kind === 'unassigned'
           && onAddToRunFromMap
-          && selectedRun
-          && !selectedRun.isVoidRun
-          && (selectedRun.status ?? 0) === 0
+          && run
+          && !run.isVoidRun
+          && (run.status ?? 0) === 0
         ) {
-          onAddToRunFromMap(p.bulkJobId, selectedRun.id);
+          onAddToRunFromMap(p.bulkJobId, run.id);
           return;
         }
         if (onPinClick) onPinClick(p.bulkJobId);
@@ -226,6 +240,7 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
       // Legacy right-click behaviour: fire the shared context menu at the
       // mouse pointer. The browser MouseEvent is in domEvent for Google.
       marker.addListener('rightclick', (e: any) => {
+        const { onPinContextMenu } = latestRef.current;
         if (!onPinContextMenu) return;
         const dom = e?.domEvent as MouseEvent | undefined;
         onPinContextMenu({
@@ -278,7 +293,10 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
         drawRunPolyline(g, mapRef.current, seqPins, polylinesRef, myToken, directionsTokenRef);
       }
     }
-  }, [ready, jobs, selectedRun, multiSelectedRuns, onPinClick, onPinContextMenu, onAddToRunFromMap, autoZoom]);
+    // pins is read through pinsKey, which changes exactly when the pins (or
+    // the selected run) do; the handlers are read through latestRef.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, pinsKey, autoZoom]);
 
   // P2.1 close-the-map-menu wiring. Mirrors MapContextMenu's Escape + outside-
   // click pattern. Deliberately NOT listening for contextmenu (a second right-
