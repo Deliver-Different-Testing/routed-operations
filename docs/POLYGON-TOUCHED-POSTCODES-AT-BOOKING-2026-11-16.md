@@ -40,7 +40,7 @@ A polygon does **not** need to be attached to a route for booking. Zone membersh
 T-SQL functions can't take optional parameters without every caller passing `DEFAULT`, and there are many callers. So:
 
 - **New** `dbo.UTL_fncJob_GetClientAvailableBulkRunScheduleAt(@ClientID, @JobTypeID, @Datetime, @FromPostCode, @ToPostCode, @FromLat, @FromLng, @ToLat, @ToLng)` holds the body.
-- **Existing** `UTL_fncJob_GetClientAvailableBulkRunSchedule` becomes a one-line wrapper passing NULL coordinates, so every caller you don't touch behaves as it does today (see D1).
+- **Existing** `UTL_fncJob_GetClientAvailableBulkRunSchedule` becomes a one-line wrapper passing NULL coordinates, so it keeps compiling for callers that are not job paths (reports such as `REP_qryClientRateSchedule*`). Every path that quotes, books or rates a job moves to `...At` and passes the job's coordinates (4.2). Every job has coordinates (Steve, 16 Nov).
 - Re-emit the full body from the **latest emitter on master at build time**, not the file named above. The collision-review header must name the emitter you actually used.
 
 Rule 2, per end, inside the new function:
@@ -49,7 +49,7 @@ Rule 2, per end, inside the new function:
 -- candidates: active polygons in an active zone membership, tagged with the postcode
 -- IsFull = 1                      -> add (g.DepotId, bzp.PostcodeGroupId)
 -- IsFull = 0 and point supplied   -> add only if p.GeographyData.STIntersects(geography::Point(@Lat, @Lng, 4326)) = 1
--- IsFull = 0 and no point         -> D1
+-- IsFull = 0 and no point         -> no match (only non-job callers such as reports get here)
 ```
 
 - One clustered-PK seek on `BulkRunPolygonZip (Zip, PolygonId)` per end, and `STIntersects` only on partial candidates. Nothing per schedule row, no scalar UDF (remember the 14 Oct rates timeout).
@@ -78,7 +78,7 @@ The api log shows `GetSchedulerRates` and `POST /API/UrgentAPI/Job` already carr
 
 | # | Question | Recommendation |
 |---|---|---|
-| D1 | A caller with **no coordinates** hits a partly-covered postcode | Keep today's behaviour for those callers: tagged rows >= 10% match, slivers don't. Nothing that works today breaks, and every quote/booking path in 4.2 passes a point, so the exact rule applies wherever customers book. |
+| D1 | A caller with **no coordinates** hits a partly-covered postcode | **Decided (Steve, 16 Nov): no fallback.** Every job has coordinates, so every job path passes them. A partly-covered postcode never matches without a point, and the 10% floor goes from availability entirely. |
 | D2 | Postcode is a member of a *different* group by postcode | Polygon still adds its own group (per-group rule 1). Recommended. Otherwise a polygon can't extend a regional run into a postcode that a metro group already owns. |
 | D3 | Rating for NZ zones via polygon | Out of scope here. NZ zone rating (`UCL_fncT_GetBulkZone`) doesn't read polygons. Flag if Marcus's corridor needs a different price, not just availability. |
 
@@ -105,7 +105,7 @@ WHERE CAST(z.PostCode AS varchar(10)) IN (SELECT Zip FROM dbo.BulkRunPolygonZip 
 1. An address in a fully-covered postcode gets the Hamilton regional schedule, with or without coordinates.
 2. **200 Lake View Drive, Karapiro 3494** (inside the line) gets the schedule at quote **and** booking.
 3. An address in 3494 **outside** the line does not get it.
-4. A 3494 call with no coordinates behaves as D1 says.
+4. Every job entry point from M0 passes coordinates. Prove it on staging: a quote and a booking into 3494 inside the line both offer the schedule.
 5. The panel lists all touched postcodes, split into fully and partly covered.
 6. A quote with no polygon involved returns exactly what it did before (diff 50 recent Urgent quotes before and after).
 
@@ -113,7 +113,7 @@ WHERE CAST(z.PostCode AS varchar(10)) IN (SELECT Zip FROM dbo.BulkRunPolygonZip 
 
 | M | Title | Done when |
 |---|---|---|
-| M0 | Confirm facts | Section 6 run on Urgent prod and results posted. Entry-point list for 4.2 agreed. D1-D2 confirmed with Steve. |
+| M0 | Confirm facts | Section 6 run on Urgent prod and results posted. Entry-point list for 4.2 agreed. D2 confirmed with Steve (D1 decided). |
 | M1 | Availability `...At` function | New function plus wrapper migration on a branch. Per-group rule 1, IsFull / point test, collision header names the real baseline. |
 | M2 | Coordinates through quote and booking | Entry points from M0 pass From/To lat/lng. Quote and insert give the same schedule for the same address. |
 | M3 | Panel shows touched postcodes | DTO carries `BulkRunPolygonZip` rows. Panel shows fully/partly lists and map shading. |
