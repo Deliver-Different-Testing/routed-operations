@@ -3,6 +3,8 @@ import {
   buildBulkJobsLabelPayload,
   buildRunLabelPayload,
   isRoutedRunId,
+  jobLabelTarget,
+  LH_LEG_LABEL_KIND,
   labelFailureText,
   runLabelPayloadIsEmpty,
   toIdCsv,
@@ -86,5 +88,29 @@ describe('labelFailureText', () => {
   it('keeps the real cause for any other failure', () => {
     expect(labelFailureText('Print run failed', 'Database error: timeout'))
       .toBe('Print run failed: Database error: timeout');
+  });
+});
+
+// #309: job detail Print prints the job it was handed, not whichever job
+// the grid has selected. LH legs have bulkJobId 0 and used to print the
+// parent; synthetic rows (jobId 0) could not print at all.
+describe('jobLabelTarget', () => {
+  it('prints a live job by its own tucJob id', () => {
+    expect(jobLabelTarget({ jobId: 501, bulkJobId: 77, jobNumber: 'P5543' })).toEqual({ kind: 'job', id: 501 });
+  });
+  it('prints an LHP leg through the LHP label', () => {
+    expect(jobLabelTarget({ jobId: 20849, bulkJobId: 0, jobNumber: 'E896WILLLHP' })).toEqual({ kind: 'lhp', id: 20849 });
+  });
+  it('prints an LH leg by the leg id, not the parent', () => {
+    expect(jobLabelTarget({ jobId: 20850, bulkJobId: 0, jobNumber: 'E896WILLLH2' })).toEqual({ kind: LH_LEG_LABEL_KIND, id: 20850 });
+  });
+  it('defaults an LH leg to its own Mode 1 job label (open for Steve)', () => {
+    expect(LH_LEG_LABEL_KIND).toBe('job');
+  });
+  it('prints a row with no tucJob yet by its bulk job', () => {
+    expect(jobLabelTarget({ jobId: 0, bulkJobId: 88, jobNumber: null })).toEqual({ kind: 'bulk', id: 88 });
+  });
+  it('has nothing to print when neither id is set', () => {
+    expect(jobLabelTarget({ jobId: 0, bulkJobId: 0, jobNumber: 'X' })).toEqual({ kind: 'none' });
   });
 });

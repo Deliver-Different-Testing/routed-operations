@@ -102,3 +102,34 @@ export const NO_LABELS_MESSAGE = 'No labels to print for this run.';
 export function labelFailureText(prefix: string, message: string): string {
   return message.startsWith('No labels to print') ? message : `${prefix}: ${message}`;
 }
+
+// #309: which label job detail Print produces for the job it was handed.
+//   LHP leg          -> /labels/lhp-jobs/{jobId} (bulk template, Mode 1)
+//   LH1..LHn leg     -> LH_LEG_LABEL_KIND on the leg's own jobId
+//   any other job    -> /labels/jobs/{jobId} (Mode 1)
+//   no tucJob yet    -> /labels/bulk?bulkJobId= (Mode 2)
+
+/** Open for Steve (G): the label an LH leg tab prints. Default is the
+ *  leg's own tucJob label (Mode 1); 'lhp' would use the LHP label. */
+export const LH_LEG_LABEL_KIND: 'job' | 'lhp' = 'job';
+
+export type JobLabelTarget =
+  | { kind: 'job' | 'lhp' | 'bulk'; id: number }
+  | { kind: 'none' };
+
+export function jobLabelTarget(job: {
+  jobId?: number | null;
+  bulkJobId?: number | null;
+  jobNumber?: string | null;
+}): JobLabelTarget {
+  const jobId = job.jobId ?? 0;
+  const bulkJobId = job.bulkJobId ?? 0;
+  const jn = (job.jobNumber ?? '').trim().toUpperCase();
+  if (jobId > 0) {
+    if (jn.endsWith('LHP')) return { kind: 'lhp', id: jobId };
+    if (/LH\d+$/.test(jn)) return { kind: LH_LEG_LABEL_KIND, id: jobId };
+    return { kind: 'job', id: jobId };
+  }
+  if (bulkJobId > 0) return { kind: 'bulk', id: bulkJobId };
+  return { kind: 'none' };
+}

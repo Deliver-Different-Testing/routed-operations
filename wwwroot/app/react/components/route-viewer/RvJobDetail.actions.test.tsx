@@ -204,3 +204,12 @@ describe('RvJobDetail (actions)', () => {
     expect(onPickSibling).toHaveBeenCalled();
   });
 });
+
+// #309: the header "More" button had no handler, so it did nothing.
+describe('RvJobDetail header (#309)', () => {
+  it('has no dead More button', () => {
+    renderDetail();
+    expect(screen.queryByTitle('More')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'More' })).toBeNull();
+  });
+});

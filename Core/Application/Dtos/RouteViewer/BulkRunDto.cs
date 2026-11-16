@@ -110,6 +110,11 @@ public class BulkRunDto
     /// not true/false; React must accept numeric.</summary>
     public int IsActive { get; set; }
 
+    /// <summary>#311/#326: the courier this row stands for. A split run
+    /// comes back as one row per courier plus a null-courier row, so a
+    /// row's identity is Id + CourierId + PreAssigned, never Id alone.</summary>
+    public int? CourierId { get; set; }
+
     /// <summary>Courier identity: display name for cell subtitle.</summary>
     public string? CourierName { get; set; }
 

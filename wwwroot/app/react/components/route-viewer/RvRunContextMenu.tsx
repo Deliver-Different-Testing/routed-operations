@@ -4,6 +4,7 @@ import { useConfirm } from '../../context/ConfirmContext';
 import { useToast } from '../../context/ToastContext';
 import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
+import { runRowJobFilters } from '../../lib/runViewerSelection';
 import { AssignRouteDialog } from './AssignRouteDialog';
 import { TransferRouteDialog } from './TransferRouteDialog';
 
@@ -31,6 +32,14 @@ import { TransferRouteDialog } from './TransferRouteDialog';
 // directly. Before, Assign Route on a Will Call filtered Burbank to Lab
 // handed ~40 jobs to the dialog while the grid showed 2, and the run-menu
 // Transfer Route sent an empty id list and always got a 400.
+//
+// 2026-11-16 (#311/#326, #323, #816): the menu is told which Run List
+// row(s) it is for. A row is run id + courier + pre-assign flag, so each
+// row's jobs are fetched with its own courier (unassigned-only for the
+// NULL-courier row) and its own pre-assign flag. With several runs
+// selected, Assign Route collects every row's jobs into one dialog.
+// Pre-assigned rows offer Re-assign / Unassign driver, and the courier is
+// picked in AssignRouteDialog's courier mode instead of window.prompt.
 
 export interface RunMenuJobFilters {
   group?: string;
@@ -40,10 +49,23 @@ export interface RunMenuJobFilters {
   courierId?: number | null;
 }
 
+/** The Run List row(s) the menu acts on (subset of BulkRun). */
+export interface RunMenuRow {
+  id: number;
+  name?: string | null;
+  courierId?: number | null;
+  courierCode?: string | null;
+  preAssigned?: number | null;
+  isMissing?: boolean;
+}
+
 interface Props {
   x: number;
   y: number;
   runId: number;
+  /** The selected rows, the right-clicked row first. Omitted = the bare
+   *  run id with no row scope (fetches every job on the run). */
+  rows?: RunMenuRow[];
   runDate: string;
   /** Parent RunViewer's Combined/Inbound/Outbound state. Scopes the
    *  Assign Route jobIds so only jobs matching the current view get
@@ -65,7 +87,7 @@ interface Props {
 type ScopedRunJob = Pick<BulkJob, 'jobId' | 'jobNumber' | 'fromAddress' | 'runName'>;
 
 export function RvRunContextMenu({
-  x, y, runId, runDate, viewMode, filters, visibleJobIds, visibleJobs, onClose, onDone,
+  x, y, runId, rows, runDate, viewMode, filters, visibleJobIds, visibleJobs, onClose, onDone,
 }: Props) {
   const user = useAuth();
   const confirm = useConfirm();
@@ -74,13 +96,22 @@ export function RvRunContextMenu({
   const [assignJobIds, setAssignJobIds] = useState<number[] | null>(null);
   const [transferLoading, setTransferLoading] = useState(false);
   const [transferJobs, setTransferJobs] = useState<ScopedRunJob[] | null>(null);
+  const [courierPick, setCourierPick] = useState<'preassign' | 'reassign' | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const assignOpen = assignJobIds !== null;
   const transferOpen = transferJobs !== null;
+  const pickOpen = courierPick !== null;
+
+  const menuRows: RunMenuRow[] = rows && rows.length > 0 ? rows : [{ id: runId }];
+  const clicked = menuRows[0];
+  const multi = menuRows.length > 1;
+  const rowCourierCode = clicked.courierCode?.trim() || null;
+  const rowIsPreAssigned = clicked.preAssigned === 1;
 
   /** The jobs a run-level action applies to: the grid's visible rows for
-   *  the run on screen, otherwise a fetch with the same filters the grid
-   *  uses plus the client-side view-mode predicate. */
+   *  the run on screen, otherwise one fetch per row with the same filters
+   *  the grid uses, narrowed to the row's own courier / pre-assign scope,
+   *  plus the client-side view-mode predicate. */
   const resolveScopedJobs = async (): Promise<ScopedRunJob[]> => {
     if (visibleJobIds) {
       const byId = new Map((visibleJobs ?? []).map((j) => [j.jobId, j] as const));
@@ -89,13 +120,21 @@ export function RvRunContextMenu({
         return { jobId: id, jobNumber: j?.jobNumber ?? null, fromAddress: j?.fromAddress ?? null, runName: j?.runName ?? null };
       });
     }
-    const jobs = await routeViewerService.getRunJobs(runId, runDate, { group: viewMode, ...filters });
-    return jobs.filter((j) => j.jobId > 0 && matchesViewMode(j, viewMode));
+    const perRow = await Promise.all(menuRows.map((r) => {
+      const gridFilters = { group: viewMode, ...filters };
+      return routeViewerService.getRunJobs(r.id, runDate, rows ? runRowJobFilters(r, gridFilters) : gridFilters);
+    }));
+    const seen = new Set<number>();
+    return perRow.flat().filter((j) => {
+      if (j.jobId <= 0 || seen.has(j.jobId) || !matchesViewMode(j, viewMode)) return false;
+      seen.add(j.jobId);
+      return true;
+    });
   };
 
   const noJobsMessage = () => {
     const scope = viewMode === 'Combined' ? 'jobs' : `${viewMode.toLowerCase()} jobs`;
-    return `No ${scope} on this run for the current filters.`;
+    return `No ${scope} on ${multi ? 'these runs' : 'this run'} for the current filters.`;
   };
 
   // Close on outside click / Esc. Skip while a child dialog is open so
@@ -104,7 +143,7 @@ export function RvRunContextMenu({
   // is in-flight so a stray mousedown does not abort the pending
   // dialog open.
   useEffect(() => {
-    if (assignOpen || transferOpen || assignLoading || transferLoading) return;
+    if (assignOpen || transferOpen || pickOpen || assignLoading || transferLoading) return;
     const onDown = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
     };
@@ -115,7 +154,7 @@ export function RvRunContextMenu({
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [onClose, assignOpen, transferOpen, assignLoading, transferLoading]);
+  }, [onClose, assignOpen, transferOpen, pickOpen, assignLoading, transferLoading]);
 
   // Assign Route: resolve the run's jobs with the on-screen filters
   // (resolveScopedJobs), then open the dialog with the pre-scoped jobIds.
@@ -159,42 +198,44 @@ export function RvRunContextMenu({
 
   const preAssignable = runId >= 0;
 
-  const doPreAssign = async () => {
+  // #816: Pre-assign (and Re-assign on a pre-assigned row) picks the new
+  // driver in the courier picker and sends the row's current driver as
+  // `from`, so RVW_stpPreAssignRun moves the row's jobs and nobody else's.
+  // The picker shows the SP's error (e.g. an unknown courier code) inline.
+  const pickCourier = async (toCode: string) => {
+    await routeViewerService.preAssignRun(runId, toCode, rowCourierCode);
+    return `Pre-assigned ${toCode} to run ${clicked.name ?? `#${runId}`}.`;
+  };
+
+  // Unassign the row's own driver. The row knows its courier, so there is
+  // nothing to type; a row with no driver has nothing to unassign.
+  const doUnassignDriver = async () => {
+    if (!rowCourierCode) return;
     onClose();
     if (!(await confirm({
-      title: 'Pre-assign run',
-      message: 'Lock this run to its currently allocated courier?',
+      title: 'Unassign driver',
+      message: `Remove ${rowCourierCode} from run ${clicked.name ?? `#${runId}`}?`,
+      danger: true,
     }))) return;
-    const courierCode = window.prompt('Courier code to pre-assign to:');
-    if (!courierCode) return;
     try {
-      await routeViewerService.preAssignRun(runId, courierCode.trim());
-      toast.show(`Pre-assigned ${courierCode} to run.`, 'success');
+      await routeViewerService.unassignRun(runId, rowCourierCode);
+      toast.show(`Unassigned ${rowCourierCode} from run.`, 'success');
       onDone();
-    } catch (e) { toast.show(`Pre-assign failed: ${(e as Error).message}`, 'error'); }
+    } catch (e) { toast.show(`Unassign failed: ${(e as Error).message}`, 'error'); }
   };
 
   const doUnassign = async (kind: 'courier' | 'agent' | 'np') => {
+    // Only courier unassign has a run-level SP, and it uses the row's own
+    // courier (doUnassignDriver). Agent/NP unassign is per-job via the
+    // bulk /jobs/unassign endpoint.
+    if (kind === 'courier') { await doUnassignDriver(); return; }
     onClose();
-    const label = kind === 'courier' ? 'courier' : kind === 'agent' ? 'agent' : 'network partner';
+    const label = kind === 'agent' ? 'agent' : 'network partner';
     if (!(await confirm({
       title: `Unassign ${label}`,
       message: `Remove the current ${label} from run #${runId}?`,
       danger: true,
     }))) return;
-    // Only courier unassign has a run-level SP. Agent/NP unassign is
-    // per-job via the bulk /jobs/unassign endpoint; those cases prompt
-    // for the courier code anyway.
-    if (kind === 'courier') {
-      const courierCode = window.prompt('Courier code to unassign from this run:');
-      if (!courierCode) return;
-      try {
-        await routeViewerService.unassignRun(runId, courierCode.trim());
-        toast.show(`Unassigned ${courierCode} from run.`, 'success');
-        onDone();
-      } catch (e) { toast.show(`Unassign failed: ${(e as Error).message}`, 'error'); }
-      return;
-    }
     toast.show(`${label} unassign is per-job - use the job menu.`);
   };
 
@@ -228,14 +269,16 @@ export function RvRunContextMenu({
       <div
         ref={menuRef}
         className={`fixed z-50 bg-surface-white border border-border rounded-md shadow-lg py-1 text-sm min-w-[14rem] ${
-          assignOpen || transferOpen ? 'hidden' : ''
+          assignOpen || transferOpen || pickOpen ? 'hidden' : ''
         }`}
         style={{ left: x, top: y }}
       >
         <MenuItem onClick={doAssign} disabled={assignLoading}>
           {assignLoading
             ? 'Loading jobs…'
-            : user.isNetworkPartner ? 'Assign Courier' : 'Assign Route'}
+            : multi
+              ? `Assign ${menuRows.length} runs`
+              : user.isNetworkPartner ? 'Assign Courier' : 'Assign Route'}
         </MenuItem>
         {!user.isNetworkPartner && (
           <MenuItem onClick={doTransfer} disabled={transferLoading}>
@@ -245,9 +288,20 @@ export function RvRunContextMenu({
         <MenuItem onClick={doSendSms}>
           Send SMS to run's drivers
         </MenuItem>
-        <MenuItem onClick={doPreAssign} disabled={!preAssignable}>
-          Pre-assign Run
-        </MenuItem>
+        {rowIsPreAssigned ? (
+          <>
+            <MenuItem onClick={() => setCourierPick('reassign')} disabled={!preAssignable}>
+              Re-assign to another driver
+            </MenuItem>
+            <MenuItem onClick={doUnassignDriver} disabled={!rowCourierCode}>
+              Unassign driver
+            </MenuItem>
+          </>
+        ) : (
+          <MenuItem onClick={() => setCourierPick('preassign')} disabled={!preAssignable}>
+            Pre-assign Run
+          </MenuItem>
+        )}
         <MenuItem onClick={doRelease}>
           Release Run
         </MenuItem>
@@ -257,7 +311,7 @@ export function RvRunContextMenu({
 
         <div className="border-t border-border my-1" />
         <div className="px-3 py-1 text-[10px] uppercase text-text-muted">Unassign</div>
-        <MenuItem onClick={() => doUnassign('courier')}>Courier</MenuItem>
+        <MenuItem onClick={() => doUnassign('courier')} disabled={!rowCourierCode}>Courier</MenuItem>
         {!user.isNetworkPartner && <MenuItem onClick={() => doUnassign('agent')}>Agent</MenuItem>}
         {!user.isNetworkPartner && <MenuItem onClick={() => doUnassign('np')}>Network Partner</MenuItem>}
 
@@ -270,12 +324,29 @@ export function RvRunContextMenu({
       {assignJobIds && (
         <AssignRouteDialog
           jobIds={assignJobIds}
-          runLabel={`run #${runId}`}
+          runLabel={multi ? `${menuRows.length} runs` : `run #${runId}`}
           onClose={() => { setAssignJobIds(null); onClose(); }}
           onSuccess={(summary) => {
             setAssignJobIds(null);
             onClose();
             toast.show(summary);
+            onDone();
+          }}
+        />
+      )}
+
+      {courierPick && (
+        <AssignRouteDialog
+          jobIds={[]}
+          runLabel={clicked.name ?? `run #${runId}`}
+          courierAction={courierPick === 'reassign'
+            ? { title: 'Re-assign to another driver', submitLabel: 'Re-assign', onPick: pickCourier }
+            : { title: 'Pre-assign run', submitLabel: 'Pre-assign', onPick: pickCourier }}
+          onClose={() => { setCourierPick(null); onClose(); }}
+          onSuccess={(summary) => {
+            setCourierPick(null);
+            onClose();
+            toast.show(summary, 'success');
             onDone();
           }}
         />

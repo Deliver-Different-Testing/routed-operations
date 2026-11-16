@@ -153,6 +153,7 @@ public class RouteViewerRunService(
         ReturnsTotal = r.ReturnsTotal,
         IsMissing = true,
         PreAssigned = r.PreAssigned,
+        CourierId = r.CourierID,
         CourierName = r.CourierName,
         CourierCode = r.CourierCode,
         CourierPercentageFormatted = r.CourierPercentageFormatted,
@@ -206,6 +207,7 @@ public class RouteViewerRunService(
         ReturnsTotal = r.ReturnsTotal,
         IsMissing = isMissing,
         PreAssigned = r.PreAssigned,
+        CourierId = r.CourierID,
         CourierName = r.CourierName,
         CourierCode = r.CourierCode,
         CourierOnlineStatus = r.CourierOnlineStatus,
@@ -270,8 +272,14 @@ public class RouteViewerRunService(
             "GetBulkRunJobsAsync runId={RunId} date={Date} NpAgentId={NpAgentId}",
             runId, request.RunDate, scope.NpAgentId);
 
-        // Tenant SP signature (9 params): RunID, ClientID, CourierID,
-        // PreAssigned, SpeedIDs, ClientIDs, RunDate, Regions, NpAgentId.
+        // Tenant SP signature (10 params): RunID, ClientID, CourierID,
+        // PreAssigned, SpeedIDs, ClientIDs, RunDate, Regions, NpAgentId,
+        // UnassignedOnly.
+        //
+        // #311/#326: UnassignedOnly is the NULL-courier row of a split run
+        // (@CourierID NULL alone means "any courier"). DEPLOY ORDER:
+        // dbmigrationsv2 20261117141000 must reach a tenant before this
+        // does, or the call fails with Msg 8145 on an unknown parameter.
         //
         // Column-shape note (P3 E2E fix): the SP does NOT emit the
         // tri-state scan-flag columns (SortScanned / RunScanned /
@@ -292,7 +300,8 @@ public class RouteViewerRunService(
                 @ClientIDs = @ClientIDs,
                 @RunDate = @RunDate,
                 @Regions = @Regions,
-                @NpAgentId = @NpAgentId",
+                @NpAgentId = @NpAgentId,
+                @UnassignedOnly = @UnassignedOnly",
             SpParam.Of("@RunID", runId),
             SpParam.Of("@ClientID", effectiveClientId),
             SpParam.Of("@CourierID", request.CourierId),
@@ -301,7 +310,8 @@ public class RouteViewerRunService(
             SpParam.Of("@ClientIDs", effectiveClientIds),
             SpParam.Of("@RunDate", request.RunDate),
             SpParam.Of("@Regions", request.RegionIds),
-            SpParam.Of("@NpAgentId", scope.NpAgentId))
+            SpParam.Of("@NpAgentId", scope.NpAgentId),
+            SpParam.Of("@UnassignedOnly", request.UnassignedOnly))
             .ToListAsync();
 
         return raw.Select(r => MapRawBulkJobRowToDto(r, r.BulkJobID ?? 0)).ToList();

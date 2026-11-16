@@ -200,9 +200,6 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
         <IconButton title="Send" ariaLabel="Send" onClick={() => onSend?.(job)}>
           <SendIcon />
         </IconButton>
-        <IconButton title="More" ariaLabel="More">
-          <KebabIcon />
-        </IconButton>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -440,16 +437,6 @@ function TrackItIcon() {
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
       <polyline points="15 3 21 3 21 9" />
       <line x1="10" y1="14" x2="21" y2="3" />
-    </svg>
-  );
-}
-
-function KebabIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <circle cx="12" cy="5" r="2" />
-      <circle cx="12" cy="12" r="2" />
-      <circle cx="12" cy="19" r="2" />
     </svg>
   );
 }
