@@ -174,7 +174,11 @@ public partial class BulkImportServiceV2
                     string toContact = GetStringValue(jobData, "ToContact", "To Contact", "tocontact");
                     string toContactPhone = GetStringValue(jobData, "ToContactPhone", "To Contact Phone", "tocontactphone");
 
-                    short? qty = (short?)GetIntValue(jobData, "Qty", "Quantity", "qty", "Items");
+                    string qtyCell = GetStringValue(jobData, "Qty", "Quantity", "qty", "Items");
+                    if (!BulkQuantity.TryParseCell(qtyCell, out short? qty))
+                    {
+                        throw new Exception($"{BulkQuantity.RangeMessage} This row has '{qtyCell}'.");
+                    }
                     int? size = GetIntValue(jobData, "Size", "size", "VehicleSize");
                     double? weight = GetDoubleValue(jobData, "Weight", "weight");
                     decimal? totalWeight = GetDecimalValue(jobData, "TotalWeight", "Total Weight", "totalweight");

@@ -53,19 +53,39 @@ public class RouteViewerCourierService(
         // combined display string, no per-field breakdown). Different
         // row class avoids trying to bind ActiveJobs / Fleet / Available
         // which aren't returned here.
-        var raw = await Context.Database.SqlQueryRaw<RawCourierSearchRow>(
-            @"EXEC dbo.RVW_stpCourierActive @SearchTerm = @SearchTerm",
-            SpParam.Of("@SearchTerm", searchTerm))
-            .ToListAsync();
+        var raw = await RunCourierSearchSpAsync(searchTerm);
+
+        // #816: the SP returns only ID + Text, but the run menu's
+        // Re-assign / Pre-assign picker needs each courier's code (the
+        // run-level SPs take @CourierCode). Look the codes up by ID.
+        var ids = raw.Select(r => r.ID).Distinct().ToList();
+        var codes = ids.Count == 0
+            ? new Dictionary<int, string?>()
+            : await Context.TucCouriers
+                .AsNoTracking()
+                .Where(c => ids.Contains(c.UccrId))
+                .Select(c => new { c.UccrId, c.Code })
+                .ToDictionaryAsync(c => c.UccrId, c => c.Code);
 
         return raw.Select(r => new CourierListDto
         {
             CourierId = r.ID,
             Name = r.Text,
+            Code = codes.TryGetValue(r.ID, out var code) && !string.IsNullOrWhiteSpace(code)
+                ? code.Trim()
+                : null,
         }).ToList();
     }
 
-    private class RawCourierSearchRow
+    /// <summary>Runs RVW_stpCourierActive. Virtual so tests can supply
+    /// rows (the SP cannot run under EF InMemory).</summary>
+    protected virtual Task<List<RawCourierSearchRow>> RunCourierSearchSpAsync(string? searchTerm) =>
+        Context.Database.SqlQueryRaw<RawCourierSearchRow>(
+            @"EXEC dbo.RVW_stpCourierActive @SearchTerm = @SearchTerm",
+            SpParam.Of("@SearchTerm", searchTerm))
+            .ToListAsync();
+
+    protected class RawCourierSearchRow
     {
         public int ID { get; set; }
         public string? Text { get; set; }

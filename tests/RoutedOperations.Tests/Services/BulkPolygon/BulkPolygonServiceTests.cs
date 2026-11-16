@@ -125,6 +125,41 @@ public class BulkPolygonServiceTests
     }
 
     [Fact]
+    public async Task UpdateMetaAsync_SetsLayerAndBlankClearsIt()
+    {
+        var svc = NewSvc(out var seed, email: "kev@x");
+        seed.BulkRunPolygons.Add(new BulkRunPolygon
+        {
+            PolygonId = 1, Name = "AD Deep East", Active = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "s",
+        });
+        await seed.SaveChangesAsync();
+
+        var withLayer = await svc.UpdateMetaAsync(1, new UpdateBulkPolygonMetaRequest("AD Deep East", "  AD  "));
+        Assert.Equal("AD", withLayer!.Layer);
+
+        var all = await svc.GetAllAsync();
+        Assert.Equal("AD", all.Single().Layer);
+
+        var cleared = await svc.UpdateMetaAsync(1, new UpdateBulkPolygonMetaRequest("AD Deep East", "   "));
+        Assert.Null(cleared!.Layer);
+    }
+
+    [Fact]
+    public async Task UpdateMetaAsync_TooLongLayerThrows()
+    {
+        var svc = NewSvc(out var seed);
+        seed.BulkRunPolygons.Add(new BulkRunPolygon
+        {
+            PolygonId = 1, Name = "A", Active = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "s",
+        });
+        await seed.SaveChangesAsync();
+
+        var layer = new string('x', 201);
+        Assert.Throws<InvalidOperationException>(() =>
+            svc.UpdateMetaAsync(1, new UpdateBulkPolygonMetaRequest("A", layer)).GetAwaiter().GetResult());
+    }
+
+    [Fact]
     public async Task UpdateMetaAsync_InvalidNameThrows()
     {
         var svc = NewSvc(out _);

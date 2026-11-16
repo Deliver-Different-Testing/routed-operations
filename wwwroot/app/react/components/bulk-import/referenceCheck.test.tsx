@@ -86,10 +86,24 @@ describe('referenceErrorLines', () => {
 describe('requiredFieldLines', () => {
   const refA = { key: 'clientRefA', label: 'Ref A (cat)', required: true };
 
-  it('names the field and the first blank record, not "please map", when the column is mapped', () => {
-    const rows = [{ PO: '1' }, { PO: '2' }, { PO: '3' }, { PO: '  ' }, { PO: '' }];
+  it('names the field and the blank record, not "please map", when the column is mapped', () => {
+    const rows = [{ PO: '1' }, { PO: '2' }, { PO: '3' }, { PO: '  ' }];
     const lines = requiredFieldLines(requiredFieldProblems([refA], { clientRefA: 'PO' }, rows));
     expect(lines).toEqual(['Ref A (cat) is required: record 4 is blank']);
+  });
+
+  // #316. Only the first blank record was named, so the operator fixed it,
+  // pressed Next and was told about the next one, one record at a time.
+  it('names every blank record in the column, not just the first', () => {
+    const rows = [{ PO: '1' }, { PO: '' }, { PO: '3' }, { PO: '4' }, { PO: '  ' }];
+    const lines = requiredFieldLines(requiredFieldProblems([refA], { clientRefA: 'PO' }, rows));
+    expect(lines).toEqual(['Ref A (cat) is required: records 2, 5 are blank']);
+  });
+
+  it('lists ten blank records and says how many more', () => {
+    const rows = Array.from({ length: 14 }, (_, i) => ({ PO: i === 0 ? '1' : '' }));
+    const lines = requiredFieldLines(requiredFieldProblems([refA], { clientRefA: 'PO' }, rows));
+    expect(lines).toEqual(['Ref A (cat) is required: records 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 +3 more are blank']);
   });
 
   it('still asks to map a column that is not mapped', () => {

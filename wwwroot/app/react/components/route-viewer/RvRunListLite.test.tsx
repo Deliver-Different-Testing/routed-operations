@@ -3,6 +3,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { RvRunListLite } from './RvRunListLite';
 import type { BulkRun } from '../../services/routeViewerService';
+import { runRowKey } from '../../lib/runViewerSelection';
 
 const mkRun = (over: Partial<BulkRun> = {}): BulkRun => ({
   id: 1,
@@ -23,6 +24,7 @@ const mkRun = (over: Partial<BulkRun> = {}): BulkRun => ({
   isMissing: false,
   preAssigned: 0,
   isActive: 1,
+  courierId: null,
   courierName: 'Kev',
   courierCode: 'KEV',
   courierPercentageFormatted: null,
@@ -37,7 +39,7 @@ function renderLite(over: Partial<Parameters<typeof RvRunListLite>[0]> = {}) {
   const defaults = {
     variant: 'preAssigned' as const,
     runs: [] as BulkRun[],
-    selectedIds: [] as number[],
+    selectedIds: [] as string[],
     onSelect: vi.fn(),
   };
   const props = { ...defaults, ...over };
@@ -160,16 +162,16 @@ describe('RvRunListLite', () => {
     expect(screen.getByText('A')).toBeInTheDocument();
   });
 
-  it('applies selected background class when the row id is in selectedIds', () => {
+  it('applies selected background class when the row key is in selectedIds', () => {
     renderLite({
       variant: 'returns',
       runs: [mkRun({ id: 9, hasReturns: true })],
-      selectedIds: [9],
+      selectedIds: ['9||0'],
     });
     expect(document.querySelector('.bg-brand-cyan\\/20')).toBeInTheDocument();
   });
 
-  it('calls onSelect with id and modifier flags on click', () => {
+  it('calls onSelect with the row key and modifier flags on click', () => {
     const onSelect = vi.fn();
     renderLite({
       variant: 'returns',
@@ -177,7 +179,7 @@ describe('RvRunListLite', () => {
       onSelect,
     });
     fireEvent.click(screen.getByText('CLICK-ME'), { ctrlKey: true, shiftKey: false });
-    expect(onSelect).toHaveBeenCalledWith(7, { ctrl: true, shift: false });
+    expect(onSelect).toHaveBeenCalledWith('7||0', { ctrl: true, shift: false });
   });
 
   it('honours metaKey as ctrl for macOS parity', () => {
@@ -188,7 +190,7 @@ describe('RvRunListLite', () => {
       onSelect,
     });
     fireEvent.click(screen.getByText('META'), { metaKey: true });
-    expect(onSelect).toHaveBeenCalledWith(3, { ctrl: true, shift: false });
+    expect(onSelect).toHaveBeenCalledWith('3||0', { ctrl: true, shift: false });
   });
 
   it('fires onContextMenu when provided', () => {
@@ -200,7 +202,7 @@ describe('RvRunListLite', () => {
     });
     fireEvent.contextMenu(screen.getByText('CTX'));
     expect(onContextMenu).toHaveBeenCalled();
-    expect(onContextMenu.mock.calls[0][1]).toBe(4);
+    expect(onContextMenu.mock.calls[0][1]).toMatchObject({ id: 4, name: 'CTX' });
   });
 
   it('omits onContextMenu wiring when the prop is not provided', () => {
@@ -217,8 +219,8 @@ describe('RvRunListLite', () => {
     renderLite({
       variant: 'returns',
       runs: [mkRun({ id: 11, name: 'TINT-ME', hasReturns: true })],
-      selectedIds: [11],
-      runColorMap: { 11: '#7c3aed' },
+      selectedIds: ['11||0'],
+      runColorMap: { '11||0': '#7c3aed' },
     });
     const row = screen.getByText('TINT-ME').closest('tr');
     expect(row).not.toBeNull();
@@ -240,8 +242,8 @@ describe('RvRunListLite', () => {
         mkRun({ id: 21, name: 'SEL', hasReturns: true }),
         mkRun({ id: 22, name: 'UNSEL', hasReturns: true }),
       ],
-      selectedIds: [21],
-      runColorMap: { 21: '#0891b2', 22: '#f59e0b' },
+      selectedIds: ['21||0'],
+      runColorMap: { '21||0': '#0891b2', '22||0': '#f59e0b' },
     });
     const selRow = screen.getByText('SEL').closest('tr');
     const unselRow = screen.getByText('UNSEL').closest('tr');
@@ -250,5 +252,18 @@ describe('RvRunListLite', () => {
     // NOT carry an inline background even though its id has a colour.
     const unselStyle = unselRow!.getAttribute('style') ?? '';
     expect(unselStyle).not.toContain('background-color');
+  });
+
+  // #311 / #326: a run pre-assigned to two drivers shows twice in the Pre
+  // Assigned list. Each row is its own selection.
+  it('treats two pre-assigned halves of one run as separate rows', () => {
+    const a = mkRun({ id: 41, name: 'RUN41', preAssigned: 1, courierId: 7, courierCode: 'C7' });
+    const b = mkRun({ id: 41, name: 'RUN41', preAssigned: 1, courierId: 8, courierCode: 'C8' });
+    const onSelect = vi.fn();
+    renderLite({ runs: [a, b], selectedIds: [runRowKey(b)], onSelect });
+    const rows = screen.getAllByText('RUN41').map((el) => el.closest('tr')!);
+    fireEvent.click(rows[1]);
+    expect(onSelect).toHaveBeenCalledWith(runRowKey(b), expect.any(Object));
+    expect(document.querySelectorAll('tbody tr.bg-brand-cyan\\/20')).toHaveLength(1);
   });
 });

@@ -183,6 +183,59 @@ public class BulkImportServiceV2StaffImportTests
         Assert.DoesNotContain(resp.FailedJobs, f => f.Error.Contains("Client not found"));
     }
 
+    // #319 on the Staff Import path. A quantity that is not a whole number from
+    // 1 up used to be read as 0, a negative, a truncated 2 or (for "abc") a
+    // silent 1. The row is now refused with the value named, the same rule
+    // the New Import validator applies; the rest of the file still books.
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-3")]
+    [InlineData("2.7")]
+    [InlineData("abc")]
+    public async Task StaffImport_QuantityNotAWholeNumberFromOne_RefusesTheRow(string qty)
+    {
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "NZ", clientTypeId: "4");
+        seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "X", UcclName = "N", UcclActive = true, JobPrefix = "P" });
+        await seed.SaveChangesAsync();
+
+        var req = new StaffImportRequest
+        {
+            Jobs = new List<Dictionary<string, object>>
+            {
+                new() { { "ClientID", 5 }, { "JobNumber", "AAA" }, { "ToAddress", "17 Main" }, { "Qty", qty } }
+            }
+        };
+        var resp = await svc.StaffImport(1, req);
+
+        var failed = Assert.Single(resp.FailedJobs);
+        Assert.Equal(1, failed.RowNumber);
+        Assert.Contains("Quantity", failed.Error);
+        Assert.Contains($"'{qty}'", failed.Error);
+    }
+
+    [Theory]
+    [InlineData("  ")]
+    [InlineData("3")]
+    public async Task StaffImport_BlankOrWholeQuantity_IsNotRefusedForQuantity(string qty)
+    {
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: "NZ", clientTypeId: "4");
+        seed.TucClients.Add(new TucClient { UcclId = 5, UcclCode = "X", UcclName = "N", UcclActive = true, JobPrefix = "P" });
+        await seed.SaveChangesAsync();
+
+        var req = new StaffImportRequest
+        {
+            Jobs = new List<Dictionary<string, object>>
+            {
+                new() { { "ClientID", 5 }, { "JobNumber", "AAA" }, { "ToAddress", "17 Main" }, { "Qty", qty } }
+            }
+        };
+        var resp = await svc.StaffImport(1, req);
+
+        // The row still fails further down (the insert SP cannot run on
+        // InMemory), but not because of its quantity.
+        Assert.DoesNotContain(resp.FailedJobs, f => f.Error.Contains("Quantity"));
+    }
+
     [Fact]
     public async Task StaffImport_NzTenant_UsesNzBranch()
     {

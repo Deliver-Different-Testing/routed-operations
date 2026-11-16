@@ -189,17 +189,23 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
     for (let i = 0; i < state.parsed.rows.length; i++) {
       const rawValue = String(state.parsed.rows[i][key] ?? '');
       const raw = rawValue.trim();
-      // Apply the corrections made on the Fix Addresses step first, so rows
-      // the operator (or the geocoder) already fixed don't land in
-      // Unmatched. US: fixedZips is keyed on the bad zip, the same key
-      // buildJobs uses when it rewrites toZipCode.
-      const usZip = state.fixedZips[rawValue] ?? state.fixedZips[raw] ?? raw;
-      const lookupKey = isUs ? zipBase(usZip) : nzPostCode(raw);
+      let lookupKey = isUs ? zipBase(raw) : nzPostCode(raw);
       let hit = depotLookup[lookupKey];
-      // NZ: the row's own postcode wins. Only when it matches no depot does
-      // the geocoder's suggested postcode get a say, and the bucket then
-      // records the override so the job is booked with that postcode.
+      // The row's own postcode / zip wins. Only when it matches no depot do
+      // the corrections from the Fix steps get a say.
       let overridePostCode: string | null = null;
+      // US (#332): fixedZips is keyed on the zip value, the same key buildJobs
+      // uses to rewrite toZipCode, so a fix suggested for one row would
+      // rewrite every row with that zip. When the sheet zip matches a depot,
+      // pin it on the bucket so the import sends it unchanged.
+      const usFix = isUs ? (state.fixedZips[rawValue] ?? state.fixedZips[raw]) : undefined;
+      if (hit && usFix && usFix !== raw) overridePostCode = raw;
+      if (!hit && usFix) {
+        lookupKey = zipBase(usFix);
+        hit = depotLookup[lookupKey];
+      }
+      // NZ: the bucket records the geocoder's suggested postcode so the job is
+      // booked with the postcode it was grouped by.
       if (!hit && !isUs && state.fixedPostCodes[i]) {
         const suggested = nzPostCode(state.fixedPostCodes[i]);
         if (depotLookup[suggested]) {

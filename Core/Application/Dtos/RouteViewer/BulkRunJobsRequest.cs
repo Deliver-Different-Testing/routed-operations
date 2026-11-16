@@ -19,6 +19,12 @@ public class BulkRunJobsRequest
     public int? ClientId { get; set; }
     public int? CourierId { get; set; }
     public bool PreAssigned { get; set; }
+
+    /// <summary>#311/#326: true for the NULL-courier row of a split run.
+    /// Only the run's jobs with no courier come back. Needs dbmigrationsv2
+    /// 20261117141000 (Msg 8145 on a tenant without it).</summary>
+    public bool UnassignedOnly { get; set; }
+
     public string? SpeedIds { get; set; }
     public string? ClientIds { get; set; }
     public string? RegionIds { get; set; }

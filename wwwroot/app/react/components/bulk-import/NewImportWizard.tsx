@@ -157,14 +157,16 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
 
   // The jobs built from one bucket's source rows, paired with their row
   // index. Rows the depot grouping placed by the geocoder's suggested
-  // postcode are sent with that postcode (see DepotBucket.postCodeOverrides).
+  // postcode are sent with that postcode, and US rows whose own zip matched
+  // the depot are sent with that zip (see DepotBucket.postCodeOverrides).
   function bucketJobs(bucket: DepotBucket): { rowIndex: number; job: BulkImportJobCreateDto }[] {
     const all = buildJobs(state, isUs);
     return bucket.jobIndexes
       .filter((i) => all[i] !== undefined)
       .map((i) => {
         const override = bucket.postCodeOverrides?.[i];
-        return { rowIndex: i, job: override ? { ...all[i], toPostCode: override } : all[i] };
+        if (!override) return { rowIndex: i, job: all[i] };
+        return { rowIndex: i, job: isUs ? { ...all[i], toZipCode: override } : { ...all[i], toPostCode: override } };
       });
   }
 
@@ -637,7 +639,7 @@ export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreat
       toZipCode: get(row, 'toZipCode'),
       toContact: get(row, 'toContact'),
       toContactPhone: get(row, 'toContactPhone'),
-      quantity: toIntOrNull(get(row, 'quantity')),
+      quantity: quantityOrNull(get(row, 'quantity')),
       // Override dimensions win when > 0. A zero-valued stock size (rare
       // but possible) falls through to the mapped column, matching
       // BulkImportHyper's `job.length = stockSize.length || row[mapped]`
@@ -782,10 +784,14 @@ function stripZipPlus4(zip: string | null | undefined): string | null {
   return digits.slice(0, 5);
 }
 
-function toIntOrNull(v: string | null): number | null {
-  if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
+// #319. A blank or whitespace cell sends nothing, so the server books 1 (it
+// used to send Number(' ') = 0). Map Columns refuses anything that is not a
+// whole number from 1 to 32767 (quantityCellProblem) before this runs.
+function quantityOrNull(v: string | null): number | null {
+  const text = (v ?? '').trim();
+  if (text === '') return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
 }
 
 function toFloatOrNull(v: string | null): number | null {

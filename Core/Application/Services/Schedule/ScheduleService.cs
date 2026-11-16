@@ -2475,6 +2475,7 @@ public class ScheduleService(
             .ToListAsync();
         if (sourceRows.Count == 0)
             throw new InvalidOperationException("Source schedule has no day rows.");
+        sourceRows = CollapseDuplicateWeekdayRowsForCopy(source.ScheduleId, sourceRows);
 
         // M2 / B2 (2026-11-10): AutoBookScanAhead and IsRecurringSchedule are
         // not mapped on the view entity, and OccurrencesAhead exists only on
@@ -2806,6 +2807,70 @@ public class ScheduleService(
             scheduleId, previous, isActive);
         return isActive;
     }
+
+    /// <summary>
+    /// A copy gets one live row per weekday. Some sources have two (73 live
+    /// headers on Urgent prod, e.g. #575 with two Mon/Wed/Fri rows that differ
+    /// only in AutoBook). Cloning both handed the operator a copy the detail
+    /// modal could not save: it shows one row per weekday, so the save either
+    /// blanked the other row (pre-8a57a26, schedules 2942 / 2947 on
+    /// 2026-11-13, which broke Bulk Import) or is refused by the N2 guard.
+    ///
+    /// Rows that agree on everything that changes what gets booked (window,
+    /// cutoff, capacity, region, service, pickup, zones, pickup zones and
+    /// linehaul legs) are one run entered twice, so the copy keeps the
+    /// lowest-id row, flags included. Rows that really differ are two runs,
+    /// and choosing one would silently drop the other, so the copy is refused
+    /// before anything is written. Blanked rows (no StartTime) are dropped:
+    /// they describe no run and the view hides them anyway.
+    /// </summary>
+    private static List<TblBulkRunSchedule> CollapseDuplicateWeekdayRowsForCopy(
+        int scheduleId, List<TblBulkRunSchedule> sourceRows)
+    {
+        var live = sourceRows.Where(r => r.StartTime != null).ToList();
+        if (live.Count == 0) return sourceRows;
+
+        var kept = new List<TblBulkRunSchedule>();
+        var conflicting = new List<short>();
+        foreach (var day in live.GroupBy(r => r.DayOfWeek).OrderBy(g => g.Key))
+        {
+            var rows = day.OrderBy(r => r.BulkRunScheduleId).ToList();
+            var first = rows[0];
+            if (rows.Skip(1).All(r => CopyPayloadKey(r) == CopyPayloadKey(first)))
+                kept.Add(first);
+            else
+                conflicting.Add(day.Key ?? 0);
+        }
+
+        if (conflicting.Count > 0)
+            throw new InvalidOperationException(
+                $"Schedule #{scheduleId} has more than one live day row for "
+                + string.Join(", ", conflicting.Select(WeekdayName))
+                + " and the rows differ (times, cutoff, zones or linehaul legs). "
+                + "A copy can carry only one row per day, so nothing was copied. "
+                + "Ask support to merge the duplicate rows on the source first.");
+
+        return kept;
+    }
+
+    /// <summary>Everything about a day row that changes what gets booked.
+    /// AutoBook, Description, Name and the row ids are left out on purpose:
+    /// they are what duplicate rows on prod differ in.</summary>
+    private static string CopyPayloadKey(TblBulkRunSchedule r) => string.Join("|",
+        r.StartTime, r.EndTime, r.CutoffDay, r.CutoffTime, r.CutoffHours, r.MaxJobs,
+        r.Region, r.SpeedId, r.ParentSpeedId, r.BookPickup, r.ApplyPickupCutoff,
+        r.PickupCutoff, r.PostcodeGroupId, r.PickupPostcodeGroupId, r.PickupDepotId,
+        r.PickupRatingSpeed, r.StorageState, r.DeliveryState, r.PickupBoxDiscount,
+        r.DropOffLocationId,
+        "Z:" + string.Join(",", r.BulkZoneSchedules.OrderBy(z => z.Zone).Select(z => $"{z.Zone}:{z.Active}")),
+        "P:" + string.Join(",", r.BulkPickupZoneSchedules.OrderBy(z => z.Zone).Select(z => $"{z.Zone}:{z.Active}")),
+        "L:" + string.Join(";", r.TblBulkScheduleLinehauls
+            .Select(l => string.Join(",", l.Name, l.Active, l.Amount, l.AmountPercentage,
+                l.FromDepotId, l.ToDepotId, l.InsertToBulk, l.Minutes, l.LinehaulRunId,
+                l.ApplyDiscount, l.ApplyAddOnPercentage, l.WeekDay, l.DepartureAdvanceDays,
+                l.FromClientAddress, l.DropOffLocationId, l.LegOrder, l.SpeedId,
+                l.ChargePerConsignment))
+            .OrderBy(x => x, StringComparer.Ordinal)));
 
     // ─── HELPERS ───────────────────────────────────────────────────────────
 

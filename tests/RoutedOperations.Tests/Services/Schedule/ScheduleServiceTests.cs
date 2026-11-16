@@ -2051,6 +2051,144 @@ public class ScheduleServiceTests : IDisposable
         Assert.Equal(new TimeSpan(8, 0, 0), first.StartTime);
     }
 
+    // ─── Copy of a source with two live rows on one weekday (13 Nov) ───
+    //
+    // Urgent prod, schedules 2942 / 2947: both were copies of #575, which has
+    // two live rows on Mon, Wed and Fri that differ only in AutoBook. The copy
+    // cloned all six, the operator saved the copy from the detail modal (one
+    // row per weekday, one id each), and the other three rows were blanked.
+    // Bulk Import then 500'd on every upload. With the N2 guard the save
+    // throws instead, which leaves the operator with a copy they cannot edit.
+
+    /// <summary>Plants a second live Monday that copies the first Monday's
+    /// payload, zones and linehaul legs exactly, with only AutoBook and
+    /// Description different: the #575 shape.</summary>
+    private async Task<(ScheduleService Svc, DbContextOptions<DespatchContext> Opts,
+            int ScheduleId, int FirstMondayId, int SecondMondayId)>
+        NewScheduleWithFlagOnlyDuplicateMondayAsync()
+    {
+        var svc = NewSvcWithSeed(out var seed, out var opts);
+        using (seed)
+        {
+            var req = ValidRequest();
+            req.AutoBook = true;
+            var created = await svc.UpsertAsync(req);
+            var monday = seed.TblBulkRunScheduleDays.AsNoTracking()
+                .Single(r => r.ScheduleId == created.ScheduleId && r.DayOfWeek == 1);
+            var second = new TblBulkRunScheduleDay
+            {
+                ScheduleId = monday.ScheduleId,
+                Name = monday.Name,
+                DayOfWeek = monday.DayOfWeek,
+                StartTime = monday.StartTime,
+                EndTime = monday.EndTime,
+                MaxJobs = monday.MaxJobs,
+                Region = monday.Region,
+                SpeedId = monday.SpeedId,
+                CutoffHours = monday.CutoffHours,
+                CutoffDay = monday.CutoffDay,
+                CutoffTime = monday.CutoffTime,
+                PostcodeGroupId = monday.PostcodeGroupId,
+                BookPickup = monday.BookPickup,
+                PickupDepotId = monday.PickupDepotId,
+                AutoBook = false,
+                Description = "second Monday",
+            };
+            seed.TblBulkRunScheduleDays.Add(second);
+            await seed.SaveChangesAsync();
+            foreach (var z in seed.BulkZoneSchedules.AsNoTracking()
+                         .Where(z => z.ScheduleId == monday.BulkRunScheduleId).ToList())
+                seed.BulkZoneSchedules.Add(new BulkZoneSchedule
+                {
+                    ScheduleId = second.BulkRunScheduleId, Zone = z.Zone, Active = z.Active,
+                });
+            await seed.SaveChangesAsync();
+            return (svc, opts, created.ScheduleId, monday.BulkRunScheduleId, second.BulkRunScheduleId);
+        }
+    }
+
+    [Fact]
+    public async Task CopyAsync_merges_weekday_rows_that_differ_only_in_flags_into_one()
+    {
+        var (svc, opts, scheduleId, firstMonday, _) = await NewScheduleWithFlagOnlyDuplicateMondayAsync();
+
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = scheduleId,
+            NewName = "Test Group (copy)",
+            ClientIds = new List<int>(),
+        });
+
+        using var read = CockpitTestHarness.Context(opts);
+        var rows = read.TblBulkRunScheduleDays.AsNoTracking()
+            .Where(r => r.ScheduleId == copy.ScheduleId).ToList();
+        // One row per weekday, not three.
+        Assert.Equal(new[] { 1, 2 }, rows.Select(r => (int)r.DayOfWeek).OrderBy(d => d).ToArray());
+        // The kept Monday is the lowest-id source row, so its flags come along.
+        var copiedMonday = rows.Single(r => r.DayOfWeek == 1);
+        var source = read.TblBulkRunScheduleDays.AsNoTracking().Single(r => r.BulkRunScheduleId == firstMonday);
+        Assert.Equal(source.AutoBook, copiedMonday.AutoBook);
+        Assert.Equal(source.Description, copiedMonday.Description);
+        // Its zones are copied once, not twice.
+        Assert.Equal(
+            read.BulkZoneSchedules.Where(z => z.ScheduleId == firstMonday).Select(z => z.Zone).OrderBy(z => z).ToList(),
+            read.BulkZoneSchedules.Where(z => z.ScheduleId == copiedMonday.BulkRunScheduleId).Select(z => z.Zone).OrderBy(z => z).ToList());
+    }
+
+    [Fact]
+    public async Task CopyAsync_merged_copy_saves_from_the_modal_without_blanking_any_row()
+    {
+        var (svc, opts, scheduleId, _, _) = await NewScheduleWithFlagOnlyDuplicateMondayAsync();
+        var copy = await svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = scheduleId,
+            NewName = "Test Group (copy)",
+            ClientIds = new List<int>(),
+            IsDefault = true,
+        });
+
+        // The modal's save: one window per weekday, each with the id it shows.
+        var save = ValidRequest();
+        save.ScheduleId = copy.ScheduleId;
+        save.Name = "Test Group (copy)";
+        save.IsDefault = true;
+        save.DayWindows = copy.DayWindows.Select(w => new DayWindowUpsertRequest
+        {
+            Id = w.Id, DayOfWeek = w.DayOfWeek, StartTime = "07:00", EndTime = "12:00",
+            CutoffDay = (byte)w.DayOfWeek, CutoffTime = "06:00",
+        }).ToList();
+        await svc.UpsertAsync(save);
+
+        using var read = CockpitTestHarness.Context(opts);
+        var rows = read.TblBulkRunScheduleDays.AsNoTracking()
+            .Where(r => r.ScheduleId == copy.ScheduleId).ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal(new TimeSpan(7, 0, 0), r.StartTime));
+    }
+
+    [Fact]
+    public async Task CopyAsync_refuses_a_source_whose_weekday_rows_really_differ()
+    {
+        // The N2 fixture's second Monday runs 18:00-20:00 with its own zone and
+        // leg: two genuinely different runs on one day. Picking one would drop
+        // the other from the copy without anyone choosing that.
+        var (svc, opts, scheduleId, _, _, _) = await NewScheduleWithDuplicateMondayAsync();
+        int headersBefore;
+        using (var before = CockpitTestHarness.Context(opts))
+            headersBefore = before.BulkRunScheduleHeaders.Count();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.CopyAsync(new ScheduleCopyRequest
+        {
+            SourceScheduleId = scheduleId,
+            NewName = "Test Group (copy)",
+            ClientIds = new List<int>(),
+        }));
+        Assert.Contains("more than one live day row for Monday", ex.Message);
+
+        using var read = CockpitTestHarness.Context(opts);
+        Assert.Equal(headersBefore, read.BulkRunScheduleHeaders.Count());
+    }
+
     // ─── 6.1: who can book a schedule is a setting, not a derivation ───
     //
     // These four pin the rule rather than the field, which is the point: the

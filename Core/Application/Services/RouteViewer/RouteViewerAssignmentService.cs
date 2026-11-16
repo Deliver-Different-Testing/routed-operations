@@ -297,22 +297,41 @@ public class RouteViewerAssignmentService(
     /// the courier-per-job path.</summary>
     public async Task PreAssignRunAsync(int runId, string? fromCourierCode, string toCourierCode)
     {
-        await Context.Database.ExecuteSqlRawAsync(
-            "EXEC dbo.RVW_stpPreAssignRun @RunID, @FromCourierCode, @ToCourierCode",
-            SpParam.Of("@RunID", runId),
-            SpParam.Of("@FromCourierCode",
-                string.IsNullOrEmpty(fromCourierCode) ? (object?)null : fromCourierCode),
-            SpParam.Of("@ToCourierCode", toCourierCode));
+        try
+        {
+            await Context.Database.ExecuteSqlRawAsync(
+                "EXEC dbo.RVW_stpPreAssignRun @RunID, @FromCourierCode, @ToCourierCode",
+                SpParam.Of("@RunID", runId),
+                SpParam.Of("@FromCourierCode",
+                    string.IsNullOrEmpty(fromCourierCode) ? (object?)null : fromCourierCode),
+                SpParam.Of("@ToCourierCode", toCourierCode));
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            // #816: the proc RAISERRORs on an unknown / inactive courier
+            // code before writing anything. Surface it as a request problem.
+            logger.LogWarning(ex, "PreAssignRun rejected by proc: {Message}", ex.Message);
+            throw new RunCourierRejectedException(ex.Message);
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/unassign-run - release a whole
     /// run from a courier. Wraps legacy RVW_stpUnAssignRun.</summary>
     public async Task UnAssignRunAsync(int runId, string courierCode)
     {
-        await Context.Database.ExecuteSqlRawAsync(
-            "EXEC dbo.RVW_stpUnAssignRun @RunID, @CourierCode",
-            SpParam.Of("@RunID", runId),
-            SpParam.Of("@CourierCode", courierCode));
+        try
+        {
+            await Context.Database.ExecuteSqlRawAsync(
+                "EXEC dbo.RVW_stpUnAssignRun @RunID, @CourierCode",
+                SpParam.Of("@RunID", runId),
+                SpParam.Of("@CourierCode", courierCode));
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            // #816: same guard as PreAssignRunAsync.
+            logger.LogWarning(ex, "UnAssignRun rejected by proc: {Message}", ex.Message);
+            throw new RunCourierRejectedException(ex.Message);
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/transfer-run - bulk-transfer
@@ -354,3 +373,7 @@ public class RouteViewerAssignmentService(
             SpParam.Of("@ToCourierCode", toCourierCode ?? string.Empty));
     }
 }
+
+/// <summary>#816: RVW_stpPreAssignRun / RVW_stpUnAssignRun refused the
+/// courier code (RAISERROR 50000). Nothing was written.</summary>
+public sealed class RunCourierRejectedException(string message) : Exception(message);

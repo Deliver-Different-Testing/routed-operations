@@ -55,6 +55,10 @@ export interface BulkRun {
   isMissing: boolean;
   preAssigned: number;             // 0 / 1, NOT bool
   isActive: number;                // 0 / 1, NOT bool
+  /** #311/#326: the courier this row stands for. A split run is one row
+   *  per courier plus a null-courier row; identity = id + courierId +
+   *  preAssigned (lib/runViewerSelection runRowKey). */
+  courierId: number | null;
   courierName: string | null;
   courierCode: string | null;
   courierPercentageFormatted: string | null;
@@ -234,6 +238,8 @@ export const routeViewerService = {
       clientId?: number | null;
       courierId?: number | null;
       preAssigned?: boolean;
+      /** #311/#326: the NULL-courier row of a split run. */
+      unassignedOnly?: boolean;
     },
   ) =>
     unwrap<BulkJob[]>(
@@ -246,6 +252,7 @@ export const routeViewerService = {
         clientId: filters?.clientId ?? undefined,
         courierId: filters?.courierId ?? undefined,
         preAssigned: filters?.preAssigned ? 'true' : undefined,
+        unassignedOnly: filters?.unassignedOnly ? 'true' : undefined,
       })}`,
     ),
 
@@ -403,7 +410,10 @@ export const routeViewerService = {
   // -----------------------------------------------------------------
   // Scans / events
   // -----------------------------------------------------------------
-  getScanDetail: (jobId: number) =>
+  /** Detail-box scan history. The selected id is a tblBulkJob.BulkJobId;
+   *  the server resolves job number + book date from it (the old `jobId`
+   *  query param was not bound by the API, so the box was always empty). */
+  getScanDetail: (bulkJobId: number) =>
     unwrap<Array<{
       scanId?: number;
       scanDateTime?: string | null;
@@ -423,7 +433,7 @@ export const routeViewerService = {
       scanType?: string;
       courierName?: string;
     }>>(
-      `/runviewer/scans/detail${buildQuery({ jobId })}`,
+      `/runviewer/scans/detail${buildQuery({ bulkJobId })}`,
     ),
 
   /** Print Manager grid. Wraps RVW_stpPrintJobsV2 via
@@ -774,6 +784,24 @@ export const routeViewerService = {
    *  for bypassing the JSON request wrapper. */
   printSingleJobLabelPdf: async (jobId: number): Promise<Blob> => {
     const res = await fetch(`/api/runviewer/labels/jobs/${jobId}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const msg = body?.message ?? body?.messages?.[0]?.message ?? `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    return res.blob();
+  },
+
+  /** Wraps GET /runviewer/labels/lhp-jobs/{jobId} (LHP leg label on the
+   *  bulk template, Mode 1). LHP jobs have no tblBulkJob row (#309). */
+  printLhpJobLabelPdf: async (jobId: number): Promise<Blob> => {
+    const res = await fetch(`/api/runviewer/labels/lhp-jobs/${jobId}`, {
       method: 'GET',
       credentials: 'same-origin',
       headers: {

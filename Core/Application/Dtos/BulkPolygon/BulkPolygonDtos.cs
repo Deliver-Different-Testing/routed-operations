@@ -51,7 +51,12 @@ public record BulkPolygonDto(
     /// <summary>Resolved ZoneName.ZoneName1 for the ZoneNameId binding. Null when unbound or the row was deleted.</summary>
     string? ZoneNameName = null,
     /// <summary>Resolved BulkZonePostcodeGroup.Name for the PostcodeGroupId binding. Null when unbound or the row was deleted.</summary>
-    string? PostcodeGroupName = null);
+    string? PostcodeGroupName = null,
+    /// <summary>Layer the shape sits in on the Polygon Builder map (2026-11-12). Stored in
+    /// tblBulkRunPolygon.TagLocation, which existed unused since 20260730095959. Null = no layer.
+    /// Layers are a drawing aid only: the sidebar groups by them and each one can be hidden or
+    /// shown alone. Nothing in auto-assign, zones or routes reads them.</summary>
+    string? Layer = null);
 
 /// <summary>Create payload. Client precomputes centroid; server stores as-is.</summary>
 public record CreateBulkPolygonRequest(
@@ -60,10 +65,11 @@ public record CreateBulkPolygonRequest(
     decimal CentroidLongitude,
     List<PolygonPointDto> Points,
     byte SourceType = 0,
-    string? SourceCode = null);
+    string? SourceCode = null,
+    string? Layer = null);
 
-/// <summary>Rename-only update. Shape edits go through /shape.</summary>
-public record UpdateBulkPolygonMetaRequest(string Name);
+/// <summary>Name + layer update. Shape edits go through /shape. Layer null or blank clears it.</summary>
+public record UpdateBulkPolygonMetaRequest(string Name, string? Layer = null);
 
 /// <summary>Reshape update. Client recomputes centroid from the new vertices.</summary>
 public record UpdateBulkPolygonShapeRequest(

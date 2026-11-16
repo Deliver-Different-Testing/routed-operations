@@ -350,6 +350,62 @@ public class AddressServiceTests
         Assert.False(byName["Air NZ Cargo"].HasSchedules);
     }
 
+    // #1017 (WOOP, 8083): airline depots Qantas and AZAP Christchurch carry a
+    // DEFAULT schedule (ClientId NULL) and a lower zone than Christchurch,
+    // where the client has its OWN schedule. A default schedule must not tie
+    // with the client's own one, or the lower airline zone takes the postcode.
+    [Fact]
+    public async Task GetPostcodesByDepotAsync_ClientOwnScheduleBeatsDefaultScheduleAtLowerZone()
+    {
+        var svc = NewSvc(out var seed, countryCode: "NZ", clientTypeId: "4");
+        var chc = new TblBulkRegion { BulkRegionId = 20, Name = "Christchurch", Active = true };
+        var qantas = new TblBulkRegion { BulkRegionId = 34, Name = "Qantas Christchurch", Active = true };
+        var azap = new TblBulkRegion { BulkRegionId = 49, Name = "AZAP Christchurch", Active = true };
+        seed.TblBulkRegions.AddRange(chc, qantas, azap);
+        seed.BulkZonePostcodes.AddRange(
+            new BulkZonePostcode { Id = 1, PostCode = 8083, Zone = 4, DepotId = 20, Depot = chc },
+            new BulkZonePostcode { Id = 2, PostCode = 8083, Zone = 3, DepotId = 34, Depot = qantas },
+            new BulkZonePostcode { Id = 3, PostCode = 8083, Zone = 3, DepotId = 49, Depot = azap },
+            // Only Qantas covers 8099: a default schedule still beats no schedule.
+            new BulkZonePostcode { Id = 4, PostCode = 8099, Zone = 3, DepotId = 34, Depot = qantas });
+        seed.TblBulkRunSchedules.AddRange(
+            new TblBulkRunSchedule { BulkRunScheduleId = 1, Name = "WOOP CHC", ClientId = 5, Region = 20, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 2, Name = "QF default", ClientId = null, Region = 34, DayOfWeek = 1 },
+            new TblBulkRunSchedule { BulkRunScheduleId = 3, Name = "AZAP default", ClientId = null, Region = 49, DayOfWeek = 1 });
+        await seed.SaveChangesAsync();
+
+        var resp = await svc.GetPostcodesByDepotAsync(Guid.NewGuid(), clientId: 5);
+
+        Assert.True(resp.Success);
+        var byName = resp.Depots.ToDictionary(d => d.Name);
+        Assert.Equal(new[] { "8083" }, byName["Christchurch"].Postcodes.ToArray());
+        Assert.Equal(new[] { "8099" }, byName["Qantas Christchurch"].Postcodes.ToArray());
+        Assert.True(byName["Qantas Christchurch"].HasSchedules);
+        Assert.False(byName.ContainsKey("AZAP Christchurch"));
+    }
+
+    // Default (ClientId NULL) schedule beats no schedule even at a higher zone.
+    [Fact]
+    public async Task GetPostcodesByDepotAsync_DefaultScheduleBeatsNoScheduleAtLowerZone()
+    {
+        var svc = NewSvc(out var seed, countryCode: "NZ", clientTypeId: "4");
+        var dflt = new TblBulkRegion { BulkRegionId = 1, Name = "Default Depot", Active = true };
+        var none = new TblBulkRegion { BulkRegionId = 2, Name = "No Schedule Depot", Active = true };
+        seed.TblBulkRegions.AddRange(dflt, none);
+        seed.BulkZonePostcodes.AddRange(
+            new BulkZonePostcode { Id = 1, PostCode = 5000, Zone = 5, DepotId = 1, Depot = dflt },
+            new BulkZonePostcode { Id = 2, PostCode = 5000, Zone = 1, DepotId = 2, Depot = none });
+        seed.TblBulkRunSchedules.Add(
+            new TblBulkRunSchedule { BulkRunScheduleId = 1, Name = "Default", ClientId = null, Region = 1, DayOfWeek = 1 });
+        await seed.SaveChangesAsync();
+
+        var resp = await svc.GetPostcodesByDepotAsync(Guid.NewGuid(), clientId: 5);
+
+        var depot = Assert.Single(resp.Depots);
+        Assert.Equal("Default Depot", depot.Name);
+        Assert.True(depot.HasSchedules);
+    }
+
     [Fact]
     public async Task GetPostcodesByDepotAsync_WithoutClient_DeDuplicatesByZoneThenDepotId()
     {
