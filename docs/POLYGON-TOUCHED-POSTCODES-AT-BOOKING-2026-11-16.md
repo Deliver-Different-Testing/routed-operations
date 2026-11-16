@@ -2,7 +2,7 @@
 
 **For:** Kevin (owner). Kerran FYI (rating side already follows this rule).
 **From:** Steve, 16 Nov 2026
-**Repos:** routed-operations (panel + DTO), dbmigrationsv2 (availability function + callers)
+**Repos:** routed-operations (panel + DTO), dbmigrationsv2 (availability + rating functions, callers), WebAPI (pass coordinates on GetSchedulerRates and rerate; approved by Steve 16 Nov)
 **Researched on:** routed-operations GitLab `develop` 8231d13 (14 Nov), dbmigrationsv2 GitLab `master` 35f9322 (15 Nov)
 
 ## 1. What happened
@@ -70,6 +70,15 @@ The api log shows `GetSchedulerRates` and `POST /API/UrgentAPI/Job` already carr
 - The panel reads **"Fully covers N postcodes · partly covers M"** and lists both. Partly-covered ones are marked "address checked against the line". Show-on-map shades partial ones lighter.
 - Leave the packed `PartiallyIncludedZips` column and its 10% rule alone. Only the route resolver reads it (routing, not booking). Moving the resolver to the new rule is a separate decision.
 
+### 4.5 Rating uses the zone the polygon gave (added 16 Nov after M0)
+
+M0 found that NZ rating never sees polygon 30. `UTL_fncJob_ExceleratorRate` reads `tblBulkRunPolygon.ZoneNameId` (US model), polygon 30 has none, and `PolygonZoneRatingEnabled = 0` on Urgent. NZ zone rating resolves the zone from `bulkzonepostcode` by postcode. Once 4.1 offers the Std Regional Hamilton run into Karapiro 3494 through the polygon, the price lookup still goes by postcode. 3494 isn't a postcode member of that group, so Zone 6 may not price at all. Kevin's 20261007210000 header warned about exactly this split.
+
+- **Rule (Steve, 16 Nov):** when availability gives a job end its group and zone through a polygon (`BulkZonePolygon`), NZ rating prices that end in the same group and zone. The quote price must match the schedule offered.
+- Same order of precedence as availability: a postcode zone in that group wins. Then a full polygon postcode. Then a partial one, if the point is inside.
+- Kevin to name the exact NZ zone resolution point(s) feeding `fncT_BulkZoneRate*` / `UCL_fncT_GetBulkZone` in M2b. Re-emit from the latest emitter on master at build time.
+- Gate it on the same switch as 4.1, so availability and rating always turn on together.
+
 ### 4.4 Switch
 
 `PolygonZoneResolutionEnabled` turns on for Urgent once M4 passes on Urgent staging, if M0 shows it's off. The old "do not enable until rule 3" condition is met by 4.1.
@@ -107,7 +116,8 @@ WHERE CAST(z.PostCode AS varchar(10)) IN (SELECT Zip FROM dbo.BulkRunPolygonZip 
 3. An address in 3494 **outside** the line does not get it.
 4. Every job entry point from M0 passes coordinates. Prove it on staging: a quote and a booking into 3494 inside the line both offer the schedule.
 5. The panel lists all touched postcodes, split into fully and partly covered.
-6. A quote with no polygon involved returns exactly what it did before (diff 50 recent Urgent quotes before and after).
+6. The Karapiro quote prices in Zone 6 of Std Regional Hamilton, matching the schedule offered (4.5).
+7. A quote with no polygon involved returns exactly what it did before (diff 50 recent Urgent quotes before and after).
 
 ## Milestones
 
@@ -116,6 +126,7 @@ WHERE CAST(z.PostCode AS varchar(10)) IN (SELECT Zip FROM dbo.BulkRunPolygonZip 
 | M0 | Confirm facts | Section 6 run on Urgent prod and results posted. Entry-point list for 4.2 agreed. D1 and D2 decided by Steve 16 Nov. |
 | M1 | Availability `...At` function | New function plus wrapper migration on a branch. Per-group rule 1, IsFull / point test, collision header names the real baseline. |
 | M2 | Coordinates through quote and booking | Entry points from M0 pass From/To lat/lng. Quote and insert give the same schedule for the same address. |
+| M2b | Rating uses the polygon zone | NZ rating prices a polygon-zoned end in the same group and zone that availability gave it, behind the same switch. A Karapiro quote on the corridor returns a Zone 6 price. |
 | M3 | Panel shows touched postcodes | DTO carries `BulkRunPolygonZip` rows. Panel shows fully/partly lists and map shading. |
-| M4 | Staging acceptance | Section 7 checks 1-6 pass on Urgent staging. |
+| M4 | Staging acceptance | Section 7 checks 1-7 pass on Urgent staging. |
 | M5 | Prod + Marcus retest | Released. Switch on for Urgent if it was off. Marcus books into Karapiro on the corridor and gets the regional run. |
