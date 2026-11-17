@@ -20,6 +20,13 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Bulk
     {
         public string? JobNumber { get; set; }
         public string? BookDate { get; set; }
+        // UC #881. On-demand rows book on their own Book Date / Book Time; the
+        // request's BookDate only fills what the row left blank. Routed ignores both.
+        public string? BookTime { get; set; }
+        // Server-only: the row's booking time once resolved (RowBookDate). Null
+        // means the row had neither value and books on the batch default.
+        [Newtonsoft.Json.JsonIgnore]
+        public DateTime? ResolvedBookDateTime { get; set; }
         public string? FromContact { get; set; }
         public string? FromCompany { get; set; }
         public string? FromAddress { get; set; }

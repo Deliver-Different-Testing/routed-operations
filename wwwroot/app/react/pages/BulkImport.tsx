@@ -393,7 +393,7 @@ export default function BulkImportPage() {
                 <SortableTh label="Job Number" k="jobNumber" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <SortableTh label="Book Date" k="bookDate" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <SortableTh label="Client Code" k="clientCode" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
-                <SortableTh label="Service" k="speed" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh label="Speed" k="speed" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <SortableTh label="From" k="fromAddress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <SortableTh label="To" k="toAddress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <SortableTh label={cityLabel(isUsTenant)} k="toSuburbOrCity" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />

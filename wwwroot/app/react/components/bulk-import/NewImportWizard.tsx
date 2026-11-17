@@ -30,6 +30,8 @@ import {
   type WizardState,
 } from './wizardState';
 import { matchKmRatedToSourceRows } from './sourceRowExport';
+import { parseBookDate, parseBookTime } from './bookDateParse';
+import { addDaysYmd, tenantTodayYmd } from '../../lib/tenantDate';
 
 interface Props {
   open: boolean;
@@ -65,7 +67,7 @@ function composeBookDateTime(bookDate: string, bookTime: string | null): string 
 export function NewImportWizard({ open, onClose, onImported }: Props) {
   const auth = useAuth();
   const toast = useToast();
-  const [state, dispatch] = useReducer(wizardReducer, undefined, initialWizardState);
+  const [state, dispatch] = useReducer(wizardReducer, auth.timeZone ?? null, initialWizardState);
   const [importing, setImporting] = useState(false);
   const [checkingPrices, setCheckingPrices] = useState(false);
   const isUs = auth.isUsTenant || state.client?.isUsTenant || false;
@@ -198,7 +200,13 @@ export function NewImportWizard({ open, onClose, onImported }: Props) {
       : null;
     return {
       clientId: state.client.id,
-      bookDate: composeBookDateTime(state.bookDate, state.bookTime || null),
+      // The defaults step may leave the date blank when every row brings its
+      // own (#881). The server never books on it then, but BookDate must bind,
+      // so tenant tomorrow stands in.
+      bookDate: composeBookDateTime(
+        state.bookDate || addDaysYmd(tenantTodayYmd({ isUsTenant: isUs, timeZone: auth.timeZone }), 1),
+        state.bookTime || null
+      ),
       scheduleId: state.importType === 'onDemand' ? null : state.scheduleId,
       speedId: state.speedId,
       isKmRatedJobs: isKmRatedSecondPass,
@@ -612,6 +620,20 @@ export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreat
   // NZ on-demand-only per-job flags (matches homeControl.js:3359-3363).
   const applyNzOnDemandFlags = !isUs && state.importType === 'onDemand';
   const truckRows = truckInPlay(state, isUs);
+  // UC #881. An on-demand row books on its own Book Date / Book Time, sent as
+  // yyyy-MM-dd / HH:mm; a blank cell takes the defaults-step value. A cell that
+  // cannot be read goes up as it is so the server refuses that row with a
+  // reason. With neither column mapped nothing is sent and the batch value applies.
+  const perRowBookDate = state.importType === 'onDemand' && !!(m.bookDate || m.bookTime);
+  const rowBookDate = (row: Record<string, string>): string | null => {
+    const raw = get(row, 'bookDate');
+    if (!perRowBookDate) return raw;
+    return raw == null ? state.bookDate || null : parseBookDate(raw, isUs) ?? raw;
+  };
+  const rowBookTime = (row: Record<string, string>): string | null => {
+    const raw = get(row, 'bookTime');
+    return raw == null ? state.bookTime || null : parseBookTime(raw) ?? raw;
+  };
   return state.parsed.rows.map((row, idx) => {
     const mappedLength = toFloatOrNull(get(row, 'length'));
     const mappedWidth = toFloatOrNull(get(row, 'width'));
@@ -619,7 +641,7 @@ export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreat
     const mappedWeight = toFloatOrNull(get(row, 'weight'));
     const j: BulkImportJobCreateDto = {
       jobNumber: autoGen ? 'AUTOGENERATE' : get(row, 'jobNumber'),
-      bookDate: get(row, 'bookDate'),
+      bookDate: rowBookDate(row),
       fromContact: overrideContact ?? get(row, 'fromContact'),
       fromCompany: get(row, 'fromCompany'),
       fromAddress: get(row, 'fromAddress'),
@@ -656,6 +678,7 @@ export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreat
       trackingMobile: get(row, 'trackingMobile'),
       stopType: normalizeStopType(get(row, 'stopType')),
     };
+    if (perRowBookDate) j.bookTime = rowBookTime(row);
     if (batchStopType === 'pickup' || batchStopType === 'dropoff') {
       j.stopType = batchStopType;
     }
@@ -674,6 +697,10 @@ export function buildJobs(state: WizardState, isUs: boolean): BulkImportJobCreat
       const totalWeight = toFloatOrNull(get(row, 'totalWeight'));
       if (totalWeight != null) j.totalWeight = totalWeight;
     }
+    // #881: a P2P row's own Speed (truck rows got theirs above). The server
+    // matches it to the client's speeds.
+    const rowSpeed = !truckRows && !isUs && state.importType === 'onDemand' ? get(row, 'speed') : null;
+    if (rowSpeed) j.speed = rowSpeed;
     // Fixed-zip override. Legacy matches on (name + postcode) for NZ so
     // duplicate suburb names across postcodes get independent replacements
     // (homeControl.js:2339-2344). US matches on zip alone.

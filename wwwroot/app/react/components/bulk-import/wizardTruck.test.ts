@@ -82,8 +82,9 @@ describe('truckInPlay', () => {
 describe('urgentFieldsFor truck fields', () => {
   const keys = (truck: boolean) => urgentFieldsFor(false, 'onDemand', false, false, undefined, false, truck).map((f) => f.key);
 
+  // #881: Speed is offered on every NZ on-demand file, truck or not.
   it('adds no truck-only fields unless a truck speed is in play', () => {
-    expect(keys(false)).not.toContain('speed');
+    expect(keys(false)).toContain('speed');
     expect(keys(false)).not.toContain('palletType');
   });
 

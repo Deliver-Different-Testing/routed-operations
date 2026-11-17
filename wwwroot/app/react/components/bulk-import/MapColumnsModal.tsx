@@ -18,6 +18,7 @@ import {
   requiredFieldProblems,
   truckFieldsEligible,
   truckInPlay,
+  remapAfterTemplateClear,
   urgentFieldsFor,
   type UrgentField,
   type WizardAction,
@@ -523,11 +524,15 @@ export function MapColumnsModal({ open, state, dispatch, onBack, onNext, onCance
                   // We rebuild the mapping from auto-map so the operator
                   // sees a clean slate instead of leftover template columns.
                   if (!raw) {
-                    const auto: Record<string, string> = {};
-                    for (const f of fields) {
-                      const match = autoMatchColumn(f, parsedHeaders);
-                      if (match) auto[f.key] = match;
-                    }
+                    const auto = remapAfterTemplateClear(state, isUsTenant, (truck) => urgentFieldsFor(
+                      isUsTenant,
+                      state.importType,
+                      state.options.autogenerateJobNumber,
+                      state.options.routeStartsFromClientSite,
+                      settings ?? undefined,
+                      !!state.options.overrideDimensions?.trim(),
+                      truck
+                    ));
                     dispatch({ type: 'APPLY_TEMPLATE', templateId: null, mapping: auto });
                     toast.show('Template cleared.', 'info');
                     return;

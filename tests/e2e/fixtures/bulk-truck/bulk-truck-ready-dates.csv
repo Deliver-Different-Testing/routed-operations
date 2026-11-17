@@ -1,0 +1,4 @@
+Job Number,Ready Date,Ready Time,Speed,From Contact,From Company,Pickup Address,Pickup Suburb,Pickup Post Code,Recipient Company,Delivery Address,To Suburb,To Post Code,Delivery Contact,Delivery Phone,Pallets,Pallet Type,Weight,Notes
+RD2001,19/03/2031,08:30,TECO,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Sample Retail Ltd,20 Sample Street,Otahuhu,1062,Test Receiver,000 000 000,1,Half Pallet,250,
+RD2002,18/03/2031,14:00,Truck Standard,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Demo Traders Ltd,30 Demo Avenue,Penrose,1061,Test Receiver,000 000 000,2,Full Pallet,500,
+RD2003,19/03/2031,10:15,Standard,Test Sender,Example Warehouse Ltd,10 Example Road,Otahuhu,1062,Placeholder Stores,40 Placeholder Lane,Newmarket,1023,Test Receiver,000 000 000,1,,5,
