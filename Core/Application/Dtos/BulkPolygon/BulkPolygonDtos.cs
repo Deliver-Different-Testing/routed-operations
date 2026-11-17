@@ -56,7 +56,15 @@ public record BulkPolygonDto(
     /// tblBulkRunPolygon.TagLocation, which existed unused since 20260730095959. Null = no layer.
     /// Layers are a drawing aid only: the sidebar groups by them and each one can be hidden or
     /// shown alone. Nothing in auto-assign, zones or routes reads them.</summary>
-    string? Layer = null);
+    string? Layer = null,
+    /// <summary>Every postcode the shape touches, from dbo.BulkRunPolygonZip (written by
+    /// the overlay on create / reshape). No 10% floor: this is what booking assesses
+    /// (polygons touched-postcodes spec 4.3). Null or empty when the overlay has not run.</summary>
+    List<BulkPolygonZipDto>? TouchedZips = null);
+
+/// <summary>One BulkRunPolygonZip row. IsFull = at least 99% inside the shape, so it
+/// matches on postcode alone; otherwise the job address is checked against the line.</summary>
+public record BulkPolygonZipDto(string Zip, bool IsFull, decimal OverlapPct);
 
 /// <summary>Create payload. Client precomputes centroid; server stores as-is.</summary>
 public record CreateBulkPolygonRequest(

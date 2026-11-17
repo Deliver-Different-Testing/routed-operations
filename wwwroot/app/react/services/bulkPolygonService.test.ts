@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '../test/server';
-import { bulkPolygonService, parsePartiallyIncludedZips } from './bulkPolygonService';
+import {
+  bulkPolygonService, formatOverlapPct, parsePartiallyIncludedZips, savedZipsToastTrailer, splitFocusSelection, splitTouchedZips,
+} from './bulkPolygonService';
 
 const stub = {
   polygonId: 1, name: 'p', sourceType: 0, sourceCode: null,
@@ -19,6 +21,47 @@ describe('parsePartiallyIncludedZips', () => {
 
   it('strips sentinel commas + trims whitespace + drops empties', () => {
     expect(parsePartiallyIncludedZips(',1010, 1011 ,1012,')).toEqual(['1010', '1011', '1012']);
+  });
+});
+
+// Touched postcodes spec 4.3: the operator must see every postcode booking
+// assesses, slivers included, with the biggest partial overlaps first.
+describe('splitTouchedZips', () => {
+  it('returns empty groups for null / undefined / []', () => {
+    expect(splitTouchedZips(undefined)).toEqual({ full: [], partial: [] });
+    expect(splitTouchedZips(null)).toEqual({ full: [], partial: [] });
+    expect(splitTouchedZips([])).toEqual({ full: [], partial: [] });
+  });
+
+  it('splits on isFull and orders partly covered by overlap descending, slivers kept', () => {
+    // Polygon 30 "Cambridge to Tirau Corridor" on Urgent prod, 16 Nov, plus one full row.
+    const { full, partial } = splitTouchedZips([
+      { zip: '3494', isFull: false, overlapPct: 8.31 },
+      { zip: '3495', isFull: false, overlapPct: 0.01 },
+      { zip: '3410', isFull: false, overlapPct: 12.33 },
+      { zip: '3200', isFull: true, overlapPct: 100 },
+      { zip: '3484', isFull: false, overlapPct: 12.13 },
+      { zip: '3100', isFull: true, overlapPct: 99.27 },
+    ]);
+    expect(full).toEqual(['3100', '3200']);
+    expect(partial.map((z) => z.zip)).toEqual(['3410', '3484', '3494', '3495']);
+  });
+
+  it('breaks equal overlaps by zip so the order is stable', () => {
+    const { partial } = splitTouchedZips([
+      { zip: '3496', isFull: false, overlapPct: 4.21 },
+      { zip: '3434', isFull: false, overlapPct: 4.21 },
+    ]);
+    expect(partial.map((z) => z.zip)).toEqual(['3434', '3496']);
+  });
+});
+
+describe('formatOverlapPct', () => {
+  it('shows the stored two decimals without trailing zeros', () => {
+    expect(formatOverlapPct(8.31)).toBe('8.31%');
+    expect(formatOverlapPct(12.3)).toBe('12.3%');
+    expect(formatOverlapPct(0.01)).toBe('0.01%');
+    expect(formatOverlapPct(50)).toBe('50%');
   });
 });
 
@@ -88,5 +131,48 @@ describe('bulkPolygonService', () => {
     const r = await bulkPolygonService.remove(3);
     expect(method).toBe('DELETE');
     expect(r.response).toBe('ok');
+  });
+});
+
+describe('splitFocusSelection', () => {
+  it('selects fully covered zips and keeps partly covered ones shown only', () => {
+    const resolved = [{ zip: '2102', id: 1 }, { zip: '3494', id: 2 }, { zip: '3495', id: 3 }];
+    const { selected, shownOnly } = splitFocusSelection(resolved, ['3494', '3495']);
+    expect(selected.map((z) => z.zip)).toEqual(['2102']);
+    expect(shownOnly.map((z) => z.zip)).toEqual(['3494', '3495']);
+  });
+
+  it('selects everything when there are no partly covered zips (zones drawer, packed list)', () => {
+    const resolved = [{ zip: '3410' }, { zip: '3484' }];
+    expect(splitFocusSelection(resolved, [])).toEqual({ selected: resolved, shownOnly: [] });
+  });
+});
+
+describe('savedZipsToastTrailer', () => {
+  it('counts every touched postcode, not the >= 10% packed list', () => {
+    const polygon = {
+      partiallyIncludedZips: '3410,3484',
+      touchedZips: [
+        { zip: '3410', isFull: false, overlapPct: 12.33 }, { zip: '3484', isFull: false, overlapPct: 12.13 },
+        { zip: '3494', isFull: false, overlapPct: 8.31 }, { zip: '3496', isFull: false, overlapPct: 4.21 },
+        { zip: '3434', isFull: false, overlapPct: 2.5 }, { zip: '3432', isFull: false, overlapPct: 0.03 },
+        { zip: '3495', isFull: false, overlapPct: 0.01 },
+      ],
+    };
+    expect(savedZipsToastTrailer(polygon))
+      .toBe(' Fully covers 0, partly covers 7: 3410, 3484, 3494, 3496, 3434, 3432, +1 more.');
+  });
+
+  it('lists fully covered postcodes first', () => {
+    expect(savedZipsToastTrailer({ partiallyIncludedZips: null, touchedZips: [
+      { zip: '2104', isFull: false, overlapPct: 40 }, { zip: '2102', isFull: true, overlapPct: 100 },
+    ] })).toBe(' Fully covers 1, partly covers 1: 2102, 2104.');
+  });
+
+  it('falls back to the packed list when the response has no touched rows', () => {
+    expect(savedZipsToastTrailer({ partiallyIncludedZips: '3410,3484' }))
+      .toBe(' Derived 2 postcodes: 3410, 3484.');
+    expect(savedZipsToastTrailer({ partiallyIncludedZips: null, touchedZips: [] }))
+      .toBe(' (no overlapping postcodes)');
   });
 });

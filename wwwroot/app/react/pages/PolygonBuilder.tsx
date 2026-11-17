@@ -17,6 +17,10 @@ import {
 import {
   bulkPolygonService,
   parsePartiallyIncludedZips,
+  splitTouchedZips,
+  splitFocusSelection,
+  savedZipsToastTrailer,
+  formatOverlapPct,
   type BulkPolygon,
   type PolygonPoint,
 } from '../services/bulkPolygonService';
@@ -180,6 +184,10 @@ export default function PolygonBuilder() {
   // Zip picker state.
   const [loadedShapes, setLoadedShapes] = useState<ZipPolygonShape[]>([]);
   const [selected, setSelected] = useState<ZipcodeLookup[]>([]);
+  // Selected zips that a coverage polygon only partly covers (touched
+  // postcodes spec 4.3). Drawn lighter than fully covered ones; set by
+  // "Show on map", cleared by any other focus or by Clear.
+  const [partialZipIds, setPartialZipIds] = useState<Set<number>>(new Set());
   const [zipSearch, setZipSearch] = useState('');
   const [zipResults, setZipResults] = useState<ZipcodeLookup[]>([]);
 
@@ -641,6 +649,8 @@ export default function PolygonBuilder() {
       const path = parseWktPolygon(s.wkt);
       if (!path || path.length < 3) return;
       const isSelected = selectedSet.has(s.zipPolygonId);
+      // Shown-only partly covered zip; clicking it selects it (dark orange).
+      const isPartial = !isSelected && partialZipIds.has(s.zipPolygonId);
       let poly = zipOverlaysRef.current.get(s.zipPolygonId);
       if (!poly) {
         poly = new g.maps.Polygon({
@@ -662,7 +672,9 @@ export default function PolygonBuilder() {
       }
       poly.setOptions({
         clickable: mode === 'view',
-        ...(isSelected
+        ...(isPartial
+          ? { strokeColor: '#F2994A', fillColor: '#F2994A', fillOpacity: 0.12, strokeWeight: 1.5 }
+          : isSelected
           ? { strokeColor: '#F2994A', fillColor: '#F2994A', fillOpacity: 0.4, strokeWeight: 2 }
           : { strokeColor: '#00A3FF', fillColor: '#00A3FF', fillOpacity: 0.15, strokeWeight: 1.5 }),
       });
@@ -676,14 +688,16 @@ export default function PolygonBuilder() {
     const focusRequested = pendingFocusRef.current;
     prevSelectedCountRef.current = selected.length;
     if (focusRequested) pendingFocusRef.current = false;
-    if ((selectionJustGrew || focusRequested)
+    // An explicit focus ("Show on map") always refits; the 15-zip cap only
+    // guards the passive grow-the-selection case. Touched-postcode lists
+    // (every zip a polygon touches, not just >= 10%) regularly exceed 15.
+    if (((selectionJustGrew && selected.length <= 15) || focusRequested)
         && boundsCount > 0
-        && selected.length > 0
-        && selected.length <= 15) {
+        && (selected.length > 0 || (focusRequested && partialZipIds.size > 0))) {
       const selectedBounds = new g.maps.LatLngBounds();
       let selectedBoundsCount = 0;
       loadedShapes.forEach((s) => {
-        if (!selectedSet.has(s.zipPolygonId)) return;
+        if (!selectedSet.has(s.zipPolygonId) && !partialZipIds.has(s.zipPolygonId)) return;
         const path = parseWktPolygon(s.wkt);
         if (!path || path.length < 3) return;
         path.forEach((pt) => { selectedBounds.extend(pt); selectedBoundsCount++; });
@@ -702,7 +716,7 @@ export default function PolygonBuilder() {
     // polygon. Coverage-polygon effect below already has `mode` in deps
     // and works correctly; this is the counterpart fix for zip overlays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedShapes, selected, mode, visibility.showPostcodes]);
+  }, [loadedShapes, selected, partialZipIds, mode, visibility.showPostcodes]);
 
   // Sync coverage-polygon overlays.
   useEffect(() => {
@@ -936,17 +950,9 @@ export default function PolygonBuilder() {
     });
   };
 
-  /** Format a "derived N postcode(s)" trailer for the post-save toast.
-   *  Called after every polygon create/reshape so operators can see what
-   *  the auto-overlay computed. Truncates long lists to 6 postcodes + " +N
-   *  more" so a big shape doesn't blow past the toast width. */
-  const derivedZipsToastTrailer = (polygon: BulkPolygon): string => {
-    const zips = parsePartiallyIncludedZips(polygon.partiallyIncludedZips);
-    if (zips.length === 0) return ' (no overlapping postcodes)';
-    const head = zips.slice(0, 6).join(', ');
-    const tail = zips.length > 6 ? `, +${zips.length - 6} more` : '';
-    return ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${head}${tail}.`;
-  };
+  /** Post-save toast trailer: every touched postcode, same counts as the panel
+   *  (see savedZipsToastTrailer). */
+  const derivedZipsToastTrailer = (polygon: BulkPolygon): string => savedZipsToastTrailer(polygon);
 
   const clearLassoPreview = () => {
     lassoBufferRef.current = [];
@@ -1031,7 +1037,9 @@ export default function PolygonBuilder() {
    *  is smaller than the previous. Side effect: the highlighted zips
    *  count toward the "Save as Route (N)" button, which is the natural
    *  next step for both flows. */
-  const showZipStringsOnMap = async (zipStrings: string[], contextLabel: string) => {
+  const showZipStringsOnMap = async (
+    zipStrings: string[], contextLabel: string, partialZips: string[] = [],
+  ) => {
     if (zipStrings.length === 0) {
       toast.show(`${contextLabel} has no zips to show.`, 'error');
       return;
@@ -1063,19 +1071,33 @@ export default function PolygonBuilder() {
       // Replace selection wholesale + request an unconditional fitBounds
       // so the map snaps to the clicked zone even when the new selection
       // is smaller than the previous one.
+      // Partly covered zips are drawn only, never selected, so they do not
+      // count toward "Save as Route (N)".
       pendingFocusRef.current = true;
-      setSelected(resolved);
+      const { selected: toSelect, shownOnly } = splitFocusSelection(resolved, partialZips);
+      setSelected(toSelect);
+      setPartialZipIds(new Set(shownOnly.map((z) => z.zipPolygonId)));
+      const partlyNote = shownOnly.length > 0
+        ? ` ${shownOnly.length} partly covered shown only, not selected.`
+        : '';
       const msg = missing.length > 0
-        ? `Focused ${shapes.length} zip(s) on the map. ${missing.length} zip(s) could not be resolved.`
-        : `Focused ${shapes.length} zip(s) on the map.`;
+        ? `Focused ${shapes.length} zip(s) on the map.${partlyNote} ${missing.length} zip(s) could not be resolved.`
+        : `Focused ${shapes.length} zip(s) on the map.${partlyNote}`;
       toast.show(msg, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
-  const showIncludedZipsOnMap = (polygon: BulkPolygon) =>
-    showZipStringsOnMap(
-      parsePartiallyIncludedZips(polygon.partiallyIncludedZips),
-      `Coverage polygon "${polygon.name}"`);
+  /** Every touched postcode when the polygon carries BulkRunPolygonZip rows
+   *  (partly covered ones shaded lighter); the packed >= 10% list otherwise. */
+  const showIncludedZipsOnMap = (polygon: BulkPolygon) => {
+    const { full, partial } = splitTouchedZips(polygon.touchedZips);
+    const partialZips = partial.map((z) => z.zip);
+    return full.length + partialZips.length > 0
+      ? showZipStringsOnMap([...full, ...partialZips], `Coverage polygon "${polygon.name}"`, partialZips)
+      : showZipStringsOnMap(
+          parsePartiallyIncludedZips(polygon.partiallyIncludedZips),
+          `Coverage polygon "${polygon.name}"`);
+  };
 
   const removeSelection = (id: number) => {
     setSelected((prev) => prev.filter((z) => z.zipPolygonId !== id));
@@ -1083,6 +1105,7 @@ export default function PolygonBuilder() {
 
   const clearAll = () => {
     setSelected([]);
+    setPartialZipIds(new Set());
     setSelectedPolygons(new Set());
     setLoadedShapes([]);
     zipOverlaysRef.current.forEach((p) => p.setMap(null));
@@ -3278,6 +3301,62 @@ export default function PolygonBuilder() {
                         </div>
                       )}
                       {(() => {
+                        // Touched postcodes (spec 4.3): every BulkRunPolygonZip
+                        // row, split into fully and partly covered. Polygons
+                        // whose overlay never wrote rows keep the old list.
+                        const { full, partial } = splitTouchedZips(p.touchedZips);
+                        if (full.length + partial.length > 0) {
+                          const plural = (n: number) => `${zipShortLower}${n === 1 ? '' : 's'}`;
+                          return (
+                            <div className="ml-5 mt-1" data-testid={`touched-zips-${p.polygonId}`}>
+                              <div className="flex items-center gap-1 mb-0.5">
+                                <span className="text-[9px] uppercase tracking-wide text-text-muted">
+                                  Fully covers {full.length} {plural(full.length)} · partly covers {partial.length}
+                                </span>
+                                <button type="button"
+                                  onClick={() => showIncludedZipsOnMap(p)}
+                                  className="text-[9px] font-semibold text-brand-purple hover:underline"
+                                  title={`Load the ${full.length + partial.length} ${zipShortLower} boundar${full.length + partial.length === 1 ? 'y' : 'ies'} onto the map. Partly covered ones are shaded lighter.`}>
+                                  Show on map
+                                </button>
+                              </div>
+                              {full.length > 0 && (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {full.slice(0, 12).map((z) => (
+                                    <span key={z}
+                                      className="inline-block px-1 py-0.5 rounded bg-brand-cyan/15 text-brand-dark text-[9px]"
+                                    >{z}</span>
+                                  ))}
+                                  {full.length > 12 && (
+                                    <span className="inline-block px-1 py-0.5 text-text-muted text-[9px]"
+                                      title={full.slice(12).join(', ')}
+                                    >+{full.length - 12} more</span>
+                                  )}
+                                </div>
+                              )}
+                              {partial.length > 0 && (
+                                <>
+                                  <div className="mt-0.5 text-[9px] text-text-muted italic">
+                                    Partly covered, address checked against the line:
+                                  </div>
+                                  <div className="flex flex-wrap gap-0.5">
+                                    {partial.slice(0, 12).map((z) => (
+                                      <span key={z.zip}
+                                        className="inline-block px-1 py-0.5 rounded border border-dashed border-brand-cyan/40 text-brand-dark text-[9px]"
+                                        title={`${z.zip}: ${formatOverlapPct(z.overlapPct)} inside the shape. Address checked against the line.`}
+                                      >{z.zip} {formatOverlapPct(z.overlapPct)}</span>
+                                    ))}
+                                    {partial.length > 12 && (
+                                      <span className="inline-block px-1 py-0.5 text-text-muted text-[9px]"
+                                        title={partial.slice(12).map((z) => `${z.zip} ${formatOverlapPct(z.overlapPct)}`).join(', ')}
+                                      >+{partial.length - 12} more</span>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
+                        }
                         const includedZips = parsePartiallyIncludedZips(p.partiallyIncludedZips);
                         if (includedZips.length === 0) return null;
                         return (
@@ -3474,10 +3553,7 @@ function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNe
       });
       try { window.localStorage.setItem(LAST_LAYER_KEY, layerTrimmed); } catch { /* preference only */ }
       onCreated(res.response);
-      const zips = parsePartiallyIncludedZips(res.response.partiallyIncludedZips);
-      const zipTrailer = zips.length === 0
-        ? ' (no overlapping postcodes)'
-        : ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${zips.slice(0, 6).join(', ')}${zips.length > 6 ? `, +${zips.length - 6} more` : ''}.`;
+      const zipTrailer = savedZipsToastTrailer(res.response);
       toast.show(`Coverage polygon "${trimmed}" saved.${zipTrailer}`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }
