@@ -118,6 +118,16 @@ public class BulkPolygonService(
             })
             .ToListAsync();
 
+        // Touched postcodes for every active polygon in one hit, same
+        // reasoning as the memberships above (no per-polygon query).
+        var touchedZips = (await (
+                from z in Context.BulkRunPolygonZips.AsNoTracking()
+                join p in Context.BulkRunPolygons.AsNoTracking() on z.PolygonId equals p.PolygonId
+                where p.Active
+                select z).ToListAsync())
+            .GroupBy(z => z.PolygonId)
+            .ToDictionary(grp => grp.Key, ToTouchedZipDtos);
+
         return rows.Select(r => new BulkPolygonDto(
             r.PolygonId, r.Name, r.ColorHex, r.SourceType, r.SourceCode,
             r.CentroidLatitude, r.CentroidLongitude, r.Active,
@@ -129,8 +139,18 @@ public class BulkPolygonService(
             scheduleBindings.TryGetValue(r.PolygonId, out var names) ? names : new List<string>(),
             r.ZoneNameId is int zid && zoneNames.TryGetValue(zid, out var zName) ? zName : null,
             r.PostcodeGroupId is int gid && groupNames.TryGetValue(gid, out var gName) ? gName : null,
-            NormaliseLayer(r.TagLocation))).ToList();
+            NormaliseLayer(r.TagLocation),
+            touchedZips.TryGetValue(r.PolygonId, out var tz) ? tz : new List<BulkPolygonZipDto>())).ToList();
     }
+
+    /// <summary>BulkRunPolygonZip rows to DTOs: fully covered first, then by overlap
+    /// descending, then zip, so every caller gets one stable order.</summary>
+    private static List<BulkPolygonZipDto> ToTouchedZipDtos(IEnumerable<BulkRunPolygonZip> rows) =>
+        rows.OrderByDescending(z => z.IsFull)
+            .ThenByDescending(z => z.OverlapPct)
+            .ThenBy(z => z.Zip, StringComparer.Ordinal)
+            .Select(z => new BulkPolygonZipDto(z.Zip, z.IsFull, z.OverlapPct))
+            .ToList();
 
     public async Task<BulkPolygonDto?> GetByIdAsync(int id)
     {
@@ -194,7 +214,11 @@ public class BulkPolygonService(
             row.PartiallyIncludedZips,
             row.CreatedUtc, row.CreatedBy, row.LastModifiedUtc, row.UpdatedBy,
             row.ZoneNameId, row.PostcodeGroupId, scheduleNames,
-            zoneName, groupName, NormaliseLayer(row.TagLocation));
+            zoneName, groupName, NormaliseLayer(row.TagLocation),
+            // Read after the overlay on create / reshape (both return through
+            // here), so the panel gets the refreshed rows.
+            ToTouchedZipDtos(await Context.BulkRunPolygonZips.AsNoTracking()
+                .Where(z => z.PolygonId == row.PolygonId).ToListAsync()));
     }
 
     public async Task<BulkPolygonDto> CreateAsync(CreateBulkPolygonRequest req)
