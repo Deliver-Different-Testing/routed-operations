@@ -4,6 +4,7 @@ import {
   addRegion,
   boundaryArc,
   chainLengthMetres,
+  closingArc,
   cutRegion,
   keepRegion,
   snapToNearestEdge,
@@ -116,6 +117,49 @@ const RIGHT_HALF: LatLng[] = [
   { lat: 11, lng: 20 },
   { lat: 11, lng: 5 },
 ];
+
+describe('closingArc (follow boundary on the closing edge)', () => {
+  // A neighbour polygon: a square with extra vertices down its east side.
+  // The operator starts on that side, draws out to the east and comes back
+  // to it lower down. The closing edge must run up the neighbour's side.
+  const NEIGHBOUR: LatLng[] = [
+    { lat: -36.850, lng: 174.750 },
+    { lat: -36.850, lng: 174.760 },
+    { lat: -36.852, lng: 174.761 },
+    { lat: -36.854, lng: 174.759 },
+    { lat: -36.856, lng: 174.761 },
+    { lat: -36.858, lng: 174.760 },
+    { lat: -36.858, lng: 174.750 },
+  ];
+  const ring = (pos: number) => ({ key: 'poly:1', path: NEIGHBOUR, pos });
+  const FREE_A: LatLng = { lat: -36.851, lng: 174.770 };
+  const FREE_B: LatLng = { lat: -36.857, lng: 174.770 };
+
+  it('follows the neighbour between the last click and the first', () => {
+    const vertices = [NEIGHBOUR[1], FREE_A, FREE_B, NEIGHBOUR[5]];
+    const snaps = [ring(1), null, null, ring(5)];
+    expect(closingArc(vertices, snaps)).toEqual([NEIGHBOUR[4], NEIGHBOUR[3], NEIGHBOUR[2]]);
+  });
+
+  it('is a straight close when first and last are not on the same ring', () => {
+    const vertices = [NEIGHBOUR[1], FREE_A, FREE_B];
+    expect(closingArc(vertices, [ring(1), null, null])).toEqual([]);
+    const other = { key: 'zip:1010', path: NEIGHBOUR, pos: 5 };
+    expect(closingArc([NEIGHBOUR[1], FREE_A, NEIGHBOUR[5]], [ring(1), null, other])).toEqual([]);
+  });
+
+  it('does not double back when every click sat on that one ring', () => {
+    // Clicks 1 -> 5 already followed the ring; closing along it again would
+    // give a shape with no area.
+    const vertices = [NEIGHBOUR[1], NEIGHBOUR[2], NEIGHBOUR[3], NEIGHBOUR[4], NEIGHBOUR[5]];
+    expect(closingArc(vertices, [ring(1), ring(5)])).toEqual([]);
+  });
+
+  it('needs at least two clicks', () => {
+    expect(closingArc([NEIGHBOUR[1]], [ring(1)])).toEqual([]);
+    expect(closingArc([], [])).toEqual([]);
+  });
+});
 
 describe('latLngRingsToPolygon', () => {
   it('auto-closes a ring when the last vertex differs from the first', () => {

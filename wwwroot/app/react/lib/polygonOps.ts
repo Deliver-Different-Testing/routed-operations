@@ -375,6 +375,32 @@ export function boundaryArc(
   return forwardLen <= backwardLen ? forward : backward;
 }
 
+/** Where a snapped click sits: which ring (by key) and the fractional
+ *  position on it. */
+export interface RingPosition { key: string; path: LatLng[]; pos: number; }
+
+/**
+ * Vertices to append after the last drawn vertex so the CLOSING edge of a
+ * point-by-point polygon (last click back to the first) follows a ring that
+ * both ends are snapped to (2026-11-17, Steve: start on a neighbour, draw the
+ * shape, attach back to the neighbour; the join must run along the neighbour,
+ * not straight across it).
+ *
+ * `snaps` has one entry per click, in order: the ring that click snapped to,
+ * or null. Returns [] (plain straight close) unless the first and last
+ * clicks are on the same ring AND some click in between left it. When every
+ * click sat on that ring the drawn path already runs along it, and following
+ * it again on the way back would give a shape with no area.
+ */
+export function closingArc(vertices: LatLng[], snaps: Array<RingPosition | null>): LatLng[] {
+  if (vertices.length < 2 || snaps.length < 2) return [];
+  const first = snaps[0];
+  const last = snaps[snaps.length - 1];
+  if (!first || !last || first.key !== last.key) return [];
+  if (snaps.every((s) => s?.key === first.key)) return [];
+  return boundaryArc(last.path, last.pos, first.pos, vertices[vertices.length - 1], vertices[0]);
+}
+
 /**
  * Snap a dragged vertex onto the nearest edge of any neighbouring shape,
  * when one is within `toleranceMetres`.

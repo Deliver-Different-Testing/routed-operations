@@ -26,7 +26,7 @@ import {
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
-import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc } from '../lib/polygonOps';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc, closingArc } from '../lib/polygonOps';
 import {
   NO_LAYER, type VisibilityState,
   groupByLayer, isLayerHidden, isPolygonVisible, layerNames, layerOf, loadVisibility,
@@ -2004,12 +2004,20 @@ export default function PolygonBuilder() {
       const prev = drawingClicksRef.current[drawingClicksRef.current.length - 1];
       const prevVertex = drawingVerticesRef.current[drawingVerticesRef.current.length - 1];
       const altHeld = Boolean((e.domEvent as MouseEvent | undefined)?.altKey);
+      // Clicking the first point again to close (2026-11-17): the snap is
+      // to the in-progress shape, which has no ring. Give it the ring the
+      // first click sat on, so the run back to the start follows it too.
+      const firstClick = drawingClicksRef.current[0];
+      const firstVertex = drawingVerticesRef.current[0];
+      const backToStart = !snap.ring && Boolean(firstClick?.snap) && Boolean(firstVertex)
+        && snap.point.lat === firstVertex.lat && snap.point.lng === firstVertex.lng;
+      const ring: SnapRing | null = backToStart ? firstClick.snap : snap.ring;
       let added: LatLng[] = [snap.point];
-      if (!altHeld && prev?.snap && snap.ring && prev.snap.key === snap.ring.key && prevVertex) {
-        const arc = boundaryArc(snap.ring.path, prev.snap.pos, snap.ring.pos, prevVertex, snap.point);
+      if (!altHeld && prev?.snap && ring && prev.snap.key === ring.key && prevVertex) {
+        const arc = boundaryArc(ring.path, prev.snap.pos, ring.pos, prevVertex, snap.point);
         added = [...arc, snap.point];
       }
-      drawingClicksRef.current.push({ count: added.length, snap: snap.ring });
+      drawingClicksRef.current.push({ count: added.length, snap: ring });
       setDrawingVertices((p) => [...p, ...added]);
     });
     const moveListener = map.addListener('mousemove', (e: any) => {
@@ -2092,13 +2100,19 @@ export default function PolygonBuilder() {
     const count = last?.count ?? 1;
     setDrawingVertices((p) => p.slice(0, Math.max(0, p.length - count)));
   };
-  const finishDraw = () => {
+  /** Finish closes the shape. When the first and last clicks are on the
+   *  same boundary the closing edge follows it (2026-11-17); `straight`
+   *  (Alt held) keeps the plain chord. */
+  const finishDraw = (straight = false) => {
     if (drawingVertices.length < 3) {
       toast.show('A polygon needs at least 3 points.', 'error');
       return;
     }
+    const closing = straight
+      ? []
+      : closingArc(drawingVertices, drawingClicksRef.current.map((c) => c.snap));
     drawingClicksRef.current = [];
-    setPendingPolygon([drawingVertices]);
+    setPendingPolygon([[...drawingVertices, ...closing]]);
     setDrawingVertices([]);
     setMode('pending');
   };
@@ -2162,7 +2176,7 @@ export default function PolygonBuilder() {
       }
       if (e.key === 'Enter' && mode === 'drawing') {
         e.preventDefault();
-        finishDraw();
+        finishDraw(e.altKey);
         return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'drawing') {
@@ -2747,7 +2761,7 @@ export default function PolygonBuilder() {
             </span>
             <Button variant="neutral" size="sm" onClick={undoVertex} disabled={drawingVertices.length === 0}>Undo</Button>
             <Button variant="neutral" size="sm" onClick={cancelDraw}>Cancel</Button>
-            <Button variant="secondary" size="sm" onClick={finishDraw} disabled={drawingVertices.length < 3}>
+            <Button variant="secondary" size="sm" onClick={(e) => finishDraw(e.altKey)} disabled={drawingVertices.length < 3}>
               Finish ({drawingVertices.length})
             </Button>
           </>
