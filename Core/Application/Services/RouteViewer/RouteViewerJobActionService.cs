@@ -131,6 +131,7 @@ public class RouteViewerJobActionService(
     /// only; the SP takes the operator's UserName for audit.</summary>
     public async Task SendSmsToRunAsync(int runId, string message)
     {
+        await scopeGuard.EnsureRunInScopeAsync(runId);
         var userName = ResolveUserName();
         logger.LogInformation("RVW_stpMessageRun runId={RunId} msgLen={MsgLen} user={User}",
             runId, message?.Length ?? 0, userName);
@@ -448,12 +449,12 @@ public class RouteViewerJobActionService(
         return user.Identity?.Name ?? "unknown";
     }
 
-    /// <summary>Throws NpLabelScopeException if the tucJob row lives
-    /// outside the caller's NP scope. No-op for admin sessions.</summary>
+    /// <summary>Throws NpLabelScopeException / BranchScopeException if the tucJob
+    /// row lives outside the caller's NP scope or branches. No-op for callers neither applies to.</summary>
     private async Task GuardByJobAsync(int jobId)
     {
-        var scope = await scopeResolver.ResolveAsync();
-        if (scope.IsAdmin) return;
+        // Always call the guard: for tenant staff the NP resolver reports IsAdmin, so an early return here would skip the branch
+        // check (Branches B2b). NpAndBranchScopeGuard does nothing for callers neither rule applies to.
         // NP scope walks tucJob for the anchor; if the row is void /
         // out of scope the guard throws. Job actions on synthetic
         // negative ids (Route Runs) never reach here because the SPs
@@ -466,8 +467,6 @@ public class RouteViewerJobActionService(
 
     private async Task GuardByBulkJobAsync(int bulkJobId)
     {
-        var scope = await scopeResolver.ResolveAsync();
-        if (scope.IsAdmin) return;
         if (bulkJobId <= 0) return;
         await scopeGuard.EnsureBulkJobInScopeAsync(bulkJobId);
     }

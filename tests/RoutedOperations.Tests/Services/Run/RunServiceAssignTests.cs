@@ -21,7 +21,7 @@ public class RunServiceAssignTests
     {
         var (opts, conn) = CockpitTestHarness.NewSqliteOptions();
         var seed = CockpitTestHarness.Context(opts);
-        return (new RunService(CockpitTestHarness.Factory(opts)), seed, conn, opts);
+        return (new RunService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted()), seed, conn, opts);
     }
 
     private static TblBulkJob NewJob(int id, int? bulkRunId = null)

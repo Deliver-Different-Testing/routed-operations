@@ -4,6 +4,7 @@
 // natively on InMemory. SP-invoking paths throw.
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 using RoutedOperations.Core.Domain;
@@ -20,7 +21,7 @@ public class RouteViewerEventServiceTests
         var factory = RouteViewerTestHarness.Factory(opts);
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
-        var sut = new RouteViewerEventService(factory, resolver,
+        var sut = new RouteViewerEventService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerEventService>.Instance);
         return (sut, seed);
     }

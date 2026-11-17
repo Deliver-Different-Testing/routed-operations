@@ -15,7 +15,8 @@ namespace RoutedOperations.Core.Application.Services.RecurringLinehaul;
 /// name (Courier/Agent/NP), live Mapped Stops count and Used-by-Schedules count.
 /// </summary>
 public class RecurringLinehaulService(
-    IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+    IDbContextFactory<DynamicDespatchDbContext> contextFactory,
+    Branches.IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
     private const byte ModeRoad = 1;
@@ -55,8 +56,10 @@ public class RecurringLinehaulService(
             })
             .ToListAsync();
 
-        var couriers = await Context.TucCouriers.AsNoTracking()
-            .Where(c => c.Active)
+        // Branches B2c: branch-limited staff pick only couriers in their branches.
+        var courierQuery = Context.TucCouriers.AsNoTracking().Where(c => c.Active);
+        if (branchGuard is not null) courierQuery = await branchGuard.WhereCourierVisibleAsync(courierQuery);
+        var couriers = await courierQuery
             .OrderBy(c => c.UccrName).ThenBy(c => c.UccrSurname)
             .Select(c => new RecurringLinehaulCourierLookupDto
             {
@@ -291,6 +294,13 @@ public class RecurringLinehaulService(
         var cells = await Context.DispatchLinehaulRunRosters.AsNoTracking()
             .Where(x => x.IsActive && x.RosterDate == null && x.DayOfWeek != null && runIds.Contains(x.LinehaulRunId))
             .ToListAsync();
+
+        // Branches B2c: a roster cell for a courier outside the caller's branches is not shown (agent and network partner cells are not branch data).
+        if (branchGuard is { IsRestricted: true })
+        {
+            var cellCouriers = await branchGuard.VisibleCourierIdsAsync(cells.Where(c => c.CourierId.HasValue).Select(c => c.CourierId!.Value).Distinct().ToList());
+            cells = [.. cells.Where(c => !c.CourierId.HasValue || cellCouriers.Contains(c.CourierId.Value))];
+        }
 
         var courierNames = await ResolveCourierNamesAsync(
             cells.Where(c => c.CourierId.HasValue).Select(c => c.CourierId!.Value));

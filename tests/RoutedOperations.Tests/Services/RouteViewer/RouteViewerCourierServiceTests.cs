@@ -3,6 +3,7 @@
 // tests cover the NP short-circuit branches exhaustively + confirm admin
 // invokes the SP.
 using Microsoft.Extensions.Logging.Abstractions;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -16,7 +17,7 @@ public class RouteViewerCourierServiceTests
         var factory = RouteViewerTestHarness.Factory(opts);
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
-        return new RouteViewerCourierService(factory, resolver,
+        return new RouteViewerCourierService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerCourierService>.Instance);
     }
 

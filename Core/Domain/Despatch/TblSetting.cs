@@ -24,6 +24,11 @@ public partial class TblSetting
 
     public int? DefaultBulkLabelId { get; set; }
 
+    // Branches: the placeholder courier split parents are parked on (it has no branch, so it would otherwise count as the
+    // default branch's courier). BranchScopeGuard reads it so that courier never makes a job family visible. Despatchweb maps
+    // the same column (SplitJobService / ScopeProvider), so it exists on every tenant.
+    public int? ParentJobCourierId { get; set; }
+
     [ForeignKey(nameof(DefaultJobLabelId))]
     public virtual AlertTemplate DefaultJobLabel { get; set; }
 

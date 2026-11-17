@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -24,6 +25,7 @@ public class RouteViewerRunService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
     INpScopeGuard scopeGuard,
+    IBranchScopeGuard branchGuard,
     SqlTimeZoneNormalizer tzNormalizer,
     IHttpContextAccessor httpContextAccessor,
     ILogger<RouteViewerRunService> logger) : BaseService(contextFactory)
@@ -132,6 +134,12 @@ public class RouteViewerRunService(
             SpParam.Of("@SpeedIDs", request.SpeedIds),
             SpParam.Of("@NpAgentId", scope.NpAgentId))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff are listed the runs whose courier is theirs or that hold at least one job of theirs.
+        // The procedures take no branch parameter, so the rows are narrowed here.
+        static int RunKey(string? id) => int.TryParse(id, out var i) ? i : 0;
+        rawPrimary = await branchGuard.FilterRunRowsAsync(rawPrimary, r => RunKey(r.ID));
+        rawMissing = await branchGuard.FilterRunRowsAsync(rawMissing, r => RunKey(r.ID));
 
         return rawPrimary
             .Select(r => MapBulkRun(r, isMissing: false))
@@ -313,6 +321,11 @@ public class RouteViewerRunService(
             SpParam.Of("@NpAgentId", scope.NpAgentId),
             SpParam.Of("@UnassignedOnly", request.UnassignedOnly))
             .ToListAsync();
+
+        // Branches B2: a run the caller can act on in full (its courier is theirs, or every job is) shows every job; any other
+        // run they can see shows only the jobs that are theirs (a job counts through its whole family).
+        if (branchGuard.IsRestricted && !await branchGuard.IsRunFullyVisibleAsync(runId))
+            raw = await branchGuard.FilterJobRowsAsync(raw, r => r.JobID, r => r.ClientID, r => r.CourierID);
 
         return raw.Select(r => MapRawBulkJobRowToDto(r, r.BulkJobID ?? 0)).ToList();
     }

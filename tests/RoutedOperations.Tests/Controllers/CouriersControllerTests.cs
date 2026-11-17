@@ -14,7 +14,7 @@ public class CouriersControllerTests
         var seed = ControllerTestHarness.Context(opts);
         var accessor = ControllerTestHarness.Accessor();
         var svc = new CourierService(ControllerTestHarness.Factory(opts),
-            ControllerTestHarness.Cache(accessor));
+            ControllerTestHarness.Cache(accessor), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
         var controller = new CouriersController(svc);
         ControllerTestHarness.AttachHttpContext(controller);
         return (controller, seed);

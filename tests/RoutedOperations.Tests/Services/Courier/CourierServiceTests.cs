@@ -16,7 +16,7 @@ public class CourierServiceTests
         var httpAccessor = Substitute.For<IHttpContextAccessor>();
         httpAccessor.HttpContext.Returns(new DefaultHttpContext());
         var cache = new TenantScopedCache(new MemoryCache(new MemoryCacheOptions()), httpAccessor);
-        return new CourierService(factory, cache);
+        return new CourierService(factory, cache, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
     }
 
     [Fact]

@@ -20,6 +20,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -29,6 +30,7 @@ public class RouteViewerAssignmentService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
     INpScopeGuard scopeGuard,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerAssignmentService> logger) : BaseService(contextFactory)
 {
     private const int StatusUnassigned = 0;
@@ -42,9 +44,10 @@ public class RouteViewerAssignmentService(
         var scope = await scopeResolver.ResolveAsync();
 
         // NP-scoped: couriers-only bucket, agents + NPs empty.
-        var couriers = await Context.TucCouriers
+        // Branches B2: branch-limited staff pick only couriers in their branches, applied in SQL before Take so the 200-row page is right.
+        var couriers = await (await branchGuard.WhereCourierVisibleAsync(Context.TucCouriers
             .Where(c => c.Active)
-            .Where(c => scope.IsAdmin || c.NpAgentId == scope.NpAgentId)
+            .Where(c => scope.IsAdmin || c.NpAgentId == scope.NpAgentId)))
             .OrderBy(c => c.UccrName)
             .Take(200)
             .Select(c => new AssignableTargetDto
@@ -95,6 +98,7 @@ public class RouteViewerAssignmentService(
         var query = Context.TucCouriers.Where(c => c.Active);
         if (!scope.IsAdmin)
             query = query.Where(c => c.NpAgentId == scope.NpAgentId);
+        query = await branchGuard.WhereCourierVisibleAsync(query);   // Branches B2
 
         if (!string.IsNullOrWhiteSpace(q))
         {
@@ -297,6 +301,8 @@ public class RouteViewerAssignmentService(
     /// the courier-per-job path.</summary>
     public async Task PreAssignRunAsync(int runId, string? fromCourierCode, string toCourierCode)
     {
+        // Branches B2: a run-level write needs the whole run to be the caller's (its courier, or every job). No-op unless branch limited.
+        await branchGuard.EnsureRunInScopeAsync(runId);
         try
         {
             await Context.Database.ExecuteSqlRawAsync(
@@ -319,6 +325,8 @@ public class RouteViewerAssignmentService(
     /// run from a courier. Wraps legacy RVW_stpUnAssignRun.</summary>
     public async Task UnAssignRunAsync(int runId, string courierCode)
     {
+        // Branches B2: a run-level write needs the whole run to be the caller's (its courier, or every job). No-op unless branch limited.
+        await branchGuard.EnsureRunInScopeAsync(runId);
         try
         {
             await Context.Database.ExecuteSqlRawAsync(
@@ -341,6 +349,8 @@ public class RouteViewerAssignmentService(
     /// jobs off the source courier.</summary>
     public async Task TransferRunAsync(int runId, string fromCourierCode, string toCourierCode)
     {
+        // Branches B2: a run-level write needs the whole run to be the caller's (its courier, or every job). No-op unless branch limited.
+        await branchGuard.EnsureRunInScopeAsync(runId);
         await Context.Database.ExecuteSqlRawAsync(
             "EXEC dbo.RVW_stpTransferRun @RunID, @FromCourierCode, @ToCourierCode",
             SpParam.Of("@RunID", runId),
@@ -353,6 +363,8 @@ public class RouteViewerAssignmentService(
     /// operator's discretion). Wraps legacy RVW_stpReleaseRun.</summary>
     public async Task ReleaseRunAsync(int runId, string courierCode)
     {
+        // Branches B2: a run-level write needs the whole run to be the caller's (its courier, or every job). No-op unless branch limited.
+        await branchGuard.EnsureRunInScopeAsync(runId);
         await Context.Database.ExecuteSqlRawAsync(
             "EXEC dbo.RVW_stpReleaseRun @RunID, @CourierCode",
             SpParam.Of("@RunID", runId),
@@ -367,6 +379,8 @@ public class RouteViewerAssignmentService(
     /// courier-percentage rollups. Wraps legacy RVW_stpTransferOriginalRunOrder.</summary>
     public async Task TransferOriginalRunOrderAsync(int runId, string toCourierCode)
     {
+        // Branches B2: a run-level write needs the whole run to be the caller's (its courier, or every job). No-op unless branch limited.
+        await branchGuard.EnsureRunInScopeAsync(runId);
         await Context.Database.ExecuteSqlRawAsync(
             "EXEC dbo.RVW_stpTransferOriginalRunOrder @RunID, @ToCourierCode",
             SpParam.Of("@RunID", runId),

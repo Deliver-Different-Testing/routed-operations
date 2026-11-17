@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -26,7 +27,7 @@ public class RunViewerCourierControllerTests
         var factory = ControllerTestHarness.Factory(opts);
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
-        var svc = new RouteViewerCourierService(factory, resolver,
+        var svc = new RouteViewerCourierService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerCourierService>.Instance);
         var controller = new RunViewerCourierController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

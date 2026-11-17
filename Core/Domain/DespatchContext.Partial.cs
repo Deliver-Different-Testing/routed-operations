@@ -18,6 +18,9 @@ namespace RoutedOperations.Core.Domain;
 
 public partial class DespatchContext
 {
+    // Branches programme (B2): read only, queried for branch-limited users. See BranchColumns.cs.
+    public virtual DbSet<TblBranch> TblBranches { get; set; }
+
     // Route Viewer P0 additions (2026-08-07). Consumed by LabelService
     // template resolution + CS module event list. Read-side only in P0;
     // P7/P12 add write paths via RVW_stpCreateBulkEvent + RVW_stpCloseEvent.
