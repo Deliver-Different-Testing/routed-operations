@@ -151,6 +151,8 @@ export default function PolygonBuilder() {
   const loadedShapesRef = useRef<ZipPolygonShape[]>([]);
   const polygonsListRef = useRef<BulkPolygon[]>([]);
   const drawingVerticesRef = useRef<LatLng[]>([]);
+  /** Latest finishDraw, for map / marker listeners bound in effects. */
+  const finishDrawRef = useRef<(straight?: boolean) => void>(() => {});
   const modeRef = useRef<Mode>('view');
 
   // ── PERF: pre-parsed snap-target cache ───────────────────────────────
@@ -2004,14 +2006,18 @@ export default function PolygonBuilder() {
       const prev = drawingClicksRef.current[drawingClicksRef.current.length - 1];
       const prevVertex = drawingVerticesRef.current[drawingVerticesRef.current.length - 1];
       const altHeld = Boolean((e.domEvent as MouseEvent | undefined)?.altKey);
-      // Clicking the first point again to close (2026-11-17): the snap is
-      // to the in-progress shape, which has no ring. Give it the ring the
-      // first click sat on, so the run back to the start follows it too.
-      const firstClick = drawingClicksRef.current[0];
+      // Clicking the first point again closes the shape, exactly like Finish
+      // (Kevin review 2026-11-18, Steve's intended behaviour): the closing
+      // edge follows the shared boundary the same way, Alt keeps it straight.
+      // A click that snaps onto the first vertex lands here; a click on the
+      // first point's own marker is handled by that marker's listener.
       const firstVertex = drawingVerticesRef.current[0];
-      const backToStart = !snap.ring && Boolean(firstClick?.snap) && Boolean(firstVertex)
-        && snap.point.lat === firstVertex.lat && snap.point.lng === firstVertex.lng;
-      const ring: SnapRing | null = backToStart ? firstClick.snap : snap.ring;
+      if (drawingVerticesRef.current.length >= 3 && firstVertex
+        && snap.point.lat === firstVertex.lat && snap.point.lng === firstVertex.lng) {
+        finishDrawRef.current(altHeld);
+        return;
+      }
+      const ring: SnapRing | null = snap.ring;
       let added: LatLng[] = [snap.point];
       if (!altHeld && prev?.snap && ring && prev.snap.key === ring.key && prevVertex) {
         const arc = boundaryArc(ring.path, prev.snap.pos, ring.pos, prevVertex, snap.point);
@@ -2052,19 +2058,32 @@ export default function PolygonBuilder() {
     if (drawingVertices.length >= 2) {
       drawPreviewPolyRef.current = new g.maps.Polyline({
         path: drawingVertices, map: mapRef.current,
+        // Not clickable: a clickable preview line swallowed clicks on itself,
+        // so a click on any drawn point (the first one, to close) never
+        // reached the map's click listener (Kevin review 2026-11-18).
+        clickable: false,
         strokeColor: '#3bc7f4', strokeOpacity: 0.9, strokeWeight: 2,
         icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '10px' }],
       });
     }
     drawingVertices.forEach((v, i) => {
+      // The first point is the close target once there is a shape to close:
+      // clickable (so a click on the dot itself is not swallowed by the
+      // marker) and above the snap hint, and clicking it finishes.
+      const closeTarget = i === 0 && drawingVertices.length >= 3;
       const m = new g.maps.Marker({
         position: v, map: mapRef.current,
         icon: {
           path: g.maps.SymbolPath.CIRCLE, scale: 5,
           fillColor: '#3bc7f4', fillOpacity: 1, strokeColor: '#0d0c2c', strokeWeight: 2,
         },
-        title: `Point ${i + 1}`, clickable: false,
+        title: closeTarget ? 'Click to close the shape' : `Point ${i + 1}`,
+        clickable: closeTarget,
+        ...(closeTarget ? { cursor: 'pointer', zIndex: 1000 } : {}),
       });
+      if (closeTarget) {
+        m.addListener('click', (ev: any) => finishDrawRef.current(Boolean(ev?.domEvent?.altKey)));
+      }
       drawPreviewMarkersRef.current.push(m);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2108,14 +2127,23 @@ export default function PolygonBuilder() {
       toast.show('A polygon needs at least 3 points.', 'error');
       return;
     }
+    // Clicking the first point again to close leaves a copy of it as the
+    // last vertex; the ring closes implicitly, so drop the copy rather than
+    // keep a zero-length edge (two stacked handles in edit mode).
+    const a = drawingVertices[0];
+    const z = drawingVertices[drawingVertices.length - 1];
+    const vertices = drawingVertices.length > 3 && a.lat === z.lat && a.lng === z.lng
+      ? drawingVertices.slice(0, -1)
+      : drawingVertices;
     const closing = straight
       ? []
-      : closingArc(drawingVertices, drawingClicksRef.current.map((c) => c.snap));
+      : closingArc(vertices, drawingClicksRef.current.map((c) => c.snap));
     drawingClicksRef.current = [];
-    setPendingPolygon([[...drawingVertices, ...closing]]);
+    setPendingPolygon([[...vertices, ...closing]]);
     setDrawingVertices([]);
     setMode('pending');
   };
+  finishDrawRef.current = finishDraw;
 
   // Stage 4 - lasso mode entry/exit.
   const startLasso = () => { setDrawingVertices([]); setMode('lassoing'); };
@@ -2757,7 +2785,7 @@ export default function PolygonBuilder() {
         {mode === 'drawing' ? (
           <>
             <span className="text-text-muted">
-              Click to add points ({drawingVertices.length}). The cursor snaps to {zipShortLower} boundaries and other polygons; two clicks on the same boundary follow it (hold Alt for a straight line). Esc cancels, Enter finishes, Del undoes the last click.
+              Click to add points ({drawingVertices.length}). The cursor snaps to {zipShortLower} boundaries and other polygons; two clicks on the same boundary follow it (hold Alt for a straight line). Click the first point or press Enter to finish (Alt for a straight close). Esc cancels, Del undoes the last click.
             </span>
             <Button variant="neutral" size="sm" onClick={undoVertex} disabled={drawingVertices.length === 0}>Undo</Button>
             <Button variant="neutral" size="sm" onClick={cancelDraw}>Cancel</Button>

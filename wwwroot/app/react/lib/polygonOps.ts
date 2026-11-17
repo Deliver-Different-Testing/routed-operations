@@ -328,6 +328,20 @@ export function boundaryArc(
   fromPoint: LatLng,
   toPoint: LatLng,
 ): LatLng[] {
+  const arcs = boundaryArcCandidates(ring, fromPos, toPos);
+  if (!arcs) return [];
+  const forwardLen = chainLengthMetres([fromPoint, ...arcs.forward, toPoint]);
+  const backwardLen = chainLengthMetres([fromPoint, ...arcs.backward, toPoint]);
+  return forwardLen <= backwardLen ? arcs.forward : arcs.backward;
+}
+
+/** Both ways round `ring` between two positions (endpoints excluded), or
+ *  null when the positions coincide or the ring is degenerate. */
+function boundaryArcCandidates(
+  ring: LatLng[],
+  fromPos: number,
+  toPos: number,
+): { forward: LatLng[]; backward: LatLng[] } | null {
   // WKT rings (postcode boundaries) repeat the first vertex at the end.
   // Drop that closing copy so an arc across the seam does not emit the
   // same point twice. Positions stay valid: vertex n-1 (the copy) maps to
@@ -336,7 +350,7 @@ export function boundaryArc(
   const closed = ring.length > 1 && last.lat === ring[0].lat && last.lng === ring[0].lng;
   const pts = closed ? ring.slice(0, -1) : ring;
   const n = pts.length;
-  if (n < 2) return [];
+  if (n < 2) return null;
   const mod = (x: number) => ((x % n) + n) % n;
 
   // Forward (increasing index) distance from fromPos to toPos, in index units.
@@ -367,12 +381,10 @@ export function boundaryArc(
     }
   } else if (backwardSpan >= n) {
     // forwardSpan is 0: same position both ends. Nothing to follow.
-    return [];
+    return null;
   }
 
-  const forwardLen = chainLengthMetres([fromPoint, ...forward, toPoint]);
-  const backwardLen = chainLengthMetres([fromPoint, ...backward, toPoint]);
-  return forwardLen <= backwardLen ? forward : backward;
+  return { forward, backward };
 }
 
 /** Where a snapped click sits: which ring (by key) and the fractional
@@ -398,7 +410,16 @@ export function closingArc(vertices: LatLng[], snaps: Array<RingPosition | null>
   const last = snaps[snaps.length - 1];
   if (!first || !last || first.key !== last.key) return [];
   if (snaps.every((s) => s?.key === first.key)) return [];
-  return boundaryArc(last.path, last.pos, first.pos, vertices[vertices.length - 1], vertices[0]);
+  // Pick the way round by AREA, not length (Kevin review, 2026-11-18). The
+  // two arcs together are the whole neighbour ring, so the two candidate
+  // shapes differ by exactly the neighbour: the smaller one is the shape
+  // that sits beside it. Shorter-way-round picked the wrong side whenever
+  // the drawn shape wrapped round a neighbour (shared edge longer than the
+  // rest of its ring) and the new polygon swallowed the neighbour whole.
+  const arcs = boundaryArcCandidates(last.path, last.pos, first.pos);
+  if (!arcs) return [];
+  const area = (arc: LatLng[]) => Math.abs(signedRingArea([...vertices, ...arc]));
+  return area(arcs.forward) <= area(arcs.backward) ? arcs.forward : arcs.backward;
 }
 
 /**

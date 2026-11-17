@@ -155,6 +155,21 @@ describe('closingArc (follow boundary on the closing edge)', () => {
     expect(closingArc(vertices, [ring(1), ring(5)])).toEqual([]);
   });
 
+  it('follows the side the shape sits on, even when that is the longer way round', () => {
+    // Kevin review 2026-11-18. A 10 x 10 neighbour. The shape starts on its
+    // top edge near the west corner, wraps round its whole east side outside
+    // it and comes back on its bottom edge. The shared edge (east side) is
+    // the LONGER way round; the shorter way (west side) would make the new
+    // polygon swallow the neighbour.
+    const s = 0.001;
+    const P = (x: number, y: number): LatLng => ({ lat: -36.85 + y * s, lng: 174.75 + x * s });
+    const SQUARE = [P(0, 0), P(10, 0), P(10, 10), P(0, 10)];
+    const sq = (pos: number) => ({ key: 'poly:2', path: SQUARE, pos });
+    const vertices = [P(2, 10), P(2, 12), P(12, 12), P(12, -2), P(6, -2), P(6, 0)];
+    const snaps = [sq(2.8), null, null, null, null, sq(0.6)];
+    expect(closingArc(vertices, snaps)).toEqual([P(10, 0), P(10, 10)]);
+  });
+
   it('needs at least two clicks', () => {
     expect(closingArc([NEIGHBOUR[1]], [ring(1)])).toEqual([]);
     expect(closingArc([], [])).toEqual([]);
