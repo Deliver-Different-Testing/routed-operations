@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using DeliverDifferent.AccessControl;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 
@@ -70,8 +71,35 @@ public interface IBulkClientScope
     Task<IReadOnlySet<int>?> ActForClientIdsAsync(DespatchContext context, int contactId);
 }
 
-public sealed class BulkClientScope(IHttpContextAccessor httpContextAccessor) : IBulkClientScope
+public sealed class BulkClientScope(IHttpContextAccessor httpContextAccessor, IBranchScopeGuard? branchGuard = null) : IBulkClientScope
 {
+    // tucClient.ClientTypeId values every branch-limited staff member still sees (internal, tenant, DF Admin): the house accounts.
+    private static readonly int[] HouseClientTypeIds = [1, 4, 5];
+
+    // Branches B2c: tenant staff who hold branches act only for clients in their branches (a client with no branch belongs to the
+    // default branch). Null when the caller is not branch limited, so existing behaviour is untouched.
+    private Expression<Func<TucClient, bool>>? BranchLimit()
+    {
+        if (branchGuard is null || !branchGuard.IsRestricted) return null;
+        var ids = branchGuard.BranchIds;
+        var defaultInScope = branchGuard.DefaultBranchInScope;
+        return c => (c.BranchId != null && ids.Contains(c.BranchId.Value))
+                    || (c.BranchId == null && defaultInScope)
+                    || HouseClientTypeIds.Contains(c.ClientTypeId);
+    }
+
+    private static Expression<Func<TucClient, bool>> And(Expression<Func<TucClient, bool>> a, Expression<Func<TucClient, bool>>? b)
+    {
+        if (b is null) return a;
+        var body = Expression.AndAlso(a.Body, new ReplaceParameter(b.Parameters[0], a.Parameters[0]).Visit(b.Body));
+        return Expression.Lambda<Func<TucClient, bool>>(body, a.Parameters);
+    }
+
+    private sealed class ReplaceParameter(ParameterExpression from, ParameterExpression to) : ExpressionVisitor
+    {
+        protected override Expression VisitParameter(ParameterExpression node) => node == from ? to : base.VisitParameter(node);
+    }
+
     public bool IsStaff =>
         httpContextAccessor.HttpContext?.User is { } user && CallerLane.IsStaff(user);
 
@@ -80,11 +108,11 @@ public sealed class BulkClientScope(IHttpContextAccessor httpContextAccessor) : 
     public bool MayChooseCourierOnCompletedImport => IsStaff;
 
     public Expression<Func<TucClient, bool>> CanSee(int contactId) =>
-        IsStaff ? c => true : Linked(contactId);
+        IsStaff ? And(c => true, BranchLimit()) : Linked(contactId);
 
     public Expression<Func<TucClient, bool>> CanActFor(int contactId)
     {
-        if (IsStaff) return c => c.UcclActive;
+        if (IsStaff) return And(c => c.UcclActive, BranchLimit());
         return c => c.UcclActive
             && (c.TucClientContacts.Any(x => x.UcctId == contactId && x.Active)
                 || c.TblClientContacts.Any(x => x.ContactId == contactId && x.Contact.Active));
@@ -98,7 +126,7 @@ public sealed class BulkClientScope(IHttpContextAccessor httpContextAccessor) : 
 
     public async Task<IReadOnlySet<int>?> ActForClientIdsAsync(DespatchContext context, int contactId)
     {
-        if (IsStaff) return null;
+        if (IsStaff && BranchLimit() is null) return null;   // staff with no branches: unrestricted, as before
         var ids = await context.TucClients.AsNoTracking()
             .Where(CanActFor(contactId))
             .Select(c => c.UcclId)

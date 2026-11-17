@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.DriverScheduling;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -31,9 +32,14 @@ public class DriverSchedulingService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     IHttpContextAccessor httpContextAccessor,
     IPhoneNormaliser phoneNormaliser,
-    IHubUrlProvider hubUrlProvider)
+    IHubUrlProvider hubUrlProvider,
+    Branches.IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
+    // Branches B2c: narrow a courier query to the caller's branches in SQL. Unchanged when the caller is not branch limited.
+    private async Task<IQueryable<TucCourier>> Narrow(IQueryable<TucCourier> query) =>
+        branchGuard is null ? query : await branchGuard.WhereCourierVisibleAsync(query);
+
     private DateTime TenantNow() => TimeZoneUtility.GetTenantNow(httpContextAccessor);
 
     private DateTime ToTenantTime(DateTime dt) =>
@@ -140,10 +146,10 @@ public class DriverSchedulingService(
         // Not notified yet = no courier picker.
         if (!schedule.NotificationSent.HasValue) return new List<CourierByScheduleDto>();
 
-        var couriers = await Context.TucCouriers
+        var couriers = await (await Narrow(Context.TucCouriers
             .Where(c => c.Active
                 && !c.UccrInternal
-                && c.RegionId == schedule.LocationId)
+                && c.RegionId == schedule.LocationId)))
             .ToListAsync();
 
         return couriers
@@ -205,8 +211,8 @@ public class DriverSchedulingService(
 
         if (statusId == 0)
         {
-            var couriers = await Context.TucCouriers
-                .Where(c => c.Active && !c.UccrInternal)
+            var couriers = await (await Narrow(Context.TucCouriers
+                .Where(c => c.Active && !c.UccrInternal)))
                 .ToListAsync();
 
             return couriers
@@ -218,15 +224,20 @@ public class DriverSchedulingService(
                 .ToList();
         }
 
-        return schedules
+        var responded = schedules
             .Where(s => s.NotificationSent.HasValue
                 && DriverSchedulingUtility.HasNotEnded(s, tenantTime))
             .SelectMany(s => s.CourierScheduleResponses)
             .Where(r => r.Courier.Active && !r.Courier.UccrInternal && r.StatusId == statusId)
             .Select(r => r.Courier)
             .Distinct()
-            .Select(MapToCourierDto)
             .ToList();
+
+        // Branches B2c: branch-limited staff see only couriers in their branches.
+        if (branchGuard is { IsRestricted: true })
+            responded = await branchGuard.FilterCourierRowsAsync(responded, c => c.UccrId);
+
+        return responded.Select(MapToCourierDto).ToList();
     }
 
     /// <summary>Lookup: active bulk regions the operator can pick when

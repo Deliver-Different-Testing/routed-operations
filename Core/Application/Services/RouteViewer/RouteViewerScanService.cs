@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -21,6 +22,7 @@ public class RouteViewerScanService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
     INpScopeGuard scopeGuard,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerScanService> logger) : BaseService(contextFactory)
 {
     /// <summary>GET /api/runviewer/scans - Bulk-mode Scan Manager grid.
@@ -50,6 +52,10 @@ public class RouteViewerScanService(
             SpParam.Of("@Regions", request.RegionIds),
             SpParam.Of("@ClientIDs", request.ClientIds))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff scan only the jobs whose family is theirs.
+        rows = await branchGuard.FilterJobRowsAsync(rows, r => r.JobID, r => r.ClientID, _ => null);
+
         return rows.Select(r => new BulkScanJobDto
         {
             BulkJobId = r.BulkJobID,
@@ -133,6 +139,9 @@ public class RouteViewerScanService(
             // B2: branch scope (BranchIds) joins here once B2 lands.
             SpParam.Of("@NpAgentId", scope.IsAdmin ? null : scope.NpAgentId))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only the shipments whose family is theirs.
+        rows = await branchGuard.FilterJobRowsAsync(rows, r => r.JobID, r => r.ClientID, _ => null);
         return rows.Select(r => new RoutedScanJobDto
         {
             JobId = r.JobID,
@@ -193,9 +202,12 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return null;
 
+        // Branches B2: a shipment outside the caller's branches reads as not found.
+        try { await branchGuard.EnsureTucJobInScopeAsync(rootJobId); }
+        catch (BranchScopeException) { return null; }
+
         // NP leak K3 (2026-11-13): the root job must be in the caller's NP
         // scope. Throws NpLabelScopeException -> 403; no-op for admin.
-        // B2: branch scope check joins here once B2 lands.
         await scopeGuard.EnsureTucJobInScopeAsync(rootJobId);
 
         // EXEC is not composable, so FirstOrDefaultAsync (which wraps the
@@ -259,6 +271,13 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<BulkScanDetailDto>();
 
+        // Branches B2: routed-mode detail follows its root job; a bulk-job detail follows that bulk job.
+        if (rootJobId is { } root && branchGuard.IsRestricted && !(await branchGuard.VisibleJobIdsAsync([root])).Contains(root))
+            return new List<BulkScanDetailDto>();
+        if (bulkJobId is > 0 && branchGuard.IsRestricted
+            && !(await branchGuard.VisibleBulkJobIdsAsync([bulkJobId.Value])).Contains(bulkJobId.Value))
+            return new List<BulkScanDetailDto>();
+
         var scanFromBulkJob = false;
         if (bulkJobId is > 0)
         {
@@ -288,7 +307,6 @@ public class RouteViewerScanService(
             //    scan (Scan Manager sends rootJobId, the detail box sends
             //    bulkJobId), so this only closes the direct-API path.
             //    A scan derived from bulkJobId above is already guarded.
-            // B2: branch scope check joins here once B2 lands.
             if (string.IsNullOrWhiteSpace(scan)) scan = null;
             if (rootJobId == null && scan == null) return new List<BulkScanDetailDto>();
             if (rootJobId != null)
@@ -358,8 +376,11 @@ public class RouteViewerScanService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin && scope.NpAgentId == null) return new List<RoutedItemProgressDto>();
 
+        // Branches B2: a shipment outside the caller's branches has no progress to show.
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleJobIdsAsync([rootJobId])).Contains(rootJobId))
+            return new List<RoutedItemProgressDto>();
+
         // NP leak K5 (2026-11-13): root job must be in scope. No-op for admin.
-        // B2: branch scope check joins here once B2 lands.
         await scopeGuard.EnsureTucJobInScopeAsync(rootJobId);
 
         // The SP emits RootJobID / ToteBarcode / LinehaulRunId, not the DTO's

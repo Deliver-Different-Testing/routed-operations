@@ -18,7 +18,7 @@ public class RouteViewerCourierSearchCodeTests
         IDbContextFactory<DynamicDespatchDbContext> factory,
         INpScopeResolver resolver,
         List<(int Id, string? Text)> rows)
-        : RouteViewerCourierService(factory, resolver, NullLogger<RouteViewerCourierService>.Instance)
+        : RouteViewerCourierService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), NullLogger<RouteViewerCourierService>.Instance)
     {
         protected override Task<List<RawCourierSearchRow>> RunCourierSearchSpAsync(string? searchTerm) =>
             Task.FromResult(rows.Select(r => new RawCourierSearchRow { ID = r.Id, Text = r.Text }).ToList());

@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -28,6 +29,7 @@ public class RunViewerScanControllerTests
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
         var svc = new RouteViewerScanService(factory, resolver,
             Substitute.For<INpScopeGuard>(),
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerScanService>.Instance);
         var controller = new RunViewerScanController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

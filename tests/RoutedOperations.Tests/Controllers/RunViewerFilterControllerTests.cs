@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -27,7 +28,7 @@ public class RunViewerFilterControllerTests
         // Tenant staff with a contact, so GetClients reaches the SP (the
         // contact now comes from this claim, not the query string).
         var accessor = ControllerTestHarness.Accessor(clientTypeId: "4", contactId: "12");
-        var svc = new RouteViewerFilterService(factory, resolver, accessor,
+        var svc = new RouteViewerFilterService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), accessor,
             NullLogger<RouteViewerFilterService>.Instance);
         var controller = new RunViewerFilterController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

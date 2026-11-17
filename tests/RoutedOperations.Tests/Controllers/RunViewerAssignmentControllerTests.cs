@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -24,7 +25,7 @@ public class RunViewerAssignmentControllerTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
         var guard = Substitute.For<INpScopeGuard>();
-        var svc = new RouteViewerAssignmentService(factory, resolver, guard,
+        var svc = new RouteViewerAssignmentService(factory, resolver, guard, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerAssignmentService>.Instance);
         var controller = new RunViewerAssignmentController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

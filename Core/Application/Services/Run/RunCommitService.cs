@@ -3,6 +3,7 @@ using Dapper;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
 using RoutedOperations.Core.Application.Dtos.Run;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Infrastructure;
 using Serilog;
 using RoutedOperations.Core.Application.Utilities;
@@ -25,11 +26,42 @@ namespace RoutedOperations.Core.Application.Services.Run;
 /// </summary>
 public class RunCommitService(
     IConnectionStringManager connectionStringManager,
-    IHttpContextAccessor httpContextAccessor)
+    IHttpContextAccessor httpContextAccessor,
+    IBranchScopeGuard? branchGuard = null)
 {
+    // Branches B2c: a branch-limited caller may only send their own jobs live (see IBranchScopeGuard.ActionableBulkJobIdsAsync).
+    private async Task<IReadOnlySet<int>?> ActionableAsync(IEnumerable<int> bulkJobIds)
+    {
+        if (branchGuard is not { IsRestricted: true }) return null;
+        return await branchGuard.ActionableBulkJobIdsAsync([.. bulkJobIds.Distinct()]);
+    }
+
+    private static DispatchResult NotFound() => new() { Result = "Failed", Message = "Job not found" };
+
+    private static DispatchResult CourierNotFound() => new() { Result = "Failed", Message = "Courier not found" };
+
+    // Branches B2c: the courier a restricted caller dispatches with must be one of their own. Null when unrestricted (nothing to check).
+    private async Task<IReadOnlySet<int>?> UsableCouriersAsync(IEnumerable<int?> courierIds)
+    {
+        if (branchGuard is not { IsRestricted: true }) return null;
+        return await branchGuard.VisibleCourierIdsAsync([.. courierIds.Where(c => c.HasValue).Select(c => c!.Value).Distinct()]);
+    }
+
+    private static bool CourierUsable(IReadOnlySet<int>? usable, int? courierId) =>
+        usable is null || courierId is null || usable.Contains(courierId.Value);
+
     public async Task<List<DispatchResult>> DispatchAsync(IEnumerable<InsertOrUpdateRunRequest> runs)
     {
         var results = new List<DispatchResult>();
+        runs = runs.ToList();
+        var allowed = await ActionableAsync(runs.SelectMany(r => r.Jobs.Select(j => j.BulkJobId)));
+        var usableCouriers = await UsableCouriersAsync(runs.Select(r => r.Courier?.CourierId));
+        if (allowed is not null && !runs.Any(r => CourierUsable(usableCouriers, r.Courier?.CourierId) && r.Jobs.Any(j => allowed.Contains(j.BulkJobId))))
+        {
+            // Nothing of theirs can be sent (a job or courier outside their branches): no need to reach the tenant database.
+            return [.. runs.SelectMany(r => r.Jobs.Select(j =>
+                !allowed.Contains(j.BulkJobId) ? NotFound() : CourierNotFound()))];
+        }
         var connectionString = await ResolveTenantConnectionAsync();
 
         await using var conn = new SqlConnection(connectionString);
@@ -51,6 +83,18 @@ public class RunCommitService(
 
             foreach (var job in run.Jobs)
             {
+                if (allowed is not null && !allowed.Contains(job.BulkJobId))
+                {
+                    results.Add(NotFound());
+                    continue;
+                }
+
+                if (!CourierUsable(usableCouriers, courierId))
+                {
+                    results.Add(CourierNotFound());
+                    continue;
+                }
+
                 try
                 {
                     await conn.ExecuteAsync(
@@ -93,6 +137,12 @@ public class RunCommitService(
     public async Task<List<DispatchResult>> DispatchJobsAsync(DispatchJobsRequest request)
     {
         var results = new List<DispatchResult>();
+        var allowed = await ActionableAsync(request.JobIds);
+        if (allowed is not null && !request.JobIds.Any(allowed.Contains))
+            return [.. request.JobIds.Select(_ => NotFound())];   // nothing of theirs: no need to reach the tenant database
+        var usableCouriers = await UsableCouriersAsync([request.CourierId]);
+        if (!CourierUsable(usableCouriers, request.CourierId))
+            return [.. request.JobIds.Select(_ => CourierNotFound())];
         var connectionString = await ResolveTenantConnectionAsync();
 
         var runName = request.RunName ?? "Selected Jobs";
@@ -110,6 +160,12 @@ public class RunCommitService(
         var runOrder = 1;
         foreach (var jobId in request.JobIds)
         {
+            if (allowed is not null && !allowed.Contains(jobId))
+            {
+                results.Add(NotFound());
+                continue;
+            }
+
             try
             {
                 await conn.ExecuteAsync(

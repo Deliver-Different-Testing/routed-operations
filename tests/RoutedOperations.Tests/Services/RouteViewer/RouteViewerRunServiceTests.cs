@@ -7,6 +7,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -25,7 +26,7 @@ public class RouteViewerRunServiceTests
         var accessorX = accessor ?? Substitute.For<IHttpContextAccessor>();
         accessorX.HttpContext.Returns(new DefaultHttpContext());
         var sut = new RouteViewerRunService(factory, resolver,
-            guard ?? Substitute.For<INpScopeGuard>(), tz, accessorX,
+            guard ?? Substitute.For<INpScopeGuard>(), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), tz, accessorX,
             NullLogger<RouteViewerRunService>.Instance);
         return (sut, resolver);
     }

@@ -25,7 +25,8 @@ namespace RoutedOperations.Core.Application.Services.RecurringRoute;
 /// </summary>
 public class RecurringRouteService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
-    IHttpContextAccessor httpContextAccessor)
+    IHttpContextAccessor httpContextAccessor,
+    Branches.IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
     // ─── ROUTES ────────────────────────────────────────────────────────────
@@ -706,6 +707,13 @@ public class RecurringRouteService(
             .ThenBy(rr => rr.RosterDate)
             .ToListAsync();
 
+        // Branches B2c: a roster entry for a courier outside the caller's branches is not shown (agent and network partner entries are not branch data).
+        if (branchGuard is { IsRestricted: true })
+        {
+            var rosterCouriers = await branchGuard.VisibleCourierIdsAsync(rows.Where(r => r.TargetType == 1 && r.CourierId.HasValue).Select(r => r.CourierId!.Value).Distinct().ToList());
+            rows = [.. rows.Where(r => !(r.TargetType == 1 && r.CourierId.HasValue) || rosterCouriers.Contains(r.CourierId!.Value))];
+        }
+
         var courierIds = rows.Where(r => r.TargetType == 1 && r.CourierId.HasValue)
             .Select(r => r.CourierId!.Value).Distinct().ToList();
         var couriers = courierIds.Count == 0
@@ -907,9 +915,7 @@ public class RecurringRouteService(
 
     public async Task<AssignableTargetsResponse> GetAssignableTargetsAsync()
     {
-        var couriers = await Context.TucCouriers
-            .AsNoTracking()
-            .Where(c => c.Active)
+        var couriers = await (branchGuard is null ? Context.TucCouriers.AsNoTracking().Where(c => c.Active) : await branchGuard.WhereCourierVisibleAsync(Context.TucCouriers.AsNoTracking().Where(c => c.Active)))   // Branches B2c
             .OrderBy(c => c.Code)
             .Select(c => new AssignableTargetDto(c.UccrId, $"{c.Code} {c.UccrName}".Trim(), c.Code ?? string.Empty))
             .ToListAsync();

@@ -77,6 +77,7 @@ public class RouteViewerRunCourierRejectTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(true, null));
         var svc = new RouteViewerAssignmentService(factory, resolver, Substitute.For<INpScopeGuard>(),
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerAssignmentService>.Instance);
         var ctl = new RunViewerAssignmentController(svc);
         ControllerTestHarness.AttachHttpContext(ctl);

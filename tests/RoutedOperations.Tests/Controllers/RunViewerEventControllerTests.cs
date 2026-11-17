@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -51,7 +52,7 @@ public class RunViewerEventControllerTests : IDisposable
         var factory = ControllerTestHarness.Factory(opts);
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(isAdmin, npAgentId));
-        var svc = new RouteViewerEventService(factory, resolver,
+        var svc = new RouteViewerEventService(factory, resolver, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerEventService>.Instance);
         var controller = new RunViewerEventController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

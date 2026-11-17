@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Job;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 using Serilog;
@@ -17,7 +18,7 @@ namespace RoutedOperations.Core.Application.Services.Job;
 /// null/empty means "no filter". Excludes Done rows and Void rows to mirror the
 /// legacy SP's default behaviour.
 /// </summary>
-public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFactory, IBranchScopeGuard branchGuard)
     : BaseService(contextFactory)
 {
     public async Task<List<BulkJobDto>> GetBulkJobsAsync(
@@ -366,6 +367,9 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
         var materialised = await joined.ToListAsync();
 
+        // Branches B2: branch-limited staff build runs from the jobs whose family is theirs only.
+        materialised = await branchGuard.FilterBulkJobRowsAsync(materialised, m => m.Dto.BulkJobId);
+
         // Stamp the origin region on client-origin jobs (schedule-origin spec
         // 4.2). Done AFTER materialisation on purpose: tblBulkJob is millions
         // of rows on urgent-prod and this query is the cockpit's hot path, so
@@ -431,6 +435,7 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// </summary>
     public async Task<JobDetailExtrasDto?> GetJobDetailExtrasAsync(int jobId)
     {
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleBulkJobIdsAsync([jobId])).Contains(jobId)) return null;   // Branches B2
         return await Context.TblBulkJobs
             .AsNoTracking()
             .Where(j => j.BulkJobId == jobId)
@@ -454,6 +459,9 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             .Distinct()
             .ToListAsync();
 
+        // Branches B2: only clients the caller may see.
+        settings = await branchGuard.FilterClientRowsAsync(settings, s => s.ClientId);
+
         return settings
             .Select(s => (object)new { id = s.ClientId, label = s.ClientCode })
             .ToList();
@@ -462,8 +470,18 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<List<string>> GetOurRefsAsync(DateTime date)
     {
         var d = date.Date;
-        return await Context.TblBulkJobs
-            .Where(j => !j.Done && !j.Void && j.BookDate.Date == d && j.OurRef != null)
+        var refs = Context.TblBulkJobs
+            .Where(j => !j.Done && !j.Void && j.BookDate.Date == d && j.OurRef != null);
+
+        // Branches B2: branch-limited staff see only the refs of jobs that are theirs.
+        if (branchGuard.IsRestricted)
+        {
+            var rows = await refs.Select(j => new { j.BulkJobId, j.OurRef }).ToListAsync();
+            var visible = await branchGuard.VisibleBulkJobIdsAsync(rows.Select(r => r.BulkJobId).ToList());
+            return rows.Where(r => visible.Contains(r.BulkJobId)).Select(r => r.OurRef!).Distinct().Order().ToList();
+        }
+
+        return await refs
             .OrderBy(j => j.OurRef)
             .Select(j => j.OurRef!)
             .Distinct()
@@ -472,6 +490,7 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
     public async Task<List<int>> GetMultiboxChildrenAsync(int parentBulkJobId)
     {
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleBulkJobIdsAsync([parentBulkJobId])).Contains(parentBulkJobId)) return [];   // Branches B2
         return await Context.TblBulkJobs
             .Where(j => j.MultiboxParentId == parentBulkJobId || j.ParentId == parentBulkJobId)
             .Select(j => j.BulkJobId)
@@ -480,6 +499,9 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
     public async Task<bool> UpdateJobDetailAsync(int jobId, string field, string value)
     {
+        // Branches B2: a job outside the caller's branches reads as not found.
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleBulkJobIdsAsync([jobId])).Contains(jobId)) return false;
+
         var job = await Context.TblBulkJobs.FindAsync(jobId);
         if (job == null) return false;
 
@@ -541,6 +563,8 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
     public async Task<bool> UpdateGpsAsync(UpdateGpsRequest request)
     {
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleBulkJobIdsAsync([request.JobId])).Contains(request.JobId)) return false;   // Branches B2
+
         var job = await Context.TblBulkJobs.FindAsync(request.JobId);
         if (job == null) return false;
 
@@ -592,6 +616,13 @@ public class JobService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             var jobsToUpdate = await Context.TblBulkJobs
                 .Where(job => request.JobIds.Contains(job.BulkJobId))
                 .ToListAsync();
+
+            // Branches B2: jobs outside the caller's branches read as not found.
+            if (branchGuard.IsRestricted)
+            {
+                var visible = await branchGuard.VisibleBulkJobIdsAsync([.. request.JobIds]);
+                jobsToUpdate = [.. jobsToUpdate.Where(j => visible.Contains(j.BulkJobId))];
+            }
 
             var foundIds = jobsToUpdate.Select(j => j.BulkJobId).ToHashSet();
             foreach (var notFoundId in request.JobIds.Where(id => !foundIds.Contains(id)))
