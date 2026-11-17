@@ -13,9 +13,11 @@ import { mockEverything } from './fixtures/npSession';
 // BulkTruckPreviewTests pins that the preview's price is the inserted price.
 
 const FILE = resolve(process.cwd(), 'tests/e2e/fixtures/bulk-truck/bulk-truck-ingram-like.csv');
+// UC #881: the customer's shape, a Ready Date, Ready Time and Speed on every row.
+const READY_DATES_FILE = resolve(process.cwd(), 'tests/e2e/fixtures/bulk-truck/bulk-truck-ready-dates.csv');
 
-function parseFixture(): Record<string, string>[] {
-  const [head, ...lines] = readFileSync(FILE, 'utf8').trim().split(/\r?\n/).map((l) => l.split(','));
+function parseFixture(file = FILE): Record<string, string>[] {
+  const [head, ...lines] = readFileSync(file, 'utf8').trim().split(/\r?\n/).map((l) => l.split(','));
   return lines.map((cells) => Object.fromEntries(head.map((h, i) => [h, cells[i] ?? ''])));
 }
 
@@ -56,9 +58,9 @@ async function mockWizardApis(
   page: Page,
   speeds: unknown[],
   importResponse: Record<string, unknown>,
-  options: { importStatus?: number; preview?: Record<string, unknown>; previewStatus?: number } = {}
+  options: { importStatus?: number; preview?: Record<string, unknown>; previewStatus?: number; file?: string } = {}
 ): Promise<Imported> {
-  const rows = parseFixture();
+  const rows = parseFixture(options.file);
   const postcodes = Array.from(new Set(rows.flatMap((r) => [r['To Post Code'], r['Pickup Post Code']])));
   const imported: Imported = { body: null, preview: null, previewCalls: 0, importCalls: 0 };
 
@@ -105,13 +107,13 @@ async function mockWizardApis(
   return imported;
 }
 
-async function openOnDemandFile(page: Page) {
+async function openOnDemandFile(page: Page, file = FILE) {
   await page.goto('/bulk-import');
   await page.getByRole('button', { name: 'New Import' }).click();
   await page.getByPlaceholder(/Search clients/).fill('Example');
   await page.getByRole('option').first().click();
   await page.locator('input[name="importType"]').nth(1).check();
-  await page.locator('input[type="file"]').setInputFiles(FILE);
+  await page.locator('input[type="file"]').setInputFiles(file);
   await page.getByRole('button', { name: 'Upload File', exact: true }).last().click();
   await expect(page.getByText('Map the Columns')).toBeVisible();
 }
@@ -322,7 +324,8 @@ test.describe('Truck rows in the bulk import wizard', () => {
 
     await expect(page.getByTestId('truck-jobs-toggle')).toHaveCount(0);
     await expect(page.getByLabel('Map Tail Lift DO')).toHaveCount(0);
-    await expect(page.getByLabel('Map Speed')).toHaveCount(0);
+    // #881: Speed is a field on every NZ on-demand file, truck or not.
+    await expect(page.getByLabel('Map Speed')).toHaveValue('Speed');
 
     await next(page, 'Fix Suburbs');
     await next(page, 'Fix Addresses');
@@ -335,10 +338,54 @@ test.describe('Truck rows in the bulk import wizard', () => {
     expect(imported.previewCalls).toBe(0);
     await expect(page.getByText('Check Truck Prices')).toHaveCount(0);
     expect(imported.body.truckDefaults).toBeUndefined();
+    // The fixture repeats BT1002, so compare in file order.
+    expect(imported.body.jobs.map((j: any) => j.speed)).toEqual(parseFixture().map((r) => r.Speed));
     for (const job of imported.body.jobs) {
-      expect(job.speed).toBeUndefined();
       expect(job.palletType).toBeUndefined();
       expect(job.tailLiftDropoff).toBeUndefined();
     }
+  });
+
+  // UC #881. Each row books on its own date, time and speed. The mapping finds
+  // all three, the defaults step says they come from the file and needs no
+  // speed, and the request carries each row's values.
+  test('per-row Ready Date, Ready Time and Speed are mapped, need no defaults and are sent per row', async ({ page }) => {
+    const imported = await mockWizardApis(page, SPEEDS, { ...env, clientId: 1, bookDate: '2031-03-18', speedId: 0, jobs: [] }, {
+      file: READY_DATES_FILE,
+      preview: {
+        ...env,
+        otherRowCount: 1,
+        rows: [previewRow({ jobNumber: 'RD2001' }), previewRow({ rowIndex: 1, jobNumber: 'RD2002', speedName: 'Truck Standard' })],
+      },
+    });
+
+    await openOnDemandFile(page, READY_DATES_FILE);
+
+    await expect(page.getByLabel('Map Book Date')).toHaveValue('Ready Date');
+    await expect(page.getByLabel('Map Book Time')).toHaveValue('Ready Time');
+    await expect(page.getByLabel('Map Speed')).toHaveValue('Speed');
+
+    await next(page, 'Fix Suburbs');
+    await next(page, 'Fix Addresses');
+    await next(page, 'Select Depots');
+    await next(page, /Central/);
+
+    await expect(page.getByLabel('Book Date: from file (2 dates)')).toBeVisible();
+    await expect(page.getByLabel('Book Time: from file')).toBeVisible();
+    await expect(page.getByLabel(/^Speed: from file/)).toBeVisible();
+    await expect(page.locator('#sp-speed')).toHaveValue('');
+    await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+
+    await expect(page.getByText('Check Truck Prices')).toBeVisible();
+    await page.getByRole('button', { name: 'Import 3 jobs' }).click();
+    await expect.poll(() => imported.body).not.toBeNull();
+
+    const sent = Object.fromEntries(imported.body.jobs.map((j: any) => [j.jobNumber, [j.bookDate, j.bookTime, j.speed]]));
+    expect(sent).toEqual({
+      RD2001: ['2031-03-19', '08:30', 'TECO'],
+      RD2002: ['2031-03-18', '14:00', 'Truck Standard'],
+      RD2003: ['2031-03-19', '10:15', 'Standard'],
+    });
   });
 });

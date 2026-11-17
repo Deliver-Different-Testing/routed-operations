@@ -161,11 +161,21 @@ public partial class BulkImportServiceV2
         var tenantNow = TimeZoneUtility.GetTenantNow(_httpContextAccessor);
         Log.Information($"({request.MessageId})({contactId}) [Schedule] Validating BookDate for on-demand job. TenantNow: {tenantNow:yyyy-MM-dd HH:mm:ss}, BookDate: {request.BookDate:yyyy-MM-dd HH:mm:ss}");
 
-        if (request.BookDate < tenantNow)
+        // Only when some row books on the defaults-step value (#881); rows with
+        // their own date are checked one by one in SplitOutBookDateRefusals.
+        if (UsesBatchBookDate(request, BooksOnSchedule(request, client)) && request.BookDate < tenantNow)
         {
             Log.Warning($"({request.MessageId})({contactId}) [Schedule] BookDate is in the past. TenantNow: {tenantNow:yyyy-MM-dd HH:mm:ss}, BookDate: {request.BookDate:yyyy-MM-dd HH:mm:ss}");
             return "Book date must be in the future.";
         }
+
+        // UC #881. An NZ file where every row names its own Speed never uses the
+        // batch speed, so the wizard sends 0. SplitTruckRows checks each row's
+        // speed against the client instead.
+        if (request.SpeedId == 0 && IsNzTenant()
+            && request.Jobs != null && request.Jobs.Any()
+            && request.Jobs.All(j => j.SpeedId.HasValue || !string.IsNullOrWhiteSpace(j.Speed)))
+            return null;
 
         // MVP: wizard omits SpeedId (sends 0) and defers to the client's default.
         // Server coerces to client.Speed.UcjtId when request.SpeedId == 0.
@@ -186,6 +196,52 @@ public partial class BulkImportServiceV2
             : request.BookDate;
     }
 
+    // UC #881. A scheduled on-demand import books at the schedule's start time,
+    // so the row's own date and time do not apply; one date per upload, as routed.
+    private static bool BooksOnSchedule(BulkImportRequest request, dynamic? client) =>
+        request.ScheduleId.HasValue && client?.Schedule != null;
+
+    // UC #881. True when some row has neither a Book Date nor a Book Time, so it
+    // books on the defaults-step value and that value must pass the batch checks.
+    // A row with only one half is checked as a whole by RowBookDate.
+    internal static bool UsesBatchBookDate(BulkImportRequest request, bool onSchedule) =>
+        onSchedule
+        || request.Jobs == null
+        || !request.Jobs.Any()
+        || request.Jobs.Any(j => string.IsNullOrWhiteSpace(j.BookDate) && string.IsNullOrWhiteSpace(j.BookTime));
+
+    // UC #881. Resolves each on-demand row's own Book Date / Book Time onto
+    // ResolvedBookDateTime and takes out the rows that cannot book (unreadable,
+    // in the past, more than 30 days ahead), the same way the reference check
+    // does. Runs before job numbers are assigned so a refused row uses none.
+    private List<BulkImportJobCreateDto> SplitOutBookDateRefusals(BulkImportRequest request, dynamic? client)
+    {
+        var refused = new List<BulkImportJobCreateDto>();
+        if (request.Jobs == null || BooksOnSchedule(request, client))
+            return refused;
+
+        var tenantNow = TimeZoneUtility.GetTenantNow(_httpContextAccessor);
+        bool isUs = IsUsTenant();
+        var kept = new List<BulkImportJobCreateDto>();
+        foreach (var job in request.Jobs)
+        {
+            var resolved = RowBookDate.Resolve(job.BookDate, job.BookTime, request.BookDate, isUs, tenantNow);
+            if (resolved.Error != null)
+            {
+                job.ErrorMessage = resolved.Error;
+                job.TruckRejected = true;
+                refused.Add(job);
+                continue;
+            }
+            job.ResolvedBookDateTime = resolved.BookDateTime.HasValue
+                ? DateTime.SpecifyKind(resolved.BookDateTime.Value, request.BookDate.Kind)
+                : null;
+            kept.Add(job);
+        }
+        request.Jobs = kept;
+        return refused;
+    }
+
     // ---- ProcessOnDemandJobs (all-tenant, per-job SP loop) ----------------
 
     private async Task<BulkImportResponse> ProcessOnDemandJobs(int contactId, BulkImportRequest request, BulkImportResponse response, dynamic client)
@@ -196,7 +252,8 @@ public partial class BulkImportServiceV2
 
         // Before job numbers are assigned, so a refused row uses none, and before
         // the truck split, because INT_stpJob_BulkInsert has no reference check.
-        var refusedByReference = await SplitOutReferenceRefusals(request);
+        List<BulkImportJobCreateDto> refusedByDate = SplitOutBookDateRefusals(request, client);
+        var refusedByReference = refusedByDate.Concat(await SplitOutReferenceRefusals(request)).ToList();
 
         string podName = null;
         int? opId = null;
@@ -260,12 +317,13 @@ public partial class BulkImportServiceV2
             var split = await SplitTruckRows(request);
             p2pJobs = split.P2PRows;
             failedJobs.AddRange(split.Rejected);
+            truckWarnings.AddRange(split.Warnings);
             if (split.TruckRows.Count > 0)
             {
                 DateTime truckBookTime = TruckBookTime(request, client);
                 TruckRunResult truck = await RunWizardTruckRows(contactId, request, split.TruckRows, truckBookTime, opId, podName);
                 successfulJobCount += truck.Created;
-                truckWarnings = truck.Warnings;
+                truckWarnings.AddRange(truck.Warnings);
                 failedJobs.AddRange(split.TruckRows.Where(j => !string.IsNullOrEmpty(j.ErrorMessage)));
             }
         }
@@ -338,7 +396,7 @@ public partial class BulkImportServiceV2
 
                 DateTime bookTimeForRating = request.ScheduleId.HasValue && client.Schedule != null
                     ? DateTime.SpecifyKind(request.BookDate.Date.AddTicks(client.Schedule.StartTime.Ticks), request.BookDate.Kind)
-                    : request.BookDate;
+                    : job.ResolvedBookDateTime ?? request.BookDate; // the row's own date and time first (#881)
 
                 DateTime bookTimeOnly = new DateTime(1900, 1, 1,
                     bookTimeForRating.Hour,
@@ -374,7 +432,7 @@ public partial class BulkImportServiceV2
 
                     await Context.Procedures.INT_stpJob_BulkInsertAsync(
                         jobNumber: job.JobNumber,
-                        bookDate: request.BookDate.Date,
+                        bookDate: bookTimeForRating.Date,
                         bookTime: bookTimeOnly,
                         clientID: request.ClientId,
                         clientCode: client.Code,
@@ -421,7 +479,7 @@ public partial class BulkImportServiceV2
                         toGeoType: job.ToGeoType,
                         pODName: podName,
                         status: request.ImportAsCompleted ? 6 : 0,
-                        complTime: request.ImportAsCompleted ? (DateTime?)DateTime.Now : null,
+                        complTime: request.ImportAsCompleted ? (DateTime?)TimeZoneUtility.GetTenantNow(_httpContextAccessor) : null, // #881 F3
                         jobDone: request.ImportAsCompleted,
                         sourceID: 3,
                         fromCompany: job.FromCompany ?? string.Empty,
@@ -580,10 +638,11 @@ public partial class BulkImportServiceV2
                                     ? $"{contact.UcctFirstname} {contact.UcctSurname} ({contact.UcctEmail})"
                                     : $"ContactID: {contactId}";
 
-                                var completionNote = $"\n[BulkImport] Job imported as completed by {userName} on {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+                                var completedAt = TimeZoneUtility.GetTenantNow(_httpContextAccessor); // #881 F3
+                                var completionNote = $"\n[BulkImport] Job imported as completed by {userName} on {BulkImportNoteTime.Format(completedAt)}.";
 
                                 tucJob.UcjbStatus = 6;
-                                tucJob.UcjbComplTime = DateTime.Now;
+                                tucJob.UcjbComplTime = completedAt;
                                 tucJob.UcjbPodname = userName;
                                 tucJob.UcjbNotes = string.IsNullOrEmpty(tucJob.UcjbNotes)
                                     ? completionNote

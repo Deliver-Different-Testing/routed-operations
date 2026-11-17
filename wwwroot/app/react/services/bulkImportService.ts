@@ -92,6 +92,7 @@ export interface ParsedFile {
 export interface BulkImportJobCreateDto {
   jobNumber?: string | null;
   bookDate?: string | null;         // yyyy-MM-dd
+  bookTime?: string | null;         // HH:mm, on-demand only (#881)
   fromContact?: string | null;
   fromCompany?: string | null;
   fromAddress?: string | null;

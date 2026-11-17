@@ -124,6 +124,35 @@ public class BulkImportRequestValidatorTests
         result.ShouldHaveValidationErrorFor(x => x.BookDate);
     }
 
+    // UC #881. Every on-demand row brings its own date, so none books on the
+    // defaults-step value and a stale one must not block the file. The server
+    // checks each row's own date instead.
+    [Fact]
+    public void BookDate_InPast_Passes_WhenEveryOnDemandRowHasItsOwnDate()
+    {
+        var sut = new BulkImportRequestValidator(NzTenant());
+        var req = ValidNzRequest();
+        req.BookDate = DateTime.UtcNow.AddDays(-1);
+        req.Jobs.Single().BookDate = "2026-11-20";
+        sut.TestValidate(req).ShouldNotHaveValidationErrorFor(x => x.BookDate);
+    }
+
+    [Fact]
+    public void BookDate_InPast_StillFails_WhenOneRowIsBlankOrTheImportIsRouted()
+    {
+        var sut = new BulkImportRequestValidator(NzTenant());
+        var dated = ValidNzJob();
+        dated.BookDate = "2026-11-20";
+        var req = ValidNzRequest();
+        req.BookDate = DateTime.UtcNow.AddDays(-1);
+        req.Jobs = new[] { dated, ValidNzJob() };
+        sut.TestValidate(req).ShouldHaveValidationErrorFor(x => x.BookDate);
+
+        req.Jobs = new[] { dated };
+        req.JobType = "routed";
+        sut.TestValidate(req).ShouldHaveValidationErrorFor(x => x.BookDate);
+    }
+
     [Fact]
     public void BookDate_TooFarInFuture_Fails()
     {
