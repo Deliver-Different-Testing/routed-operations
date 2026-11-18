@@ -1,8 +1,10 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
 using RoutedOperations.Core.Application.Services.RecurringRoute;
+using Serilog;
 
 namespace RoutedOperations.API.Controllers;
 
@@ -245,5 +247,45 @@ public class RecurringRoutesController(RecurringRouteService routes) : BaseContr
     {
         var list = await routes.GetSchedulesLookupAsync();
         return Ok(new { response = list });
+    }
+
+    /// <summary>
+    /// POST /api/recurring-routes/schedules/coverage-match - which live
+    /// schedules share at least one postcode with the route's (usually
+    /// unsaved) coverage at their delivery end (final-mile route setup spec
+    /// 4.2). Same features and scope as the lookup above, whose rows it
+    /// filters.
+    ///
+    /// Any SQL failure (function not installed yet, missing grant for the
+    /// app login) gets a 500 ProblemDetails carrying the MessageId; the editor
+    /// then shows the full list with a muted note rather than failing.
+    /// </summary>
+    [HttpPost("schedules/coverage-match")]
+    [RequireFeature("ro-recurring-routes", "ro-polygon-builder")]
+    public async Task<IActionResult> MatchScheduleCoverage([FromBody] CoverageMatchRequest req)
+    {
+        var messageId = Guid.NewGuid();
+        if (!ModelState.IsValid) return HandleInvalidModelState(messageId);
+        Log.Information("({Method} {Path})({MessageId}) direction={Direction} zips={Zips} polygons={Polygons}",
+            Request.Method, Request.Path, messageId, req.Direction,
+            req.ZipPolygonIds?.Count ?? 0, req.BulkPolygonIds?.Count ?? 0);
+        try
+        {
+            var res = await routes.MatchScheduleCoverageAsync(req);
+            Log.Information("Response ({MessageId}): routePostcodeCount={Count} rows={Rows}",
+                messageId, res.RoutePostcodeCount, res.Rows.Count);
+            return Ok(new { response = res });
+        }
+        catch (SqlException ex)
+        {
+            // 208 = function not installed on this tenant yet, 229 = no SELECT
+            // grant for the app login; any SQL failure gets the same answer so
+            // the editor falls back to the full list without a raw stack trace.
+            Log.Error(ex, "Response ({MessageId}): schedule coverage query failed (SQL error {Number})", messageId, ex.Number);
+            return Problem(
+                title: "Coverage filter unavailable",
+                detail: $"The schedule coverage query failed on this tenant. MessageId {messageId}.",
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
     }
 }
