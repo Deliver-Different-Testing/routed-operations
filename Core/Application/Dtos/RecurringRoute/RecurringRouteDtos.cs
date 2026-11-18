@@ -257,6 +257,28 @@ public record ScheduleLookupDto(
     bool IsActive,
     List<string> ClientCodes);
 
+/// <summary>POST schedules/coverage-match body (final-mile route setup spec
+/// 4.2). The editor's coverage, usually unsaved, hence a body and not a route
+/// id. Null lists read as empty.</summary>
+public record CoverageMatchRequest(
+    byte Direction,
+    List<int> ZipPolygonIds,
+    List<int> BulkPolygonIds);
+
+/// <summary>One live schedule header that covers at least one route postcode
+/// at its delivery end. ScheduleId is the same DAY-ROW id the lookup returns
+/// for that header, so the editor can join on it; HeaderId is for matching a
+/// ticked schedule whose bound day row is not the lookup's.</summary>
+public record CoverageMatchRowDto(
+    int ScheduleId,
+    int HeaderId,
+    int MatchedCount,
+    bool DepotWide);
+
+public record CoverageMatchResponse(
+    int RoutePostcodeCount,
+    List<CoverageMatchRowDto> Rows);
+
 /// <summary>Full polygon shape for the map layer - one row per zip.</summary>
 public record ZipPolygonShapeDto(
     int ZipPolygonId,
