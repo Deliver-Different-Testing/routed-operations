@@ -104,12 +104,12 @@ Response: { routePostcodeCount: int,
 
 ## 5. Decisions
 
-| # | Question | Default in this spec | Owner |
+| # | Question | Answer | Status |
 |---|----------|----------------------|-------|
-| D1 | With no master, does the driver get each delivery as its own job, with no tote scanning? | Yes | Steve |
-| D2 | Do depot-wide schedules show when the filter is on? | Yes, labelled "Whole depot" | Steve |
-| D3 | Is the filter on by default? | Yes, when the route has coverage | Steve |
-| D4 | Transfer routes: which schedule end is compared? | Kevin proposes at M0 | Kevin |
+| D1 | With no master, does the driver get each delivery as its own job, with no tote scanning? | Yes | Decided by Steve 18 Nov |
+| D2 | Do depot-wide schedules show when the filter is on? | Yes, labelled "Whole depot" | Decided by Steve 18 Nov |
+| D3 | Is the filter on by default? | Yes, when the route has coverage | Decided by Steve 18 Nov |
+| D4 | Transfer routes: which schedule end is compared? | Kevin proposes at M0 | Open |
 
 ## 6. Tests and done-when
 
