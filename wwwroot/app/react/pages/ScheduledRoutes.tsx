@@ -6,6 +6,7 @@ import { postcodeLabel } from '../lib/tenantLabels';
 import { tenantMapCentre } from '../lib/mapDefaults';
 import { parseWktPolygon } from '../lib/wktPolygon';
 import { checkToteSave, initialToteScanning, toteSavePayload } from '../lib/finalMileTote';
+import { buildScheduleList, tickedHeaderIds } from '../lib/scheduleCoverageFilter';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
@@ -35,6 +36,7 @@ import {
   FinalMileDeliveryMode,
   type FinalMileDeliveryModeValue,
   type RouteLinkableBooking,
+  type CoverageMatchResponse,
   mayOfferHardDelete,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
@@ -671,12 +673,68 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
     setFocusRequest({ kind: 'bulkPolygon', id: polygonId, nonce: focusNonceRef.current });
   };
 
-  const filteredSchedules = useMemo(() => {
-    const needle = scheduleFilter.trim().toLowerCase();
-    if (!needle) return schedules;
-    return schedules.filter((s) => s.name.toLowerCase().includes(needle)
-      || s.clientCodes.some((c) => c.toLowerCase().includes(needle)));
-  }, [schedules, scheduleFilter]);
+  // ── Coverage filter on the schedules list (final-mile route setup 4.3) ──
+  // Final mile only. TODO(fmr-Q3): first-mile routes would compare the
+  // schedule's pickup end; until Steve answers they keep today's list.
+  const hasCoverage = zips.length > 0 || bulkPolygonIds.size > 0;
+  const coverageFilterOffered = direction === RouteDirection.FinalMile;
+  const [coverageFilterOn, setCoverageFilterOn] = useState(true);
+  const [coverageMatch, setCoverageMatch] = useState<CoverageMatchResponse | null>(null);
+  const [coverageMatchFailed, setCoverageMatchFailed] = useState(false);
+  // A coverage-match answer is due for the latest coverage. The previous
+  // match stays applied meanwhile (no flash to the full lookup); the editor
+  // shows "Checking coverage..." instead.
+  const [coverageMatchPending, setCoverageMatchPending] = useState(false);
+  const coverageSeqRef = useRef(0);
+  const coverageZipKey = zips.map((z) => z.zipPolygonId).sort((a, b) => a - b).join(',');
+  const coveragePolygonKey = [...bulkPolygonIds].sort((a, b) => a - b).join(',');
+
+  useEffect(() => {
+    const seq = ++coverageSeqRef.current;
+    if (!coverageFilterOffered || !hasCoverage) {
+      setCoverageMatch(null);
+      setCoverageMatchFailed(false);
+      setCoverageMatchPending(false);
+      return;
+    }
+    setCoverageMatchPending(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await recurringRouteService.matchScheduleCoverage({
+          direction,
+          zipPolygonIds: zips.map((z) => z.zipPolygonId),
+          bulkPolygonIds: [...bulkPolygonIds],
+        });
+        if (seq !== coverageSeqRef.current) return;
+        setCoverageMatch(res.response);
+        setCoverageMatchFailed(false);
+        setCoverageMatchPending(false);
+      } catch {
+        if (seq !== coverageSeqRef.current) return;
+        setCoverageMatch(null);
+        setCoverageMatchFailed(true);
+        setCoverageMatchPending(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [direction, coverageZipKey, coveragePolygonKey]);
+
+  const coverageFilterApplied = coverageFilterOffered && hasCoverage && coverageFilterOn
+    && !coverageMatchFailed && coverageMatch !== null;
+  // The visible hint under the tick box, for aria-describedby.
+  const coverageHintId = !hasCoverage ? 'schedule-coverage-hint-none'
+    : !coverageFilterOn ? undefined
+    : coverageMatchFailed ? 'schedule-coverage-hint-failed'
+    : coverageMatchPending ? 'schedule-coverage-hint-pending'
+    : undefined;
+  const tickedHeaders = useMemo(
+    () => tickedHeaderIds(scheduleIds, schedules, initial?.schedules ?? []),
+    [scheduleIds, schedules, initial]);
+  const scheduleList = useMemo(
+    () => buildScheduleList(schedules, scheduleFilter,
+      coverageFilterApplied ? coverageMatch : null, tickedHeaders),
+    [schedules, scheduleFilter, coverageFilterApplied, coverageMatch, tickedHeaders]);
 
   const targetOptions = useMemo<AssignableTarget[]>(() => {
     if (!targets) return [];
@@ -921,13 +979,33 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               <input type="text" value={scheduleFilter} onChange={(e) => setScheduleFilter(e.target.value)}
                 className={INPUT_CLASS + ' text-xs border-0 border-b border-border-light rounded-b-none'}
                 placeholder="Filter schedules by name or client code..." />
+              {coverageFilterOffered && (
+                <div className="px-2 py-1 border-b border-border-light text-xs">
+                  <label className={`flex items-center gap-2 ${hasCoverage ? 'cursor-pointer' : 'text-text-muted cursor-not-allowed'}`}>
+                    <input type="checkbox" data-testid="schedule-coverage-filter"
+                      checked={hasCoverage && coverageFilterOn} disabled={!hasCoverage}
+                      aria-describedby={coverageHintId}
+                      onChange={(e) => setCoverageFilterOn(e.target.checked)} />
+                    Only schedules covering this route's postcodes
+                  </label>
+                  {!hasCoverage && (
+                    <p id="schedule-coverage-hint-none" className="text-[10px] text-text-muted ml-5">Add postcodes or a polygon to filter by coverage</p>
+                  )}
+                  {hasCoverage && coverageFilterOn && coverageMatchFailed && (
+                    <p id="schedule-coverage-hint-failed" className="text-[10px] text-text-muted ml-5">Coverage filter unavailable</p>
+                  )}
+                  {hasCoverage && coverageFilterOn && !coverageMatchFailed && coverageMatchPending && (
+                    <p id="schedule-coverage-hint-pending" className="text-[10px] text-text-muted ml-5">Checking coverage...</p>
+                  )}
+                </div>
+              )}
               <ul className="max-h-56 overflow-auto text-xs divide-y divide-border-light">
-                {filteredSchedules.length === 0 && (
+                {scheduleList.length === 0 && (
                   <li className="px-2 py-3 text-center text-text-muted italic">
                     {schedules.length === 0 ? 'Loading schedules...' : 'No matches'}
                   </li>
                 )}
-                {filteredSchedules.map((s) => {
+                {scheduleList.map(({ schedule: s, overlapLabel, noOverlap }) => {
                   const checked = scheduleIds.has(s.id);
                   return (
                     <li key={s.id}>
@@ -942,8 +1020,14 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                                 Inactive
                               </span>
                             )}
+                            {noOverlap && (
+                              <span className="shrink-0 px-1 rounded bg-amber-50 text-[10px] text-amber-700 border border-amber-300">
+                                no postcodes in common
+                              </span>
+                            )}
                           </div>
                           <div className="text-[10px] text-text-muted">
+                            {overlapLabel && <span className="font-medium text-text-primary">{overlapLabel} - </span>}
                             {s.startTime}-{s.endTime}
                             {s.days.length > 0 && ` (${s.days.map((d) => DAYS_OF_WEEK[d - 1] ?? d).join(',')})`}
                             {s.clientCodes.length > 0 && ` - ${s.clientCodes.join(', ')}`}
