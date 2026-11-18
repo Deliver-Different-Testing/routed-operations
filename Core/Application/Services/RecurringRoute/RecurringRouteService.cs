@@ -386,6 +386,11 @@ public class RecurringRouteService(
 
         if (wanted == 0)
         {
+            // TODO(fmr-Q1): this is also the path the Route editor's "Use tote
+            // scanning on this route" switch takes when it is turned off. The
+            // demoted booking keeps building jobs with no courier or route.
+            // Whether it should also stop is open with Steve; keep today's
+            // demote exactly until he answers.
             foreach (var b in current) Demote(b);
             return;
         }

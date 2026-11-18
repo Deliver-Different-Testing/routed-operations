@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { postcodeLabel } from '../lib/tenantLabels';
 import { tenantMapCentre } from '../lib/mapDefaults';
 import { parseWktPolygon } from '../lib/wktPolygon';
+import { checkToteSave, initialToteScanning, toteSavePayload } from '../lib/finalMileTote';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
@@ -243,7 +244,20 @@ export default function ScheduledRoutes() {
                     onClick={openEdit}
                     className="border-b border-border-light last:border-b-0 hover:bg-surface-cream cursor-pointer"
                   >
-                    <td className="px-2 py-1.5 font-medium text-text-primary">{r.name}</td>
+                    <td className="px-2 py-1.5 font-medium text-text-primary">
+                      {r.name}
+                      {/* Final-mile route setup spec 3.2.6. The "Master: ..."
+                          label used to sit on the Schedules NEW Recurring
+                          Routes tab (e75ae7c), which df92581 removed, so it
+                          lives under the route name here. A route without a
+                          master shows nothing: the master is optional. */}
+                      {r.masterBookingLabel && (
+                        <div className="text-[10px] font-mono font-normal text-brand-cyan"
+                          title="Route's final-mile master booking">
+                          Master: {r.masterBookingLabel}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5">
                       <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap">
                         First/Final Mile
@@ -423,8 +437,11 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   // so what the operator sees pre-filled is what they would get anyway.
   const [originRadiusM, setOriginRadiusM] = useState<number>(initial?.origin?.radiusM ?? 5000);
   // Final-mile tote scanning. The master is the booking whose realised job the
-  // driver opens to scan totes on and off; without one the handset has nothing
-  // to route the tote screens from.
+  // driver opens to scan totes on and off. It is optional (final-mile route
+  // setup spec 3.2): with the switch off the driver gets each delivery as its
+  // own job, the same as any other recurring route.
+  const [toteScanning, setToteScanning] = useState<boolean>(
+    initialToteScanning(initial?.masterBookingId));
   const [masterBookingId, setMasterBookingId] = useState<number | null>(initial?.masterBookingId ?? null);
   const [masterLabel, setMasterLabel] = useState<string | null>(initial?.masterBookingLabel ?? null);
   const [deliveryMode, setDeliveryMode] = useState<FinalMileDeliveryModeValue>(
@@ -754,6 +771,19 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
       if (originKind === 'address' && originRadiusM <= 0) {
         toast.show('Origin radius must be greater than zero metres', 'error'); return;
       }
+      const tote = checkToteSave({
+        toteScanning,
+        masterBookingId,
+        initialMasterBookingId: initial?.masterBookingId,
+        initialMasterLabel: initial?.masterBookingLabel,
+      });
+      if (tote.kind === 'refuse') { toast.show(tote.message, 'error'); return; }
+      if (tote.kind === 'confirm' && !(await askConfirm({
+        title: 'Turn off tote scanning',
+        message: tote.message,
+        confirmLabel: 'Turn off and save',
+        danger: true,
+      }))) return;
     }
     setSaving(true);
     try {
@@ -787,12 +817,10 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
         // Final-mile only, and 0 rather than null to CLEAR: null means "leave
         // it alone" on the server, so a first-mile route's save must not send
         // a value at all or it would be read as a clear it never asked for.
+        // Tote scanning off sends the clear; the mode is only meaningful once
+        // a master exists to carry it.
         ...(direction === RouteDirection.FinalMile
-          ? {
-              masterBookingId: masterBookingId ?? 0,
-              // Only meaningful once a master exists to carry it.
-              finalMileDeliveryMode: masterBookingId != null ? deliveryMode : null,
-            }
+          ? toteSavePayload(toteScanning, masterBookingId, deliveryMode)
           : {}),
       };
       if (isNew) {
@@ -1058,10 +1086,22 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
 
           {/* Final-mile tote scanning (spec 4.1 and 4.7). Only a final-mile
               route has a master: a first-mile route's driver never scans a
-              tote onto a vehicle at the depot. */}
+              tote onto a vehicle at the depot. The master is optional
+              (final-mile route setup spec 3.2): the switch decides whether
+              the picker and the mode buttons apply at all. */}
           {direction === RouteDirection.FinalMile && (
             <FieldGroup label="Tote scanning">
               <div className="border border-border rounded-lg p-2 bg-surface-white space-y-3">
+                <label className="flex items-center gap-2 text-xs font-medium text-text-primary cursor-pointer">
+                  <input type="checkbox" role="switch" data-testid="final-mile-tote-switch"
+                    checked={toteScanning}
+                    onChange={(e) => setToteScanning(e.target.checked)} />
+                  Use tote scanning on this route
+                </label>
+                {!toteScanning && (
+                  <p className="text-[11px] text-text-muted">Drivers get each delivery as its own job.</p>
+                )}
+                {toteScanning && (<>
                 <div>
                   <span className="block text-[11px] font-medium text-text-secondary mb-1">
                     Master job
@@ -1128,9 +1168,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                   )}
                   <p className="mt-1 text-[10px] text-text-muted">
                     The booking whose daily job the driver opens to scan totes on at the
-                    depot and off at the destination. Without one there is nothing for the
-                    handset to open.
-                    {masterBookingId != null && ' Clearing it also unbinds the booking from this route.'}
+                    depot and off at the destination.
                   </p>
                 </div>
 
@@ -1163,6 +1201,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                       : 'What the destination expects. The lab decides, not the driver.'}
                   </p>
                 </div>
+                </>)}
               </div>
             </FieldGroup>
           )}

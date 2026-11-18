@@ -88,9 +88,11 @@ public record RouteDto(
     // same field at the same index.
     //
     // Only meaningful on a final-mile route (Direction = 2). The master is the
-    // booking whose realised job the driver opens to scan totes on and off;
-    // without one the handset has nothing to route the tote screens from, so
-    // the editor shows the picker only for Direction = 2.
+    // booking whose realised job the driver opens to scan totes on and off.
+    // A master is optional: it is set only when the route uses tote scanning,
+    // and a route without one gets each delivery as its own job (final-mile
+    // route setup spec 3.1). The editor shows the picker only for
+    // Direction = 2.
     int? MasterBookingId = null,
     // "P5372BIO - Burbank to Lab" style label for the picker's selected state,
     // so the editor does not have to fetch the booking again to render it.
