@@ -44,7 +44,8 @@ public class ScheduleService(
     ILogger<ScheduleService> logger,
     TenantScopedCache cache,
     IScheduleConverter converter,
-    IHttpContextAccessor httpContextAccessor)
+    IHttpContextAccessor httpContextAccessor,
+    Branches.IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
     /// <summary>
@@ -981,6 +982,10 @@ public class ScheduleService(
     /// </summary>
     public async Task<List<ClientScheduleDto>> GetSchedulesForClientAsync(int clientId)
     {
+        // Branches B2c: a client outside the caller's branches has no schedules to show.
+        if (branchGuard is { IsRestricted: true } && !(await branchGuard.VisibleClientIdsAsync([clientId])).Contains(clientId))
+            return new List<ClientScheduleDto>();
+
         var headers = await Context.BulkRunScheduleHeaders.AsNoTracking()
             .Where(h => h.RetiredUtc == null)
             .Select(h => new { h.ScheduleId, h.Name, h.IsDefault, h.BaseScheduleId })
@@ -1170,6 +1175,9 @@ public class ScheduleService(
     {
         var query = Context.TucClients.AsNoTracking()
             .Where(c => includeInactive || c.UcclActive == true);
+
+        // Branches B2c: branch-limited staff search only the clients they can see (their branches and the house accounts).
+        if (branchGuard is not null) query = await branchGuard.WhereClientVisibleAsync(query);
 
         if (!string.IsNullOrWhiteSpace(q))
         {

@@ -63,6 +63,7 @@ public class RouteViewerSplitRunTests
         var accessor = Substitute.For<IHttpContextAccessor>();
         accessor.HttpContext.Returns(new DefaultHttpContext());
         var sut = new RouteViewerRunService(factory, resolver, Substitute.For<INpScopeGuard>(),
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             new SqlTimeZoneNormalizer(factory), accessor, NullLogger<RouteViewerRunService>.Instance);
         return (sut, sql);
     }

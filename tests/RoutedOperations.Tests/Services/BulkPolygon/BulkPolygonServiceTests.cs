@@ -108,6 +108,60 @@ public class BulkPolygonServiceTests
         Assert.Null(row);
     }
 
+    // Polygons touched-postcodes spec 4.3: booking assesses every postcode a
+    // shape touches, so the panel must list slivers under the 10% packed-list
+    // floor too (polygon 30's Karapiro 3494 was 8.31% and invisible).
+    private static void SeedCorridor(Core.Domain.DynamicDespatchDbContext seed)
+    {
+        seed.BulkRunPolygons.AddRange(
+            new BulkRunPolygon { PolygonId = 30, Name = "Corridor", Active = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "s",
+                PartiallyIncludedZips = ",3410,3484," },
+            new BulkRunPolygon { PolygonId = 31, Name = "Other", Active = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "s" });
+        seed.BulkRunPolygonZips.AddRange(
+            new BulkRunPolygonZip { PolygonId = 30, Zip = "3494", IsFull = false, OverlapPct = 8.31m },
+            new BulkRunPolygonZip { PolygonId = 30, Zip = "3410", IsFull = false, OverlapPct = 12.33m },
+            new BulkRunPolygonZip { PolygonId = 30, Zip = "3200", IsFull = true, OverlapPct = 100m },
+            new BulkRunPolygonZip { PolygonId = 30, Zip = "3495", IsFull = false, OverlapPct = 0.01m },
+            new BulkRunPolygonZip { PolygonId = 31, Zip = "1010", IsFull = true, OverlapPct = 99.5m });
+    }
+
+    [Fact]
+    public async Task GetAllAsync_CarriesEveryTouchedZipPerPolygon_IncludingSlivers()
+    {
+        var svc = NewSvc(out var seed);
+        SeedCorridor(seed);
+        await seed.SaveChangesAsync();
+
+        var rows = await svc.GetAllAsync();
+
+        var corridor = rows.Single(r => r.PolygonId == 30);
+        // Full first, then partly covered by overlap descending; slivers kept.
+        Assert.Equal(new[] { "3200", "3410", "3494", "3495" }, corridor.TouchedZips!.Select(z => z.Zip));
+        Assert.True(corridor.TouchedZips![0].IsFull);
+        Assert.Equal(8.31m, corridor.TouchedZips!.Single(z => z.Zip == "3494").OverlapPct);
+        // Rows never leak across polygons.
+        Assert.Equal(new[] { "1010" }, rows.Single(r => r.PolygonId == 31).TouchedZips!.Select(z => z.Zip));
+        // Packed resolver column is passed through untouched.
+        Assert.Equal(",3410,3484,", corridor.PartiallyIncludedZips);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_CarriesTouchedZips_AndEmptyWhenOverlayNeverRan()
+    {
+        var svc = NewSvc(out var seed);
+        SeedCorridor(seed);
+        seed.BulkRunPolygons.Add(new BulkRunPolygon { PolygonId = 32, Name = "Fresh", Active = true, CreatedUtc = DateTime.UtcNow, CreatedBy = "s" });
+        await seed.SaveChangesAsync();
+
+        var corridor = await svc.GetByIdAsync(30);
+        var fresh = await svc.GetByIdAsync(32);
+
+        Assert.Equal(4, corridor!.TouchedZips!.Count);
+        Assert.Equal(new[] { "3410", "3494", "3495" },
+            corridor.TouchedZips!.Where(z => !z.IsFull).Select(z => z.Zip));
+        Assert.Empty(fresh!.TouchedZips!);
+    }
+
     [Fact]
     public async Task UpdateMetaAsync_RenamesActive()
     {

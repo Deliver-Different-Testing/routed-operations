@@ -126,12 +126,16 @@ public class RunViewerAssignmentController(
         try
         {
             await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode);
+            return Ok(new { response = "ok" });
         }
         catch (RunCourierRejectedException ex)
         {
             return BadRequest(new { message = ex.Message });
         }
-        return Ok(new { response = "ok" });
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/transfer-run - bulk-transfer
@@ -143,8 +147,15 @@ public class RunViewerAssignmentController(
     {
         if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
             return BadRequest(new { message = "RunId + ToCourierCode required." });
-        await assignmentService.TransferRunAsync(request.RunId, request.FromCourierCode ?? string.Empty, request.ToCourierCode);
-        return Ok(new { response = "ok" });
+        try
+        {
+            await assignmentService.TransferRunAsync(request.RunId, request.FromCourierCode ?? string.Empty, request.ToCourierCode);
+            return Ok(new { response = "ok" });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/release-run - soft release a
@@ -155,8 +166,15 @@ public class RunViewerAssignmentController(
     {
         if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
             return BadRequest(new { message = "RunId + CourierCode required." });
-        await assignmentService.ReleaseRunAsync(request.RunId, request.CourierCode);
-        return Ok(new { response = "ok" });
+        try
+        {
+            await assignmentService.ReleaseRunAsync(request.RunId, request.CourierCode);
+            return Ok(new { response = "ok" });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/unassign-run - hard unassign
@@ -170,12 +188,16 @@ public class RunViewerAssignmentController(
         try
         {
             await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
+            return Ok(new { response = "ok" });
         }
         catch (RunCourierRejectedException ex)
         {
             return BadRequest(new { message = ex.Message });
         }
-        return Ok(new { response = "ok" });
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 
     /// <summary>POST /api/runviewer/jobs/transfer-original-run-order -
@@ -187,7 +209,14 @@ public class RunViewerAssignmentController(
     {
         if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
             return BadRequest(new { message = "RunId + ToCourierCode required." });
-        await assignmentService.TransferOriginalRunOrderAsync(request.RunId, request.ToCourierCode);
-        return Ok(new { response = "ok" });
+        try
+        {
+            await assignmentService.TransferOriginalRunOrderAsync(request.RunId, request.ToCourierCode);
+            return Ok(new { response = "ok" });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
     }
 }

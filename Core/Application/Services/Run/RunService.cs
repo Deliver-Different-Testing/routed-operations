@@ -4,6 +4,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.Run;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 using Serilog;
@@ -15,9 +16,45 @@ namespace RoutedOperations.Core.Application.Services.Run;
 /// legacy JobRepository; the dispatch flow (send-to-live) still lives on
 /// RunCommitService which calls UTL_stpJob_InsertFromRunBuilder via Dapper.
 /// </summary>
-public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFactory, IBranchScopeGuard branchGuard)
     : BaseService(contextFactory)
 {
+    // Branches B2c. A branch-limited user may act on a run when the run is fully theirs (its courier is theirs, or every job on it
+    // is) or it is a fresh run with no jobs and no courier yet (so the user who creates a run can put the first job on it).
+    private async Task<bool> CanActOnRunAsync(int runId)
+    {
+        if (!branchGuard.IsRestricted) return true;
+        var run = await Context.TblBulkRuns.AsNoTracking().Where(r => r.Id == runId).Select(r => new { r.CourierId }).FirstOrDefaultAsync();
+        if (run is null) return true;   // a missing run is the caller's existing "not found" path
+        if (run.CourierId is null && !await Context.TblBulkJobRuns.AnyAsync(jr => jr.RunId == runId) && !await Context.TblBulkJobs.AnyAsync(j => j.BulkRunId == runId))
+            return true;
+        return await branchGuard.IsRunFullyVisibleAsync(runId);
+    }
+
+    // Branches B2c: may the caller move these jobs? The one rule for every job action (move, remove, dispatch, void, Route Viewer):
+    // a job is the caller's to act on when it is visible, or it sits on a run whose courier is theirs. Where the job sits on a run
+    // that is not fully theirs does not matter; whether the target run is theirs is a separate check (CanActOnRunAsync).
+    private async Task<bool> CanMoveJobsAsync(IReadOnlyCollection<int> bulkJobIds)
+    {
+        if (!branchGuard.IsRestricted) return true;
+        var ids = bulkJobIds.Distinct().ToList();
+        if (ids.Count == 0) return true;
+        return (await branchGuard.ActionableBulkJobIdsAsync(ids)).Count == ids.Count;
+    }
+
+    // Branches B2c: a branch-limited caller may only put a courier of their own on a run. Keeping the courier the run already has is
+    // fine (renaming a run must not fail because an earlier editor chose a courier outside the caller's branches).
+    private async Task<bool> CanUseCourierAsync(int? courierId, int? runId)
+    {
+        if (!branchGuard.IsRestricted || courierId is null) return true;
+        if (runId is > 0)
+        {
+            var current = await Context.TblBulkRuns.AsNoTracking().Where(r => r.Id == runId).Select(r => r.CourierId).FirstOrDefaultAsync();
+            if (current == courierId) return true;
+        }
+        return (await branchGuard.VisibleCourierIdsAsync([courierId.Value])).Contains(courierId.Value);
+    }
+
     /// <summary>
     /// Read-side lift of `UTL_stpJob_tblBulkRunWithFilter`: returns all jobs that
     /// belong to an existing run for the filter set, grouped into RunDto rows.
@@ -240,6 +277,38 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
         var runs = await runQuery.ToListAsync();
 
+        // Branches B2c: branch-limited staff see a run when its courier is theirs (then all its jobs) or it holds a job of theirs (then only
+        // those jobs). A run with no jobs and no courier is not branch data and stays visible.
+        if (branchGuard.IsRestricted)
+        {
+            var visibleJobIds = await branchGuard.VisibleBulkJobIdsAsync(jobs.Select(j => j.BulkJobId).ToList());
+            var courierIdsOfRuns = await branchGuard.VisibleCourierIdsAsync(
+                runs.Where(r => r.CourierId.HasValue).Select(r => r.CourierId!.Value).Distinct().ToList());
+            var jobsByRun = jobs.Where(j => j.BulkRunId.HasValue).GroupBy(j => j.BulkRunId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+            var keptRuns = new List<TblBulkRun>();
+            var hiddenJobIds = new HashSet<int>();
+            foreach (var r in runs)
+            {
+                var runJobs = jobsByRun.GetValueOrDefault(r.Id) ?? [];
+                var courierIsTheirs = r.CourierId.HasValue && courierIdsOfRuns.Contains(r.CourierId.Value);
+                var anyJobIsTheirs = runJobs.Any(j => visibleJobIds.Contains(j.BulkJobId));
+                var emptyAndUnassigned = runJobs.Count == 0 && !r.CourierId.HasValue;
+                if (courierIsTheirs || anyJobIsTheirs || emptyAndUnassigned)
+                {
+                    keptRuns.Add(r);
+                    if (!courierIsTheirs)
+                        foreach (var j in runJobs.Where(j => !visibleJobIds.Contains(j.BulkJobId))) hiddenJobIds.Add(j.BulkJobId);
+                }
+                else
+                {
+                    foreach (var j in runJobs) hiddenJobIds.Add(j.BulkJobId);
+                }
+            }
+
+            runs = keptRuns;
+            jobs = [.. jobs.Where(j => !hiddenJobIds.Contains(j.BulkJobId))];
+        }
+
         var courierIds = runs.Where(r => r.CourierId.HasValue).Select(r => r.CourierId!.Value).ToList();
         // Add every per-job courier id too so the Run Builder pane can render
         // the Courier column on each row without a second round-trip.
@@ -350,6 +419,11 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// </summary>
     public async Task<(string Result, string Message)> InsertOrUpdateRunAsync(InsertOrUpdateRunRequest run)
     {
+        if (run.Id.HasValue && !await CanActOnRunAsync(run.Id.Value)) return ("Failed", "Run not found");   // Branches B2c
+        // Branches B2c: the jobs this call pulls onto the run must be the caller's to move (a new run has no id, so check them here).
+        if (run.Jobs.Count > 0 && !await CanMoveJobsAsync([.. run.Jobs.Select(j => j.BulkJobId)])) return ("Failed", "Job not found");
+        if (!await CanUseCourierAsync(run.Courier?.CourierId, run.Id)) return ("Failed", "Courier not found");
+
         float courierPercentage = 0;
         if (!string.IsNullOrEmpty(run.CourierPercent) && run.CourierPercent != "NaN%")
         {
@@ -442,6 +516,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     public async Task<(string Result, string Message)> UpdateRunAsync(InsertOrUpdateRunRequest run)
     {
         if (!run.Id.HasValue) return ("Failed", "Missing run id");
+        if (!await CanActOnRunAsync(run.Id.Value)) return ("Failed", "Run not found");   // Branches B2c
+        if (!await CanUseCourierAsync(run.Courier?.CourierId, run.Id)) return ("Failed", "Courier not found");
 
         var runToUpdate = await Context.TblBulkRuns.FindAsync(run.Id.Value);
         if (runToUpdate == null) return ("Failed", "Run not found");
@@ -479,6 +555,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
     public async Task<(string Result, string Message)> DeleteAsync(int id)
     {
+        if (!await CanActOnRunAsync(id)) return ("Failed", "Run not found");   // Branches B2c: outside the caller's branches
         var run = await Context.TblBulkRuns.FindAsync(id);
         // Legacy SP silently no-ops for missing run ids (delete is idempotent).
         // Return Success so callers can retry / re-issue without seeing spurious
@@ -548,6 +625,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             .Select(g => new AssignJobItem { JobId = g.Key, PickRunOrder = g.First().BuilderIndex })
             .ToList();
         if (items.Count == 0) return ("Failed", "No jobs to assign");
+        if (!await CanMoveJobsAsync([.. items.Select(i => i.JobId)])) return ("Failed", "Job not found");   // Branches B2c
 
         await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         try
@@ -585,6 +663,11 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var items = jobs.GroupBy(j => j.JobId).Select(g => g.First()).ToList();
         if (items.Count == 0) return ("Failed", "No jobs to assign");
         if (deleteRunId == runId) return ("Failed", "Cannot merge a run into itself");
+
+        // Branches B2c: the target run, the run being merged away, and every job must be the caller's.
+        if (!await CanActOnRunAsync(runId) || (deleteRunId.HasValue && !await CanActOnRunAsync(deleteRunId.Value))
+            || !await CanMoveJobsAsync([.. items.Select(i => i.JobId)]))
+            return ("Failed", "Run or job not found");
 
         await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
         try
@@ -685,6 +768,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// </summary>
     public async Task<(string Result, string Message)> UpdateJobToRunAsync(int jobId, int? fromRunId, int runId, int? pickRunOrder = null)
     {
+        if (!await CanMoveJobsAsync([jobId]) || !await CanActOnRunAsync(runId)) return ("Failed", "Run or job not found");   // Branches B2c
+
         // Optimistic-concurrency check on fromRunId. Legacy SP does not do
         // this but the check helps two-operator scenarios flag conflicts
         // instead of silently overwriting. Only fires when the caller passes
@@ -733,6 +818,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// </summary>
     public async Task<(string Result, string Message)> SetJobStartEndAsync(int runId, int jobId, bool? isStart, bool? isEnd)
     {
+        if (!await CanActOnRunAsync(runId)) return ("Failed", "Run not found");   // Branches B2c
+
         var jobRuns = await Context.TblBulkJobRuns
             .Where(jr => jr.RunId == runId)
             .ToListAsync();
@@ -766,6 +853,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
 
     public async Task<(string Result, string Message)> RemoveJobFromRunAsync(int jobId)
     {
+        if (!await CanMoveJobsAsync([jobId])) return ("Failed", "Job not found");   // Branches B2c
+
         var existing = await Context.TblBulkJobRuns
             .FirstOrDefaultAsync(x => x.BulkJobId == jobId);
         if (existing == null) return ("Failed", "Job is not on any run");

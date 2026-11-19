@@ -14,7 +14,9 @@ vi.mock('@vis.gl/react-google-maps', () => ({
 }));
 
 // See NewImportWizard.walkthrough.test.tsx for the frozen-time rationale.
-const FROZEN_NOW = new Date('2026-08-12T12:00:00Z');
+// 14:00 on 12 Aug in Pacific/Auckland (the test tenant zone) and 02:00 UTC, so
+// tenant tomorrow and browser tomorrow are both Thursday 13 Aug (UC #881).
+const FROZEN_NOW = new Date('2026-08-12T02:00:00Z');
 const EXPECTED_DOW = 4;
 
 const env = { messageId: 'x', success: true, messages: [] };
@@ -230,11 +232,11 @@ describe('NewImportWizard - multi-depot iteration', () => {
     // carry over, and after the first depot the service is never
     // auto-picked, so the operator confirms it per depot (tester report
     // 2026-09-22, Christchurch).
-    expect((screen.getByLabelText('Service') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('Speed') as HTMLSelectElement).value).toBe('');
     expect((screen.getByLabelText('Schedule') as HTMLSelectElement).value).toBe('');
-    expect(screen.getByText('Pick a service first...')).toBeInTheDocument();
+    expect(screen.getByText('Pick a speed first...')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Service'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: '10' } });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
     );
@@ -290,7 +292,7 @@ describe('NewImportWizard - multi-depot iteration', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText(/2 of 2/)).toBeInTheDocument());
     expect(screen.getByText(/Wellington/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Service'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: '10' } });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
     );
@@ -357,7 +359,7 @@ describe('NewImportWizard - multi-depot iteration', () => {
       expect(screen.getByText(/Wellington/)).toBeInTheDocument()
     );
     // Same auto-select miss as the other test - pick the speed manually.
-    fireEvent.change(screen.getByLabelText('Service'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: '10' } });
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Next' })).not.toBeDisabled()
     );

@@ -7,6 +7,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -25,7 +26,7 @@ public class RouteViewerJobServiceTests
         var guard = Substitute.For<INpScopeGuard>();
         var s3 = Substitute.For<IAmazonS3>();
         var reader = new S3PhotoReader(s3, NullLogger<S3PhotoReader>.Instance);
-        var sut = new RouteViewerJobService(factory, resolver, guard, reader,
+        var sut = new RouteViewerJobService(factory, resolver, guard, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), reader,
             NullLogger<RouteViewerJobService>.Instance);
         return (sut, guard, resolver, s3);
     }

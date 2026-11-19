@@ -13,7 +13,9 @@ vi.mock('@vis.gl/react-google-maps', () => ({
   useMapsLibrary: () => ({}),
 }));
 
-const FROZEN_NOW = new Date('2026-08-12T12:00:00Z');
+// 14:00 on 12 Aug in Pacific/Auckland (the test tenant zone) and 02:00 UTC, so
+// tenant tomorrow and browser tomorrow are both Thursday 13 Aug (UC #881).
+const FROZEN_NOW = new Date('2026-08-12T02:00:00Z');
 const EXPECTED_DOW = 4;
 const EXPECTED_BOOKDATE = '2026-08-13';
 
@@ -191,7 +193,7 @@ describe('NewImportWizard - buildJobs projection helpers', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(screen.getByText(/Cambridge Hub/)).toBeInTheDocument());
     // Wait for auto-select or pick manually.
-    const serviceSelect = screen.getByLabelText('Service') as HTMLSelectElement;
+    const serviceSelect = screen.getByLabelText('Speed') as HTMLSelectElement;
     if (serviceSelect.value === '') {
       fireEvent.change(serviceSelect, { target: { value: '10' } });
     }

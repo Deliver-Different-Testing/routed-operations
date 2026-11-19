@@ -40,11 +40,12 @@ public class RouteViewerJobActionServiceTests
     // -------- job-status mutations --------
 
     [Fact]
-    public async Task ActivateAsync_Admin_SkipsGuardButThrowsOnSp()
+    public async Task ActivateAsync_Admin_StillHitsTheGuard_SoTheBranchRuleApplies_ThenThrowsOnSp()
     {
+        // Tenant staff resolve as NP admins; the combined NP + branch guard must still be called for them.
         var (sut, guard, _) = NewSvc(new NpScope(true, null));
         await Assert.ThrowsAnyAsync<Exception>(() => sut.ActivateAsync(1));
-        await guard.DidNotReceive().EnsureTucJobInScopeAsync(Arg.Any<int>());
+        await guard.Received(1).EnsureTucJobInScopeAsync(1);
     }
 
     [Fact]

@@ -154,16 +154,18 @@ public partial class BulkImportServiceV2 : BaseService
             // tblClientContact.
             // Staff = ClientTypeId 4/5, not the "Internal" billing-flag claim.
             var isInternal = _scope.IsStaff;
+            // The tenant's date, not the web server's (#881 F3).
+            var tenantToday = TimeZoneUtility.GetTenantNow(_httpContextAccessor).Date;
 
             List<int> clientIds;
             if (isInternal)
             {
                 clientIds = await Context.TblBulkJobs
-                    .Where(j => j.BookDate.Date >= DateTime.Today && j.SourceId == 3 && !j.Done && !j.Void)
+                    .Where(j => j.BookDate.Date >= tenantToday && j.SourceId == 3 && !j.Done && !j.Void)
                     .Select(j => j.ClientId)
                     .Union(
                         Context.TucJobs
-                            .Where(j => j.UcjbDate.Date >= DateTime.Today.AddDays(-30) && j.SourceId == 3 && !j.UcjbVoid && !j.UcjbJobDone && j.UcjbClientId.HasValue)
+                            .Where(j => j.UcjbDate.Date >= tenantToday.AddDays(-30) && j.SourceId == 3 && !j.UcjbVoid && !j.UcjbJobDone && j.UcjbClientId.HasValue)
                             .Select(j => j.UcjbClientId.Value)
                     )
                     .Distinct()
@@ -179,7 +181,7 @@ public partial class BulkImportServiceV2 : BaseService
             }
 
             var bulkJobs = await Context.TblBulkJobs
-                        .Where(j => j.BookDate.Date >= DateTime.Today
+                        .Where(j => j.BookDate.Date >= tenantToday
                                 && j.SourceId == 3
                                 && clientIds.Contains(j.ClientId)
                                 && j.JobRelationshipTypeId != 20
@@ -214,7 +216,7 @@ public partial class BulkImportServiceV2 : BaseService
                 .ToListAsync();
 
             var tucJobs = await Context.TucJobs
-                .Where(j => j.UcjbDate.Date >= DateTime.Today.AddDays(-30)
+                .Where(j => j.UcjbDate.Date >= tenantToday.AddDays(-30)
                             && j.SourceId == 3
                             && clientIds.Contains(j.UcjbClientId.Value)
                             && !j.UcjbVoid && !j.UcjbJobDone)
@@ -248,7 +250,7 @@ public partial class BulkImportServiceV2 : BaseService
 
             var prebookJobs = await Context.TucJobBookings
                     .Where(j => j.UcbkDate.HasValue
-                                && j.UcbkDate.Value.Date >= DateTime.Today.AddDays(-30)
+                                && j.UcbkDate.Value.Date >= tenantToday.AddDays(-30)
                                 && j.SourceId == 3
                                 && clientIds.Contains(j.UcbkClientId.Value)
                                 // "not done" means NULL OR false. The previous
@@ -752,6 +754,7 @@ public partial class BulkImportServiceV2 : BaseService
             ? $"{contact.UcctFirstname} {contact.UcctSurname} ({contact.UcctEmail})"
             : $"ContactID: {contactId}";
 
+        var tenantNow = TimeZoneUtility.GetTenantNow(_httpContextAccessor); // #881 F3
         var children = tucJobsToVoid.Where(j => j.ParentId == request.Id).ToList();
         var parents = tucJobsToVoid.Where(j => j.UcjbId == request.Id).ToList();
 
@@ -759,7 +762,7 @@ public partial class BulkImportServiceV2 : BaseService
         {
             child.UcjbVoid = true;
             child.UcjbStatus = 1000;
-            var deletionNote = $"\n[DELETED] from BulkImport by {userName} on {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+            var deletionNote = $"\n[DELETED] from BulkImport by {userName} on {BulkImportNoteTime.Format(tenantNow)}.";
             child.UcjbNotes = string.IsNullOrEmpty(child.UcjbNotes)
                 ? deletionNote
                 : child.UcjbNotes + deletionNote;
@@ -774,7 +777,7 @@ public partial class BulkImportServiceV2 : BaseService
         {
             parent.UcjbVoid = true;
             parent.UcjbStatus = 1000;
-            var deletionNote = $"\n[DELETED] from BulkImport by {userName} on {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+            var deletionNote = $"\n[DELETED] from BulkImport by {userName} on {BulkImportNoteTime.Format(tenantNow)}.";
             parent.UcjbNotes = string.IsNullOrEmpty(parent.UcjbNotes)
                 ? deletionNote
                 : parent.UcjbNotes + deletionNote;
@@ -914,6 +917,7 @@ public partial class BulkImportServiceV2 : BaseService
                 : $"ContactID: {contactId}";
 
             var jobIds = request.Jobs.Select(j => j.JobId).ToList();
+            var tenantNow = TimeZoneUtility.GetTenantNow(_httpContextAccessor); // #881 F3
 
             var allJobs = await Context.TucJobs
                 .Where(j => jobIds.Contains(j.UcjbId) || (j.ParentId.HasValue && jobIds.Contains(j.ParentId.Value)))
@@ -929,10 +933,10 @@ public partial class BulkImportServiceV2 : BaseService
                 {
                     if (!child.UcjbJobDone && !child.UcjbVoid)
                     {
-                        var completionNote = $"\n[BulkImport] Job completed from client upload by {userName} on {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+                        var completionNote = $"\n[BulkImport] Job completed from client upload by {userName} on {BulkImportNoteTime.Format(tenantNow)}.";
 
                         child.UcjbStatus = CompleteJobStatusId;
-                        child.UcjbComplTime = DateTime.Now;
+                        child.UcjbComplTime = tenantNow;
                         child.UcjbPodname = userName;
                         child.UcjbNotes = string.IsNullOrEmpty(child.UcjbNotes)
                             ? completionNote
@@ -959,10 +963,10 @@ public partial class BulkImportServiceV2 : BaseService
                     {
                         if (!tucJob.UcjbJobDone && !tucJob.UcjbVoid)
                         {
-                            var completionNote = $"\n[BulkImport] Job completed from client upload by {userName} on {DateTime.Now:yyyy-MM-dd HH:mm:ss}.";
+                            var completionNote = $"\n[BulkImport] Job completed from client upload by {userName} on {BulkImportNoteTime.Format(tenantNow)}.";
 
                             tucJob.UcjbStatus = CompleteJobStatusId;
-                            tucJob.UcjbComplTime = DateTime.Now;
+                            tucJob.UcjbComplTime = tenantNow;
                             tucJob.UcjbPodname = userName;
                             tucJob.UcjbNotes = string.IsNullOrEmpty(tucJob.UcjbNotes)
                                 ? completionNote
@@ -1520,25 +1524,6 @@ public partial class BulkImportServiceV2 : BaseService
         if (bool.TryParse(strValue, out var value)) return value;
         if (strValue == "1" || strValue == "-1" || strValue.Equals("yes", StringComparison.OrdinalIgnoreCase) || strValue.Equals("y", StringComparison.OrdinalIgnoreCase)) return true;
         if (strValue == "0" || strValue.Equals("no", StringComparison.OrdinalIgnoreCase) || strValue.Equals("n", StringComparison.OrdinalIgnoreCase)) return false;
-        return null;
-    }
-
-    private DateTime? GetDateValue(Dictionary<string, object> data, params string[] keys)
-    {
-        foreach (var key in keys)
-        {
-            if (data.TryGetValue(key, out var value) && value != null)
-            {
-                if (value is DateTime dt) return dt;
-                if (DateTime.TryParse(value.ToString(), out var parsedDt)) return parsedDt;
-            }
-            var foundKey = data.Keys.FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
-            if (foundKey != null && data[foundKey] != null)
-            {
-                if (data[foundKey] is DateTime dt) return dt;
-                if (DateTime.TryParse(data[foundKey].ToString(), out var parsedDt)) return parsedDt;
-            }
-        }
         return null;
     }
 }

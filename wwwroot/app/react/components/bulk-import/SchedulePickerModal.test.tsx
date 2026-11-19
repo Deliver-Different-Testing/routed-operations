@@ -94,7 +94,7 @@ describe('SchedulePickerModal', () => {
     );
     expect(screen.getByText(/Central/)).toBeInTheDocument();
     expect(screen.getByLabelText('Book Date')).toBeInTheDocument();
-    expect(screen.getByLabelText('Service')).toBeInTheDocument();
+    expect(screen.getByLabelText('Speed')).toBeInTheDocument();
   });
 
   it('filters services to those with a matching (depot, dayOfWeek) schedule', () => {
@@ -108,7 +108,7 @@ describe('SchedulePickerModal', () => {
         onCancel={noop}
       />
     );
-    const service = screen.getByLabelText('Service') as HTMLSelectElement;
+    const service = screen.getByLabelText('Speed') as HTMLSelectElement;
     const options = Array.from(service.options).map((o) => o.textContent);
     expect(options).toContain('Standard');
     expect(options).not.toContain('Express');
@@ -160,7 +160,7 @@ describe('SchedulePickerModal', () => {
     dispatch.mockClear();
     // Only speedA is in the filtered list (given schedules), so change is a no-op
     // for value. Just verify handler wiring.
-    fireEvent.change(screen.getByLabelText('Service'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: '' } });
     expect(dispatch).toHaveBeenCalledWith({ type: 'SET_SPEED_ID', speedId: 0 });
     expect(dispatch).toHaveBeenCalledWith({ type: 'SET_SCHEDULE_ID', scheduleId: null });
   });
@@ -224,7 +224,7 @@ describe('SchedulePickerModal', () => {
         onCancel={noop}
       />
     );
-    const service = screen.getByLabelText('Service') as HTMLSelectElement;
+    const service = screen.getByLabelText('Speed') as HTMLSelectElement;
     const options = Array.from(service.options).map((o) => o.textContent);
     expect(options).toContain('Standard');
     expect(options).toContain('Express');
@@ -361,7 +361,7 @@ describe('SchedulePickerModal', () => {
           onCancel={noop}
         />
       );
-      return screen.getByLabelText('Service') as HTMLSelectElement;
+      return screen.getByLabelText('Speed') as HTMLSelectElement;
     }
 
     afterEach(() => {
@@ -400,6 +400,57 @@ describe('SchedulePickerModal', () => {
       expect(screen.queryByTestId('sp-cutoff-notice')).not.toBeInTheDocument();
     });
   });
+  // UC #881: the picker used the operator's browser clock for min/max date,
+  // the default book time and the same-day bump. An NZ operator on a UTC
+  // machine (or a US dispatcher reviewing NZ) got yesterday's date range and
+  // a time slot from the wrong zone. The tenant decides, as on the server.
+  describe('date range and default time come from the tenant clock', () => {
+    afterEach(() => {
+      delete (window as any).__APP_USER__;
+    });
+
+    function asTenant(timeZone: string) {
+      (window as any).__APP_USER__ = { timeZone, isUsTenant: false };
+    }
+
+    it('min/max follow the NZ day even when the browser is still on the UTC day', () => {
+      // 2026-11-10 23:10 UTC = 2026-11-11 12:10 NZDT.
+      vi.setSystemTime(new Date('2026-11-10T23:10:00Z'));
+      asTenant('Pacific/Auckland');
+      renderWithProviders(
+        <SchedulePickerModal open state={withSettings({ importType: 'onDemand', bookDate: '2026-11-12' })}
+          dispatch={noop} onBack={noop} onNext={noop} onCancel={noop} />
+      );
+      const input = screen.getByLabelText('Book Date') as HTMLInputElement;
+      expect(input.min).toBe('2026-11-11');
+      expect(input.max).toBe('2026-12-11');
+    });
+
+    it('default book time is the next 15-minute slot on the tenant clock', () => {
+      vi.setSystemTime(new Date('2026-11-10T23:10:00Z')); // 12:10 NZDT
+      asTenant('Pacific/Auckland');
+      const dispatch = vi.fn();
+      renderWithProviders(
+        <SchedulePickerModal open state={withSettings({ importType: 'onDemand', bookTime: '' })}
+          dispatch={dispatch} onBack={noop} onNext={noop} onCancel={noop} />
+      );
+      expect(dispatch).toHaveBeenCalledWith({ type: 'SET_BOOK_TIME', time: '12:15' });
+    });
+
+    it('same-day bump compares against tenant now, not the browser', () => {
+      vi.setSystemTime(new Date('2026-11-10T23:10:00Z')); // 12:10 NZDT on 11 Nov
+      asTenant('Pacific/Auckland');
+      const dispatch = vi.fn();
+      renderWithProviders(
+        <SchedulePickerModal open
+          state={withSettings({ importType: 'onDemand', bookDate: '2026-11-11', bookTime: '09:00', speedId: 10 })}
+          dispatch={dispatch} onBack={noop} onNext={noop} onCancel={noop} />
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+      expect(dispatch).toHaveBeenCalledWith({ type: 'SET_BOOK_TIME', time: '12:30' });
+    });
+  });
+
   // Kevin 2026-10-29: every error has to be visible. The toast carrying the
   // server's reason auto-dismisses after 4s, which is not long enough to
   // read a list of clashing job numbers, so the reason also lives on the

@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -16,6 +17,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerEventService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerEventService> logger) : BaseService(contextFactory)
 {
     // NOTE: S3PhotoReader was injected here initially - dropped because
@@ -50,6 +52,13 @@ public class RouteViewerEventService(
             SpParam.Of("@EventDate", request.RunDate),
             SpParam.Of("@IncludeClosed", request.IncludeClosed))
             .ToListAsync();
+
+        // Branches B2: branch-limited staff see only the events of jobs (their whole family) or clients and couriers that are
+        // theirs. Rows carry the bulk job id; the family rule needs the live tucJob id.
+        var jobByBulk = await LiveJobIdsByBulkJobAsync(raw.Select(r => r.BulkJobID ?? 0));
+        raw = await branchGuard.FilterJobRowsAsync(raw,
+            r => r.BulkJobID.HasValue && jobByBulk.TryGetValue(r.BulkJobID.Value, out var j) ? j : null,
+            r => r.ClientID, r => r.CourierID);
 
         return raw.Select(r => new EventDto
         {
@@ -106,10 +115,48 @@ public class RouteViewerEventService(
         if (!scope.IsAdmin) return new List<EventJobDto>();
 
         // Tenant SP (1 param, verified): @ClientID only.
-        return await Context.Database.SqlQueryRaw<EventJobDto>(
+        var rows = await Context.Database.SqlQueryRaw<EventJobDto>(
             @"EXEC dbo.RVW_stpEventJobs @ClientID = @ClientID",
             SpParam.Of("@ClientID", clientId))
             .ToListAsync();
+
+        // Branches B2: the procedure row has no tucJob id or client, so they are read from tblBulkJob.
+        if (!branchGuard.IsRestricted || rows.Count == 0) return rows;
+        var bulkIds = rows.Select(r => r.BulkJobId).Distinct().ToList();
+        var bulk = await Context.TblBulkJobs
+            .Where(b => bulkIds.Contains(b.BulkJobId))
+            .Select(b => new { b.BulkJobId, b.ClientId, b.JobId })
+            .ToDictionaryAsync(b => b.BulkJobId);
+        return await branchGuard.FilterJobRowsAsync(rows,
+            r => bulk.TryGetValue(r.BulkJobId, out var b) ? b.JobId : null,
+            r => bulk.TryGetValue(r.BulkJobId, out var b) ? b.ClientId : null,
+            r => r.CourierId);
+    }
+
+    // tblBulkJob id -> live tucJob id, for the family rule. Empty (and no database access) for an unrestricted caller.
+    private async Task<Dictionary<int, int?>> LiveJobIdsByBulkJobAsync(IEnumerable<int> bulkJobIds)
+    {
+        if (!branchGuard.IsRestricted) return new Dictionary<int, int?>();
+        var ids = bulkJobIds.Where(i => i > 0).Distinct().ToList();
+        if (ids.Count == 0) return new Dictionary<int, int?>();
+        return await Context.TblBulkJobs
+            .Where(b => ids.Contains(b.BulkJobId))
+            .Select(b => new { b.BulkJobId, b.JobId })
+            .ToDictionaryAsync(b => b.BulkJobId, b => b.JobId);
+    }
+
+    // Branches B2: is this event the caller's to touch? An event is attributed to a bulk job and / or a courier; it is the caller's when
+    // that job (its family) or courier is. An event with neither cannot be attributed, so a branch-limited caller never touches it.
+    private async Task<bool> EventVisibleAsync(int eventId)
+    {
+        if (!branchGuard.IsRestricted) return true;
+        var row = await Context.TblBulkEvents.AsNoTracking()
+            .Where(e => e.BulkEventId == eventId)
+            .Select(e => new { e.BulkJobId, e.CourierId })
+            .FirstOrDefaultAsync();
+        if (row is null) return false;
+        if (row.BulkJobId is { } jobId && (await branchGuard.VisibleBulkJobIdsAsync([jobId])).Contains(jobId)) return true;
+        return row.CourierId is { } courierId && (await branchGuard.VisibleJobCourierIdsAsync([courierId])).Contains(courierId);
     }
 
     /// <summary>GET /api/runviewer/events/direct-link?eventId=&clientId=
@@ -117,6 +164,21 @@ public class RouteViewerEventService(
     /// </summary>
     public async Task<DirectLinkResponse> GenerateDirectLinkAsync(int eventId, int clientId)
     {
+        // Branches B2: no link for a client outside the caller's branches.
+        if (branchGuard.IsRestricted && !(await branchGuard.VisibleClientIdsAsync([clientId])).Contains(clientId))
+            return new DirectLinkResponse { Url = "Link Declined" };
+
+        // Branches B2: and the event must be one of theirs AND belong to that client (a caller's own client id with another branch's
+        // event id must not yield that event's link).
+        if (branchGuard.IsRestricted)
+        {
+            var eventClient = await (from e in Context.TblBulkEvents.AsNoTracking().Where(e => e.BulkEventId == eventId)
+                                     join b in Context.TblBulkJobs on e.BulkJobId equals b.BulkJobId
+                                     select (int?)b.ClientId).FirstOrDefaultAsync();
+            if (eventClient != clientId || !await EventVisibleAsync(eventId))
+                return new DirectLinkResponse { Url = "Link Declined" };
+        }
+
         // Legacy reads RVW_stpClientEventNotification for the email +
         // internal flag. If internal -> "Link Declined". Otherwise
         // builds RunViewerUrl#/CS?eid={eventId}.
@@ -152,6 +214,18 @@ public class RouteViewerEventService(
         // #1003 / D2: resolve the bulk row from the tucJob id when the
         // caller has no bulk id (every synthetic route row on Medical).
         var bulkJobId = await ResolveBulkJobIdAsync(request);
+
+        // Branches B2: a branch-limited caller can only raise an event against a job, courier or client that is theirs.
+        // The job is judged by the RESOLVED bulk id, so a request carrying only a tucJob id is checked too.
+        if (branchGuard.IsRestricted)
+        {
+            var attached = bulkJobId.HasValue || request.CourierId.HasValue || request.ClientId.HasValue;
+            if (!attached
+                || (bulkJobId is { } j && !(await branchGuard.VisibleBulkJobIdsAsync([j])).Contains(j))
+                || (request.CourierId is { } c && !(await branchGuard.VisibleCourierIdsAsync([c])).Contains(c))
+                || (request.ClientId is { } k && !(await branchGuard.VisibleClientIdsAsync([k])).Contains(k)))
+                return 0;
+        }
 
         // Uses SqlQuery with OUTPUT parameter binding via SqlParameter -
         // EF Core 8 SqlQueryRaw doesn't surface output params, so wrap
@@ -227,6 +301,7 @@ public class RouteViewerEventService(
         // sessions can't see events (short-circuit above) so they
         // can't close them either.
         if (!scope.IsAdmin) return false;
+        if (!await EventVisibleAsync(eventId)) return false;   // Branches B2
         var updated = await Context.TblBulkEvents
             .Where(e => e.BulkEventId == eventId)
             .ExecuteUpdateAsync(setters => setters
@@ -245,6 +320,7 @@ public class RouteViewerEventService(
         var scope = await scopeResolver.ResolveAsync();
         // Admin only until T.1 SECURITY option (a) is signed off.
         if (!scope.IsAdmin) return false;
+        if (!await EventVisibleAsync(eventId)) return false;   // Branches B2
         var current = await Context.TblBulkEvents
             .Where(e => e.BulkEventId == eventId)
             .Select(e => e.Notes)

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.Job;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 using Serilog;
@@ -12,7 +13,7 @@ namespace RoutedOperations.Core.Application.Services.Job;
 /// EF transaction, symmetric void / un-void behaviour. No SP - the legacy
 /// version was already pure EF.
 /// </summary>
-public class VoidJobService(IDbContextFactory<DynamicDespatchDbContext> contextFactory)
+public class VoidJobService(IDbContextFactory<DynamicDespatchDbContext> contextFactory, IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
     public async Task<object> VoidAsync(VoidJobsRequest request)
@@ -27,6 +28,13 @@ public class VoidJobService(IDbContextFactory<DynamicDespatchDbContext> contextF
             var jobsToUpdate = await Context.TblBulkJobs
                 .Where(job => request.JobIds.Contains(job.BulkJobId))
                 .ToListAsync();
+
+            // Branches B2c: a branch-limited caller can only void / un-void their own jobs; the rest read as not found.
+            if (branchGuard is { IsRestricted: true })
+            {
+                var actionable = await branchGuard.ActionableBulkJobIdsAsync([.. jobsToUpdate.Select(j => j.BulkJobId)]);
+                jobsToUpdate = [.. jobsToUpdate.Where(j => actionable.Contains(j.BulkJobId))];
+            }
 
             var notFoundIds = request.JobIds
                 .Except(jobsToUpdate.Select(j => j.BulkJobId))

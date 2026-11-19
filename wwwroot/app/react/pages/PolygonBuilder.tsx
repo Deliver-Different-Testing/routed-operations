@@ -17,12 +17,16 @@ import {
 import {
   bulkPolygonService,
   parsePartiallyIncludedZips,
+  splitTouchedZips,
+  splitFocusSelection,
+  savedZipsToastTrailer,
+  formatOverlapPct,
   type BulkPolygon,
   type PolygonPoint,
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
-import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc } from '../lib/polygonOps';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc, closingArc } from '../lib/polygonOps';
 import {
   NO_LAYER, type VisibilityState,
   groupByLayer, isLayerHidden, isPolygonVisible, layerNames, layerOf, loadVisibility,
@@ -147,6 +151,8 @@ export default function PolygonBuilder() {
   const loadedShapesRef = useRef<ZipPolygonShape[]>([]);
   const polygonsListRef = useRef<BulkPolygon[]>([]);
   const drawingVerticesRef = useRef<LatLng[]>([]);
+  /** Latest finishDraw, for map / marker listeners bound in effects. */
+  const finishDrawRef = useRef<(straight?: boolean) => void>(() => {});
   const modeRef = useRef<Mode>('view');
 
   // ── PERF: pre-parsed snap-target cache ───────────────────────────────
@@ -180,6 +186,10 @@ export default function PolygonBuilder() {
   // Zip picker state.
   const [loadedShapes, setLoadedShapes] = useState<ZipPolygonShape[]>([]);
   const [selected, setSelected] = useState<ZipcodeLookup[]>([]);
+  // Selected zips that a coverage polygon only partly covers (touched
+  // postcodes spec 4.3). Drawn lighter than fully covered ones; set by
+  // "Show on map", cleared by any other focus or by Clear.
+  const [partialZipIds, setPartialZipIds] = useState<Set<number>>(new Set());
   const [zipSearch, setZipSearch] = useState('');
   const [zipResults, setZipResults] = useState<ZipcodeLookup[]>([]);
 
@@ -641,6 +651,8 @@ export default function PolygonBuilder() {
       const path = parseWktPolygon(s.wkt);
       if (!path || path.length < 3) return;
       const isSelected = selectedSet.has(s.zipPolygonId);
+      // Shown-only partly covered zip; clicking it selects it (dark orange).
+      const isPartial = !isSelected && partialZipIds.has(s.zipPolygonId);
       let poly = zipOverlaysRef.current.get(s.zipPolygonId);
       if (!poly) {
         poly = new g.maps.Polygon({
@@ -662,7 +674,9 @@ export default function PolygonBuilder() {
       }
       poly.setOptions({
         clickable: mode === 'view',
-        ...(isSelected
+        ...(isPartial
+          ? { strokeColor: '#F2994A', fillColor: '#F2994A', fillOpacity: 0.12, strokeWeight: 1.5 }
+          : isSelected
           ? { strokeColor: '#F2994A', fillColor: '#F2994A', fillOpacity: 0.4, strokeWeight: 2 }
           : { strokeColor: '#00A3FF', fillColor: '#00A3FF', fillOpacity: 0.15, strokeWeight: 1.5 }),
       });
@@ -676,14 +690,16 @@ export default function PolygonBuilder() {
     const focusRequested = pendingFocusRef.current;
     prevSelectedCountRef.current = selected.length;
     if (focusRequested) pendingFocusRef.current = false;
-    if ((selectionJustGrew || focusRequested)
+    // An explicit focus ("Show on map") always refits; the 15-zip cap only
+    // guards the passive grow-the-selection case. Touched-postcode lists
+    // (every zip a polygon touches, not just >= 10%) regularly exceed 15.
+    if (((selectionJustGrew && selected.length <= 15) || focusRequested)
         && boundsCount > 0
-        && selected.length > 0
-        && selected.length <= 15) {
+        && (selected.length > 0 || (focusRequested && partialZipIds.size > 0))) {
       const selectedBounds = new g.maps.LatLngBounds();
       let selectedBoundsCount = 0;
       loadedShapes.forEach((s) => {
-        if (!selectedSet.has(s.zipPolygonId)) return;
+        if (!selectedSet.has(s.zipPolygonId) && !partialZipIds.has(s.zipPolygonId)) return;
         const path = parseWktPolygon(s.wkt);
         if (!path || path.length < 3) return;
         path.forEach((pt) => { selectedBounds.extend(pt); selectedBoundsCount++; });
@@ -702,7 +718,7 @@ export default function PolygonBuilder() {
     // polygon. Coverage-polygon effect below already has `mode` in deps
     // and works correctly; this is the counterpart fix for zip overlays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedShapes, selected, mode, visibility.showPostcodes]);
+  }, [loadedShapes, selected, partialZipIds, mode, visibility.showPostcodes]);
 
   // Sync coverage-polygon overlays.
   useEffect(() => {
@@ -936,17 +952,9 @@ export default function PolygonBuilder() {
     });
   };
 
-  /** Format a "derived N postcode(s)" trailer for the post-save toast.
-   *  Called after every polygon create/reshape so operators can see what
-   *  the auto-overlay computed. Truncates long lists to 6 postcodes + " +N
-   *  more" so a big shape doesn't blow past the toast width. */
-  const derivedZipsToastTrailer = (polygon: BulkPolygon): string => {
-    const zips = parsePartiallyIncludedZips(polygon.partiallyIncludedZips);
-    if (zips.length === 0) return ' (no overlapping postcodes)';
-    const head = zips.slice(0, 6).join(', ');
-    const tail = zips.length > 6 ? `, +${zips.length - 6} more` : '';
-    return ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${head}${tail}.`;
-  };
+  /** Post-save toast trailer: every touched postcode, same counts as the panel
+   *  (see savedZipsToastTrailer). */
+  const derivedZipsToastTrailer = (polygon: BulkPolygon): string => savedZipsToastTrailer(polygon);
 
   const clearLassoPreview = () => {
     lassoBufferRef.current = [];
@@ -1031,7 +1039,9 @@ export default function PolygonBuilder() {
    *  is smaller than the previous. Side effect: the highlighted zips
    *  count toward the "Save as Route (N)" button, which is the natural
    *  next step for both flows. */
-  const showZipStringsOnMap = async (zipStrings: string[], contextLabel: string) => {
+  const showZipStringsOnMap = async (
+    zipStrings: string[], contextLabel: string, partialZips: string[] = [],
+  ) => {
     if (zipStrings.length === 0) {
       toast.show(`${contextLabel} has no zips to show.`, 'error');
       return;
@@ -1063,19 +1073,33 @@ export default function PolygonBuilder() {
       // Replace selection wholesale + request an unconditional fitBounds
       // so the map snaps to the clicked zone even when the new selection
       // is smaller than the previous one.
+      // Partly covered zips are drawn only, never selected, so they do not
+      // count toward "Save as Route (N)".
       pendingFocusRef.current = true;
-      setSelected(resolved);
+      const { selected: toSelect, shownOnly } = splitFocusSelection(resolved, partialZips);
+      setSelected(toSelect);
+      setPartialZipIds(new Set(shownOnly.map((z) => z.zipPolygonId)));
+      const partlyNote = shownOnly.length > 0
+        ? ` ${shownOnly.length} partly covered shown only, not selected.`
+        : '';
       const msg = missing.length > 0
-        ? `Focused ${shapes.length} zip(s) on the map. ${missing.length} zip(s) could not be resolved.`
-        : `Focused ${shapes.length} zip(s) on the map.`;
+        ? `Focused ${shapes.length} zip(s) on the map.${partlyNote} ${missing.length} zip(s) could not be resolved.`
+        : `Focused ${shapes.length} zip(s) on the map.${partlyNote}`;
       toast.show(msg, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
-  const showIncludedZipsOnMap = (polygon: BulkPolygon) =>
-    showZipStringsOnMap(
-      parsePartiallyIncludedZips(polygon.partiallyIncludedZips),
-      `Coverage polygon "${polygon.name}"`);
+  /** Every touched postcode when the polygon carries BulkRunPolygonZip rows
+   *  (partly covered ones shaded lighter); the packed >= 10% list otherwise. */
+  const showIncludedZipsOnMap = (polygon: BulkPolygon) => {
+    const { full, partial } = splitTouchedZips(polygon.touchedZips);
+    const partialZips = partial.map((z) => z.zip);
+    return full.length + partialZips.length > 0
+      ? showZipStringsOnMap([...full, ...partialZips], `Coverage polygon "${polygon.name}"`, partialZips)
+      : showZipStringsOnMap(
+          parsePartiallyIncludedZips(polygon.partiallyIncludedZips),
+          `Coverage polygon "${polygon.name}"`);
+  };
 
   const removeSelection = (id: number) => {
     setSelected((prev) => prev.filter((z) => z.zipPolygonId !== id));
@@ -1083,6 +1107,7 @@ export default function PolygonBuilder() {
 
   const clearAll = () => {
     setSelected([]);
+    setPartialZipIds(new Set());
     setSelectedPolygons(new Set());
     setLoadedShapes([]);
     zipOverlaysRef.current.forEach((p) => p.setMap(null));
@@ -1981,12 +2006,24 @@ export default function PolygonBuilder() {
       const prev = drawingClicksRef.current[drawingClicksRef.current.length - 1];
       const prevVertex = drawingVerticesRef.current[drawingVerticesRef.current.length - 1];
       const altHeld = Boolean((e.domEvent as MouseEvent | undefined)?.altKey);
+      // Clicking the first point again closes the shape, exactly like Finish
+      // (Kevin review 2026-11-18, Steve's intended behaviour): the closing
+      // edge follows the shared boundary the same way, Alt keeps it straight.
+      // A click that snaps onto the first vertex lands here; a click on the
+      // first point's own marker is handled by that marker's listener.
+      const firstVertex = drawingVerticesRef.current[0];
+      if (drawingVerticesRef.current.length >= 3 && firstVertex
+        && snap.point.lat === firstVertex.lat && snap.point.lng === firstVertex.lng) {
+        finishDrawRef.current(altHeld);
+        return;
+      }
+      const ring: SnapRing | null = snap.ring;
       let added: LatLng[] = [snap.point];
-      if (!altHeld && prev?.snap && snap.ring && prev.snap.key === snap.ring.key && prevVertex) {
-        const arc = boundaryArc(snap.ring.path, prev.snap.pos, snap.ring.pos, prevVertex, snap.point);
+      if (!altHeld && prev?.snap && ring && prev.snap.key === ring.key && prevVertex) {
+        const arc = boundaryArc(ring.path, prev.snap.pos, ring.pos, prevVertex, snap.point);
         added = [...arc, snap.point];
       }
-      drawingClicksRef.current.push({ count: added.length, snap: snap.ring });
+      drawingClicksRef.current.push({ count: added.length, snap: ring });
       setDrawingVertices((p) => [...p, ...added]);
     });
     const moveListener = map.addListener('mousemove', (e: any) => {
@@ -2021,19 +2058,32 @@ export default function PolygonBuilder() {
     if (drawingVertices.length >= 2) {
       drawPreviewPolyRef.current = new g.maps.Polyline({
         path: drawingVertices, map: mapRef.current,
+        // Not clickable: a clickable preview line swallowed clicks on itself,
+        // so a click on any drawn point (the first one, to close) never
+        // reached the map's click listener (Kevin review 2026-11-18).
+        clickable: false,
         strokeColor: '#3bc7f4', strokeOpacity: 0.9, strokeWeight: 2,
         icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 }, offset: '0', repeat: '10px' }],
       });
     }
     drawingVertices.forEach((v, i) => {
+      // The first point is the close target once there is a shape to close:
+      // clickable (so a click on the dot itself is not swallowed by the
+      // marker) and above the snap hint, and clicking it finishes.
+      const closeTarget = i === 0 && drawingVertices.length >= 3;
       const m = new g.maps.Marker({
         position: v, map: mapRef.current,
         icon: {
           path: g.maps.SymbolPath.CIRCLE, scale: 5,
           fillColor: '#3bc7f4', fillOpacity: 1, strokeColor: '#0d0c2c', strokeWeight: 2,
         },
-        title: `Point ${i + 1}`, clickable: false,
+        title: closeTarget ? 'Click to close the shape' : `Point ${i + 1}`,
+        clickable: closeTarget,
+        ...(closeTarget ? { cursor: 'pointer', zIndex: 1000 } : {}),
       });
+      if (closeTarget) {
+        m.addListener('click', (ev: any) => finishDrawRef.current(Boolean(ev?.domEvent?.altKey)));
+      }
       drawPreviewMarkersRef.current.push(m);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2069,16 +2119,31 @@ export default function PolygonBuilder() {
     const count = last?.count ?? 1;
     setDrawingVertices((p) => p.slice(0, Math.max(0, p.length - count)));
   };
-  const finishDraw = () => {
+  /** Finish closes the shape. When the first and last clicks are on the
+   *  same boundary the closing edge follows it (2026-11-17); `straight`
+   *  (Alt held) keeps the plain chord. */
+  const finishDraw = (straight = false) => {
     if (drawingVertices.length < 3) {
       toast.show('A polygon needs at least 3 points.', 'error');
       return;
     }
+    // Clicking the first point again to close leaves a copy of it as the
+    // last vertex; the ring closes implicitly, so drop the copy rather than
+    // keep a zero-length edge (two stacked handles in edit mode).
+    const a = drawingVertices[0];
+    const z = drawingVertices[drawingVertices.length - 1];
+    const vertices = drawingVertices.length > 3 && a.lat === z.lat && a.lng === z.lng
+      ? drawingVertices.slice(0, -1)
+      : drawingVertices;
+    const closing = straight
+      ? []
+      : closingArc(vertices, drawingClicksRef.current.map((c) => c.snap));
     drawingClicksRef.current = [];
-    setPendingPolygon([drawingVertices]);
+    setPendingPolygon([[...vertices, ...closing]]);
     setDrawingVertices([]);
     setMode('pending');
   };
+  finishDrawRef.current = finishDraw;
 
   // Stage 4 - lasso mode entry/exit.
   const startLasso = () => { setDrawingVertices([]); setMode('lassoing'); };
@@ -2139,7 +2204,7 @@ export default function PolygonBuilder() {
       }
       if (e.key === 'Enter' && mode === 'drawing') {
         e.preventDefault();
-        finishDraw();
+        finishDraw(e.altKey);
         return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && mode === 'drawing') {
@@ -2720,11 +2785,11 @@ export default function PolygonBuilder() {
         {mode === 'drawing' ? (
           <>
             <span className="text-text-muted">
-              Click to add points ({drawingVertices.length}). The cursor snaps to {zipShortLower} boundaries and other polygons; two clicks on the same boundary follow it (hold Alt for a straight line). Esc cancels, Enter finishes, Del undoes the last click.
+              Click to add points ({drawingVertices.length}). The cursor snaps to {zipShortLower} boundaries and other polygons; two clicks on the same boundary follow it (hold Alt for a straight line). Click the first point or press Enter to finish (Alt for a straight close). Esc cancels, Del undoes the last click.
             </span>
             <Button variant="neutral" size="sm" onClick={undoVertex} disabled={drawingVertices.length === 0}>Undo</Button>
             <Button variant="neutral" size="sm" onClick={cancelDraw}>Cancel</Button>
-            <Button variant="secondary" size="sm" onClick={finishDraw} disabled={drawingVertices.length < 3}>
+            <Button variant="secondary" size="sm" onClick={(e) => finishDraw(e.altKey)} disabled={drawingVertices.length < 3}>
               Finish ({drawingVertices.length})
             </Button>
           </>
@@ -3278,6 +3343,62 @@ export default function PolygonBuilder() {
                         </div>
                       )}
                       {(() => {
+                        // Touched postcodes (spec 4.3): every BulkRunPolygonZip
+                        // row, split into fully and partly covered. Polygons
+                        // whose overlay never wrote rows keep the old list.
+                        const { full, partial } = splitTouchedZips(p.touchedZips);
+                        if (full.length + partial.length > 0) {
+                          const plural = (n: number) => `${zipShortLower}${n === 1 ? '' : 's'}`;
+                          return (
+                            <div className="ml-5 mt-1" data-testid={`touched-zips-${p.polygonId}`}>
+                              <div className="flex items-center gap-1 mb-0.5">
+                                <span className="text-[9px] uppercase tracking-wide text-text-muted">
+                                  Fully covers {full.length} {plural(full.length)} · partly covers {partial.length}
+                                </span>
+                                <button type="button"
+                                  onClick={() => showIncludedZipsOnMap(p)}
+                                  className="text-[9px] font-semibold text-brand-purple hover:underline"
+                                  title={`Load the ${full.length + partial.length} ${zipShortLower} boundar${full.length + partial.length === 1 ? 'y' : 'ies'} onto the map. Partly covered ones are shaded lighter.`}>
+                                  Show on map
+                                </button>
+                              </div>
+                              {full.length > 0 && (
+                                <div className="flex flex-wrap gap-0.5">
+                                  {full.slice(0, 12).map((z) => (
+                                    <span key={z}
+                                      className="inline-block px-1 py-0.5 rounded bg-brand-cyan/15 text-brand-dark text-[9px]"
+                                    >{z}</span>
+                                  ))}
+                                  {full.length > 12 && (
+                                    <span className="inline-block px-1 py-0.5 text-text-muted text-[9px]"
+                                      title={full.slice(12).join(', ')}
+                                    >+{full.length - 12} more</span>
+                                  )}
+                                </div>
+                              )}
+                              {partial.length > 0 && (
+                                <>
+                                  <div className="mt-0.5 text-[9px] text-text-muted italic">
+                                    Partly covered, address checked against the line:
+                                  </div>
+                                  <div className="flex flex-wrap gap-0.5">
+                                    {partial.slice(0, 12).map((z) => (
+                                      <span key={z.zip}
+                                        className="inline-block px-1 py-0.5 rounded border border-dashed border-brand-cyan/40 text-brand-dark text-[9px]"
+                                        title={`${z.zip}: ${formatOverlapPct(z.overlapPct)} inside the shape. Address checked against the line.`}
+                                      >{z.zip} {formatOverlapPct(z.overlapPct)}</span>
+                                    ))}
+                                    {partial.length > 12 && (
+                                      <span className="inline-block px-1 py-0.5 text-text-muted text-[9px]"
+                                        title={partial.slice(12).map((z) => `${z.zip} ${formatOverlapPct(z.overlapPct)}`).join(', ')}
+                                      >+{partial.length - 12} more</span>
+                                    )}
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
+                        }
                         const includedZips = parsePartiallyIncludedZips(p.partiallyIncludedZips);
                         if (includedZips.length === 0) return null;
                         return (
@@ -3474,10 +3595,7 @@ function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNe
       });
       try { window.localStorage.setItem(LAST_LAYER_KEY, layerTrimmed); } catch { /* preference only */ }
       onCreated(res.response);
-      const zips = parsePartiallyIncludedZips(res.response.partiallyIncludedZips);
-      const zipTrailer = zips.length === 0
-        ? ' (no overlapping postcodes)'
-        : ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${zips.slice(0, 6).join(', ')}${zips.length > 6 ? `, +${zips.length - 6} more` : ''}.`;
+      const zipTrailer = savedZipsToastTrailer(res.response);
       toast.show(`Coverage polygon "${trimmed}" saved.${zipTrailer}`, 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(false); }

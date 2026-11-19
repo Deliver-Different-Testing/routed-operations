@@ -16,7 +16,8 @@ public partial class BulkImportServiceV2
     private sealed record TruckSplit(
         List<BulkImportJobCreateDto> P2PRows,
         List<BulkImportJobCreateDto> TruckRows,
-        List<BulkImportJobCreateDto> Rejected);
+        List<BulkImportJobCreateDto> Rejected,
+        List<string> Warnings);
 
     private sealed record TruckRunResult(int Created, List<(int RowNo, string Error)> Failed, List<string> Warnings);
 
@@ -28,7 +29,7 @@ public partial class BulkImportServiceV2
     private async Task<TruckSplit> SplitTruckRows(BulkImportRequest request)
     {
         var jobs = request.Jobs!.ToList();
-        var split = new TruckSplit(new(), new(), new());
+        var split = new TruckSplit(new(), new(), new(), new());
         bool anyRowSpeed = jobs.Any(j => j.SpeedId.HasValue || !string.IsNullOrWhiteSpace(j.Speed));
         bool batchIsTruck = await Context.TucJobTypes
             .AnyAsync(t => t.UcjtId == request.SpeedId && t.TruckJobEntry == true);
@@ -40,30 +41,55 @@ public partial class BulkImportServiceV2
         }
 
         var speeds = await ClientSpeedCatalog.LoadAsync(Context, request.ClientId);
+        var truckSpeeds = await Context.TucJobTypes
+            .Where(t => t.TruckJobEntry == true)
+            .Select(t => new ClientSpeed(t.UcjtId, t.UcjtName, t.ShortName, t.SystemName, true))
+            .ToListAsync();
+        ClientSpeed? Resolve(BulkImportJobCreateDto j, IReadOnlyList<ClientSpeed> list) =>
+            j.SpeedId.HasValue ? list.FirstOrDefault(s => s.Id == j.SpeedId.Value) : ClientSpeedCatalog.Match(list, j.Speed);
+
+        // UC #881 option B (Kevin). A point-to-point file (no row names a truck
+        // speed, not even one the client lacks, the batch speed is not a truck and
+        // no truck defaults) books an unknown Speed on the batch speed, as it did
+        // before the wizard sent the column. Anywhere else an unknown name is
+        // refused, because a wrong speed could book a truck as a van.
+        bool p2pFile = !batchIsTruck && request.TruckDefaults == null
+            && !jobs.Any(j => Resolve(j, truckSpeeds) != null);
+        // Mirrors the validator, which skips its size caps only for an on-demand
+        // request carrying TruckDefaults; otherwise it has already applied them.
+        bool validatorSkippedCaps = request.TruckDefaults != null
+            && string.Equals(request.JobType, "ondemand", StringComparison.OrdinalIgnoreCase);
+
         foreach (var job in jobs)
         {
             bool rowHasSpeed = job.SpeedId.HasValue || !string.IsNullOrWhiteSpace(job.Speed);
             ClientSpeed? rowSpeed = null;
             if (rowHasSpeed)
             {
-                rowSpeed = job.SpeedId.HasValue
-                    ? speeds.FirstOrDefault(s => s.Id == job.SpeedId.Value)
-                    : ClientSpeedCatalog.Match(speeds, job.Speed);
-                if (rowSpeed == null)
+                rowSpeed = Resolve(job, speeds);
+                if (rowSpeed == null && p2pFile && request.SpeedId > 0)
+                {
+                    split.Warnings.Add($"Job {job.JobNumber}: Speed '{job.Speed ?? job.SpeedId?.ToString()}' is not available for this client; the default speed was used.");
+                    job.SpeedId = null;
+                }
+                else if (rowSpeed == null)
                 {
                     job.ErrorMessage = $"Speed {job.Speed ?? job.SpeedId?.ToString()} is not available for this client.";
                     job.TruckRejected = true;
                     split.Rejected.Add(job);
                     continue;
                 }
-                job.SpeedId = rowSpeed.Id;
+                else
+                {
+                    job.SpeedId = rowSpeed.Id;
+                }
             }
 
             int speedId = job.SpeedId ?? request.SpeedId;
             bool isTruck = rowSpeed?.TruckJobEntry ?? batchIsTruck;
             if (!isTruck)
             {
-                var overCap = DimensionCapError(job);
+                var overCap = validatorSkippedCaps ? DimensionCapError(job) : null;
                 if (overCap != null)
                 {
                     job.ErrorMessage = overCap;
@@ -147,7 +173,7 @@ public partial class BulkImportServiceV2
         await GeocodeTruckPickups(rows, request.MessageId, contactId);
 
         var couriers = await TruckCourierIds(rows.Select(j => j.CourierCode));
-        var completedAt = request.ImportAsCompleted ? DateTime.Now : (DateTime?)null;
+        var completedAt = request.ImportAsCompleted ? TimeZoneUtility.GetTenantNow(_httpContextAccessor) : (DateTime?)null; // #881 F3
         return rows.Select((job, i) =>
         {
             ApplyTruckDefaults(job, request.TruckDefaults);
@@ -156,7 +182,7 @@ public partial class BulkImportServiceV2
                 Job = job,
                 ClientId = request.ClientId,
                 SpeedId = job.SpeedId ?? request.SpeedId,
-                BookDateTime = bookDateTime,
+                BookDateTime = job.ResolvedBookDateTime ?? bookDateTime, // the row's own date first (#881)
                 Completed = request.ImportAsCompleted,
                 PodName = podName,
                 CompletedTime = completedAt,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   autoMatchColumn,
   includedDepotBuckets,
@@ -36,12 +36,44 @@ describe('initialWizardState', () => {
     expect(s.perDepotResults).toEqual([]);
   });
 
-  it('defaults bookDate to a valid yyyy-MM-dd string one day out', () => {
-    const s = initialWizardState();
-    expect(s.bookDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    const today = new Date();
-    today.setDate(today.getDate() + 1);
-    expect(s.bookDate).toBe(today.toISOString().slice(0, 10));
+  it('defaults bookDate to a valid yyyy-MM-dd string', () => {
+    expect(initialWizardState().bookDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  // #881: the default was cut from toISOString(), the UTC date, so before
+  // 13:00 NZDT every NZ operator was offered TODAY as "tomorrow" and a file
+  // with no Book Date booked for today.
+  describe('default bookDate is the tenant\'s tomorrow, not the UTC one', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('NZ tenant at 11:34 NZDT on 10 Nov gets 11 Nov', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-10T11:34:00+13:00'));
+      expect(initialWizardState('Pacific/Auckland').bookDate).toBe('2026-11-11');
+      // The Windows name the Hub sends resolves the same way.
+      expect(initialWizardState('New Zealand Standard Time').bookDate).toBe('2026-11-11');
+    });
+
+    it('US tenant at 20:00 PST on 10 Nov gets 11 Nov whatever the browser zone', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-10T20:00:00-08:00'));
+      expect(initialWizardState('America/Los_Angeles').bookDate).toBe('2026-11-11');
+    });
+
+    it('rolls over a month end', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-30T09:00:00+13:00'));
+      expect(initialWizardState('Pacific/Auckland').bookDate).toBe('2026-12-01');
+    });
+
+    it('RESET keeps the tenant zone', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-10T11:34:00+13:00'));
+      const s = initialWizardState('Pacific/Auckland');
+      expect(wizardReducer({ ...s, bookDate: '2026-11-20' }, { type: 'RESET' }).bookDate).toBe('2026-11-11');
+    });
   });
 });
 

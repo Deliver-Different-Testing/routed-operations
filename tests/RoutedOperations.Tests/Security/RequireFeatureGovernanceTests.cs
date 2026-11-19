@@ -153,6 +153,7 @@ public class RequireFeatureGovernanceTests
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetAllZipcodeCentroids), ["ro-recurring-routes", "ro-polygon-builder"]),
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetAssignableTargets), ["ro-recurring-routes", "ro-polygon-builder"]),
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetSchedulesLookup), ["ro-recurring-routes", "ro-polygon-builder"]),
+        (typeof(RecurringRoutesController), nameof(RecurringRoutesController.MatchScheduleCoverage), ["ro-recurring-routes", "ro-polygon-builder"]),   // filters the lookup above, final-mile route setup 4.2
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetAll), ["ro-recurring-routes", "ro-schedules-new", "ro-client-overrides"]),
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetRoster), ["ro-recurring-routes", "ro-schedules-new", "ro-client-overrides"]),
         (typeof(RecurringRoutesController), nameof(RecurringRoutesController.GetPolygonShapes), ["ro-recurring-routes", "ro-polygon-builder", "ro-schedules", "ro-schedules-new", "ro-client-overrides"]),

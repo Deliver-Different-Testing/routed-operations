@@ -8,6 +8,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 using RoutedOperations.Core.Domain;
@@ -26,7 +27,7 @@ public class RouteViewerAssignmentServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
         var guard = Substitute.For<INpScopeGuard>();
-        var sut = new RouteViewerAssignmentService(factory, resolver, guard,
+        var sut = new RouteViewerAssignmentService(factory, resolver, guard, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerAssignmentService>.Instance);
         return (sut, seed, resolver, guard);
     }

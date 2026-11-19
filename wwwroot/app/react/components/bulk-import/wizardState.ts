@@ -6,6 +6,8 @@ import type {
   ParsedFile,
   PickupJobToCreateResponse,
 } from '../../services/bulkImportService';
+import { addDaysYmd, tenantTodayYmd } from '../../lib/tenantDate';
+import { parseBookDate } from './bookDateParse';
 
 /**
  * State machine for the New Import wizard. Rendered by NewImportWizard.tsx.
@@ -85,6 +87,9 @@ export interface WizardOptions {
 }
 
 export interface WizardState {
+  // The tenant's zone from the auth claim, kept so RESET and a client switch
+  // default the Book Date to the same tenant tomorrow. Null = browser zone.
+  tenantTimeZone: string | null;
   step: WizardStep;
   client: ClientDto | null;
   file: File | null;
@@ -164,14 +169,16 @@ export interface WizardState {
   pickupJobPayload: PickupJobToCreateResponse | null;
 }
 
-function defaultBookDate(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+// Tomorrow in the tenant's zone. Cutting the date from toISOString() gave the
+// UTC date, which is today for an NZ operator until 13:00 NZDT (#881).
+function defaultBookDate(tenantTimeZone: string | null): string {
+  return addDaysYmd(tenantTodayYmd({ isUsTenant: false, timeZone: tenantTimeZone }), 1);
 }
 
-export function initialWizardState(): WizardState {
+/** `tenantTimeZone` is the auth claim (Windows or IANA name); null = browser zone. */
+export function initialWizardState(tenantTimeZone: string | null = null): WizardState {
   return {
+    tenantTimeZone,
     step: 'newImport',
     client: null,
     file: null,
@@ -205,7 +212,7 @@ export function initialWizardState(): WizardState {
     perDepotResults: [],
     completedDepotIds: new Set(),
     clientSettings: null,
-    bookDate: defaultBookDate(),
+    bookDate: defaultBookDate(tenantTimeZone),
     bookTime: '',
     speedId: 0,
     scheduleId: null,
@@ -275,7 +282,7 @@ export type WizardAction =
 export function wizardReducer(state: WizardState, action: WizardAction): WizardState {
   switch (action.type) {
     case 'RESET':
-      return initialWizardState();
+      return initialWizardState(state.tenantTimeZone);
     case 'GOTO':
       return { ...state, step: action.step };
     case 'SET_CLIENT': {
@@ -288,7 +295,7 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       const prevId = state.client?.id ?? null;
       const nextId = action.client?.id ?? null;
       if (prevId != null && nextId !== prevId) {
-        const fresh = initialWizardState();
+        const fresh = initialWizardState(state.tenantTimeZone);
         return { ...fresh, client: action.client };
       }
       return { ...state, client: action.client };
@@ -652,9 +659,13 @@ function totalWeightField(): UrgentField {
   };
 }
 
+function speedField(): UrgentField {
+  return { key: 'speed', label: 'Speed', aliases: ['Service', 'Service Level', 'Speed Code'], showFor: 'nz' };
+}
+
 function truckFields(): UrgentField[] {
   return [
-    { key: 'speed', label: 'Speed', aliases: ['Service', 'Service Level', 'Speed Code'], showFor: 'nz' },
+    speedField(),
     { key: 'palletType', label: 'Pallet Type', aliases: ['PalletType', 'Pallet Size'], showFor: 'nz' },
     totalWeightField(),
     { key: 'tailLiftPickup', label: 'Tail Lift PU', aliases: ['TailLift PU', 'Tail Lift Pickup', 'Pickup Tail Lift'], showFor: 'nz' },
@@ -700,9 +711,12 @@ export function urgentFieldsFor(
     });
   }
   if (jobType === 'onDemand') {
-    base.push({ key: 'bookDate', label: 'Book Date', aliases: ['Book Date', 'Date', 'Delivery Date'], showFor: 'both' });
+    base.push({ key: 'bookDate', label: 'Book Date', aliases: ['Book Date', 'Date', 'Ready Date', 'Delivery Date'], showFor: 'both' });
     base.push({ key: 'bookTime', label: 'Book Time', aliases: ['Book Time', 'Time', 'Ready Time'], showFor: 'both' });
   }
+  // #881: every NZ on-demand row can name its own Speed, P2P or truck. With a
+  // truck speed in play it comes in with the truck fields below instead.
+  if (nzOnDemand && !truckInPlay) base.push(speedField());
 
   // fromContact always shown (MapColumnsModal hides when Override From Contact set).
   //
@@ -958,10 +972,15 @@ export function truckFieldsEligible(state: WizardState, isUs: boolean): boolean 
 }
 
 function isTruckSpeedValue(state: WizardState, value: string): boolean {
+  return isClientSpeedValue(state, value, true);
+}
+
+/** Does the cell name one of the client's speeds (by id, code, system name or name)? */
+function isClientSpeedValue(state: WizardState, value: string, truckOnly = false): boolean {
   const v = value.trim().toLowerCase();
   if (!v) return false;
   return !!state.clientSettings?.speeds?.some(
-    (s) => s.isTruck && [String(s.id), s.code, s.systemName, s.name]
+    (s) => (!truckOnly || s.isTruck) && [String(s.id), s.code, s.systemName, s.name]
       .some((candidate) => candidate?.trim().toLowerCase() === v)
   );
 }
@@ -972,12 +991,85 @@ export function columnHasTruckSpeed(state: WizardState, column: string | undefin
   return !!state.parsed?.rows.some((r) => isTruckSpeedValue(state, String(r[column] ?? '')));
 }
 
+export interface FromFileSummary {
+  bookDate: { mapped: boolean; dates: number; anyBlank: boolean };
+  bookTime: { mapped: boolean; anyBlank: boolean };
+  speed: { mapped: boolean; names: string[]; anyBlank: boolean };
+}
+
+/**
+ * UC #881. What an on-demand file brings per row for the defaults step:
+ * Book Date (distinct dates), Book Time and Speed (names in file order), and
+ * whether any row leaves one blank, which is when the defaults-step value is
+ * used and so required. An unmapped column counts as every row blank. Speed
+ * is NZ only. `rowIndexes` limits it to the current depot's rows.
+ * A Speed the client does not have counts as blank too: on a point-to-point
+ * file the server books that row on the batch speed (Kevin, option B), so the
+ * batch speed is required. With no speed list loaded nothing is checked.
+ */
+export function fromFileSummary(state: WizardState, isUs: boolean, rowIndexes?: number[]): FromFileSummary {
+  const all = state.parsed?.rows ?? [];
+  const rows = rowIndexes ? rowIndexes.map((i) => all[i]).filter(Boolean) : all;
+  const onDemand = state.importType === 'onDemand';
+  const column = (key: string, allowed = true) => (onDemand && allowed ? state.mapping[key] || null : null);
+  const cells = (col: string | null) => rows.map((r) => (col ? String(r[col] ?? '').trim() : ''));
+
+  const dateCol = column('bookDate');
+  const dates = cells(dateCol);
+  const timeCol = column('bookTime');
+  const times = cells(timeCol);
+  const speedCol = column('speed', !isUs);
+  const speedCells = cells(speedCol);
+  const checkSpeeds = !!state.clientSettings?.speeds?.length;
+  const usableSpeed = (v: string) => !!v && (!checkSpeeds || isClientSpeedValue(state, v));
+
+  return {
+    bookDate: {
+      mapped: !!dateCol,
+      dates: new Set(dates.filter(Boolean).map((d) => parseBookDate(d, isUs) ?? d)).size,
+      anyBlank: dates.some((d) => !d),
+    },
+    bookTime: { mapped: !!timeCol, anyBlank: times.some((t) => !t) },
+    speed: {
+      mapped: !!speedCol,
+      names: Array.from(new Set(speedCells.filter(Boolean))),
+      anyBlank: speedCells.some((v) => !usableSpeed(v)),
+    },
+  };
+}
+
 /** The operator said so, the mapped Speed column names one, or the batch speed is one. */
 export function truckInPlay(state: WizardState, isUs: boolean): boolean {
   if (!truckFieldsEligible(state, isUs)) return false;
   return state.options.truckJobs
     || columnHasTruckSpeed(state, state.mapping.speed)
     || !!state.clientSettings?.speeds?.some((s) => s.isTruck && s.id === state.speedId);
+}
+
+/**
+ * #881. Clearing a template rebuilds the mapping from the aliases. Speed is
+ * matched first, and when its column names a truck speed the truck fields are
+ * matched too, as they would be on open. Before this the rebuild used the
+ * fields of the moment, so a Speed held only by the template was dropped and
+ * nothing matched it again.
+ */
+export function remapAfterTemplateClear(
+  state: WizardState,
+  isUs: boolean,
+  fieldsFor: (truckInPlay: boolean) => UrgentField[]
+): Record<string, string> {
+  const headers = state.parsed?.headers ?? [];
+  const auto: Record<string, string> = {};
+  for (const f of fieldsFor(false)) {
+    const match = autoMatchColumn(f, headers);
+    if (match) auto[f.key] = match;
+  }
+  if (!truckFieldsEligible(state, isUs)) return auto;
+  if (!auto.speed) {
+    const match = autoMatchColumn(speedField(), headers);
+    if (match && columnHasTruckSpeed(state, match)) auto.speed = match;
+  }
+  return truckInPlay({ ...state, mapping: auto }, isUs) ? autoMapTruckFields(fieldsFor(true), headers, auto) : auto;
 }
 
 /**

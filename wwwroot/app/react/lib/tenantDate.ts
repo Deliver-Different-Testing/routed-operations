@@ -143,6 +143,14 @@ export function tenantTodayYmd(opts: TenantDateOptions): string {
   return `${year}-${month}-${day}`;
 }
 
+/** Calendar arithmetic on a yyyy-MM-dd string. No clock, no timezone: the
+ *  input is already a tenant date, so the answer is too. */
+export function addDaysYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return t.toISOString().slice(0, 10);
+}
+
 /**
  * Tenant-local "now" as a Date carrying the tenant's wall-clock fields.
  *

@@ -2,11 +2,13 @@ import { useEffect, useMemo } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
-import { tenantNowWallClock } from '../../lib/tenantDate';
+import { addDaysYmd, tenantNowWallClock, tenantTodayYmd } from '../../lib/tenantDate';
+import { parseBookDate, parseBookTime } from './bookDateParse';
 import { formatCutoff, isPastCutoff, latestCutoff } from './scheduleCutoff';
 import type { ScheduleDto } from '../../services/clientsService';
 import type { BulkTruckDefaults } from '../../services/bulkImportService';
 import {
+  fromFileSummary,
   includedDepotBuckets,
   nextPendingDepotIndex,
   truckInPlay,
@@ -296,7 +298,8 @@ export function SchedulePickerModal({
   useEffect(() => {
     if (!open || !isOnDemand) return;
     if (state.bookTime) return;
-    const now = new Date();
+    // Tenant wall clock, not the operator's machine (UC #881).
+    const now = tenantNowWallClock({ isUsTenant: isUs, timeZone: auth.timeZone });
     const minutes = Math.ceil(now.getMinutes() / 15) * 15;
     now.setMinutes(minutes);
     now.setSeconds(0);
@@ -306,20 +309,13 @@ export function SchedulePickerModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isOnDemand]);
 
-  // Book date guards: >= today, <= today+30. Uses local yyyy-MM-dd to
-  // match input[type=date] semantics.
+  // Book date guards: >= tenant today, <= tenant today + 30. The tenant's
+  // calendar day, not the browser's (UC #881), so the range matches the
+  // server's own past-date and 30-day checks.
   const { minDate, maxDate } = useMemo(() => {
-    const today = new Date();
-    const iso = (d: Date) => {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${dd}`;
-    };
-    const max = new Date();
-    max.setDate(max.getDate() + 30);
-    return { minDate: iso(today), maxDate: iso(max) };
-  }, []);
+    const today = tenantTodayYmd({ isUsTenant: isUs, timeZone: auth.timeZone });
+    return { minDate: today, maxDate: addDaysYmd(today, 30) };
+  }, [isUs, auth.timeZone]);
 
 // P1-9 pre-populate bookDate + bookTime from the first mapped row in
   // the current depot bucket (on-demand only). Legacy sortByDepot at
@@ -337,19 +333,15 @@ export function SchedulePickerModal({
       if (dateCol && state.bookDate === '') {
         const rawDate = String(row[dateCol] ?? '').trim();
         if (rawDate) {
-          // Accept ISO yyyy-MM-dd; also accept mm/dd/yyyy or dd/mm/yyyy
-          // as best-effort. Normalise to yyyy-MM-dd for the input.
-          const iso = normalizeDateForInput(rawDate);
+          // Tenant-ordered read (NZ dd/MM, US MM/dd); see bookDateParse.ts.
+          const iso = parseBookDate(rawDate, isUs);
           if (iso) dispatch({ type: 'SET_BOOK_DATE', date: iso });
         }
       }
       if (timeCol && state.bookTime === '') {
         const rawTime = String(row[timeCol] ?? '').trim();
-        const m = rawTime.match(/^([0-1]?\d|2[0-3]):([0-5]\d)/);
-        if (m) {
-          const hh = m[1].padStart(2, '0');
-          dispatch({ type: 'SET_BOOK_TIME', time: `${hh}:${m[2]}` });
-        }
+        const hhmm = parseBookTime(rawTime);
+        if (hhmm) dispatch({ type: 'SET_BOOK_TIME', time: hhmm });
       }
       if (state.bookDate !== '' && state.bookTime !== '') break;
     }
@@ -366,13 +358,39 @@ export function SchedulePickerModal({
   // don't block Next on scheduleId. The wizard's afterSchedulePicker will
   // route this bucket through the RateByDistanceModal acknowledgement.
   const isCoverageOnly = currentDepot?.depotId === -1;
+  // UC #881. What this depot's rows bring per row. A control is only required
+  // when some row leaves it blank; otherwise it is just the fallback.
+  const fromFile = useMemo(
+    () => fromFileSummary(state, isUs, currentDepot?.jobIndexes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.parsed, state.mapping, state.importType, isUs, currentDepot]
+  );
+  const everyRowHas = (f: { mapped: boolean; anyBlank: boolean }) => isOnDemand && f.mapped && !f.anyBlank;
   const nextDisabled = useMemo(() => {
-    if (!state.bookDate) return true;
-    if (state.speedId === 0) return true;
+    if (!state.bookDate && !everyRowHas(fromFile.bookDate)) return true;
+    if (state.speedId === 0 && !everyRowHas(fromFile.speed)) return true;
     if (isRouted && !isCoverageOnly && state.scheduleId == null) return true;
-    if ((isOnDemand || isCoverageOnly) && !state.bookTime) return true;
+    if ((isOnDemand || isCoverageOnly) && !state.bookTime && !everyRowHas(fromFile.bookTime)) return true;
     return false;
-  }, [state.bookDate, state.speedId, state.scheduleId, state.bookTime, isRouted, isOnDemand, isCoverageOnly]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.bookDate, state.speedId, state.scheduleId, state.bookTime, isRouted, isOnDemand, isCoverageOnly, fromFile]);
+  // UC #881 F1. A default no row will use is disabled and shows no value, so
+  // the operator is never shown a date (tomorrow) that nothing books on.
+  const dateFromFile = everyRowHas(fromFile.bookDate);
+  const timeFromFile = everyRowHas(fromFile.bookTime);
+  const speedFromFile = everyRowHas(fromFile.speed);
+  const dateCount = fromFile.bookDate.dates;
+  const bookDateLabel = isOnDemand && fromFile.bookDate.mapped
+    ? `Book Date: from file (${dateCount} date${dateCount === 1 ? '' : 's'})`
+    : 'Book Date';
+  const bookTimeLabel = isOnDemand && fromFile.bookTime.mapped ? 'Book Time: from file' : 'Book Time';
+  const speedNames = fromFile.speed.names;
+  const speedNameList = speedNames.length > 3
+    ? `${speedNames.slice(0, 3).join(', ')} +${speedNames.length - 3} more`
+    : speedNames.join(', ');
+  const speedLabel = isOnDemand && fromFile.speed.mapped
+    ? `Speed: from file (${speedNameList})`
+    : 'Speed';
 
   // P2-7 silent rewind: on-demand bookTime that lands in the past gets
   // bumped to now+15min. Legacy homeControl.js:3273-3289 does the same
@@ -382,11 +400,13 @@ export function SchedulePickerModal({
     dispatch({ type: 'SET_OPTIONS', options: { truckDefaults: { ...truckDefaults, ...patch } } });
 
   const handleNext = () => {
-    if (isOnDemand && state.bookDate && state.bookTime) {
+    // Not when every row brings its own date or time: the default is unused.
+    if (isOnDemand && state.bookDate && state.bookTime && !dateFromFile && !timeFromFile) {
       const [y, m, d] = state.bookDate.split('-').map(Number);
       const [hh, mm] = state.bookTime.split(':').map(Number);
       const picked = new Date(y, m - 1, d, hh, mm);
-      const now = new Date();
+      // Both sides are tenant wall clock (see tenantNowWallClock).
+      const now = tenantNowWallClock({ isUsTenant: isUs, timeZone: auth.timeZone });
       const sameDay =
         picked.getFullYear() === now.getFullYear()
         && picked.getMonth() === now.getMonth()
@@ -413,7 +433,7 @@ export function SchedulePickerModal({
       title={
         currentDepot
           ? `${currentDepot.depotName}${depotCountLabel}`
-          : `Book Date, Service & Schedule${depotCountLabel}`
+          : `Book Date, Speed & Schedule${depotCountLabel}`
       }
       size="xl"
       loading={importing || checkingPrices}
@@ -444,26 +464,27 @@ export function SchedulePickerModal({
 
         <div>
           <label className="block text-xs font-medium text-text-secondary mb-1" htmlFor="sp-book-date">
-            Book Date
+            {bookDateLabel}
           </label>
           <input
             id="sp-book-date"
             type="date"
-            value={state.bookDate}
+            value={dateFromFile ? '' : state.bookDate}
             min={minDate}
             max={maxDate}
+            disabled={dateFromFile}
             onChange={(e) => dispatch({ type: 'SET_BOOK_DATE', date: e.target.value })}
-            className="w-full text-sm border border-border rounded px-2 py-1.5"
+            className="w-full text-sm border border-border rounded px-2 py-1.5 disabled:bg-surface-cream disabled:text-text-muted"
           />
         </div>
 
         <div>
           <label className="block text-xs font-medium text-text-secondary mb-1" htmlFor="sp-speed">
-            Service
+            {speedLabel}
           </label>
           <select
             id="sp-speed"
-            value={state.speedId === 0 ? '' : String(state.speedId)}
+            value={speedFromFile || state.speedId === 0 ? '' : String(state.speedId)}
             onChange={(e) => {
               const v = e.target.value;
               dispatch({ type: 'SET_SPEED_ID', speedId: v ? Number(v) : 0 });
@@ -471,15 +492,17 @@ export function SchedulePickerModal({
               // can pick a fresh one from the new filtered list.
               dispatch({ type: 'SET_SCHEDULE_ID', scheduleId: null });
             }}
-            className="w-full text-sm border border-border rounded px-2 py-1.5 bg-surface-white"
-            disabled={isRouted && speeds.length === 0}
+            className="w-full text-sm border border-border rounded px-2 py-1.5 bg-surface-white disabled:bg-surface-cream disabled:text-text-muted"
+            disabled={speedFromFile || (isRouted && speeds.length === 0)}
           >
             <option value="">
-              {isRouted && speeds.length === 0
+              {speedFromFile
+                ? 'From file'
+                : isRouted && speeds.length === 0
                 ? cutoffNotice?.blocking
                   ? 'Booking has closed for this date.'
-                  : 'No services for this date + depot.'
-                : 'Select a service...'}
+                  : 'No speeds for this date + depot.'
+                : 'Select a speed...'}
             </option>
             {speeds.map((s) => (
               <option key={s.id} value={s.id}>
@@ -541,9 +564,9 @@ export function SchedulePickerModal({
             >
               <option value="">
                 {state.speedId === 0
-                  ? 'Pick a service first...'
+                  ? 'Pick a speed first...'
                   : filteredSchedules.length === 0
-                    ? 'No schedules for this date + service.'
+                    ? 'No schedules for this date + speed.'
                     : 'Select a schedule...'}
               </option>
               {filteredSchedules.map((s) => (
@@ -557,15 +580,16 @@ export function SchedulePickerModal({
 
         <div>
           <label className="block text-xs font-medium text-text-secondary mb-1" htmlFor="sp-book-time">
-            Book Time
+            {bookTimeLabel}
           </label>
           <input
             id="sp-book-time"
             type="time"
-            value={state.bookTime}
+            value={timeFromFile ? '' : state.bookTime}
             onChange={(e) => dispatch({ type: 'SET_BOOK_TIME', time: e.target.value })}
             readOnly={isRouted && !isCoverageOnly}
-            className={`w-full text-sm border border-border rounded px-2 py-1.5 ${
+            disabled={timeFromFile}
+            className={`w-full text-sm border border-border rounded px-2 py-1.5 disabled:bg-surface-cream disabled:text-text-muted ${
               isRouted && !isCoverageOnly ? 'bg-surface-cream text-text-muted' : ''
             }`}
           />
@@ -656,45 +680,4 @@ export function SchedulePickerModal({
       </div>
     </Modal>
   );
-}
-
-/**
- * Best-effort normalisation of a spreadsheet date string into
- * input[type=date] format (yyyy-MM-dd). Accepts:
- *   - ISO already: 2026-01-15
- *   - US mm/dd/yyyy: 1/15/2026
- *   - NZ dd/mm/yyyy: 15/01/2026  (ambiguous with US - assumes NZ order for
- *     value >12 in first component)
- *   - Excel serial dates are NOT handled here (server parse converts them).
- * Returns null if the value cannot be interpreted as a valid date.
- */
-function normalizeDateForInput(raw: string): string | null {
-  const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (iso) {
-    const y = iso[1];
-    const m = iso[2].padStart(2, '0');
-    const d = iso[3].padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
-  const slash = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (slash) {
-    const first = Number(slash[1]);
-    const second = Number(slash[2]);
-    let year = Number(slash[3]);
-    if (year < 100) year += 2000;
-    // If first > 12 it must be a day (dd/mm/yyyy). If second > 12 it must
-    // be a day (mm/dd/yyyy). Otherwise ambiguous - default to mm/dd/yyyy
-    // (US) since that is the more common export convention.
-    let day: number, month: number;
-    if (first > 12 && second <= 12) {
-      day = first;
-      month = second;
-    } else {
-      month = first;
-      day = second;
-    }
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-  return null;
 }

@@ -24,7 +24,7 @@ public class RunServiceTests
     {
         var opts = CockpitTestHarness.NewInMemoryOptions();
         seed = CockpitTestHarness.Context(opts);
-        return new RunService(CockpitTestHarness.Factory(opts));
+        return new RunService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
     }
 
     private static TblBulkJob NewJob(int id, DateTime date, int clientId = 1, int speed = 1,

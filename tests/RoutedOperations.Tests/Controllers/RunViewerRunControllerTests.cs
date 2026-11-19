@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -31,7 +32,7 @@ public class RunViewerRunControllerTests
         var accessor = Substitute.For<IHttpContextAccessor>();
         accessor.HttpContext.Returns(new DefaultHttpContext());
         var svc = new RouteViewerRunService(factory, resolver,
-            Substitute.For<INpScopeGuard>(), tz, accessor,
+            Substitute.For<INpScopeGuard>(), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), tz, accessor,
             NullLogger<RouteViewerRunService>.Instance);
         var controller = new RunViewerRunController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

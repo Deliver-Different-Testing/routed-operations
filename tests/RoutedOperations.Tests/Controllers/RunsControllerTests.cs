@@ -20,7 +20,7 @@ public class RunsControllerTests
     {
         var opts = ControllerTestHarness.NewOptions();
         var seed = ControllerTestHarness.Context(opts);
-        var runService = new RunService(ControllerTestHarness.Factory(opts));
+        var runService = new RunService(ControllerTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
 
         // RunCommitService needs IConnectionStringManager + IHttpContextAccessor.
         // Tests only exercise the controller's own short-circuits (ModelState

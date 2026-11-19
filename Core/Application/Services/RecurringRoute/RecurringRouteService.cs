@@ -25,7 +25,8 @@ namespace RoutedOperations.Core.Application.Services.RecurringRoute;
 /// </summary>
 public class RecurringRouteService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
-    IHttpContextAccessor httpContextAccessor)
+    IHttpContextAccessor httpContextAccessor,
+    Branches.IBranchScopeGuard? branchGuard = null)
     : BaseService(contextFactory)
 {
     // ─── ROUTES ────────────────────────────────────────────────────────────
@@ -385,6 +386,11 @@ public class RecurringRouteService(
 
         if (wanted == 0)
         {
+            // TODO(fmr-Q1): this is also the path the Route editor's "Use tote
+            // scanning on this route" switch takes when it is turned off. The
+            // demoted booking keeps building jobs with no courier or route.
+            // Whether it should also stop is open with Steve; keep today's
+            // demote exactly until he answers.
             foreach (var b in current) Demote(b);
             return;
         }
@@ -706,6 +712,13 @@ public class RecurringRouteService(
             .ThenBy(rr => rr.RosterDate)
             .ToListAsync();
 
+        // Branches B2c: a roster entry for a courier outside the caller's branches is not shown (agent and network partner entries are not branch data).
+        if (branchGuard is { IsRestricted: true })
+        {
+            var rosterCouriers = await branchGuard.VisibleCourierIdsAsync(rows.Where(r => r.TargetType == 1 && r.CourierId.HasValue).Select(r => r.CourierId!.Value).Distinct().ToList());
+            rows = [.. rows.Where(r => !(r.TargetType == 1 && r.CourierId.HasValue) || rosterCouriers.Contains(r.CourierId!.Value))];
+        }
+
         var courierIds = rows.Where(r => r.TargetType == 1 && r.CourierId.HasValue)
             .Select(r => r.CourierId!.Value).Distinct().ToList();
         var couriers = courierIds.Count == 0
@@ -907,9 +920,7 @@ public class RecurringRouteService(
 
     public async Task<AssignableTargetsResponse> GetAssignableTargetsAsync()
     {
-        var couriers = await Context.TucCouriers
-            .AsNoTracking()
-            .Where(c => c.Active)
+        var couriers = await (branchGuard is null ? Context.TucCouriers.AsNoTracking().Where(c => c.Active) : await branchGuard.WhereCourierVisibleAsync(Context.TucCouriers.AsNoTracking().Where(c => c.Active)))   // Branches B2c
             .OrderBy(c => c.Code)
             .Select(c => new AssignableTargetDto(c.UccrId, $"{c.Code} {c.UccrName}".Trim(), c.Code ?? string.Empty))
             .ToListAsync();
@@ -1002,6 +1013,132 @@ public class RecurringRouteService(
             .OrderBy(s => s.Name)
             .ThenBy(s => s.HeaderId)
             .ToList();
+    }
+
+    // ── Coverage match (final-mile route setup spec 4.2) ────────────────
+    //
+    // Which live schedules cover at least one of the route's postcodes at
+    // their DELIVERY end. The rule itself is not written here: it is the
+    // shared inline TVF per region (Kevin K2, 18 Nov), so the editor's filter
+    // and availability cannot drift apart. This method only collects the
+    // route's postcodes and aggregates the TVF rows per header.
+
+    /// <summary>NZ zips are numeric and may carry a leading zero ('0602');
+    /// the NZ TVF TRY_CASTs to int, so 0602 and 602 are one postcode and are
+    /// sent once, without the zero. US ZIPs are compared as text, zero-padded
+    /// to five digits by the TVF, so a short all-digit ZIP is padded here to
+    /// count the same way. Anything else is kept as typed (trimmed). The
+    /// result is distinct, which is what routePostcodeCount counts.</summary>
+    public static List<string> NormaliseRoutePostcodes(IEnumerable<string?> zips, bool isUs)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in zips)
+        {
+            var z = raw?.Trim();
+            if (string.IsNullOrEmpty(z)) continue;
+            var allDigits = z.All(char.IsAsciiDigit);
+            var key = !allDigits ? z
+                : isUs ? (z.Length < 5 ? z.PadLeft(5, '0') : z)
+                : int.TryParse(z, out var n) ? n.ToString(System.Globalization.CultureInfo.InvariantCulture) : z;
+            if (seen.Add(key)) result.Add(key);
+        }
+        return result;
+    }
+
+    /// <summary>One TVF aggregate per header, as the SQL returns it.</summary>
+    public sealed class CoverageMatchSqlRow
+    {
+        public int HeaderId { get; set; }
+        public int? ScheduleId { get; set; }
+        public int MatchedCount { get; set; }
+        public bool DepotWide { get; set; }
+    }
+
+    /// <summary>Drops what the editor must never see (no overlap, or a header
+    /// the lookup would not list because it has no live day row) and orders by
+    /// overlap, largest first, so the response reads the way the list does.</summary>
+    public static List<CoverageMatchRowDto> ToCoverageMatchRows(IEnumerable<CoverageMatchSqlRow> rows) =>
+        rows
+            .Where(r => r.MatchedCount > 0 && r.ScheduleId.HasValue)
+            .OrderByDescending(r => r.MatchedCount)
+            .ThenBy(r => r.HeaderId)
+            .Select(r => new CoverageMatchRowDto(r.ScheduleId!.Value, r.HeaderId, r.MatchedCount, r.DepotWide))
+            .ToList();
+
+    /// <summary>NZ vs US, read the same way ScheduleService and the zone
+    /// lookups read it: the CountryCode claim. tblSetting.CountryCode is NULL
+    /// on both US tenants, so a database-side test would answer NZ.</summary>
+    private bool IsUsTenant() =>
+        string.Equals(
+            httpContextAccessor.HttpContext?.User.FindFirstValue("CountryCode"),
+            "US",
+            StringComparison.OrdinalIgnoreCase);
+
+    // The TVFs are created by dbmigrationsv2 20261118200100. One shape per
+    // region; the name is the only thing that differs in the call.
+    internal const string NzCoverageFunction = "dbo.UTL_fncScheduleDeliveryCoverage";
+    internal const string UsCoverageFunction = "dbo.DD_fncScheduleDeliveryCoverage";
+
+    /// <summary>Set-based: one statement per call, no per-schedule loop. The
+    /// day-row id is the header's lowest live day row, the same rule
+    /// GetSchedulesLookupAsync uses, and only non-retired headers are kept,
+    /// the same scope the lookup lists.</summary>
+    internal static string CoverageMatchSql(bool isUs) => $"""
+        SELECT c.ScheduleId AS HeaderId,
+               (SELECT MIN(s.BulkRunScheduleId)
+                  FROM dbo.tblBulkRunSchedule s
+                 WHERE s.ScheduleId = c.ScheduleId
+                   AND s.StartTime IS NOT NULL) AS ScheduleId,
+               COUNT(DISTINCT c.PostCode) AS MatchedCount,
+               CAST(MAX(CASE WHEN c.How = 'U' THEN 1 ELSE 0 END) AS bit) AS DepotWide
+          FROM {(isUs ? UsCoverageFunction : NzCoverageFunction)}(@PostcodesJson) c
+          JOIN dbo.tblBulkRunScheduleHeader h
+            ON h.ScheduleId = c.ScheduleId
+           AND h.RetiredUtc IS NULL
+         GROUP BY c.ScheduleId
+        """;
+
+    public async Task<CoverageMatchResponse> MatchScheduleCoverageAsync(CoverageMatchRequest req)
+    {
+        var zipIds = (req.ZipPolygonIds ?? new List<int>()).Distinct().ToList();
+        var polygonIds = (req.BulkPolygonIds ?? new List<int>()).Distinct().ToList();
+        if (zipIds.Count == 0 && polygonIds.Count == 0)
+            return new CoverageMatchResponse(0, new List<CoverageMatchRowDto>());
+
+        var zips = new List<string>();
+        if (zipIds.Count > 0)
+            zips.AddRange(await Context.ZipPolygons.AsNoTracking()
+                .Where(z => zipIds.Contains(z.ZipPolygonId))
+                .Select(z => z.Zip)
+                .ToListAsync());
+        if (polygonIds.Count > 0)
+            // Any overlap counts, IsFull or not (16 Nov rule: a touched
+            // postcode is assessed). Inactive polygons do not cover anything.
+            zips.AddRange(await (
+                    from pz in Context.BulkRunPolygonZips.AsNoTracking()
+                    join p in Context.BulkRunPolygons.AsNoTracking() on pz.PolygonId equals p.PolygonId
+                    where polygonIds.Contains(pz.PolygonId) && p.Active
+                    select pz.Zip)
+                .ToListAsync());
+
+        var isUs = IsUsTenant();
+        var postcodes = NormaliseRoutePostcodes(zips, isUs);
+        if (postcodes.Count == 0)
+            return new CoverageMatchResponse(0, new List<CoverageMatchRowDto>());
+
+        // TODO(fmr-Q3): first-mile routes would compare the schedule's PICKUP
+        // end. Not offered until Steve answers, so the editor keeps today's
+        // unfiltered list for them.
+        if (req.Direction != RouteDirections.FinalMile)
+            return new CoverageMatchResponse(postcodes.Count, new List<CoverageMatchRowDto>());
+
+        var json = System.Text.Json.JsonSerializer.Serialize(postcodes);
+        var rows = await Context.Database.GetDbConnection().QueryAsync<CoverageMatchSqlRow>(
+            CoverageMatchSql(isUs),
+            new { PostcodesJson = new DbString { Value = json, IsAnsi = false, Length = -1 } });
+
+        return new CoverageMatchResponse(postcodes.Count, ToCoverageMatchRows(rows));
     }
 
     // ─── HELPERS ───────────────────────────────────────────────────────────

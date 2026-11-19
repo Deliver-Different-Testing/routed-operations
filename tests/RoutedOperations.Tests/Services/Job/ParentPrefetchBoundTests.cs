@@ -95,9 +95,9 @@ public class ParentPrefetchBoundTests
         var (opts, keeper, _) = Seeded();
         using var _k = keeper;
 
-        var jobs = await new JobService(CockpitTestHarness.Factory(opts))
+        var jobs = await new JobService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted())
             .GetBulkJobsAsync(Day, null, null, null, null);
-        var runs = await new RunService(CockpitTestHarness.Factory(opts))
+        var runs = await new RunService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted())
             .GetBulkRunsAsync(Day, null, null, null, null);
 
         // Parents 10, 20 and 30 never show, whichever day or state the child is in.
@@ -122,7 +122,7 @@ public class ParentPrefetchBoundTests
         var (opts, keeper, sql) = Seeded();
         using var _k = keeper;
 
-        await new JobService(CockpitTestHarness.Factory(opts)).GetBulkJobsAsync(Day, null, null, null, null);
+        await new JobService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted()).GetBulkJobsAsync(Day, null, null, null, null);
 
         Assert.DoesNotContain(sql.Commands, c => UnboundedParentPrefetch.IsMatch(c.Trim()));
     }
@@ -133,7 +133,7 @@ public class ParentPrefetchBoundTests
         var (opts, keeper, sql) = Seeded();
         using var _k = keeper;
 
-        await new RunService(CockpitTestHarness.Factory(opts)).GetBulkRunsAsync(Day, null, null, null, null);
+        await new RunService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted()).GetBulkRunsAsync(Day, null, null, null, null);
 
         Assert.DoesNotContain(sql.Commands, c => UnboundedParentPrefetch.IsMatch(c.Trim()));
     }
