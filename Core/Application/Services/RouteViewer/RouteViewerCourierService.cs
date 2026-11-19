@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Np;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services;
 using RoutedOperations.Core.Domain;
 
@@ -21,6 +22,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerCourierService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     INpScopeResolver scopeResolver,
+    IBranchScopeGuard branchGuard,
     ILogger<RouteViewerCourierService> logger) : BaseService(contextFactory)
 {
     /// <summary>GET /api/runviewer/couriers?runDate= - all active
@@ -38,7 +40,8 @@ public class RouteViewerCourierService(
             SpParam.Of("@RunDate", runDate))
             .ToListAsync();
 
-        return raw.Select(MapCourier).ToList();
+        // Branches B2: branch-limited staff see only couriers in their branches.
+        return await branchGuard.FilterCourierRowsAsync(raw.Select(MapCourier).ToList(), c => c.CourierId);
     }
 
     /// <summary>GET /api/runviewer/couriers/search?q= - typeahead
@@ -67,14 +70,14 @@ public class RouteViewerCourierService(
                 .Select(c => new { c.UccrId, c.Code })
                 .ToDictionaryAsync(c => c.UccrId, c => c.Code);
 
-        return raw.Select(r => new CourierListDto
+        return await branchGuard.FilterCourierRowsAsync(raw.Select(r => new CourierListDto
         {
             CourierId = r.ID,
             Name = r.Text,
             Code = codes.TryGetValue(r.ID, out var code) && !string.IsNullOrWhiteSpace(code)
                 ? code.Trim()
                 : null,
-        }).ToList();
+        }).ToList(), c => c.CourierId);
     }
 
     /// <summary>Runs RVW_stpCourierActive. Virtual so tests can supply
@@ -120,6 +123,10 @@ public class RouteViewerCourierService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return null;
 
+        // Branches B2: the job must be in the caller's branches; otherwise no position is returned.
+        try { await branchGuard.EnsureTucJobInScopeAsync(jobId); }
+        catch (BranchScopeException) { return null; }
+
         return await Context.Database.SqlQueryRaw<CourierPositionDto>(
             @"EXEC dbo.MAP_stpCourierGPS_LastPositionToday_ByJobID @JobID",
             SpParam.Of("@JobID", jobId))
@@ -136,13 +143,15 @@ public class RouteViewerCourierService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<AvailableCourierPositionDto>();
 
-        return await Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
+        var positions = await Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
             @"EXEC dbo.MAP_stpEnvelope @MinLng, @MinLat, @MaxLng, @MaxLat",
             SpParam.Of("@MinLng", minLng),
             SpParam.Of("@MinLat", minLat),
             SpParam.Of("@MaxLng", maxLng),
             SpParam.Of("@MaxLat", maxLat))
             .ToListAsync();
+
+        return await branchGuard.FilterCourierRowsAsync(positions, c => c.CourierId);
     }
 
     /// <summary>GET /api/runviewer/couriers/route?code&start&end - GPS
@@ -155,6 +164,14 @@ public class RouteViewerCourierService(
     {
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<CourierRoutePointDto>();
+
+        // Branches B2: the GPS trail of a courier outside the caller's branches is not available.
+        if (branchGuard.IsRestricted)
+        {
+            var courierId = await Context.TucCouriers.Where(c => c.Code == courierCode).Select(c => (int?)c.UccrId).FirstOrDefaultAsync();
+            if (courierId is null || !(await branchGuard.VisibleCourierIdsAsync([courierId.Value])).Contains(courierId.Value))
+                return new List<CourierRoutePointDto>();
+        }
 
         return await Context.Database.SqlQueryRaw<CourierRoutePointDto>(
             @"EXEC dbo.MAP_stpCourierGPS_CourierTimeTrace_New @Code, @Start, @End",

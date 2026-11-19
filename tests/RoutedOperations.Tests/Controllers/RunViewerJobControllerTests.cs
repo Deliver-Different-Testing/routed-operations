@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using RoutedOperations.API.Controllers;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -30,7 +31,7 @@ public class RunViewerJobControllerTests
         var guard = Substitute.For<INpScopeGuard>();
         var s3 = Substitute.For<Amazon.S3.IAmazonS3>();
         var reader = new S3PhotoReader(s3, NullLogger<S3PhotoReader>.Instance);
-        var svc = new RouteViewerJobService(factory, resolver, guard, reader,
+        var svc = new RouteViewerJobService(factory, resolver, guard, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(), reader,
             NullLogger<RouteViewerJobService>.Instance);
         var controller = new RunViewerJobController(svc);
         ControllerTestHarness.AttachHttpContext(controller);

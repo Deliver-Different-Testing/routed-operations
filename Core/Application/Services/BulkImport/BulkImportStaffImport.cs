@@ -135,6 +135,17 @@ public partial class BulkImportServiceV2
                         throw new Exception(referenceRefusal);
                     }
 
+                    // Dates - support both BookDate and DeliveryDate (Despatch_Root legacy).
+                    // UC #881: read in the tenant's order (NZ dd/MM, US MM/dd), not the
+                    // host culture's, and refuse a cell that cannot be read rather than
+                    // booking it on some other day. Before the job number, so a refused
+                    // row uses none. A blank date is the tenant's today, not the host's.
+                    DateTime? rowBookDate = StaffCellDate(jobData, !isNz, "Book date not recognised.",
+                        "BookDate", "Book Date", "bookdate", "DeliveryDate", "Delivery Date");
+                    DateTime bookDate = rowBookDate ?? TimeZoneUtility.GetTenantToday(_httpContextAccessor);
+                    DateTime? bookTime = StaffCellBookTime(jobData, bookDate, "Book time not recognised.",
+                        "BookTime", "Book Time", "booktime", "DeliveryTime", "Delivery Time");
+
                     string jobNumber = GetStringValue(jobData, "JobNumber", "Job Number", "jobnumber");
 
                     // Auto-generate job number if not provided or empty. Uses the
@@ -147,10 +158,6 @@ public partial class BulkImportServiceV2
                         jobNumber = $"{prefix}{currentJobNumber.ToString().PadLeft(4, '0')}";
                     }
 
-                    // Dates - support both BookDate and DeliveryDate (Despatch_Root legacy)
-                    DateTime? rowBookDate = GetDateValue(jobData, "BookDate", "Book Date", "bookdate", "DeliveryDate", "Delivery Date");
-                    DateTime bookDate = rowBookDate ?? DateTime.Today;
-                    DateTime? bookTime = GetDateValue(jobData, "BookTime", "Book Time", "booktime", "DeliveryTime", "Delivery Time");
 
                     string contact = GetStringValue(jobData, "Contact", "FromContact", "contact", "ContactName");
                     decimal amount = GetDecimalValue(jobData, "Amount", "amount") ?? 0;
@@ -229,7 +236,7 @@ public partial class BulkImportServiceV2
 
                     int? status = GetIntValue(jobData, "Status", "status");
                     bool? jobDone = GetBoolValue(jobData, "JobDone", "Job Done", "jobdone");
-                    DateTime? complTime = GetDateValue(jobData, "ComplTime", "Complete Time", "compltime");
+                    DateTime? complTime = StaffCellDateTime(jobData, !isNz, "ComplTime", "Complete Time", "compltime");
                     string podName = GetStringValue(jobData, "PODName", "POD Name", "podname");
 
                     string pickupTimeZone = GetTimeZoneCode(pickUpLatitude, pickUpLongitude);
@@ -442,8 +449,7 @@ public partial class BulkImportServiceV2
                             : $"{fromCompany}, {fromAddress}";
 
                         // A P2P job books for the row's BookDate. With no BookDate on the row
-                        // the row's time still goes as is: bookDate's fallback is the host's
-                        // date, which can be a different day from the tenant's.
+                        // the row's time still goes as is and the SP picks the day.
                         DateTime? p2pBookTime = rowBookDate.HasValue
                             ? bookDate.Date.Add((bookTime ?? TimeZoneUtility.GetTenantNow(_httpContextAccessor)).TimeOfDay)
                             : bookTime;
@@ -651,8 +657,58 @@ public partial class BulkImportServiceV2
         columns.Select(column => GetStringValue(jobData, column)).FirstOrDefault(value => !string.IsNullOrEmpty(value))
             ?? GetStringValue(jobData, columns);
 
+    // UC #881. Staff Import cell readers on the shared BulkImportDateParser.
+    // A cell already typed as DateTime (an in-process caller) is taken as is.
+    // A non-blank cell that cannot be read throws, so the row catch reports
+    // it and the rest of the file still books.
+    private DateTime? StaffCellDate(Dictionary<string, object> data, bool isUs, string refusal, params string[] keys)
+    {
+        var cell = StaffCell(data, keys);
+        if (cell is DateTime dt) return dt.Date;
+        var text = cell?.ToString();
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        return BulkImportDateParser.ParseDate(text, isUs) ?? throw new Exception(refusal);
+    }
+
+    // A typed DateTime keeps its own date, as it always has (the US schedule
+    // path sends it unchanged). A text time books on the row's date.
+    private DateTime? StaffCellBookTime(Dictionary<string, object> data, DateTime bookDate, string refusal, params string[] keys)
+    {
+        var cell = StaffCell(data, keys);
+        if (cell is DateTime dt) return dt;
+        var text = cell?.ToString();
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var time = BulkImportDateParser.ParseTime(text) ?? throw new Exception(refusal);
+        return bookDate.Date.Add(time);
+    }
+
+    // Completed time: a date with an optional time. Unreadable stays null, as
+    // it did with TryParse, and the existing fallback applies.
+    private DateTime? StaffCellDateTime(Dictionary<string, object> data, bool isUs, params string[] keys)
+    {
+        var cell = StaffCell(data, keys);
+        if (cell is DateTime dt) return dt;
+        var text = cell?.ToString()?.Trim();
+        var date = BulkImportDateParser.ParseDate(text, isUs);
+        if (date == null) return null;
+        var space = text!.IndexOf(' ');
+        var time = BulkImportDateParser.ParseTime(text.Contains('T') ? text : space > 0 ? text[(space + 1)..] : null);
+        return time.HasValue ? date.Value.Add(time.Value) : date;
+    }
+
+    private static object? StaffCell(Dictionary<string, object> data, string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (data.TryGetValue(key, out var value) && value != null) return value;
+            var found = data.Keys.FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (found != null && data[found] != null) return data[found];
+        }
+        return null;
+    }
+
     // Note: GetStringValue / GetIntValue / GetDecimalValue / GetDoubleValue /
-    // GetBoolValue / GetDateValue live on the BulkImportServiceV2 partial in
+    // GetBoolValue live on the BulkImportServiceV2 partial in
     // BulkImportServiceV2.cs (they were added there ahead of this port for
     // future dictionary-shaped payloads). Reusing rather than duplicating.
 }

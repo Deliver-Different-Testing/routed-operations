@@ -82,6 +82,53 @@ describe('PolygonBuilder - coverage polygons + viewport', () => {
     expect(screen.getByRole('button', { name: /Show on map/ })).toBeInTheDocument();
   });
 
+  // Touched postcodes spec 4.3 / acceptance 5: the panel lists every touched
+  // postcode, not just the >= 10% packed list, so a sliver like Karapiro 3494
+  // (8.31%) is visible and marked as checked against the line.
+  it('lists fully and partly covered postcodes from touchedZips', async () => {
+    server.use(
+      http.get('/api/bulk-polygons', () =>
+        HttpResponse.json({
+          response: [
+            {
+              polygonId: 30,
+              name: 'Corridor',
+              centroidLatitude: -37.9,
+              centroidLongitude: 175.5,
+              sourceType: 0,
+              sourceCode: null,
+              points: [
+                { ringIndex: 0, orderIndex: 0, lat: -37.8, lng: 175.4 },
+                { ringIndex: 0, orderIndex: 1, lat: -37.8, lng: 175.6 },
+                { ringIndex: 0, orderIndex: 2, lat: -38.0, lng: 175.6 },
+              ],
+              attachedRouteCount: 0,
+              attachedRoutes: [],
+              partiallyIncludedZips: ',3410,3484,',
+              touchedZips: [
+                { zip: '3494', isFull: false, overlapPct: 8.31 },
+                { zip: '3200', isFull: true, overlapPct: 100 },
+                { zip: '3410', isFull: false, overlapPct: 12.33 },
+              ],
+              createdBy: 'kevin',
+              createdUtc: '2026-11-16T00:00:00',
+              updatedBy: null,
+              lastModifiedUtc: null,
+            },
+          ],
+        }),
+      ),
+    );
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByRole('button', { name: 'Corridor' });
+    const panel = screen.getByTestId('touched-zips-30');
+    expect(panel.textContent).toMatch(/Fully covers 1 postcode · partly covers 2/);
+    expect(panel.textContent).toMatch(/address checked against the line/);
+    // Partly covered ordered by overlap descending, with the percentage.
+    expect(panel.textContent).toMatch(/3410 12\.33%.*3494 8\.31%/);
+    expect(document.body.textContent).not.toMatch(/Covers 2 postcodes/);
+  });
+
   it('renders fallback attached-count chip for pre-2026-08-06 payloads', async () => {
     server.use(
       http.get('/api/bulk-polygons', () =>

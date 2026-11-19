@@ -12,7 +12,7 @@ using RoutedOperations.Infrastructure;
 
 namespace RoutedOperations.Tests.Services.BulkImport;
 
-public class BulkTruckPreviewTests
+public partial class BulkTruckPreviewTests
 {
     private const int ClientId = 5;
     private const int OtherClientId = 6;

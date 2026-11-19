@@ -3,6 +3,7 @@
 // degenerate NP. RemoveMissingScanJobs returns false for NP.
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
 
@@ -24,6 +25,7 @@ public class RouteViewerScanServiceTests
         resolver.ResolveAsync().Returns(scope);
         var guard = Substitute.For<INpScopeGuard>();
         var sut = new RouteViewerScanService(factory, resolver, guard,
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerScanService>.Instance);
         return (sut, resolver, guard);
     }
@@ -246,6 +248,7 @@ public class RouteViewerScanServiceTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(scope);
         var sut = new RouteViewerScanService(factory, resolver, Substitute.For<INpScopeGuard>(),
+            RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted(),
             NullLogger<RouteViewerScanService>.Instance);
         return (sut, capture);
     }

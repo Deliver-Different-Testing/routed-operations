@@ -5,6 +5,8 @@ import { useAuth } from '../context/AuthContext';
 import { postcodeLabel } from '../lib/tenantLabels';
 import { tenantMapCentre } from '../lib/mapDefaults';
 import { parseWktPolygon } from '../lib/wktPolygon';
+import { checkToteSave, initialToteScanning, toteSavePayload } from '../lib/finalMileTote';
+import { buildScheduleList, tickedHeaderIds } from '../lib/scheduleCoverageFilter';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
@@ -34,6 +36,7 @@ import {
   FinalMileDeliveryMode,
   type FinalMileDeliveryModeValue,
   type RouteLinkableBooking,
+  type CoverageMatchResponse,
   mayOfferHardDelete,
 } from '../services/recurringRouteService';
 import { bulkPolygonService, type BulkPolygon } from '../services/bulkPolygonService';
@@ -243,7 +246,20 @@ export default function ScheduledRoutes() {
                     onClick={openEdit}
                     className="border-b border-border-light last:border-b-0 hover:bg-surface-cream cursor-pointer"
                   >
-                    <td className="px-2 py-1.5 font-medium text-text-primary">{r.name}</td>
+                    <td className="px-2 py-1.5 font-medium text-text-primary">
+                      {r.name}
+                      {/* Final-mile route setup spec 3.2.6. The "Master: ..."
+                          label used to sit on the Schedules NEW Recurring
+                          Routes tab (e75ae7c), which df92581 removed, so it
+                          lives under the route name here. A route without a
+                          master shows nothing: the master is optional. */}
+                      {r.masterBookingLabel && (
+                        <div className="text-[10px] font-mono font-normal text-brand-cyan"
+                          title="Route's final-mile master booking">
+                          Master: {r.masterBookingLabel}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5">
                       <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-cyan/15 text-brand-cyan whitespace-nowrap">
                         First/Final Mile
@@ -423,8 +439,11 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
   // so what the operator sees pre-filled is what they would get anyway.
   const [originRadiusM, setOriginRadiusM] = useState<number>(initial?.origin?.radiusM ?? 5000);
   // Final-mile tote scanning. The master is the booking whose realised job the
-  // driver opens to scan totes on and off; without one the handset has nothing
-  // to route the tote screens from.
+  // driver opens to scan totes on and off. It is optional (final-mile route
+  // setup spec 3.2): with the switch off the driver gets each delivery as its
+  // own job, the same as any other recurring route.
+  const [toteScanning, setToteScanning] = useState<boolean>(
+    initialToteScanning(initial?.masterBookingId));
   const [masterBookingId, setMasterBookingId] = useState<number | null>(initial?.masterBookingId ?? null);
   const [masterLabel, setMasterLabel] = useState<string | null>(initial?.masterBookingLabel ?? null);
   const [deliveryMode, setDeliveryMode] = useState<FinalMileDeliveryModeValue>(
@@ -654,12 +673,68 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
     setFocusRequest({ kind: 'bulkPolygon', id: polygonId, nonce: focusNonceRef.current });
   };
 
-  const filteredSchedules = useMemo(() => {
-    const needle = scheduleFilter.trim().toLowerCase();
-    if (!needle) return schedules;
-    return schedules.filter((s) => s.name.toLowerCase().includes(needle)
-      || s.clientCodes.some((c) => c.toLowerCase().includes(needle)));
-  }, [schedules, scheduleFilter]);
+  // ── Coverage filter on the schedules list (final-mile route setup 4.3) ──
+  // Final mile only. TODO(fmr-Q3): first-mile routes would compare the
+  // schedule's pickup end; until Steve answers they keep today's list.
+  const hasCoverage = zips.length > 0 || bulkPolygonIds.size > 0;
+  const coverageFilterOffered = direction === RouteDirection.FinalMile;
+  const [coverageFilterOn, setCoverageFilterOn] = useState(true);
+  const [coverageMatch, setCoverageMatch] = useState<CoverageMatchResponse | null>(null);
+  const [coverageMatchFailed, setCoverageMatchFailed] = useState(false);
+  // A coverage-match answer is due for the latest coverage. The previous
+  // match stays applied meanwhile (no flash to the full lookup); the editor
+  // shows "Checking coverage..." instead.
+  const [coverageMatchPending, setCoverageMatchPending] = useState(false);
+  const coverageSeqRef = useRef(0);
+  const coverageZipKey = zips.map((z) => z.zipPolygonId).sort((a, b) => a - b).join(',');
+  const coveragePolygonKey = [...bulkPolygonIds].sort((a, b) => a - b).join(',');
+
+  useEffect(() => {
+    const seq = ++coverageSeqRef.current;
+    if (!coverageFilterOffered || !hasCoverage) {
+      setCoverageMatch(null);
+      setCoverageMatchFailed(false);
+      setCoverageMatchPending(false);
+      return;
+    }
+    setCoverageMatchPending(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await recurringRouteService.matchScheduleCoverage({
+          direction,
+          zipPolygonIds: zips.map((z) => z.zipPolygonId),
+          bulkPolygonIds: [...bulkPolygonIds],
+        });
+        if (seq !== coverageSeqRef.current) return;
+        setCoverageMatch(res.response);
+        setCoverageMatchFailed(false);
+        setCoverageMatchPending(false);
+      } catch {
+        if (seq !== coverageSeqRef.current) return;
+        setCoverageMatch(null);
+        setCoverageMatchFailed(true);
+        setCoverageMatchPending(false);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [direction, coverageZipKey, coveragePolygonKey]);
+
+  const coverageFilterApplied = coverageFilterOffered && hasCoverage && coverageFilterOn
+    && !coverageMatchFailed && coverageMatch !== null;
+  // The visible hint under the tick box, for aria-describedby.
+  const coverageHintId = !hasCoverage ? 'schedule-coverage-hint-none'
+    : !coverageFilterOn ? undefined
+    : coverageMatchFailed ? 'schedule-coverage-hint-failed'
+    : coverageMatchPending ? 'schedule-coverage-hint-pending'
+    : undefined;
+  const tickedHeaders = useMemo(
+    () => tickedHeaderIds(scheduleIds, schedules, initial?.schedules ?? []),
+    [scheduleIds, schedules, initial]);
+  const scheduleList = useMemo(
+    () => buildScheduleList(schedules, scheduleFilter,
+      coverageFilterApplied ? coverageMatch : null, tickedHeaders),
+    [schedules, scheduleFilter, coverageFilterApplied, coverageMatch, tickedHeaders]);
 
   const targetOptions = useMemo<AssignableTarget[]>(() => {
     if (!targets) return [];
@@ -754,6 +829,19 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
       if (originKind === 'address' && originRadiusM <= 0) {
         toast.show('Origin radius must be greater than zero metres', 'error'); return;
       }
+      const tote = checkToteSave({
+        toteScanning,
+        masterBookingId,
+        initialMasterBookingId: initial?.masterBookingId,
+        initialMasterLabel: initial?.masterBookingLabel,
+      });
+      if (tote.kind === 'refuse') { toast.show(tote.message, 'error'); return; }
+      if (tote.kind === 'confirm' && !(await askConfirm({
+        title: 'Turn off tote scanning',
+        message: tote.message,
+        confirmLabel: 'Turn off and save',
+        danger: true,
+      }))) return;
     }
     setSaving(true);
     try {
@@ -787,12 +875,10 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
         // Final-mile only, and 0 rather than null to CLEAR: null means "leave
         // it alone" on the server, so a first-mile route's save must not send
         // a value at all or it would be read as a clear it never asked for.
+        // Tote scanning off sends the clear; the mode is only meaningful once
+        // a master exists to carry it.
         ...(direction === RouteDirection.FinalMile
-          ? {
-              masterBookingId: masterBookingId ?? 0,
-              // Only meaningful once a master exists to carry it.
-              finalMileDeliveryMode: masterBookingId != null ? deliveryMode : null,
-            }
+          ? toteSavePayload(toteScanning, masterBookingId, deliveryMode)
           : {}),
       };
       if (isNew) {
@@ -893,13 +979,33 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
               <input type="text" value={scheduleFilter} onChange={(e) => setScheduleFilter(e.target.value)}
                 className={INPUT_CLASS + ' text-xs border-0 border-b border-border-light rounded-b-none'}
                 placeholder="Filter schedules by name or client code..." />
+              {coverageFilterOffered && (
+                <div className="px-2 py-1 border-b border-border-light text-xs">
+                  <label className={`flex items-center gap-2 ${hasCoverage ? 'cursor-pointer' : 'text-text-muted cursor-not-allowed'}`}>
+                    <input type="checkbox" data-testid="schedule-coverage-filter"
+                      checked={hasCoverage && coverageFilterOn} disabled={!hasCoverage}
+                      aria-describedby={coverageHintId}
+                      onChange={(e) => setCoverageFilterOn(e.target.checked)} />
+                    Only schedules covering this route's postcodes
+                  </label>
+                  {!hasCoverage && (
+                    <p id="schedule-coverage-hint-none" className="text-[10px] text-text-muted ml-5">Add postcodes or a polygon to filter by coverage</p>
+                  )}
+                  {hasCoverage && coverageFilterOn && coverageMatchFailed && (
+                    <p id="schedule-coverage-hint-failed" className="text-[10px] text-text-muted ml-5">Coverage filter unavailable</p>
+                  )}
+                  {hasCoverage && coverageFilterOn && !coverageMatchFailed && coverageMatchPending && (
+                    <p id="schedule-coverage-hint-pending" className="text-[10px] text-text-muted ml-5">Checking coverage...</p>
+                  )}
+                </div>
+              )}
               <ul className="max-h-56 overflow-auto text-xs divide-y divide-border-light">
-                {filteredSchedules.length === 0 && (
+                {scheduleList.length === 0 && (
                   <li className="px-2 py-3 text-center text-text-muted italic">
                     {schedules.length === 0 ? 'Loading schedules...' : 'No matches'}
                   </li>
                 )}
-                {filteredSchedules.map((s) => {
+                {scheduleList.map(({ schedule: s, overlapLabel, noOverlap }) => {
                   const checked = scheduleIds.has(s.id);
                   return (
                     <li key={s.id}>
@@ -914,8 +1020,14 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                                 Inactive
                               </span>
                             )}
+                            {noOverlap && (
+                              <span className="shrink-0 px-1 rounded bg-amber-50 text-[10px] text-amber-700 border border-amber-300">
+                                no postcodes in common
+                              </span>
+                            )}
                           </div>
                           <div className="text-[10px] text-text-muted">
+                            {overlapLabel && <span className="font-medium text-text-primary">{overlapLabel} - </span>}
                             {s.startTime}-{s.endTime}
                             {s.days.length > 0 && ` (${s.days.map((d) => DAYS_OF_WEEK[d - 1] ?? d).join(',')})`}
                             {s.clientCodes.length > 0 && ` - ${s.clientCodes.join(', ')}`}
@@ -1058,10 +1170,22 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
 
           {/* Final-mile tote scanning (spec 4.1 and 4.7). Only a final-mile
               route has a master: a first-mile route's driver never scans a
-              tote onto a vehicle at the depot. */}
+              tote onto a vehicle at the depot. The master is optional
+              (final-mile route setup spec 3.2): the switch decides whether
+              the picker and the mode buttons apply at all. */}
           {direction === RouteDirection.FinalMile && (
             <FieldGroup label="Tote scanning">
               <div className="border border-border rounded-lg p-2 bg-surface-white space-y-3">
+                <label className="flex items-center gap-2 text-xs font-medium text-text-primary cursor-pointer">
+                  <input type="checkbox" role="switch" data-testid="final-mile-tote-switch"
+                    checked={toteScanning}
+                    onChange={(e) => setToteScanning(e.target.checked)} />
+                  Use tote scanning on this route
+                </label>
+                {!toteScanning && (
+                  <p className="text-[11px] text-text-muted">Drivers get each delivery as its own job.</p>
+                )}
+                {toteScanning && (<>
                 <div>
                   <span className="block text-[11px] font-medium text-text-secondary mb-1">
                     Master job
@@ -1128,9 +1252,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                   )}
                   <p className="mt-1 text-[10px] text-text-muted">
                     The booking whose daily job the driver opens to scan totes on at the
-                    depot and off at the destination. Without one there is nothing for the
-                    handset to open.
-                    {masterBookingId != null && ' Clearing it also unbinds the booking from this route.'}
+                    depot and off at the destination.
                   </p>
                 </div>
 
@@ -1163,6 +1285,7 @@ function RouteEditor({ initial, onClose, onSaved }: EditorProps) {
                       : 'What the destination expects. The lab decides, not the driver.'}
                   </p>
                 </div>
+                </>)}
               </div>
             </FieldGroup>
           )}

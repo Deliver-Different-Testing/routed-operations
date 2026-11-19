@@ -74,7 +74,7 @@ public partial class BulkTruckRoutingTests
         ServerNow = new DateTime(2031, 1, 1),
     };
 
-    private static Rig NewRig(string clientTypeId = "4", string tenant = "NZ")
+    private static Rig NewRig(string clientTypeId = "4", string tenant = "NZ", string timeZone = "UTC")
     {
         var options = BulkImportTestHarness.NewOptions();
         var procs = Substitute.For<IDespatchContextProcedures>();
@@ -83,7 +83,7 @@ public partial class BulkTruckRoutingTests
         factory.CreateDbContextAsync(Arg.Any<CancellationToken>())
             .Returns(_ => Task.FromResult<DynamicDespatchDbContext>(new RecordingContext(options, procs)));
 
-        var accessor = BulkImportTestHarness.Accessor(tenant, clientTypeId, "UTC");
+        var accessor = BulkImportTestHarness.Accessor(tenant, clientTypeId, timeZone);
         var scope = new BulkClientScope(accessor);
         var here = new HereGeocodeService(new HttpClient(new BulkImportServiceV2CoreTests.FakeHandler()), new AppSettings { HereMapsApiKey = string.Empty });
         var address = new AddressService(factory, accessor, here, BulkImportTestHarness.Cache(accessor), scope);

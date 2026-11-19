@@ -188,6 +188,28 @@ describe('PolygonBuilder - draw by points', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /View Zones/ })).toBeInTheDocument());
   });
 
+  it('clicking the first point again finishes the drawing (no Finish press needed)', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    fireEvent.click(await screen.findByRole('button', { name: /New Drawing/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Draw by points/ }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/Click to add points \(0\)/));
+
+    const g = (window as any).google;
+    const latLng = (lat: number, lng: number) => ({ lat: () => lat, lng: () => lng });
+    const pts: [number, number][] = [[-36.85, 174.76], [-36.85, 174.80], [-36.89, 174.80]];
+    for (let i = 0; i < pts.length; i++) {
+      await act(async () => {
+        g.__fireOnMap('click', { latLng: latLng(pts[i][0], pts[i][1]), domEvent: { altKey: false } });
+      });
+      await waitFor(() => expect(document.body.textContent).toContain(`Click to add points (${i + 1})`));
+    }
+    await act(async () => {
+      g.__fireOnMap('click', { latLng: latLng(pts[0][0], pts[0][1]), domEvent: { altKey: false } });
+    });
+    await waitFor(() => expect(document.body.textContent).toMatch(/Drag the purple squares/));
+    expect(document.body.textContent).toContain('(3 vertices');
+  });
+
   it('P in view mode starts point drawing', async () => {
     renderWithProviders(<PolygonBuilder />);
     await screen.findByRole('button', { name: /View Zones/ });

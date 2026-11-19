@@ -74,6 +74,71 @@ export interface BulkPolygon {
    *  show / hide; nothing downstream reads it. Optional because older
    *  fixtures omit it. */
   layer?: string | null;
+  /** Every postcode the shape touches (dbo.BulkRunPolygonZip, refreshed on
+   *  save / reshape). No 10% floor: this is what booking assesses. Optional
+   *  because older fixtures omit it; empty when the overlay never ran. */
+  touchedZips?: PolygonTouchedZip[];
+}
+
+/** One BulkRunPolygonZip row. isFull = at least 99% inside the shape, so it
+ *  matches on postcode alone; otherwise the job address is checked against
+ *  the line. overlapPct = % of the postcode's own area inside the shape. */
+export interface PolygonTouchedZip {
+  zip: string;
+  isFull: boolean;
+  overlapPct: number;
+}
+
+/** Split touched postcodes for the panel: fully covered by zip, partly
+ *  covered by overlap descending (ties by zip) so the biggest overlaps
+ *  read first. */
+export function splitTouchedZips(rows: PolygonTouchedZip[] | null | undefined): {
+  full: string[];
+  partial: PolygonTouchedZip[];
+} {
+  const list = rows ?? [];
+  const full = list.filter((r) => r.isFull).map((r) => r.zip)
+    .sort((a, b) => a.localeCompare(b));
+  const partial = list.filter((r) => !r.isFull)
+    .sort((a, b) => b.overlapPct - a.overlapPct || a.zip.localeCompare(b.zip));
+  return { full, partial };
+}
+
+/** Post-save toast trailer. Counts every touched postcode (same numbers as
+ *  the panel's "Fully covers N · partly covers M"); falls back to the packed
+ *  >= 10% list for responses that carry no touched rows. */
+export function savedZipsToastTrailer(
+  polygon: Pick<BulkPolygon, 'touchedZips' | 'partiallyIncludedZips'>,
+): string {
+  const { full, partial } = splitTouchedZips(polygon.touchedZips);
+  const zips = full.length + partial.length > 0
+    ? [...full, ...partial.map((z) => z.zip)]
+    : parsePartiallyIncludedZips(polygon.partiallyIncludedZips);
+  if (zips.length === 0) return ' (no overlapping postcodes)';
+  const head = zips.slice(0, 6).join(', ');
+  const tail = zips.length > 6 ? `, +${zips.length - 6} more` : '';
+  if (full.length + partial.length === 0) {
+    return ` Derived ${zips.length} postcode${zips.length === 1 ? '' : 's'}: ${head}${tail}.`;
+  }
+  return ` Fully covers ${full.length}, partly covers ${partial.length}: ${head}${tail}.`;
+}
+
+/** "Show on map" split: fully covered zips become the selection (they feed
+ *  "Save as Route"); partly covered ones are only drawn, so a 0.01% sliver
+ *  never lands in a saved route by accident. */
+export function splitFocusSelection<T extends { zip: string }>(
+  resolved: T[], partialZips: string[],
+): { selected: T[]; shownOnly: T[] } {
+  const partialSet = new Set(partialZips);
+  return {
+    selected: resolved.filter((z) => !partialSet.has(z.zip)),
+    shownOnly: resolved.filter((z) => partialSet.has(z.zip)),
+  };
+}
+
+/** "8.31%" / "12.3%" / "0.01%": the stored 2-decimal value without trailing zeros. */
+export function formatOverlapPct(pct: number): string {
+  return `${Number(pct.toFixed(2))}%`;
 }
 
 /** Parse the comma-delimited PartiallyIncludedZips string (with sentinel

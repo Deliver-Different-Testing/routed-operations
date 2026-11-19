@@ -20,7 +20,7 @@ public class JobsControllerTests
         var opts = ControllerTestHarness.NewOptions();
         var seed = ControllerTestHarness.Context(opts);
         var factory = ControllerTestHarness.Factory(opts);
-        var jobSvc = new JobService(factory);
+        var jobSvc = new JobService(factory, RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
         var voidSvc = new VoidJobService(factory);
         var cs = Substitute.For<IConnectionStringManager>();
         cs.GetConnectionStringAsync(Arg.Any<string>()).Returns(Task.FromResult<string?>(null));

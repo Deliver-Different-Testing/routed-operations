@@ -88,9 +88,11 @@ public record RouteDto(
     // same field at the same index.
     //
     // Only meaningful on a final-mile route (Direction = 2). The master is the
-    // booking whose realised job the driver opens to scan totes on and off;
-    // without one the handset has nothing to route the tote screens from, so
-    // the editor shows the picker only for Direction = 2.
+    // booking whose realised job the driver opens to scan totes on and off.
+    // A master is optional: it is set only when the route uses tote scanning,
+    // and a route without one gets each delivery as its own job (final-mile
+    // route setup spec 3.1). The editor shows the picker only for
+    // Direction = 2.
     int? MasterBookingId = null,
     // "P5372BIO - Burbank to Lab" style label for the picker's selected state,
     // so the editor does not have to fetch the booking again to render it.
@@ -254,6 +256,28 @@ public record ScheduleLookupDto(
     int HeaderId,
     bool IsActive,
     List<string> ClientCodes);
+
+/// <summary>POST schedules/coverage-match body (final-mile route setup spec
+/// 4.2). The editor's coverage, usually unsaved, hence a body and not a route
+/// id. Null lists read as empty.</summary>
+public record CoverageMatchRequest(
+    byte Direction,
+    List<int> ZipPolygonIds,
+    List<int> BulkPolygonIds);
+
+/// <summary>One live schedule header that covers at least one route postcode
+/// at its delivery end. ScheduleId is the same DAY-ROW id the lookup returns
+/// for that header, so the editor can join on it; HeaderId is for matching a
+/// ticked schedule whose bound day row is not the lookup's.</summary>
+public record CoverageMatchRowDto(
+    int ScheduleId,
+    int HeaderId,
+    int MatchedCount,
+    bool DepotWide);
+
+public record CoverageMatchResponse(
+    int RoutePostcodeCount,
+    List<CoverageMatchRowDto> Rows);
 
 /// <summary>Full polygon shape for the map layer - one row per zip.</summary>
 public record ZipPolygonShapeDto(

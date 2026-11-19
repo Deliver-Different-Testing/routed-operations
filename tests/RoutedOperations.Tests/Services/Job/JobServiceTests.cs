@@ -26,7 +26,7 @@ public class JobServiceTests
     {
         var opts = CockpitTestHarness.NewInMemoryOptions();
         seed = CockpitTestHarness.Context(opts);
-        return new JobService(CockpitTestHarness.Factory(opts));
+        return new JobService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
     }
 
     private static (JobService Svc, Core.Domain.DynamicDespatchDbContext Seed,
@@ -35,7 +35,7 @@ public class JobServiceTests
     {
         var (opts, conn) = CockpitTestHarness.NewSqliteOptions();
         var seed = CockpitTestHarness.Context(opts);
-        return (new JobService(CockpitTestHarness.Factory(opts)), seed, conn, opts);
+        return (new JobService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted()), seed, conn, opts);
     }
 
     private static TblBulkJob NewJob(int id, DateTime date, int clientId = 1, int speed = 1,

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Courier;
+using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 
@@ -14,7 +15,8 @@ namespace RoutedOperations.Core.Application.Services.Courier;
 /// </summary>
 public class CourierService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
-    TenantScopedCache cache)
+    TenantScopedCache cache,
+    IBranchScopeGuard branchGuard)
     : BaseService(contextFactory)
 {
     // 5-minute sliding TTL. Couriers are edited via a different app
@@ -23,8 +25,13 @@ public class CourierService(
     // that happen inside a single operator session.
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
 
-    public Task<List<CourierDto>> GetActiveAsync() =>
-        cache.GetOrSetAsync("couriers:active", CacheTtl, LoadActiveAsync);
+    // The cached list is the whole tenant's; it is narrowed per caller AFTER the cache, so a branch-limited user never populates the cache
+    // with their own subset for the next user (Branches B2c). Unrestricted callers get the cached list itself, as before.
+    public async Task<List<CourierDto>> GetActiveAsync()
+    {
+        var all = await cache.GetOrSetAsync("couriers:active", CacheTtl, LoadActiveAsync);
+        return await branchGuard.FilterCourierRowsAsync(all, c => c.CourierId);
+    }
 
     private async Task<List<CourierDto>> LoadActiveAsync()
     {

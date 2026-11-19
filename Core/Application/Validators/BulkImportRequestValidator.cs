@@ -37,6 +37,9 @@ namespace RoutedOperations.Core.Application.Validators
             return countryCode?.Equals(usa) ?? true;
         }
 
+        private static bool IsOnDemand(BulkImportRequest request) =>
+            string.Equals(request.JobType, "ondemand", StringComparison.OrdinalIgnoreCase);
+
         private void SetRules()
         {
             RuleFor(x => x.ClientId)
@@ -74,7 +77,10 @@ namespace RoutedOperations.Core.Application.Validators
 
                      return isValid;
                  })
-                 .WithMessage("'BookDate' must be in the future and within 30 days.");
+                 .WithMessage("'BookDate' must be in the future and within 30 days.")
+                 // UC #881. An on-demand file whose every row has its own Book Date or
+                 // Book Time never books on this value; the server checks each row.
+                 .When(x => !IsOnDemand(x) || BulkImportServiceV2.UsesBatchBookDate(x, x.ScheduleId.HasValue));
 
             //RuleFor(x => x.BookDate.Kind == DateTimeKind.Utc ? x.BookDate.ToLocalTime() : x.BookDate)
             // .ExclusiveBetween(DateTime.Now, DateTime.Today.AddDays(30));

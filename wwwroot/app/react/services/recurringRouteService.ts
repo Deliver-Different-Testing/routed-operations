@@ -274,6 +274,25 @@ export interface ScheduleLookup {
   clientCodes: string[];
 }
 
+export interface CoverageMatchBody {
+  direction: number;
+  zipPolygonIds: number[];
+  bulkPolygonIds: number[];
+}
+
+/** `scheduleId` is the same day-row id the lookup returns as `id`. */
+export interface CoverageMatchRow {
+  scheduleId: number;
+  headerId: number;
+  matchedCount: number;
+  depotWide: boolean;
+}
+
+export interface CoverageMatchResponse {
+  routePostcodeCount: number;
+  rows: CoverageMatchRow[];
+}
+
 /**
  * Whether to OFFER a permanent delete on this route.
  *
@@ -377,4 +396,12 @@ export const recurringRouteService = {
 
   getSchedules: () =>
     request<{ response: ScheduleLookup[] }>('/recurring-routes/schedules/lookup'),
+
+  /** Which live schedules deliver to at least one of the route's postcodes
+   *  (final-mile route setup spec 4.2). Rows only for schedules with an
+   *  overlap; an empty coverage or a first-mile route returns no rows. */
+  matchScheduleCoverage: (body: CoverageMatchBody) =>
+    request<{ response: CoverageMatchResponse }>('/recurring-routes/schedules/coverage-match', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
 };
