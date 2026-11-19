@@ -37,6 +37,7 @@ namespace RoutedOperations.Core.Application.Services.RouteViewer;
 public class RouteViewerLabelService(
     IDbContextFactory<DynamicDespatchDbContext> contextFactory,
     IAlertLabelService alertLabelService,
+    ILabelTemplateResolver labelTemplateResolver,
     INpScopeResolver npScopeResolver,
     INpScopeGuard npScopeGuard,
     HttpClient httpClient,
@@ -70,13 +71,15 @@ public class RouteViewerLabelService(
         });
     }
 
-    // LHP jobs live in tblJob with no tblBulkJob row. Use the bulk
-    // template so the single-click PDF matches the page produced by
-    // the bulk-form run print. Legacy: LabelService.GetLhpLabel.
+    // LHP jobs live in tblJob with no tblBulkJob row. Use the client's own
+    // label template when it has one, else the default bulk template so the
+    // single-click PDF matches the page produced by the bulk-form run print.
+    // Legacy: LabelService.GetLhpLabel.
     public async Task<byte[]> GetLhpJobLabelAsync(int jobId)
     {
         await npScopeGuard.EnsureTucJobInScopeAsync(jobId);
-        var templateId = await GetDefaultBulkTemplateIdAsync();
+        var templateId = await GetClientTemplateIdForJobAsync(jobId)
+            ?? await GetDefaultBulkTemplateIdAsync();
         return await alertLabelService.GeneratePdfAsync(new AlertLabelRequest
         {
             ConnectionString = TenantConnectionString,
@@ -309,32 +312,42 @@ public class RouteViewerLabelService(
     {
         var job = await Context.TucJobs
             .Where(j => !j.UcjbVoid && j.UcjbId == jobId)
-            .Select(j => new { j.UcjbSpeed })
+            .Select(j => new { j.UcjbClientId, j.UcjbSpeed })
             .FirstOrDefaultAsync();
 
-        return await GetTemplateIdForSpeedAsync(job?.UcjbSpeed, TemplateTypeJob);
+        return await GetTemplateIdAsync(job?.UcjbClientId, job?.UcjbSpeed, TemplateTypeJob, job is not null);
+    }
+
+    private async Task<int?> GetClientTemplateIdForJobAsync(int jobId)
+    {
+        var job = await Context.TucJobs
+            .Where(j => !j.UcjbVoid && j.UcjbId == jobId)
+            .Select(j => new { j.UcjbClientId })
+            .FirstOrDefaultAsync();
+        if (job?.UcjbClientId is null) return null;
+
+        var choice = await labelTemplateResolver.ResolveAsync(job.UcjbClientId, null, isBulk: true);
+        return choice?.ClientTemplateId;
     }
 
     private async Task<int> GetTemplateIdForBulkJobAsync(int bulkJobId)
     {
         var bj = await Context.TblBulkJobs
             .Where(j => !j.Void && j.BulkJobId == bulkJobId)
-            .Select(j => new { j.Speed })
+            .Select(j => new { j.ClientId, j.Speed })
             .FirstOrDefaultAsync();
 
-        return await GetTemplateIdForSpeedAsync(bj?.Speed, TemplateTypeBulk);
+        return await GetTemplateIdAsync(bj?.ClientId, bj?.Speed, TemplateTypeBulk, bj is not null);
     }
 
-    private async Task<int> GetTemplateIdForSpeedAsync(int? speedId, int templateType)
+    // client -> speed -> tenant default is dbo.REP_fncLabelTemplate; a NULL
+    // TemplateId (nothing configured) drops into the fallback chain below.
+    private async Task<int> GetTemplateIdAsync(int? clientId, int? speedId, int templateType, bool jobFound)
     {
-        if (speedId is not null)
+        if (jobFound)
         {
-            var labelId = await Context.TucJobTypes
-                .Where(s => s.UcjtId == speedId)
-                .Select(s => s.LabelId)
-                .FirstOrDefaultAsync();
-            if (labelId is not null && await Context.AlertTemplates.AnyAsync(a => a.Id == labelId))
-                return labelId.Value;
+            var choice = await labelTemplateResolver.ResolveAsync(clientId, speedId, templateType == TemplateTypeBulk);
+            if (choice?.TemplateId is not null) return choice.TemplateId.Value;
         }
 
         return await GetDefaultTemplateIdAsync(templateType);

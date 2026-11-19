@@ -39,7 +39,8 @@ public class RouteViewerLabelServiceTests
         (int Id, int Type)[] templates,
         int? defaultJobLabelId = null,
         int? defaultBulkLabelId = null,
-        Action<DynamicDespatchDbContext>? seed = null)
+        Action<DynamicDespatchDbContext>? seed = null,
+        Dictionary<int, int>? clientTemplates = null)
     {
         var opts = RouteViewerTestHarness.NewOptions();
         using (var ctx = RouteViewerTestHarness.Context(opts))
@@ -58,6 +59,7 @@ public class RouteViewerLabelServiceTests
 
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(true, null));
+        var factory = RouteViewerTestHarness.Factory(opts);
         var alert = Substitute.For<IAlertLabelService>();
         Fixture? fx = null;
         alert.GeneratePdfAsync(Arg.Any<AlertLabelRequest>())
@@ -67,8 +69,9 @@ public class RouteViewerLabelServiceTests
         {
             Alert = alert,
             Sut = new RouteViewerLabelService(
-                RouteViewerTestHarness.Factory(opts),
+                factory,
                 alert,
+                new FakeLabelTemplateResolver(factory, clientTemplates),
                 resolver,
                 Substitute.For<INpScopeGuard>(),
                 new HttpClient(),
@@ -173,6 +176,98 @@ public class RouteViewerLabelServiceTests
         await fx.Sut.GetBulkLabelsAsync(new LabelRequest { BookDate = new DateTime(2026, 11, 4) });
 
         Assert.Equal(8, fx.Captured!.TemplateId);
+    }
+
+    // ── Client label template ───────────────────────────────────────────
+
+    // Client 77 has template 20 (bulk-type is fine: the client template
+    // serves job and bulk labels alike). Speed 421 carries label 1.
+    private static void SeedClientJobs(DynamicDespatchDbContext ctx)
+    {
+        ctx.TucJobTypes.Add(new TucJobType { UcjtId = 421, LabelId = 1 });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 1, UcjbNumber = "WITH", UcjbSpeed = 421, UcjbClientId = 77, UcjbVoid = false });
+        ctx.TucJobs.Add(new TucJob { UcjbId = 2, UcjbNumber = "WITHOUT", UcjbSpeed = 421, UcjbClientId = 78, UcjbVoid = false });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 10, ClientId = 77, Speed = 421, Void = false });
+        ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 11, ClientId = 78, Speed = 421, Void = false });
+    }
+
+    private static Fixture ClientFixture(int? defaultJobLabelId = null, int? defaultBulkLabelId = null) =>
+        NewFixture(new[] { (1, TemplateTypeJob), (20, TemplateTypeJob), (5, TemplateTypeJob), (6, TemplateTypeBulk) },
+            defaultJobLabelId, defaultBulkLabelId, SeedClientJobs, new Dictionary<int, int> { [77] = 20 });
+
+    [Fact]
+    public async Task SingleJob_ClientTemplate_BeatsTheSpeedLabel()
+    {
+        var fx = ClientFixture(defaultJobLabelId: 5);
+
+        await fx.Sut.GetSingleJobLabelAsync(1);
+
+        Assert.Equal(20, fx.Captured!.TemplateId);
+    }
+
+    [Fact]
+    public async Task SingleJob_ClientWithoutTemplate_KeepsSpeedThenDefault()
+    {
+        var fx = ClientFixture(defaultJobLabelId: 5);
+
+        await fx.Sut.GetSingleJobLabelAsync(2);
+        Assert.Equal(1, fx.Captured!.TemplateId);
+
+        var noSpeedLabel = NewFixture(new[] { (5, TemplateTypeJob) }, defaultJobLabelId: 5, seed: ctx =>
+        {
+            ctx.TucJobTypes.Add(new TucJobType { UcjtId = 421, LabelId = null });
+            ctx.TucJobs.Add(new TucJob { UcjbId = 2, UcjbNumber = "WITHOUT", UcjbSpeed = 421, UcjbClientId = 78, UcjbVoid = false });
+        });
+        await noSpeedLabel.Sut.GetSingleJobLabelAsync(2);
+        Assert.Equal(5, noSpeedLabel.Captured!.TemplateId);
+    }
+
+    [Fact]
+    public async Task SingleJob_ClientWithoutTemplate_NoDefaults_StillUsesTheFallbackChain()
+    {
+        var fx = NewFixture(new[] { (4, TemplateTypeJob), (2, TemplateTypeBulk) }, seed: ctx =>
+        {
+            ctx.TucJobTypes.Add(new TucJobType { UcjtId = 421, LabelId = null });
+            ctx.TucJobs.Add(new TucJob { UcjbId = 2, UcjbNumber = "WITHOUT", UcjbSpeed = 421, UcjbClientId = 78, UcjbVoid = false });
+        });
+
+        await fx.Sut.GetSingleJobLabelAsync(2);
+
+        Assert.Equal(4, fx.Captured!.TemplateId);
+    }
+
+    [Fact]
+    public async Task SingleBulk_ClientTemplate_BeatsTheSpeedLabel_AndNoTemplateKeepsToday()
+    {
+        var fx = ClientFixture(defaultBulkLabelId: 6);
+
+        await fx.Sut.GetSingleBulkLabelAsync(10);
+        Assert.Equal(20, fx.Captured!.TemplateId);
+        Assert.Equal(2, fx.Captured.Mode);
+
+        await fx.Sut.GetSingleBulkLabelAsync(11);
+        Assert.Equal(1, fx.Captured.TemplateId);
+    }
+
+    [Fact]
+    public async Task Lhp_ClientTemplate_WinsOverTheDefaultBulkTemplate()
+    {
+        var fx = ClientFixture(defaultBulkLabelId: 6);
+
+        await fx.Sut.GetLhpJobLabelAsync(1);
+
+        Assert.Equal(20, fx.Captured!.TemplateId);
+        Assert.Equal(1, fx.Captured.Mode);
+    }
+
+    [Fact]
+    public async Task Lhp_ClientWithoutTemplate_UsesTheDefaultBulkTemplate_NotTheSpeedLabel()
+    {
+        var fx = ClientFixture(defaultBulkLabelId: 6);
+
+        await fx.Sut.GetLhpJobLabelAsync(2);
+
+        Assert.Equal(6, fx.Captured!.TemplateId);
     }
 
     [Fact]
