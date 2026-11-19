@@ -291,22 +291,24 @@ public class RouteViewerLabelService(
     private static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
 
     // -----------------------------------------------------------------
-    // Template ID lookup. AlertTemplate.TemplateType: 1 = Job label,
-    // 2 = Bulk label.
+    // Template ID lookup. AlertTemplate.TemplateType: 1 = order
+    // notification, 2 = label (dbmigrationsv2 AddCustomTemplateTypeField,
+    // Configurator TenantCustomTemplatesService).
     //
-    // Job chain:  speed LabelId -> DefaultJobLabelId -> first type-1
-    //             -> DefaultBulkLabelId -> first template of any type
-    // Bulk chain: speed LabelId -> DefaultBulkLabelId -> first type-2
-    //             -> DefaultJobLabelId -> first template of any type
+    // Job chain:  client/speed/default via REP_fncLabelTemplate (job default)
+    //             -> first label template -> DefaultBulkLabelId
+    //             -> first template of any type
+    // Bulk chain: client/speed/default via REP_fncLabelTemplate (bulk default)
+    //             -> first label template -> DefaultJobLabelId
+    //             -> first template of any type
     //
-    // The two cross-type steps log a warning. They exist because a tenant
-    // with only one kind of template should still print (#855: Medical prod
-    // has a single bulk-type template, so every speed without its own
+    // The cross-default and any-type steps log a warning. They exist because
+    // a tenant with only one default set should still print (#855: Medical
+    // prod has a single label template, so every speed without its own
     // LabelId, Will Call among them, returned 501 on single print). Only a
     // tenant with no AlertTemplate at all gets the 501.
     // -----------------------------------------------------------------
-    private const int TemplateTypeJob  = 1;
-    private const int TemplateTypeBulk = 2;
+    private const int TemplateTypeLabel = 2;
 
     private async Task<int> GetTemplateIdForJobAsync(int jobId)
     {
@@ -315,7 +317,7 @@ public class RouteViewerLabelService(
             .Select(j => new { j.UcjbClientId, j.UcjbSpeed })
             .FirstOrDefaultAsync();
 
-        return await GetTemplateIdAsync(job?.UcjbClientId, job?.UcjbSpeed, TemplateTypeJob, job is not null);
+        return await GetTemplateIdAsync(job?.UcjbClientId, job?.UcjbSpeed, isBulk: false, job is not null);
     }
 
     private async Task<int?> GetClientTemplateIdForJobAsync(int jobId)
@@ -337,46 +339,42 @@ public class RouteViewerLabelService(
             .Select(j => new { j.ClientId, j.Speed })
             .FirstOrDefaultAsync();
 
-        return await GetTemplateIdAsync(bj?.ClientId, bj?.Speed, TemplateTypeBulk, bj is not null);
+        return await GetTemplateIdAsync(bj?.ClientId, bj?.Speed, isBulk: true, bj is not null);
     }
 
     // client -> speed -> tenant default is dbo.REP_fncLabelTemplate; a NULL
     // TemplateId (nothing configured) drops into the fallback chain below.
-    private async Task<int> GetTemplateIdAsync(int? clientId, int? speedId, int templateType, bool jobFound)
+    private async Task<int> GetTemplateIdAsync(int? clientId, int? speedId, bool isBulk, bool jobFound)
     {
         if (jobFound)
         {
-            var choice = await labelTemplateResolver.ResolveAsync(clientId, speedId, templateType == TemplateTypeBulk);
+            var choice = await labelTemplateResolver.ResolveAsync(clientId, speedId, isBulk);
             if (choice?.TemplateId is not null) return choice.TemplateId.Value;
         }
 
-        return await GetDefaultTemplateIdAsync(templateType);
+        return await GetDefaultTemplateIdAsync(isBulk);
     }
 
-    private Task<int> GetDefaultBulkTemplateIdAsync() => GetDefaultTemplateIdAsync(TemplateTypeBulk);
+    private Task<int> GetDefaultBulkTemplateIdAsync() => GetDefaultTemplateIdAsync(isBulk: true);
 
     // Reads the FK columns directly (not the nav properties) so a NULL FK
     // doesn't NRE - the nav-property load path was the cause of the
     // tenant-wide 500 on US medical-staging in the legacy.
-    private async Task<int> GetDefaultTemplateIdAsync(int templateType)
+    private async Task<int> GetDefaultTemplateIdAsync(bool isBulk)
     {
         var settings = await Context.TblSettings
             .Select(s => new { s.DefaultJobLabelId, s.DefaultBulkLabelId })
             .FirstOrDefaultAsync();
 
-        var isBulk       = templateType == TemplateTypeBulk;
-        var otherType    = isBulk ? TemplateTypeJob : TemplateTypeBulk;
         var sameDefault  = isBulk ? settings?.DefaultBulkLabelId : settings?.DefaultJobLabelId;
         var otherDefault = isBulk ? settings?.DefaultJobLabelId  : settings?.DefaultBulkLabelId;
 
         if (sameDefault is not null) return sameDefault.Value;
 
-        var sameTypeId = await FirstTemplateIdAsync(templateType);
-        if (sameTypeId is not null) return sameTypeId.Value;
+        var labelId = await FirstTemplateIdAsync(TemplateTypeLabel);
+        if (labelId is not null) return labelId.Value;
 
-        var crossId = otherDefault
-            ?? await FirstTemplateIdAsync(otherType)
-            ?? await FirstTemplateIdAsync(null);
+        var crossId = otherDefault ?? await FirstTemplateIdAsync(null);
         if (crossId is not null)
         {
             logger.LogWarning(

@@ -23,8 +23,8 @@ namespace RoutedOperations.Tests.Services.RouteViewer;
 
 public class RouteViewerLabelServiceTests
 {
-    private const int TemplateTypeJob = 1;
-    private const int TemplateTypeBulk = 2;
+    private const int TemplateTypeOrderNotification = 1;
+    private const int TemplateTypeLabel = 2;
 
     private sealed class Fixture
     {
@@ -96,7 +96,7 @@ public class RouteViewerLabelServiceTests
     [Fact]
     public async Task SingleJob_SpeedHasLabel_UsesTheSpeedLabel()
     {
-        var fx = NewFixture(new[] { (1, TemplateTypeBulk) }, seed: SeedMedicalJobs);
+        var fx = NewFixture(new[] { (1, TemplateTypeLabel) }, seed: SeedMedicalJobs);
 
         await fx.Sut.GetSingleJobLabelAsync(17960);
 
@@ -110,7 +110,7 @@ public class RouteViewerLabelServiceTests
     {
         // Was HTTP 501 "No AlertTemplate of TemplateType=1 configured" on
         // Medical prod (E896WILLDEL). The tenant's only template prints it.
-        var fx = NewFixture(new[] { (1, TemplateTypeBulk) }, seed: SeedMedicalJobs);
+        var fx = NewFixture(new[] { (1, TemplateTypeLabel) }, seed: SeedMedicalJobs);
 
         await fx.Sut.GetSingleJobLabelAsync(20857);
 
@@ -122,7 +122,7 @@ public class RouteViewerLabelServiceTests
     [Fact]
     public async Task SingleJob_PrefersDefaultJobLabel_OverFirstJobTemplate()
     {
-        var fx = NewFixture(new[] { (1, TemplateTypeJob), (5, TemplateTypeJob), (9, TemplateTypeBulk) },
+        var fx = NewFixture(new[] { (1, TemplateTypeOrderNotification), (5, TemplateTypeOrderNotification), (9, TemplateTypeLabel) },
             defaultJobLabelId: 5, defaultBulkLabelId: 9, seed: SeedMedicalJobs);
 
         await fx.Sut.GetSingleJobLabelAsync(20857);
@@ -131,21 +131,36 @@ public class RouteViewerLabelServiceTests
     }
 
     [Fact]
-    public async Task SingleJob_NoJobDefault_UsesFirstJobTemplate_BeforeAnyBulkOne()
+    public async Task SingleJob_NoJobDefault_UsesFirstLabelTemplate_NeverAnOrderNotification()
     {
-        var fx = NewFixture(new[] { (2, TemplateTypeBulk), (7, TemplateTypeJob), (4, TemplateTypeJob) },
-            defaultBulkLabelId: 2, seed: SeedMedicalJobs);
+        // Ids 4 and 7 are order notifications (type 1) and sort ahead of the
+        // label (id 9); the old chain picked 4 for a job label.
+        var fx = NewFixture(new[] { (9, TemplateTypeLabel), (7, TemplateTypeOrderNotification), (4, TemplateTypeOrderNotification) },
+            seed: SeedMedicalJobs);
 
         await fx.Sut.GetSingleJobLabelAsync(20857);
 
-        Assert.Equal(4, fx.Captured!.TemplateId);
+        Assert.Equal(9, fx.Captured!.TemplateId);
     }
 
     [Fact]
-    public async Task SingleJob_NoJobTemplates_UsesDefaultBulkLabel_BeforeFirstBulkTemplate()
+    public async Task SingleBulk_NoBulkDefault_UsesFirstLabelTemplate_NeverAnOrderNotification()
     {
-        var fx = NewFixture(new[] { (2, TemplateTypeBulk), (3, TemplateTypeBulk) },
-            defaultBulkLabelId: 3, seed: SeedMedicalJobs);
+        var fx = NewFixture(new[] { (3, TemplateTypeOrderNotification), (9, TemplateTypeLabel) }, seed: ctx =>
+        {
+            ctx.TucJobTypes.Add(new TucJobType { UcjtId = 423, LabelId = null });
+            ctx.TblBulkJobs.Add(new TblBulkJob { BulkJobId = 10, ClientId = 1, Speed = 423, Void = false });
+        });
+
+        await fx.Sut.GetSingleBulkLabelAsync(10);
+
+        Assert.Equal(9, fx.Captured!.TemplateId);
+    }
+
+    [Fact]
+    public async Task SingleJob_OnlyOrderNotificationTemplates_LastResortStillPrints()
+    {
+        var fx = NewFixture(new[] { (3, TemplateTypeOrderNotification) }, seed: SeedMedicalJobs);
 
         await fx.Sut.GetSingleJobLabelAsync(20857);
 
@@ -153,9 +168,20 @@ public class RouteViewerLabelServiceTests
     }
 
     [Fact]
+    public async Task SingleJob_NoJobDefault_UsesFirstLabelTemplate_BeforeTheBulkDefault()
+    {
+        var fx = NewFixture(new[] { (2, TemplateTypeLabel), (3, TemplateTypeLabel) },
+            defaultBulkLabelId: 3, seed: SeedMedicalJobs);
+
+        await fx.Sut.GetSingleJobLabelAsync(20857);
+
+        Assert.Equal(2, fx.Captured!.TemplateId);
+    }
+
+    [Fact]
     public async Task SingleJob_SpeedLabelPointsAtMissingTemplate_FallsBackToTheChain()
     {
-        var fx = NewFixture(new[] { (2, TemplateTypeBulk) }, seed: ctx =>
+        var fx = NewFixture(new[] { (2, TemplateTypeLabel) }, seed: ctx =>
         {
             ctx.TucJobTypes.Add(new TucJobType { UcjtId = 500, LabelId = 99 });
             ctx.TucJobs.Add(new TucJob { UcjbId = 1, UcjbNumber = "J1", UcjbSpeed = 500, UcjbVoid = false });
@@ -171,7 +197,7 @@ public class RouteViewerLabelServiceTests
     {
         // Bulk chain mirrors the job chain: no bulk template on the tenant
         // falls back to the job default rather than failing.
-        var fx = NewFixture(new[] { (6, TemplateTypeJob), (8, TemplateTypeJob) }, defaultJobLabelId: 8);
+        var fx = NewFixture(new[] { (6, TemplateTypeOrderNotification), (8, TemplateTypeOrderNotification) }, defaultJobLabelId: 8);
 
         await fx.Sut.GetBulkLabelsAsync(new LabelRequest { BookDate = new DateTime(2026, 11, 4) });
 
@@ -192,7 +218,7 @@ public class RouteViewerLabelServiceTests
     }
 
     private static Fixture ClientFixture(int? defaultJobLabelId = null, int? defaultBulkLabelId = null) =>
-        NewFixture(new[] { (1, TemplateTypeJob), (20, TemplateTypeJob), (5, TemplateTypeJob), (6, TemplateTypeBulk) },
+        NewFixture(new[] { (1, TemplateTypeOrderNotification), (20, TemplateTypeOrderNotification), (5, TemplateTypeOrderNotification), (6, TemplateTypeLabel) },
             defaultJobLabelId, defaultBulkLabelId, SeedClientJobs, new Dictionary<int, int> { [77] = 20 });
 
     [Fact]
@@ -213,7 +239,7 @@ public class RouteViewerLabelServiceTests
         await fx.Sut.GetSingleJobLabelAsync(2);
         Assert.Equal(1, fx.Captured!.TemplateId);
 
-        var noSpeedLabel = NewFixture(new[] { (5, TemplateTypeJob) }, defaultJobLabelId: 5, seed: ctx =>
+        var noSpeedLabel = NewFixture(new[] { (5, TemplateTypeOrderNotification) }, defaultJobLabelId: 5, seed: ctx =>
         {
             ctx.TucJobTypes.Add(new TucJobType { UcjtId = 421, LabelId = null });
             ctx.TucJobs.Add(new TucJob { UcjbId = 2, UcjbNumber = "WITHOUT", UcjbSpeed = 421, UcjbClientId = 78, UcjbVoid = false });
@@ -225,7 +251,7 @@ public class RouteViewerLabelServiceTests
     [Fact]
     public async Task SingleJob_ClientWithoutTemplate_NoDefaults_StillUsesTheFallbackChain()
     {
-        var fx = NewFixture(new[] { (4, TemplateTypeJob), (2, TemplateTypeBulk) }, seed: ctx =>
+        var fx = NewFixture(new[] { (4, TemplateTypeOrderNotification), (2, TemplateTypeLabel) }, seed: ctx =>
         {
             ctx.TucJobTypes.Add(new TucJobType { UcjtId = 421, LabelId = null });
             ctx.TucJobs.Add(new TucJob { UcjbId = 2, UcjbNumber = "WITHOUT", UcjbSpeed = 421, UcjbClientId = 78, UcjbVoid = false });
@@ -233,7 +259,7 @@ public class RouteViewerLabelServiceTests
 
         await fx.Sut.GetSingleJobLabelAsync(2);
 
-        Assert.Equal(4, fx.Captured!.TemplateId);
+        Assert.Equal(2, fx.Captured!.TemplateId);
     }
 
     [Fact]
@@ -299,7 +325,7 @@ public class RouteViewerLabelServiceTests
     {
         // Was: SpeedIds and BulkJobIds dropped, so the Speed filter and the
         // jobs on screen made no difference to a bulk-run print.
-        var fx = NewFixture(new[] { (1, TemplateTypeBulk) });
+        var fx = NewFixture(new[] { (1, TemplateTypeLabel) });
 
         await fx.Sut.GetBulkLabelsAsync(new LabelRequest
         {
@@ -326,7 +352,7 @@ public class RouteViewerLabelServiceTests
         // Medical prod 4 Nov, Burbank to Lab: the grid shows 38 DEL legs plus
         // the two Will Call LHP legs. Before #855 Mode 8 got none of the
         // filters and printed only the two LHP legs.
-        var fx = NewFixture(new[] { (1, TemplateTypeBulk) });
+        var fx = NewFixture(new[] { (1, TemplateTypeLabel) });
 
         await fx.Sut.GetBulkLabelsAsync(new LabelRequest
         {
@@ -351,7 +377,7 @@ public class RouteViewerLabelServiceTests
     [Fact]
     public async Task RouteRun_DefaultSort_IsRunOrder()
     {
-        var fx = NewFixture(new[] { (1, TemplateTypeBulk) });
+        var fx = NewFixture(new[] { (1, TemplateTypeLabel) });
 
         await fx.Sut.GetBulkLabelsAsync(new LabelRequest { BookDate = new DateTime(2026, 11, 4), JobIds = "1" });
 
