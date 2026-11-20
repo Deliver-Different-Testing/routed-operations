@@ -457,6 +457,7 @@ builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewe
 // legacy. Label PDFs no longer need any env var. Swapped 2026-09-18
 // from the P14-interim HTTP proxy.
 DeliverDifferent.AlertLabel.Data.Extensions.ServiceCollectionExtensions.AddAlertLabelService(builder.Services);
+builder.Services.AddScoped<RoutedOperations.Core.Application.Services.RouteViewer.ILabelTemplateResolver, RoutedOperations.Core.Application.Services.RouteViewer.SqlLabelTemplateResolver>();
 builder.Services.AddHttpClient<RoutedOperations.Core.Application.Services.RouteViewer.RouteViewerLabelService>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(60);
