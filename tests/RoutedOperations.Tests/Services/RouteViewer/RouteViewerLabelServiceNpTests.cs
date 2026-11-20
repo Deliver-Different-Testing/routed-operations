@@ -31,6 +31,7 @@ public class RouteViewerLabelServiceNpTests
         return new RouteViewerLabelService(
             factory,
             Substitute.For<IAlertLabelService>(),
+            Substitute.For<ILabelTemplateResolver>(),
             resolver,
             Substitute.For<INpScopeGuard>(),
             new HttpClient(),

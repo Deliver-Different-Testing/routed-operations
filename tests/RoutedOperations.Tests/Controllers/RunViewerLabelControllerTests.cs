@@ -33,7 +33,7 @@ public class RunViewerLabelControllerTests
         var resolver = Substitute.For<INpScopeResolver>();
         resolver.ResolveAsync().Returns(new NpScope(true, null));
         var svc = new RouteViewerLabelService(
-            ControllerTestHarness.Factory(opts), alert, resolver,
+            ControllerTestHarness.Factory(opts), alert, Substitute.For<ILabelTemplateResolver>(), resolver,
             Substitute.For<INpScopeGuard>(), new HttpClient(),
             NullLogger<RouteViewerLabelService>.Instance);
         var ctl = new RunViewerLabelController(svc);
