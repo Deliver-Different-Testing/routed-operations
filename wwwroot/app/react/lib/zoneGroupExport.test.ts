@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { zoneGroupCsvFileName, zoneGroupCsvRows } from './zoneGroupExport';
+import { decodeCsvBytes, zoneGroupCsvFileName, zoneGroupCsvRows } from './zoneGroupExport';
 import { rowsToCsv } from './csvExport';
 import type { PostcodeGroupZone } from '../services/territoryService';
 
@@ -56,5 +56,36 @@ describe('zoneGroupCsvFileName', () => {
       .toBe('AKL-HAM- zones-postcodes-2026-01-09.csv');
     expect(zoneGroupCsvFileName(null, 42, new Date(2026, 0, 9)))
       .toBe('group-42-postcodes-2026-01-09.csv');
+  });
+});
+
+// r1 (review 20 Nov): a US ZIP can be stored with no zone (ZoneNumber NULL),
+// which the detail endpoint sends as 0. The export writes it blank, so the
+// sheet does not claim a zone 0 that no schedule tick can reach, and the
+// upload reads blank back as "no zone, unchanged".
+describe('zoneGroupCsvRows - no zone', () => {
+  it('writes a zone of 0 as a blank cell', () => {
+    const rows = zoneGroupCsvRows([zone(0, [['00501', 'SMF']]), zone(1, [['00601', 'A']])]);
+    expect(rows.slice(1)).toEqual([['', '00501', 'SMF'], ['1', '00601', 'A']]);
+  });
+});
+
+// Nit 3 (review 20 Nov): Excel's plain "CSV (Comma delimited)" saves in the
+// Windows code page, not UTF-8. Decoded as UTF-8, every accented byte came
+// through as U+FFFD and an added row's suburb was written that way.
+describe('decodeCsvBytes', () => {
+  it('reads a UTF-8 file, macrons included, and drops the BOM', () => {
+    const bytes = new TextEncoder().encode('\uFEFFZone,Postcode,Suburb\r\n1,2024,Māngere\r\n');
+    expect(decodeCsvBytes(bytes)).toBe('Zone,Postcode,Suburb\r\n1,2024,Māngere\r\n');
+  });
+
+  it('falls back to Windows-1252 when the file is not valid UTF-8', () => {
+    // "Mângere": 0xE2 is a lone lead byte in UTF-8, so the strict
+    // decoder refuses it. Windows-1252 has no a-macron at all, so a file
+    // saved that way carries a stand-in such as this circumflex.
+    const bytes = new Uint8Array([...new TextEncoder().encode('1,2024,M'), 0xe2, ...new TextEncoder().encode('ngere')]);
+    const text = decodeCsvBytes(bytes);
+    expect(text).toBe('1,2024,Mângere');
+    expect(text).not.toContain('�');
   });
 });

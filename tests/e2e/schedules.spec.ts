@@ -377,3 +377,114 @@ test.describe('Schedules module - group-shaped model + junctions', () => {
     await expect(page.getByText(/stays in the AdminManager/i)).toBeVisible();
   });
 });
+
+// F4 (Marcus, 16 Nov release, step 7; ZG3): re-upload a zone group export.
+// The diff itself is server-side and unit tested in ZoneGroupCsvImportTests;
+// these pin the screen: the preview shows only what the file changes, a bad
+// row is named with no way to apply, and after Apply the list and the map
+// both reload from the server.
+test.describe('Zone group CSV re-upload (F4)', () => {
+  const ok = (route: Route, response: unknown) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response }) });
+
+  async function openGroup(page: import('@playwright/test').Page) {
+    // Server state for group 10: 1011 starts in zone 1.
+    const rows = [
+      { id: 1, code: '1010', zone: 1, suburb: 'Auckland Central' },
+      { id: 2, code: '1011', zone: 1, suburb: 'Ponsonby' },
+      { id: 3, code: '1024', zone: 2, suburb: 'Mt Eden, Auckland' },
+    ];
+    const calls = { map: 0, apply: [] as any[] };
+    await stubApis(page);
+    await page.route('**/api/territory/bootstrap', (route: Route) => ok(route, {
+      ...TERRITORY_NZ,
+      postcodeGroups: [{ ...TERRITORY_NZ.postcodeGroups[0], postcodeCount: 3, zoneCount: 2, polygonCount: 0,
+        deliveryScheduleCount: 1, pickupScheduleCount: 0 }],
+    }));
+    await page.route('**/api/territory/postcode-groups/10/detail', (route: Route) => {
+      const zones = [...new Set(rows.map((r) => r.zone))].sort().map((zone) => {
+        const members = rows.filter((r) => r.zone === zone)
+          .map((r) => ({ id: r.id, code: r.code, value: Number(r.code), suburb: r.suburb }));
+        return { zone, label: null, memberCount: members.length, members };
+      });
+      return ok(route, {
+        group: { ...TERRITORY_NZ.postcodeGroups[0], postcodeCount: rows.length, zoneCount: zones.length,
+          polygonCount: 0, deliveryScheduleCount: 1, pickupScheduleCount: 0 },
+        zones,
+        schedules: [{ scheduleId: 1, name: 'NZ Standard', usedForDelivery: true, usedForPickup: false, dayCount: 5 }],
+        polygons: [],
+      });
+    });
+    await page.route('**/api/territory/postcode-groups/10/map', (route: Route) => {
+      calls.map++;
+      return ok(route, { shapes: [], codesWithNoShape: rows.map((r) => r.code), depotLatitude: null, depotLongitude: null });
+    });
+    await page.route('**/api/territory/postcode-groups/10/import/preview', (route: Route) => {
+      const csv: string = route.request().postDataJSON().csv;
+      if (csv.includes('zone two')) {
+        return ok(route, { added: [], moved: [], removed: [], unrecognised: [], unchanged: 0, token: 'T1',
+          errors: ['Row 3: zone "zone two" is not a whole number above 0.'] });
+      }
+      return ok(route, { added: [], removed: [], unrecognised: [], unchanged: 2, errors: [], token: 'T1',
+        moved: [{ id: 2, code: '1011', fromZone: 1, toZone: 2, line: 3 }] });
+    });
+    await page.route('**/api/territory/postcode-groups/10/import/apply', (route: Route) => {
+      calls.apply.push(route.request().postDataJSON());
+      rows[1].zone = 2;
+      return ok(route, { added: 0, moved: 1, removed: 0, keptNotInFile: 0 });
+    });
+
+    await page.goto('/schedules');
+    await page.getByRole('button', { name: 'Postcode Groups', exact: true }).click();
+    await page.getByTitle('Delivery schedules using Metro AKL').click();
+    await expect(page.getByTestId('pg-zone-toggle-1')).toBeVisible();
+    return calls;
+  }
+
+  const file = (body: string) => ({
+    name: 'Metro AKL-postcodes-2026-11-19.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('\uFEFFZone,Postcode,Suburb\r\n' + body, 'utf-8'),
+  });
+
+  test('spec test 7: one changed zone previews as one move, applies, and list and map reload', async ({ page }) => {
+    const calls = await openGroup(page);
+    const mapBefore = calls.map;
+
+    await page.getByTestId('pg-upload-csv').setInputFiles(
+      file('1,1010,Auckland Central\r\n2,1011,Ponsonby\r\n2,1024,"Mt Eden, Auckland"'));
+
+    const panel = page.getByTestId('pg-import-panel');
+    await expect(panel.getByTestId('pg-import-moved')).toHaveText(/Moved \(1\):\s*1011 zone 1 to 2/);
+    await expect(panel).not.toContainText('Added');
+    await expect(panel).not.toContainText('Not in the file');
+    await expect(panel.getByTestId('pg-import-remove')).toHaveCount(0);
+
+    await panel.getByTestId('pg-import-apply').click();
+
+    await expect(page.getByText(/Group updated from the file: 1 moved\./)).toBeVisible();
+    expect(calls.apply).toHaveLength(1);
+    expect(calls.apply[0]).toMatchObject({ token: 'T1', removeMissing: false });
+    expect(calls.apply[0].csv).toContain('2,1011,Ponsonby');
+    await expect(page.getByTestId('pg-import-panel')).toHaveCount(0);
+
+    // The list: 1011 is now under zone 2.
+    await page.getByTestId('pg-zone-toggle-2').click();
+    await expect(page.getByTestId('pg-zone-members-2')).toContainText('1011');
+    // The map refetched rather than keeping the pre-upload shading.
+    await expect.poll(() => calls.map).toBeGreaterThan(mapBefore);
+  });
+
+  test('spec test 8: a bad row is named and there is no way to apply the file', async ({ page }) => {
+    const calls = await openGroup(page);
+
+    await page.getByTestId('pg-upload-csv').setInputFiles(
+      file('1,1010,Auckland Central\r\nzone two,1011,Ponsonby\r\n2,1024,'));
+
+    const errors = page.getByTestId('pg-import-errors');
+    await expect(errors).toContainText('Nothing will be saved');
+    await expect(errors).toContainText('Row 3: zone "zone two" is not a whole number above 0.');
+    await expect(page.getByTestId('pg-import-apply')).toHaveCount(0);
+    expect(calls.apply).toHaveLength(0);
+  });
+});

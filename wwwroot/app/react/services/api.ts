@@ -31,6 +31,15 @@ export class ApiError extends Error {
   }
 }
 
+/** The error's message, plus "(ref xxxxxxxx)" when the server sent a
+ *  messageId with it, so an operator can quote the refusal and support can
+ *  find the full Guid in the log. */
+export function messageWithRef(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  const id = e instanceof ApiError ? (e.body as { messageId?: unknown } | null)?.messageId : undefined;
+  return typeof id === 'string' && id.length >= 8 ? `${message} (ref ${id.slice(0, 8)})` : message;
+}
+
 /**
  * Collapse an ASP.NET Core ValidationProblemDetails body into one readable
  * line. A model-state failure comes back as

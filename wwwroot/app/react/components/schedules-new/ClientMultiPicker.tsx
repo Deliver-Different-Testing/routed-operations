@@ -55,6 +55,12 @@ interface Props {
   /** S3: also list inactive accounts (labelled "(inactive)" by the server).
    *  On for the schedule modals, off for the list's "View as" filter. */
   includeInactive?: boolean;
+  /** F3 (Marcus, 16 Nov release): the whole picker is off, not just the
+   *  caller's submit button. The trigger cannot open the panel. */
+  disabled?: boolean;
+  /** Id of the element that explains the picker's state (F3: the empty
+   *  bundle notice), wired to the trigger as aria-describedby. */
+  describedBy?: string;
 }
 
 export function ClientMultiPicker({
@@ -66,6 +72,8 @@ export function ClientMultiPicker({
   panelTitle,
   compact = false,
   includeInactive = false,
+  disabled = false,
+  describedBy,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -123,10 +131,12 @@ export function ClientMultiPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        aria-describedby={describedBy}
         className={
-          compact
+          (disabled ? 'opacity-50 cursor-not-allowed ' : '') + (compact
             ? 'w-full flex items-center justify-between pl-2 pr-1 py-1 text-xs border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40'
-            : 'w-full flex items-center justify-between pl-3 pr-2 py-1.5 text-sm border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40'
+            : 'w-full flex items-center justify-between pl-3 pr-2 py-1.5 text-sm border border-border rounded bg-surface-white text-left focus:outline-none focus:ring-2 focus:ring-brand-cyan/40')
         }
       >
         <span className={selected.length === 0 ? 'text-text-muted' : 'text-text-primary'}>
@@ -137,7 +147,7 @@ export function ClientMultiPicker({
 
       <DropdownPortal
         anchorRef={wrapperRef}
-        open={open}
+        open={open && !disabled}
         onDismiss={() => setOpen(false)}
         width={320}
         data-testid="client-multi-picker-panel"

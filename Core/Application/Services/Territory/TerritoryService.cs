@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.Territory;
 using RoutedOperations.Core.Domain;
 using Serilog;
@@ -832,13 +833,21 @@ public class TerritoryService(
             FromLatLng = req.FromLatLng,
             Created = DateTime.UtcNow,
         };
+        await using var tx = await BeginGroupWriteAsync();
+        await LockGroupRowsAsync(req.PostcodeGroupId);
         Context.BulkZonePostcodes.Add(entity);
         await Context.SaveChangesAsync();
-        return await GetNzPostcodeAsync(entity.Id);
+        var dto = await GetNzPostcodeAsync(entity.Id);
+        await CommitGroupWriteAsync(tx);
+        return dto;
     }
 
     public async Task<NzPostcodeDto> UpdateNzPostcodeAsync(int id, NzPostcodeUpsertRequest req)
     {
+        await using var tx = await BeginGroupWriteAsync();
+        // The row can leave one group and join another, so both are locked;
+        // nit 5: its group is read again under the lock.
+        await ZoneGroupLocks.LockRowGroupAsync(() => NzGroupOfAsync(id), req.PostcodeGroupId, LockGroupRowsAsync);
         var entity = await Context.BulkZonePostcodes
             .FirstOrDefaultAsync(p => p.Id == id)
             ?? throw new InvalidOperationException("Postcode not found.");
@@ -850,17 +859,26 @@ public class TerritoryService(
         entity.Name = req.Name;
         entity.FromLatLng = req.FromLatLng;
         await Context.SaveChangesAsync();
-        return await GetNzPostcodeAsync(id);
+        var dto = await GetNzPostcodeAsync(id);
+        await CommitGroupWriteAsync(tx);
+        return dto;
     }
 
     public async Task DeleteNzPostcodeAsync(int id)
     {
+        await using var tx = await BeginGroupWriteAsync();
+        await ZoneGroupLocks.LockRowGroupAsync(() => NzGroupOfAsync(id), null, LockGroupRowsAsync);
         var entity = await Context.BulkZonePostcodes
             .FirstOrDefaultAsync(p => p.Id == id)
             ?? throw new InvalidOperationException("Postcode not found.");
         Context.BulkZonePostcodes.Remove(entity);
         await Context.SaveChangesAsync();
+        await CommitGroupWriteAsync(tx);
     }
+
+    private Task<int?> NzGroupOfAsync(int id) =>
+        Context.BulkZonePostcodes.AsNoTracking()
+            .Where(p => p.Id == id).Select(p => (int?)p.PostcodeGroupId).FirstOrDefaultAsync();
 
     private async Task<NzPostcodeDto> GetNzPostcodeAsync(int id)
     {
@@ -886,6 +904,12 @@ public class TerritoryService(
     public async Task<NzPostcodePasteResultDto> PasteNzPostcodesAsync(
         int groupId, int zone, NzPostcodePasteRequest req)
     {
+        // Review r2: the check against the group's rows and the insert are
+        // one transaction holding the group lock, so a paste queues behind a
+        // CSV apply on the same group instead of landing inside it.
+        await using var tx = await BeginGroupWriteAsync();
+        await LockGroupRowsAsync(groupId);
+
         var group = await Context.BulkZonePostcodeGroups.AsNoTracking()
             .FirstOrDefaultAsync(g => g.Id == groupId)
             ?? throw new InvalidOperationException("Postcode group not found.");
@@ -967,12 +991,328 @@ public class TerritoryService(
             }));
             await Context.SaveChangesAsync();
         }
+        await CommitGroupWriteAsync(tx);
 
         return new NzPostcodePasteResultDto(
             toAdd.OrderBy(c => c).Select(c => c.ToString("D4")).ToList(),
             elsewhere,
             alreadyHere.OrderBy(c => c).Select(c => c.ToString("D4")).ToList(),
             ignored);
+    }
+
+    // ─── ZONE GROUP CSV RE-UPLOAD (F4 / ZG3) ────────────────────────────────
+
+    /// <summary>
+    /// Preview a re-uploaded zone group export: added, moved, removed and
+    /// unrecognised, plus a token naming the exact group state it was worked
+    /// out against. Writes nothing.
+    ///
+    /// NZ reads BulkZonePostcode by PostcodeGroupId; US reads ZoneZip by
+    /// ZoneZipGroupId (which points at BulkZonePostcodeGroup), the same rows
+    /// the group detail and the export show. On US the export's third column
+    /// is the zone NAME, not a suburb, and is ignored here: a ZIP takes its
+    /// zone name from the group's own rows for that zone number.
+    /// </summary>
+    public async Task<ZoneGroupCsvImport.ZoneGroupImportPreview> PreviewZoneGroupImportAsync(
+        int groupId, ZoneGroupImportRequest req)
+    {
+        var state = await LoadImportStateAsync(groupId);
+        return await BuildImportPreviewAsync(state, req);
+    }
+
+    /// <summary>
+    /// Apply a re-upload. The file is parsed and diffed again here, never
+    /// taken from the browser, and the apply refuses when:
+    ///   * the file has any error (nothing is written, the rows are named);
+    ///   * the group no longer matches the preview's token, because the
+    ///     operator approved a diff against a group that has since changed.
+    /// Rows missing from the file are deleted only with RemoveMissing (M0
+    /// I-6); otherwise they stay and are counted as kept. One transaction, so
+    /// a failure part way leaves the group as it was.
+    /// </summary>
+    public async Task<ZoneGroupImportResultDto> ApplyZoneGroupImportAsync(int groupId, ZoneGroupImportRequest req)
+    {
+        await using var tx = await Context.Database.BeginTransactionAsync();
+        await LockGroupForImportAsync(groupId);
+
+        var state = await LoadImportStateAsync(groupId);
+        if (string.IsNullOrEmpty(req.Token) || req.Token != ImportToken(state.Current))
+            throw new ZoneGroupImportStaleException();
+
+        var preview = await BuildImportPreviewAsync(state, req);
+        if (preview.Errors.Count > 0)
+            throw new InvalidOperationException(
+                "Nothing was saved. Fix the file and upload it again. " + string.Join(" ", preview.Errors));
+
+        var now = DateTime.UtcNow;
+        var removeIds = req.RemoveMissing ? preview.Removed.Select(r => r.Id).ToList() : new List<int>();
+        var moveTo = preview.Moved.ToDictionary(m => m.Id, m => m.ToZone);
+
+        if (state.IsUs)
+        {
+            var who = CurrentUser();
+            var targets = ZoneTargets(state);
+            var touched = moveTo.Keys.Concat(removeIds).ToList();
+            var tracked = await Context.ZoneZips.Where(z => touched.Contains(z.ZoneZipId)).ToListAsync();
+            foreach (var z in tracked.Where(z => moveTo.ContainsKey(z.ZoneZipId)))
+            {
+                z.ZoneNumber = moveTo[z.ZoneZipId];
+                z.ZoneNameId = targets[z.ZoneNumber.Value].ZoneNameId;
+                z.LastModified = now;
+                z.LastModifiedBy = who;
+            }
+            Context.ZoneZips.RemoveRange(tracked.Where(z => removeIds.Contains(z.ZoneZipId)));
+            Context.ZoneZips.AddRange(preview.Added.Select(a => new Domain.Despatch.ZoneZip
+            {
+                Zip = a.Code,
+                ZoneNumber = a.Zone,
+                ZoneNameId = targets[a.Zone].ZoneNameId,
+                // The preview refused any add whose zone disagrees on client,
+                // so this is the one ClientId every row of the zone carries.
+                ClientId = targets[a.Zone].ClientId,
+                // Same rule as the US paste (coverage spec 2.1): a coverage
+                // row never adds a congestion charge.
+                ApplyCongestion = false,
+                ZoneZipGroupId = groupId,
+                Created = now,
+                CreatedBy = who,
+                // Nit 1 / #980: a new row starts with LastModified = Created,
+                // as CreateUsZipZoneAsync and AdminManager do.
+                LastModified = now,
+                LastModifiedBy = who,
+            }));
+        }
+        else
+        {
+            var touched = moveTo.Keys.Concat(removeIds).ToList();
+            var tracked = await Context.BulkZonePostcodes.Where(p => touched.Contains(p.Id)).ToListAsync();
+            foreach (var p in tracked.Where(p => moveTo.ContainsKey(p.Id)))
+                p.Zone = moveTo[p.Id];
+            Context.BulkZonePostcodes.RemoveRange(tracked.Where(p => removeIds.Contains(p.Id)));
+
+            // A blank suburb inherits the label from the same postcode
+            // elsewhere in the tenant, the paste's rule; the column is NOT
+            // NULL, so an unknown one is "".
+            var addCodes = preview.Added.Select(a => int.Parse(a.Code)).ToList();
+            var inherited = addCodes.Count == 0
+                ? new Dictionary<int, string>()
+                : (await Context.BulkZonePostcodes.AsNoTracking()
+                        .Where(p => addCodes.Contains(p.PostCode) && p.Name != null && p.Name != "")
+                        .Select(p => new { p.PostCode, p.Name })
+                        .ToListAsync())
+                    .GroupBy(p => p.PostCode)
+                    .ToDictionary(g => g.Key, g => g.First().Name);
+
+            Context.BulkZonePostcodes.AddRange(preview.Added.Select(a =>
+            {
+                var code = int.Parse(a.Code);
+                return new Domain.Despatch.BulkZonePostcode
+                {
+                    PostCode = code,
+                    Zone = a.Zone,
+                    DepotId = state.DepotId,
+                    PostcodeGroupId = groupId,
+                    FromSiteId = 0,
+                    Name = !string.IsNullOrWhiteSpace(a.Suburb) ? a.Suburb
+                        : inherited.TryGetValue(code, out var n) ? n : string.Empty,
+                    Created = now,
+                };
+            }));
+        }
+
+        await Context.SaveChangesAsync();
+        await tx.CommitAsync();
+
+        return new ZoneGroupImportResultDto(
+            preview.Added.Count,
+            preview.Moved.Count,
+            removeIds.Count,
+            preview.Removed.Count - removeIds.Count);
+    }
+
+    /// <summary>
+    /// Review m2: the token is checked inside the transaction, but under READ
+    /// COMMITTED another writer could still land between that check and the
+    /// commit. On SQL Server this takes, to the end of the transaction:
+    ///   * an update lock on the group row, so two applies, or an apply and a
+    ///     Routed Operations paste or edit (which take the same lock), queue;
+    ///   * a key-range lock on the group's members, so no row joins or leaves
+    ///     the group until the commit;
+    ///   * an update lock on each member's primary key (review r3-1), so a
+    ///     zone change or delete by Id from a writer that skips the group lock,
+    ///     such as a legacy admin screen, also waits for the commit.
+    /// The range lock alone did not cover that last writer once the index
+    /// migration 20261120190500_ZoneGroupMemberIndexes narrowed it to the
+    /// group index. Nothing names that index, so this works with or without
+    /// it; without it the range lock covers the whole table (3311 locks on
+    /// local NZ), which is correct but blocks every other group's writers.
+    /// SQLite locks the whole database for a write transaction, so the test
+    /// harness needs nothing here. Detail in ZoneGroupLocks.
+    /// </summary>
+    private async Task LockGroupForImportAsync(int groupId)
+    {
+        if (!IsSqlServer()) return;
+        await ZoneGroupLocks.LockGroupForImportAsync(Context.Database, groupId, IsUsTenant());
+    }
+
+    /// <summary>The transaction a single member write runs in, the same rule
+    /// as ScheduleService: none on a non-relational provider (the InMemory
+    /// test store), and none of its own when the caller already holds one,
+    /// in which case the caller commits.</summary>
+    private async Task<IDbContextTransaction> BeginGroupWriteAsync() =>
+        Context.Database.IsRelational() && Context.Database.CurrentTransaction == null
+            ? await Context.Database.BeginTransactionAsync()
+            : null;
+
+    private static Task CommitGroupWriteAsync(IDbContextTransaction tx) =>
+        tx == null ? Task.CompletedTask : tx.CommitAsync();
+
+    private bool IsSqlServer() =>
+        Context.Database.ProviderName?.Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>Review r2: the group-row lock every writer of a group's
+    /// members takes before it reads the rows its write depends on (see
+    /// ZoneGroupLocks.LockGroupRowsAsync). A no-op on SQLite.</summary>
+    private Task LockGroupRowsAsync(params int?[] groupIds) =>
+        IsSqlServer() ? ZoneGroupLocks.LockGroupRowsAsync(Context.Database, groupIds) : Task.CompletedTask;
+
+    private sealed record ImportState(
+        int GroupId, int? DepotId, bool IsUs,
+        List<ZoneGroupCsvImport.CurrentRow> Current,
+        List<(int Zone, int? ZoneNameId, int? ClientId)> UsZoneRows);
+
+    private async Task<ImportState> LoadImportStateAsync(int groupId)
+    {
+        var group = await Context.BulkZonePostcodeGroups.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.Id == groupId)
+            ?? throw new InvalidOperationException("Postcode group not found.");
+
+        if (IsUsTenant())
+        {
+            var zips = await Context.ZoneZips.AsNoTracking()
+                .Where(z => z.ZoneZipGroupId == groupId)
+                .Select(z => new { z.ZoneZipId, z.Zip, z.ZoneNumber, z.ZoneNameId, z.ClientId })
+                .ToListAsync();
+            return new ImportState(groupId, group.DepotId, true,
+                zips.Select(z => new ZoneGroupCsvImport.CurrentRow(z.ZoneZipId, UsZip(z.Zip), z.ZoneNumber ?? 0)).ToList(),
+                zips.Select(z => (z.ZoneNumber ?? 0, z.ZoneNameId, z.ClientId)).ToList());
+        }
+
+        var pcs = await Context.BulkZonePostcodes.AsNoTracking()
+            .Where(p => p.PostcodeGroupId == groupId)
+            .Select(p => new { p.Id, p.PostCode, p.Zone })
+            .ToListAsync();
+        return new ImportState(groupId, group.DepotId, false,
+            pcs.Select(p => new ZoneGroupCsvImport.CurrentRow(p.Id, p.PostCode.ToString("D4"), p.Zone)).ToList(),
+            new());
+    }
+
+    // Matches the parse: a short all-digit ZIP is compared with its zero back.
+    private static string UsZip(string zip)
+    {
+        var z = (zip ?? "").Trim();
+        return z.Length is > 0 and < 5 && z.All(char.IsAsciiDigit) ? z.PadLeft(5, '0') : z;
+    }
+
+    private async Task<ZoneGroupCsvImport.ZoneGroupImportPreview> BuildImportPreviewAsync(
+        ImportState state, ZoneGroupImportRequest req)
+    {
+        // Review M3: the same spelling guard as the US paste. The upload pads
+        // every ZIP to 5, so on a tenant that stores any ZIP unpadded it
+        // would put one ZIP in two zones depending on its spelling.
+        if (state.IsUs && await FirstUnpaddedZipAsync() is { } stripped)
+            return new ZoneGroupCsvImport.ZoneGroupImportPreview(new(), new(), new(), new(), 0,
+                new List<string>
+                {
+                    $"This tenant stores at least one ZIP unpadded (\"{stripped}\"). Uploading padded ZIPs "
+                    + "would leave the same ZIP in different zones depending on its spelling, so nothing "
+                    + "can be applied. Settle the tenant's spelling first.",
+                },
+                ImportToken(state.Current));
+
+        var parsed = ZoneGroupCsvImport.Parse(req.Csv, state.IsUs);
+
+        // "Known" (M0 I-5): the right shape for the tenant AND used somewhere
+        // in the tenant already. Only asked about codes the group lacks.
+        var inGroup = state.Current.Select(c => c.Code).ToHashSet();
+        var candidates = parsed.Rows.Select(r => r.Code).Where(c => !inGroup.Contains(c)).Distinct().ToList();
+        HashSet<string> known;
+        if (candidates.Count == 0) known = new();
+        else if (state.IsUs)
+            known = (await Context.ZoneZips.AsNoTracking()
+                    .Where(z => candidates.Contains(z.Zip)).Select(z => z.Zip).Distinct().ToListAsync())
+                .ToHashSet();
+        else
+        {
+            var ints = candidates.Where(c => c.Length == 4).Select(int.Parse).ToList();
+            known = (await Context.BulkZonePostcodes.AsNoTracking()
+                    .Where(p => ints.Contains(p.PostCode)).Select(p => p.PostCode).Distinct().ToListAsync())
+                .Select(c => c.ToString("D4")).ToHashSet();
+        }
+        var size = state.IsUs ? 5 : 4;
+
+        var preview = ZoneGroupCsvImport.Diff(state.Current, parsed, c => c.Length == size && known.Contains(c));
+
+        if (state.IsUs && preview.Errors.Count == 0)
+        {
+            // A US ZIP joins a zone by taking the zone name the group already
+            // uses for that number. A number the group does not have, or one
+            // carrying two names, has no answer, so it is an error rather than
+            // a guess at which ZoneName (and so which depot and lanes) to use.
+            //
+            // An added ZIP also takes the zone's client, so a zone whose rows
+            // carry more than one ClientId refuses the add rather than copy
+            // whichever row came first (review M3). A move keeps its own
+            // client, so it only needs the zone name.
+            var targets = ZoneTargets(state);
+            var problems = preview.Added.Select(a => (a.Line, a.Code, a.Zone, IsAdd: true))
+                .Concat(preview.Moved.Select(m => (m.Line, m.Code, Zone: m.ToZone, IsAdd: false)))
+                .Where(t => !targets.ContainsKey(t.Zone) || (t.IsAdd && !targets[t.Zone].OneClient))
+                .OrderBy(t => t.Line)
+                .Select(t => targets.ContainsKey(t.Zone)
+                    ? $"Row {t.Line}: zone {t.Zone}'s ZIPs in this group belong to more than one client, so "
+                      + $"there is no single client to give {t.Code}. Settle zone {t.Zone} in the group first."
+                    : state.UsZoneRows.Any(r => r.Zone == t.Zone)
+                    ? $"Row {t.Line}: zone {t.Zone} carries more than one zone name in this group, so there is "
+                      + $"no single one to put {t.Code} under. Settle zone {t.Zone} in the group first."
+                    : $"Row {t.Line}: zone {t.Zone} has no ZIPs in this group yet, so there is no zone name "
+                      + $"to put {t.Code} under. Add zone {t.Zone}'s first ZIP in the group (Zones tab), "
+                      + "then upload the file again.")
+                .Distinct()
+                .ToList();
+            // Nit 4: an empty group would repeat that for every zone, so it
+            // gets one message. The file cannot start a zone, because a new
+            // ZIP needs a zone name and only the group's own ZIPs give one.
+            if (problems.Count > 0 && state.UsZoneRows.Count == 0)
+                problems = new List<string>
+                {
+                    "This group has no ZIPs yet. A ZIP takes its zone name from the group's own ZIPs in that "
+                    + "zone, so add each zone's first ZIP in the group (Zones tab), then upload the file again.",
+                };
+            if (problems.Count > 0)
+                preview = new ZoneGroupCsvImport.ZoneGroupImportPreview(new(), new(), new(), new(), 0, problems, null);
+        }
+
+        return preview with { Token = ImportToken(state.Current) };
+    }
+
+    /// <summary>US zone number -> the one ZoneName the group's rows for that
+    /// number carry, and their client when they all agree on one (OneClient).
+    /// Numbers with two names are left out.</summary>
+    private static Dictionary<int, (int? ZoneNameId, int? ClientId, bool OneClient)> ZoneTargets(ImportState state) =>
+        state.UsZoneRows.GroupBy(r => r.Zone)
+            .Where(g => g.Select(r => r.ZoneNameId).Distinct().Count() == 1)
+            .ToDictionary(g => g.Key, g => (
+                g.First().ZoneNameId,
+                g.First().ClientId,
+                g.Select(r => r.ClientId).Distinct().Count() == 1));
+
+    /// <summary>Names the group's exact rows (id, code, zone). Any add, move or
+    /// delete in between changes it.</summary>
+    private static string ImportToken(List<ZoneGroupCsvImport.CurrentRow> current)
+    {
+        var text = string.Join("|", current.OrderBy(c => c.Id).Select(c => $"{c.Id}:{c.Code}:{c.Zone}"));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
     }
 
     // ─── US ZIP ZONE WRITES ────────────────────────────────────────────────
@@ -995,6 +1335,11 @@ public class TerritoryService(
     /// A ZIP already in another zone is added here as well, not moved: on US a
     /// ZIP sitting in one pricing zone plus any number of coverage zones is
     /// the normal shape, and the rater matches lanes against the whole list.
+    ///
+    /// Review r2: no group lock here. This paste writes ZoneZipGroupId = null,
+    /// so it never adds a member to a zone group and cannot land inside a CSV
+    /// apply's view of one. The US writers that do set ZoneZipGroupId
+    /// (Create/Update/DeleteUsZipZoneAsync) take the lock.
     /// </summary>
     public async Task<ZoneZipPasteResultDto> PasteZoneZipsAsync(int zoneNameId, ZoneZipPasteRequest req)
     {
@@ -1012,10 +1357,7 @@ public class TerritoryService(
         // guess. If a tenant ever turns out to strip instead, mixing the two
         // spellings would put one ZIP in different zones depending on how it
         // was typed, so that case refuses rather than guessing.
-        var stripped = await Context.ZoneZips.AsNoTracking()
-            .Where(z => z.Zip != null && z.Zip.Length > 0 && z.Zip.Length < 5)
-            .Select(z => z.Zip)
-            .FirstOrDefaultAsync();
+        var stripped = await FirstUnpaddedZipAsync();
         if (stripped != null)
             throw new InvalidOperationException(
                 $"This tenant stores at least one ZIP unpadded (\"{stripped}\"). Adding padded rows "
@@ -1097,6 +1439,14 @@ public class TerritoryService(
         return new ZoneZipPasteResultDto(toAdd, already, ignored);
     }
 
+    /// <summary>A ZIP the tenant stores shorter than 5 characters, or null.
+    /// The paste and the zone group upload both stop on one.</summary>
+    private Task<string> FirstUnpaddedZipAsync() =>
+        Context.ZoneZips.AsNoTracking()
+            .Where(z => z.Zip != null && z.Zip.Length > 0 && z.Zip.Length < 5)
+            .Select(z => z.Zip)
+            .FirstOrDefaultAsync();
+
     public async Task<UsZipZoneDto> CreateUsZipZoneAsync(UsZipZoneUpsertRequest req)
     {
         // #980: a new row starts with LastModified = Created, as AdminManager does.
@@ -1115,13 +1465,20 @@ public class TerritoryService(
             LastModified = now,
             LastModifiedBy = who,
         };
+        await using var tx = await BeginGroupWriteAsync();
+        await LockGroupRowsAsync(req.ZoneZipGroupId);
         Context.ZoneZips.Add(entity);
         await Context.SaveChangesAsync();
-        return await GetUsZipZoneAsync(entity.ZoneZipId);
+        var dto = await GetUsZipZoneAsync(entity.ZoneZipId);
+        await CommitGroupWriteAsync(tx);
+        return dto;
     }
 
     public async Task<UsZipZoneDto> UpdateUsZipZoneAsync(int id, UsZipZoneUpsertRequest req)
     {
+        await using var tx = await BeginGroupWriteAsync();
+        // Old and new group, the old one read again under the lock (nit 5).
+        await ZoneGroupLocks.LockRowGroupAsync(() => UsGroupOfAsync(id), req.ZoneZipGroupId, LockGroupRowsAsync);
         var entity = await Context.ZoneZips
             .FirstOrDefaultAsync(z => z.ZoneZipId == id)
             ?? throw new InvalidOperationException("Zip zone not found.");
@@ -1134,17 +1491,26 @@ public class TerritoryService(
         entity.LastModified = DateTime.UtcNow;
         entity.LastModifiedBy = CurrentUser();
         await Context.SaveChangesAsync();
-        return await GetUsZipZoneAsync(id);
+        var dto = await GetUsZipZoneAsync(id);
+        await CommitGroupWriteAsync(tx);
+        return dto;
     }
 
     public async Task DeleteUsZipZoneAsync(int id)
     {
+        await using var tx = await BeginGroupWriteAsync();
+        await ZoneGroupLocks.LockRowGroupAsync(() => UsGroupOfAsync(id), null, LockGroupRowsAsync);
         var entity = await Context.ZoneZips
             .FirstOrDefaultAsync(z => z.ZoneZipId == id)
             ?? throw new InvalidOperationException("Zip zone not found.");
         Context.ZoneZips.Remove(entity);
         await Context.SaveChangesAsync();
+        await CommitGroupWriteAsync(tx);
     }
+
+    private Task<int?> UsGroupOfAsync(int id) =>
+        Context.ZoneZips.AsNoTracking()
+            .Where(z => z.ZoneZipId == id).Select(z => (int?)z.ZoneZipGroupId).FirstOrDefaultAsync();
 
     private async Task<UsZipZoneDto> GetUsZipZoneAsync(int id)
     {
