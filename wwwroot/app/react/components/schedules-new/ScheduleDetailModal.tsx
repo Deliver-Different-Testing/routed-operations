@@ -38,7 +38,8 @@ import { PostcodeLookupInput } from './PostcodeLookupInput';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { copyMondayToOtherDays } from '../../lib/copyMondayToDays';
+import { messageWithRef } from '../../services/api';
+import { copyMondayToOtherDays, tickMonToFri } from '../../lib/copyMondayToDays';
 import { clientsService, type ClientGeocodeResult } from '../../services/clientsService';
 
 // Edit modal for the Schedules NEW page (Steve's 2026-09-08 brief
@@ -885,7 +886,8 @@ export function ScheduleDetailModal({
       }
       onClose();
     },
-    onError: (e: Error) => setSaveError(e.message),
+    // n1: a refusal (F1) carries a messageId; show it so it can be quoted.
+    onError: (e: Error) => setSaveError(messageWithRef(e)),
   });
 
   // Override-mode save: PUT the delta rather than upserting the base.
@@ -2704,7 +2706,19 @@ function DaysTab({ days, onChange, scheduleId, readOnly = false, overrideMode = 
         </span>
       </div>
       {!overrideMode && !readOnly && (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {/* F2 (Marcus, 16 Nov release): back to the working week in one
+              click, then copy Monday across. */}
+          <button
+            type="button"
+            onClick={() => onChange(tickMonToFri(days))}
+            disabled={days.slice(0, 5).every((d) => d.enabled)}
+            title="Tick Monday to Friday. Saturday and Sunday are left as they are."
+            className="px-2 py-1 text-xs rounded border border-border hover:bg-surface-light disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="days-tab-tick-mon-fri"
+          >
+            Tick Mon to Fri
+          </button>
           <button
             type="button"
             onClick={() => onChange(copyMondayToOtherDays(days))}

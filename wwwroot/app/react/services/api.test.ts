@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modelStateMessage } from './api';
+import { ApiError, messageWithRef, modelStateMessage } from './api';
 
 // A model-state 400 from ASP.NET Core arrives as ValidationProblemDetails,
 // which carries none of the fields `request` previously looked at, so the
@@ -71,5 +71,20 @@ describe('modelStateMessage', () => {
     expect(modelStateMessage({ errors: {} })).toBeUndefined();
     expect(modelStateMessage({ errors: { Field: [''] } })).toBeUndefined();
     expect(modelStateMessage({ message: 'plain' })).toBeUndefined();
+  });
+});
+
+// n1 (review 19 Nov): the server returns a MessageId with a refusal so the
+// operator can quote it, but the UI never showed it. The short form is the
+// first 8 characters, enough to find the full Guid in the log.
+describe('messageWithRef', () => {
+  it('appends the first 8 characters of the server messageId', () => {
+    const e = new ApiError('Nothing was saved.', 400, { message: 'Nothing was saved.', messageId: '1234abcd-5678-90ef-1234-567890abcdef' });
+    expect(messageWithRef(e)).toBe('Nothing was saved. (ref 1234abcd)');
+  });
+
+  it('is just the message when the server sent no messageId', () => {
+    expect(messageWithRef(new ApiError('Postcode group not found.', 400, { message: 'Postcode group not found.' }))).toBe('Postcode group not found.');
+    expect(messageWithRef(new Error('offline'))).toBe('offline');
   });
 });

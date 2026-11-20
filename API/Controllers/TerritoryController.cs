@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using DeliverDifferent.AccessControl.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Territory;
 using RoutedOperations.Core.Application.Services.Territory;
 
@@ -225,6 +226,28 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
         int id, int zone, [FromBody] NzPostcodePasteRequest req) =>
         await Wrap(() => svc.PasteNzPostcodesAsync(id, zone, req));
 
+    // ─── ZONE GROUP CSV RE-UPLOAD (F4 / ZG3) ───────────────────────────────
+
+    /// <summary>
+    /// Diff a re-uploaded Zone,Postcode,Suburb export against the group:
+    /// added, moved, removed, unrecognised, and any row errors. Writes
+    /// nothing. NZ and US both; the service picks the table by tenant.
+    /// </summary>
+    [HttpPost("postcode-groups/{id:int}/import/preview")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> PreviewZoneGroupImport(int id, [FromBody] ZoneGroupImportRequest req) =>
+        await WrapLogged("PreviewZoneGroupImport", writes: false, id, req, () => svc.PreviewZoneGroupImportAsync(id, req));
+
+    /// <summary>
+    /// Apply a re-upload in one transaction. Refuses (400, nothing written)
+    /// on any row error or when the group changed since the preview token.
+    /// Rows missing from the file are removed only with removeMissing.
+    /// </summary>
+    [HttpPost("postcode-groups/{id:int}/import/apply")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> ApplyZoneGroupImport(int id, [FromBody] ZoneGroupImportRequest req) =>
+        await WrapLogged("ApplyZoneGroupImport", writes: true, id, req, () => svc.ApplyZoneGroupImportAsync(id, req));
+
     [HttpPost("nz/postcodes")]
     [Authorize(Policy = "RouteBuilder.Admin")]
     public async Task<IActionResult> CreateNzPostcode([FromBody] NzPostcodeUpsertRequest req) =>
@@ -315,6 +338,78 @@ public class TerritoryController(TerritoryService svc, PolygonBindingService bin
             return BadRequest(new { message = ex.Message });
         }
     }
+
+    /// <summary>Wrap plus request / response logging under one MessageId,
+    /// which a refusal also returns so a user can quote it. The CSV text is
+    /// logged by size only: a whole group's file is noise in the log.</summary>
+    private async Task<IActionResult> WrapLogged<T>(string action, bool writes, int groupId, ZoneGroupImportRequest req, Func<Task<T>> op)
+    {
+        var messageId = Guid.NewGuid();
+        Serilog.Log.Information(
+            "Request ({MessageId}): {Action} group {GroupId}, {CsvLength} chars, removeMissing {RemoveMissing}",
+            messageId, action, groupId, req?.Csv?.Length ?? 0, req?.RemoveMissing ?? false);
+        // Review n-a: no ModelState check here. [ApiController] answers an
+        // invalid model before the action runs, so the check could never fire;
+        // Csv is not [Required], so an empty file reaches this line, is logged
+        // above (by size only) and is refused by the parser in plain words.
+        try
+        {
+            var result = await op();
+            // Counts only (review m3): a preview carries every added, moved
+            // and removed row of the group, which is noise in the log.
+            Serilog.Log.Information("Response ({MessageId}): {Action} {@Counts}", messageId, action, ImportCounts(result));
+            return Ok(new { response = result });
+        }
+        catch (ZoneGroupImportStaleException ex)
+        {
+            // Review r3: the one refusal the panel answers by previewing again.
+            Serilog.Log.Warning("Response ({MessageId}): {Action} refused, stale token", messageId, action);
+            return BadRequest(new { message = ex.Message, messageId, code = "stale" });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Serilog.Log.Warning("Response ({MessageId}): {Action} refused: {Message}", messageId, action, ex.Message);
+            return BadRequest(new { message = ex.Message, messageId });
+        }
+        catch (DbUpdateException ex)
+        {
+            // Review m4: a database refusal (for example a missing grant on a
+            // tenant) was a bare 500. The apply is one transaction, so nothing
+            // was saved; the real error is logged under the MessageId.
+            Serilog.Log.Error(ex, "Response ({MessageId}): {Action} database refused the save", messageId, action);
+            return BadRequest(new
+            {
+                message = "Nothing was saved. The database refused the change; quote the reference to support.",
+                messageId,
+            });
+        }
+        catch (System.Data.Common.DbException ex)
+        {
+            // Review r4: a refusal on a READ (a missing SELECT grant, a
+            // timeout) is a DbException, not a DbUpdateException, and was a
+            // bare 500. Same log as the save arm. Nit 2: a preview only reads,
+            // so it says so; an apply is one transaction, so on any database
+            // error nothing was saved.
+            Serilog.Log.Error(ex, "Response ({MessageId}): {Action} database refused the request", messageId, action);
+            return BadRequest(new
+            {
+                message = writes
+                    ? "Nothing was saved. The database refused the change; quote the reference to support."
+                    : "The group could not be read. The database refused the request; quote the reference to support.",
+                messageId,
+            });
+        }
+    }
+
+    private static object? ImportCounts(object? result) => result switch
+    {
+        ZoneGroupCsvImport.ZoneGroupImportPreview p => new
+        {
+            Added = p.Added.Count, Moved = p.Moved.Count, Removed = p.Removed.Count,
+            Unrecognised = p.Unrecognised.Count, p.Unchanged, Errors = p.Errors.Count,
+        },
+        _ => result,
+    };
 
     private async Task<IActionResult> WrapVoid(Func<Task> op)
     {

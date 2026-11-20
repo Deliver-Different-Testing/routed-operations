@@ -820,6 +820,63 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     });
   });
 
+  // F2 (Marcus, 16 Nov release, spec tests 4 and 5): Copy Monday on New
+  // Schedule. Tick Mon to Fri, set Monday, copy; the created schedule
+  // carries Monday's window and cut-off time on Tue to Fri with the cut-off
+  // weekday shifted per day.
+  test('New Schedule: Tick Mon to Fri, Copy Monday, create carries the copied days', async ({ page }) => {
+    let createPayload: any = null;
+    await stubApis(page);
+    await page.route('**/api/v2/schedules', async (route) => {
+      if (route.request().method() === 'POST') {
+        createPayload = await route.request().postDataJSON();
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ response: { scheduleId: 5556, name: createPayload.name } }),
+        });
+      }
+      return route.fallback();
+    });
+    await page.goto('/schedules-new');
+    await page.getByRole('button', { name: '+ New Schedule' }).click();
+    await page.getByPlaceholder('AKL > CHCH Pre 10am Medical').fill('Copy Monday E2E');
+    await page.getByRole('button', { name: /DELIVERY/ }).click();
+    await page.locator('label').filter({ hasText: 'Region' }).locator('select').selectOption('1');
+
+    const copy = page.getByTestId('new-schedule-copy-monday');
+    const day = (n: number) => page.getByTestId(`new-schedule-day-${n}`);
+
+    // Test 5: Monday unticked, the copy is refused.
+    await day(1).getByRole('checkbox').uncheck();
+    await expect(copy).toBeDisabled();
+
+    // Test 4: start from Mon only, Tick Mon to Fri brings the week back.
+    for (const n of [2, 3, 4, 5]) await day(n).getByRole('checkbox').uncheck();
+    await page.getByTestId('new-schedule-tick-mon-fri').click();
+    for (const n of [1, 2, 3, 4, 5]) await expect(day(n).getByRole('checkbox')).toBeChecked();
+    await expect(day(6).getByRole('checkbox')).not.toBeChecked();
+
+    const mon = day(1);
+    const times = mon.locator('input[type=time]');
+    await times.nth(0).fill('12:00');
+    await times.nth(1).fill('17:00');
+    await mon.getByTitle('Cut-off day').selectOption('7');
+    await mon.getByTitle('Cut-off time').fill('15:30');
+    await copy.click();
+
+    await page.getByRole('button', { name: 'Create schedule' }).click();
+    await expect.poll(() => createPayload).not.toBeNull();
+
+    const sent = createPayload.dayWindows as Array<Record<string, unknown>>;
+    expect(sent.map((d) => d.dayOfWeek)).toEqual([1, 2, 3, 4, 5]);
+    for (const d of sent) {
+      expect(d).toMatchObject({ startTime: '12:00', endTime: '17:00', cutoffTime: '15:30' });
+    }
+    // Monday closes on the Sunday before, so each day closes the day before.
+    expect(sent.map((d) => d.cutoffDay)).toEqual([7, 1, 2, 3, 4]);
+  });
+
   test('Bundle Attach clients modal picks + POSTs to /clients', async ({ page }) => {
     let attachPayload: any = null;
     await stubApis(page);
@@ -856,5 +913,74 @@ test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
     await dialog.getByRole('button', { name: /^Add 1$/ }).click();
     await expect.poll(() => attachPayload).not.toBeNull();
     expect(attachPayload).toMatchObject({ clientIds: [100] });
+  });
+
+  // F3 (Marcus, 16 Nov release, spec test 6): on an empty bundle the client
+  // picker is off and an amber notice says why, with + Schedule beside it.
+  // Add a schedule from there and the picker comes on; a client then adds
+  // with a success toast.
+  test('Empty bundle: picker disabled with notice; add a schedule, then a client adds with a toast', async ({ page }) => {
+    let members: Array<Record<string, unknown>> = [];
+    let addPayload: any = null;
+    let attachPayload: any = null;
+    await stubApis(page);
+    await page.route('**/api/v2/schedule-bundles/1', (route: Route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          response: {
+            bundleId: 1, name: 'AKL medical overnight bundle', description: null,
+            isActive: true, members, clients: [],
+          },
+        }),
+      });
+    });
+    await page.route('**/api/v2/schedule-bundles/1/members', async (route: Route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      addPayload = await route.request().postDataJSON();
+      members = [{
+        scheduleId: 7, name: 'Auckland Afternoons', isDefault: false, clientCount: 0,
+        regionName: 'Auckland', speedName: 'Standard', activeDays: [1, 2, 3, 4, 5],
+      }];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response: { added: 1 } }) });
+    });
+    await page.route('**/api/v2/schedule-bundles/1/clients', async (route: Route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      attachPayload = await route.request().postDataJSON();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ response: { added: 1 } }) });
+    });
+
+    await page.goto('/schedules-new');
+    await page.getByRole('button', { name: /^Schedule Bundles\b/ }).click();
+    await page.getByRole('row').filter({ hasText: 'AKL medical overnight bundle' })
+      .getByRole('button', { name: 'Open' }).click();
+    const dialog = page.getByRole('dialog');
+
+    await expect(dialog.getByText('Changes save as you make them.')).toBeVisible();
+    const notice = dialog.getByTestId('bundle-empty-notice');
+    await expect(notice).toContainText('Add a schedule to this bundle first. Clients can only be added once it has one.');
+    const picker = dialog.getByRole('button', { name: 'Add a schedule first' });
+    await expect(picker).toBeDisabled();
+
+    await notice.getByRole('button', { name: '+ Schedule' }).click();
+    await dialog.getByPlaceholder('Search schedules by name...').fill('Auckland');
+    await page.getByRole('button', { name: /Auckland Afternoons/ }).click();
+    await expect.poll(() => addPayload).not.toBeNull();
+    expect(addPayload).toMatchObject({ scheduleIds: [7] });
+
+    await expect(notice).toHaveCount(0);
+    const enabledPicker = dialog.getByRole('button', { name: 'Add clients...' });
+    await expect(enabledPicker).toBeEnabled();
+    await enabledPicker.click();
+    const panel = page.getByTestId('client-multi-picker-panel');
+    await panel.getByPlaceholder('Search clients...').fill('med');
+    await panel.getByText('MedLab Central (MLC)').click();
+    await dialog.getByRole('button', { name: /^Add 1$/ }).click();
+
+    await expect.poll(() => attachPayload).not.toBeNull();
+    expect(attachPayload).toMatchObject({ clientIds: [100] });
+    await expect(page.getByText(/Client added to bundle/)).toBeVisible();
   });
 });
