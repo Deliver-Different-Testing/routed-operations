@@ -409,7 +409,7 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             var saved = await svc.UpsertAsync(req);
             return Ok(new { response = saved });
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(ScheduleSaveRefusal.Body(ex)); }
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 
@@ -430,7 +430,9 @@ public class SchedulesV2Controller(ScheduleService svc, ScheduleOverrideService 
             var saved = await svc.UpsertAsync(req);
             return Ok(new { response = saved });
         }
-        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+        // F1: when the reference check could not run, the body carries the
+        // MessageId its real error was logged under (ScheduleSaveRefusal).
+        catch (InvalidOperationException ex) { return BadRequest(ScheduleSaveRefusal.Body(ex)); }
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }
 

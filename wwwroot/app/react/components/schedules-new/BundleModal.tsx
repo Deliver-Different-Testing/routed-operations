@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Modal } from '../common/Modal';
 import { StatusBadge } from '../common/StatusBadge';
@@ -53,6 +53,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
   const [description, setDescription] = useState('');
   const [addingSchedule, setAddingSchedule] = useState(false);
   const [pickedClients, setPickedClients] = useState<number[]>([]);
+  const emptyNoticeId = useId();
 
   // Reset the transient state whenever a different bundle opens.
   useEffect(() => {
@@ -92,16 +93,17 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
   });
   const attachMut = useMutation({
     mutationFn: (clientIds: number[]) => schedulesV2Service.attachClientsToBundle(bundleId!, clientIds),
-    onSuccess: (r) => {
+    onSuccess: (r, clientIds) => {
       invalidate();
       setPickedClients([]);
-      toast.show(`Linked: ${r.added} schedule link${r.added === 1 ? '' : 's'} added.`, 'success');
+      // F3: say what happened to the bundle first, then the link count.
+      toast.show(`${clientIds.length === 1 ? 'Client' : `${clientIds.length} clients`} added to bundle (${r.added} schedule link${r.added === 1 ? '' : 's'}).`, 'success');
     },
     onError: fail('Add client'),
   });
   const detachMut = useMutation({
     mutationFn: (clientId: number) => schedulesV2Service.detachClientFromBundle(bundleId!, clientId),
-    onSuccess: (r) => { invalidate(); toast.show(`Removed from ${r.removed} schedule${r.removed === 1 ? '' : 's'}.`, 'success'); },
+    onSuccess: (r) => { invalidate(); toast.show(`Client removed from bundle (${r.removed} schedule link${r.removed === 1 ? '' : 's'}).`, 'success'); },
     onError: fail('Remove client'),
   });
   const deleteMut = useMutation({
@@ -192,6 +194,9 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
       )}
       {d && (
         <div className="space-y-4">
+          {/* F3 (Marcus, 16 Nov release): there is no Save button because
+              every action below saves on its own; say so. */}
+          <p className="text-xs text-text-muted -mt-2">Changes save as you make them.</p>
           {/* Header strip: description + actions, or the inline editor. */}
           <div className="flex items-start gap-3">
             {editing ? (
@@ -332,6 +337,25 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                   Clients on this bundle <span className="text-text-muted font-normal">- {clients.length}</span>
                 </h4>
               </div>
+              {/* F3: an empty bundle cannot take a client (the server refuses
+                  too, ScheduleService.EmptyBundleAttachMessage). Say so where
+                  the operator is looking, with the way out beside it. */}
+              {members.length === 0 && (
+                <div
+                  className="mb-2 flex items-center gap-2 text-xs text-warning border border-warning/30 bg-warning-bg/40 rounded px-3 py-2"
+                  data-testid="bundle-empty-notice"
+                >
+                  <span id={emptyNoticeId} className="flex-1">Add a schedule to this bundle first. Clients can only be added once it has one.</span>
+                  <button
+                    type="button"
+                    onClick={() => setAddingSchedule(true)}
+                    className="shrink-0 px-3 py-1 text-xs font-medium rounded bg-brand-cyan text-brand-dark hover:bg-brand-cyan/90"
+                    data-testid="bundle-empty-notice-add-schedule"
+                  >
+                    + Schedule
+                  </button>
+                </div>
+              )}
               <div className="flex gap-2 mb-2">
                 <ClientMultiPicker
                   selected={pickedClients}
@@ -341,6 +365,8 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                   triggerWidth="flex-1"
                   panelTitle="Clients to add"
                   compact
+                  disabled={members.length === 0}
+                  describedBy={members.length === 0 ? emptyNoticeId : undefined}
                 />
                 <button
                   type="button"
@@ -387,11 +413,7 @@ export function BundleModal({ bundleId, onClose, onScheduleClick }: Props) {
                   );
                 })}
                 {clients.length === 0 && (
-                  <li className="px-2 py-4 text-xs text-text-muted italic">
-                    {members.length === 0
-                      ? 'This bundle has no schedules yet. Add a schedule before adding clients.'
-                      : 'No clients linked yet.'}
-                  </li>
+                  <li className="px-2 py-4 text-xs text-text-muted italic">No clients linked yet.</li>
                 )}
               </ul>
               <p className="text-[11px] text-text-muted mt-2">

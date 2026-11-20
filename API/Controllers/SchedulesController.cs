@@ -139,7 +139,7 @@ public class SchedulesController(ScheduleService svc) : BaseController
         }
         catch (InvalidOperationException ex)
         {
-            return BadRequest(new { message = ex.Message });
+            return BadRequest(ScheduleSaveRefusal.Body(ex));
         }
         catch (DbUpdateException ex) { return HandleDbUpdate(ex); }
     }

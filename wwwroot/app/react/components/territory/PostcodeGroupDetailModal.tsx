@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { StatusBadge } from '../common/StatusBadge';
@@ -7,14 +7,17 @@ import { useAuth } from '../../context/AuthContext';
 import { useConfirm } from '../../context/ConfirmContext';
 import { depotLabel, postcodeGroupLabel } from '../../lib/tenantLabels';
 import { downloadCsv } from '../../lib/csvExport';
-import { zoneGroupCsvFileName, zoneGroupCsvRows } from '../../lib/zoneGroupExport';
+import { decodeCsvBytes, zoneGroupCsvFileName, zoneGroupCsvRows } from '../../lib/zoneGroupExport';
 import { ZoneGroupMapPanel } from './ZoneGroupMapPanel';
+import { ZoneGroupImportPanel } from './ZoneGroupImportPanel';
 import {
   territoryService,
   postcodeGroupScope,
   type PostcodeGroupDetail,
   type NzPostcodePasteResult,
+  type ZoneGroupImportPreview,
 } from '../../services/territoryService';
+import { messageWithRef } from '../../services/api';
 
 /** One bucket of a paste result. Renders nothing when the bucket is empty, so
  *  the breakdown only ever shows what actually happened. */
@@ -206,9 +209,44 @@ export function PostcodeGroupDetailModal({
     );
   };
 
+  // F4 (ZG3): re-upload the exported file. The preview writes nothing; the
+  // panel applies. The map refetches only on a new key, so it is bumped on
+  // apply to keep the list and the map agreeing.
+  // upload counts the files picked: the preview token names the group's
+  // state, not the file, so two files on an unchanged group share a token.
+  const [importing, setImporting] = useState<{ csv: string; fileName: string; preview: ZoneGroupImportPreview; upload: number } | null>(null);
+  const uploads = useRef(0);
+  const [mapVersion, setMapVersion] = useState(0);
+  const uploadCsv = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const csv = decodeCsvBytes(await file.arrayBuffer());
+      const res = await territoryService.previewZoneGroupImport(groupId, { csv });
+      uploads.current += 1;
+      setImporting({ csv, fileName: file.name, preview: res.response, upload: uploads.current });
+    } catch (e) {
+      toast.show(messageWithRef(e), 'error');
+    }
+  };
+  // A refused apply (stale preview) re-runs the preview on the same file, so
+  // what the panel shows is the group as it is now.
+  const refreshImport = async () => {
+    if (!importing) return;
+    const res = await territoryService.previewZoneGroupImport(groupId, { csv: importing.csv });
+    setImporting({ ...importing, preview: res.response });
+  };
+  // Upload CSV is a real button (keyboard reachable) that opens this input.
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const importApplied = async () => {
+    setImporting(null);
+    await load();
+    setMapVersion((v) => v + 1);
+  };
+
   const g = detail?.group ?? null;
   const scope = postcodeGroupScope(g);
   const totalSchedules = detail?.schedules.length ?? 0;
+  const hasMembers = (detail?.zones ?? []).some((z) => z.members.length > 0);
   const orphaned = !loading && detail != null
     && totalSchedules === 0 && detail.polygons.length === 0;
 
@@ -297,8 +335,11 @@ export function PostcodeGroupDetailModal({
               <h4 className="text-sm font-semibold text-text-primary">
                 Zones <span className="font-normal text-text-muted">- {detail.zones.length}</span>
               </h4>
-              {detail.zones.some((z) => z.members.length > 0) && (
-                <div className="flex items-center gap-3">
+              {/* n-d: Upload CSV also shows on an empty group, the one an
+                  operator fills from a sheet. Export and the suburb toggle
+                  need members to show. */}
+              <div className="flex items-center gap-3">
+                {hasMembers && (
                 <button
                   type="button"
                   data-testid="pg-export-csv"
@@ -307,6 +348,24 @@ export function PostcodeGroupDetailModal({
                 >
                   Export CSV
                 </button>
+                )}
+                <button
+                  type="button"
+                  className="text-xs text-brand hover:underline"
+                  title="Upload an edited export of this group. You see what changes before anything is saved."
+                  onClick={() => uploadInputRef.current?.click()}
+                >
+                  Upload CSV
+                </button>
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  data-testid="pg-upload-csv"
+                  className="hidden"
+                  onChange={(e) => { void uploadCsv(e.target.files?.[0]); e.target.value = ''; }}
+                />
+                {hasMembers && (
                 <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
                   <input
                     type="checkbox"
@@ -316,9 +375,24 @@ export function PostcodeGroupDetailModal({
                   />
                   Show suburb names
                 </label>
-                </div>
-              )}
+                )}
+              </div>
             </div>
+            {importing && (
+              // r3-3: a new key per uploaded file, so it starts with "Also
+              // remove" unticked rather than carrying the last file's tick.
+              <ZoneGroupImportPanel
+                key={importing.upload}
+                groupId={groupId}
+                memberWord={memberWord}
+                csv={importing.csv}
+                fileName={importing.fileName}
+                preview={importing.preview}
+                onApplied={() => { void importApplied(); }}
+                onCancel={() => setImporting(null)}
+                onRefresh={refreshImport}
+              />
+            )}
             {detail.zones.length === 0 ? (
               <p className="text-xs text-text-muted italic">
                 No {memberWord}s in this group yet. Add them on the Zones tab.
@@ -565,6 +639,7 @@ export function PostcodeGroupDetailModal({
           <section>
             <h4 className="text-sm font-semibold text-text-primary mb-1">Map</h4>
             <ZoneGroupMapPanel
+              key={mapVersion}
               postcodeGroupId={groupId}
               highlightZone={hoverZone}
               memberWord={memberWord}

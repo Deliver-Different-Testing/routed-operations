@@ -128,3 +128,79 @@ describe('PostcodeGroupDetailModal - Z4 change a postcode zone', () => {
     expect(puts).toHaveLength(0);
   });
 });
+
+// m5 (review 19 Nov): Upload CSV was a <label> around a display:none input,
+// so it had no tab stop. It is a real button that opens the file picker.
+describe('PostcodeGroupDetailModal - Upload CSV is keyboard reachable', () => {
+  it('is a button that opens the hidden file input', async () => {
+    mockGroup();
+    const user = userEvent.setup();
+    render();
+
+    const upload = await screen.findByRole('button', { name: 'Upload CSV' });
+    const input = screen.getByTestId('pg-upload-csv') as HTMLInputElement;
+    const click = vi.spyOn(input, 'click');
+    upload.focus();
+    await user.keyboard('{Enter}');
+
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+});
+
+// n-d (review 20 Nov): a group with no postcodes yet is exactly the one an
+// operator fills from a sheet, so Upload CSV shows there. Export and the
+// suburb toggle have nothing to show and stay hidden.
+describe('PostcodeGroupDetailModal - Upload CSV on an empty group', () => {
+  it('offers Upload CSV with no members, without Export CSV', async () => {
+    server.use(
+      http.get('/api/territory/postcode-groups/41/detail', () => HttpResponse.json({ response: { ...detail, zones: [] } })),
+      http.get('/api/territory/postcode-groups/41/map', () =>
+        HttpResponse.json({ response: { shapes: [], codesWithNoShape: [], depotLatitude: null, depotLongitude: null } })),
+    );
+    render();
+
+    expect(await screen.findByRole('button', { name: 'Upload CSV' })).toBeInTheDocument();
+    expect(screen.getByTestId('pg-upload-csv')).toBeInTheDocument();
+    expect(screen.queryByTestId('pg-export-csv')).not.toBeInTheDocument();
+  });
+});
+
+// r3-3 (review 20 Nov): "Also remove" belongs to one preview. Uploading a
+// second file while the panel is open showed a new "Not in the file" list
+// with the box still ticked from the first one.
+// jsdom's File has neither text() nor arrayBuffer(); a browser's has both.
+function csvFile(body: string, name: string): File {
+  const bytes = new TextEncoder().encode(body);
+  return Object.assign(new File([body], name, { type: 'text/csv' }), {
+    text: async () => body,
+    arrayBuffer: async () => bytes.buffer,
+  });
+}
+
+describe('PostcodeGroupDetailModal - a new upload starts with Also remove unticked', () => {
+  it('resets the tick when a second file is previewed', async () => {
+    mockGroup();
+    let n = 0;
+    server.use(http.post('/api/territory/postcode-groups/41/import/preview', () => {
+      n += 1;
+      return HttpResponse.json({ response: {
+        added: [], moved: [], removed: [{ id: 900 + n, code: n === 1 ? '3210' : '3216', zone: 1 }],
+        // The token names the group, not the file, so an unchanged group
+        // gives both files the same one.
+        unrecognised: [], unchanged: 1, errors: [], token: 'same-group-state',
+      } });
+    }));
+    const user = userEvent.setup();
+    render();
+    const input = await screen.findByTestId('pg-upload-csv');
+
+    await user.upload(input, csvFile('Zone,Postcode,Suburb\n1,3204,Frankton\n', 'a.csv'));
+    await user.click(await screen.findByTestId('pg-import-remove'));
+    expect(screen.getByTestId('pg-import-remove')).toBeChecked();
+
+    await user.upload(input, csvFile('Zone,Postcode,Suburb\n1,3210,Fairfield\n', 'b.csv'));
+
+    await waitFor(() => expect(screen.getByText(/b\.csv/)).toBeInTheDocument());
+    expect(screen.getByTestId('pg-import-remove')).not.toBeChecked();
+  });
+});
