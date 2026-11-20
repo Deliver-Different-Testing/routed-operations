@@ -36,3 +36,16 @@ export function copyMondayToOtherDays<T extends CopyableDay>(days: T[]): T[] {
     };
   });
 }
+
+/**
+ * F2 (Marcus, 16 Nov release): "Tick Mon to Fri" beside the copy button.
+ * Ticks Monday to Friday exactly as ticking each box by hand does (a newly
+ * ticked day with no cut-off day gets a same-day one) and touches nothing
+ * else: already-ticked days and the weekend come back as they were.
+ */
+export function tickMonToFri<T extends CopyableDay>(days: T[]): T[] {
+  return days.map((d, i) => {
+    if (i > 4 || d.enabled) return d;
+    return { ...d, enabled: true, cutoffDay: d.cutoffDay ?? i + 1 };
+  });
+}

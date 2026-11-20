@@ -270,5 +270,25 @@ describe('Schedule detail modal - operating days (M12)', () => {
     // Monday closes the Sunday before (7); Wednesday then closes Tuesday (2).
     expect(wed).toMatchObject({ id: 9002, startTime: '13:00', endTime: '20:00', cutoffDay: 2, cutoffTime: '11:00' });
   });
+
+  // F2 (Marcus, 16 Nov release): Tick Mon to Fri beside the copy button, so a
+  // schedule cut down to fewer days goes back to the working week in one
+  // click. It ticks the weekdays only; the existing rows keep their ids.
+  it('Tick Mon to Fri ticks the five weekdays and the save carries them', async () => {
+    installHandlers(detail(twoDays));
+    const user = userEvent.setup();
+    renderModal();
+    await user.click(await screen.findByRole('button', { name: 'Operating days' }));
+    await user.click(screen.getByRole('button', { name: 'Tick Mon to Fri' }));
+
+    const save = screen.getByRole('button', { name: /^Save/ });
+    await waitFor(() => expect(save).toBeEnabled());
+    await user.click(save);
+
+    await waitFor(() => expect(lastPut).not.toBeNull());
+    const sent = (lastPut!.dayWindows as Array<Record<string, unknown>>);
+    expect(sent.map((d) => d.dayOfWeek).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(sent.find((d) => d.dayOfWeek === 3)).toMatchObject({ id: 9002, startTime: '08:00' });
+  });
 });
 

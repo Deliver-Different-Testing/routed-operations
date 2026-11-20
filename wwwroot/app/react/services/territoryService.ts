@@ -102,6 +102,33 @@ export interface NzPostcodePasteResult {
   ignored: string[];
 }
 
+/** F4 zone group CSV re-upload. The same body drives preview and apply;
+ *  apply re-parses the file server-side and refuses if the group changed
+ *  since the preview's token. */
+export interface ZoneGroupImportBody {
+  csv: string;
+  token?: string | null;
+  removeMissing?: boolean;
+}
+
+export interface ZoneGroupImportPreview {
+  added: { line: number; code: string; zone: number; suburb: string; unrecognised: boolean }[];
+  /** newZone: the group has no zone toZone yet, so the move creates it. */
+  moved: { id: number; code: string; fromZone: number; toZone: number; line: number; newZone?: boolean }[];
+  removed: { id: number; code: string; zone: number }[];
+  unrecognised: string[];
+  unchanged: number;
+  errors: string[];
+  token: string | null;
+}
+
+export interface ZoneGroupImportResult {
+  added: number;
+  moved: number;
+  removed: number;
+  keptNotInFile: number;
+}
+
 export interface PostcodeGroupDuplicateBody {
   name: string;
   depotId?: number | null;
@@ -358,6 +385,14 @@ export const territoryService = {
   pasteNzPostcodes: (groupId: number, zone: number, b: NzPostcodePasteBody) =>
     write<NzPostcodePasteResult, NzPostcodePasteBody>(
       `/territory/postcode-groups/${groupId}/zones/${zone}/postcodes`, 'POST', b),
+  /** F4: diff a re-uploaded Zone,Postcode,Suburb export. Writes nothing. */
+  previewZoneGroupImport: (groupId: number, b: ZoneGroupImportBody) =>
+    write<ZoneGroupImportPreview, ZoneGroupImportBody>(
+      `/territory/postcode-groups/${groupId}/import/preview`, 'POST', b),
+  /** F4: apply a previewed re-upload in one transaction. */
+  applyZoneGroupImport: (groupId: number, b: ZoneGroupImportBody) =>
+    write<ZoneGroupImportResult, ZoneGroupImportBody>(
+      `/territory/postcode-groups/${groupId}/import/apply`, 'POST', b),
 
   createNzPostcode: (b: NzPostcodeUpsertBody) =>
     write<NzPostcode, NzPostcodeUpsertBody>('/territory/nz/postcodes', 'POST', b),

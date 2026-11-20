@@ -2193,12 +2193,37 @@ public class ScheduleService(
     /// Both are SQL Server only (neither is an entity in this model), so the
     /// Sqlite harness checks the job tables it can see and treats the rest as
     /// unreferenced.
+    ///
+    /// If the check itself fails (Urgent prod 18 Nov: no SELECT on
+    /// dbo.ShopWindow, a bare 500), the save is refused with
+    /// ScheduleReferenceCheckUnavailableException. It must never fall back to
+    /// "nothing references it": that would delete a row a route still holds.
     /// </summary>
     private async Task<HashSet<int>> ReferencedDayRowIdsAsync(IReadOnlyCollection<int> dayRowIds)
     {
         var ids = dayRowIds.Where(id => id > 0).Distinct().ToList();
         if (ids.Count == 0) return new HashSet<int>();
 
+        try
+        {
+            return await QueryReferencedDayRowIdsAsync(ids);
+        }
+        // Every failure of the check is "could not check", not only a
+        // DbException: a pool timeout is an InvalidOperationException and a
+        // command timeout can be a TimeoutException (review m1). A cancelled
+        // request is the caller going away, so it stays a cancellation.
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var messageId = Guid.NewGuid();
+            _logger.LogError(ex,
+                "Day-row reference check failed ({MessageId}) for day rows {DayRowIds}; save refused",
+                messageId, ids);
+            throw new ScheduleReferenceCheckUnavailableException(messageId, ex);
+        }
+    }
+
+    private async Task<HashSet<int>> QueryReferencedDayRowIdsAsync(List<int> ids)
+    {
         var isSqlServer = Context.Database.ProviderName?
             .Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true;
         if (isSqlServer)

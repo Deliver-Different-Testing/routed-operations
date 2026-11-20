@@ -255,3 +255,7 @@ public record TerritoryBootstrapDto(
     List<UsZipZoneDto> UsZipZones,
     List<ZoneNameDto> ZoneNames,
     List<ZoneGroupDto> ZoneGroups);
+
+/// <summary>What a zone group re-upload wrote. KeptNotInFile counts rows the
+/// file left out that stayed because "also remove" was not ticked.</summary>
+public record ZoneGroupImportResultDto(int Added, int Moved, int Removed, int KeptNotInFile);

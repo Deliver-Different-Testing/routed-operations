@@ -11,6 +11,7 @@ import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
 import { schedulesV2Keys } from '../../hooks/queries/useSchedulesV2';
 import { PostcodeLookupInput } from './PostcodeLookupInput';
+import { copyMondayToOtherDays, tickMonToFri } from '../../lib/copyMondayToDays';
 
 // New Schedule modal - covers Steve's mockup "New Schedule" creator.
 // Uses ChainBuilder (this session's MVP of Dane's visual leg builder)
@@ -594,10 +595,37 @@ export function NewScheduleModal({ open, onClose }: Props) {
 
         <div className="col-span-2 block">
           <span className="text-xs uppercase tracking-wide text-text-muted">Operating days + cut-off</span>
+          {/* F2 (Marcus, 16 Nov release): the same Copy Monday button as the
+              detail modal's Operating days tab, plus Tick Mon to Fri. */}
+          <div className="mt-1 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDays(tickMonToFri)}
+              disabled={days.slice(0, 5).every((d) => d.enabled)}
+              title="Tick Monday to Friday. Saturday and Sunday are left as they are."
+              className="px-2 py-1 text-xs rounded border border-border hover:bg-surface-light disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="new-schedule-tick-mon-fri"
+            >
+              Tick Mon to Fri
+            </button>
+            <button
+              type="button"
+              onClick={() => setDays(copyMondayToOtherDays)}
+              disabled={!days[0]?.enabled || !days.some((d, i) => i > 0 && d.enabled)}
+              title={days[0]?.enabled
+                ? 'Copy Monday\'s cut-off, collection and delivery onto the other ticked days. The cut-off day moves with each day.'
+                : 'Tick Monday first'}
+              className="px-2 py-1 text-xs rounded border border-border hover:bg-surface-light disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="new-schedule-copy-monday"
+            >
+              Copy Monday to other days
+            </button>
+          </div>
           <div className="mt-1 grid grid-cols-7 gap-2">
             {days.map((d, i) => (
               <div
                 key={DAYS[i].n}
+                data-testid={`new-schedule-day-${DAYS[i].n}`}
                 className={`border rounded p-2 text-center ${
                   d.enabled ? 'border-brand-cyan bg-brand-cyan/5' : 'border-border bg-surface-light'
                 }`}

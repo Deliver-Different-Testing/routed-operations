@@ -170,3 +170,24 @@ public class PostcodesForScheduleRequest
 public record PostcodesForScheduleResponse(
     List<int> BoundZipPolygonIds,
     List<int> ZoneDerivedZipPolygonIds);
+
+/// <summary>
+/// F4 zone group CSV re-upload (ZG3). The same body drives the preview and
+/// the apply: the apply re-parses and re-diffs the file rather than trusting
+/// a diff the browser sends back.
+/// </summary>
+public class ZoneGroupImportRequest
+{
+    /// <summary>The file's text, exactly as exported: Zone,Postcode,Suburb.</summary>
+    /// Not [Required] (review n-a): an empty file must reach the action so
+    /// it is logged and refused by the parser in plain words.
+    public string Csv { get; set; } = "";
+
+    /// <summary>The token the preview returned. Apply refuses when the group
+    /// no longer matches it.</summary>
+    public string Token { get; set; }
+
+    /// <summary>Also delete rows that are in the group but not in the file.
+    /// Off by default: removing coverage is never implied (M0 I-6).</summary>
+    public bool RemoveMissing { get; set; }
+}
