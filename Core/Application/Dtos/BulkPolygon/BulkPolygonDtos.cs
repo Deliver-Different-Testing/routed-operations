@@ -60,7 +60,13 @@ public record BulkPolygonDto(
     /// <summary>Every postcode the shape touches, from dbo.BulkRunPolygonZip (written by
     /// the overlay on create / reshape). No 10% floor: this is what booking assesses
     /// (polygons touched-postcodes spec 4.3). Null or empty when the overlay has not run.</summary>
-    List<BulkPolygonZipDto>? TouchedZips = null);
+    List<BulkPolygonZipDto>? TouchedZips = null,
+    /// <summary>Apps that list this polygon (tblBulkRunPolygonApp, perimeter spec 4.3), in
+    /// PolygonApps.All order. Empty = used by no app.</summary>
+    List<string>? Apps = null,
+    /// <summary>Set on a create / update response only: the save added or removed PERIMETER,
+    /// which changes prices for distance-rated jobs (spec 4.3). Always false on reads.</summary>
+    bool PerimeterChanged = false);
 
 /// <summary>One BulkRunPolygonZip row. IsFull = at least 99% inside the shape, so it
 /// matches on postcode alone; otherwise the job address is checked against the line.</summary>
@@ -74,10 +80,24 @@ public record CreateBulkPolygonRequest(
     List<PolygonPointDto> Points,
     byte SourceType = 0,
     string? SourceCode = null,
-    string? Layer = null);
+    string? Layer = null,
+    /// <summary>Apps to list the new polygon in. Null = SCHEDULES (spec 4.3); empty = none.</summary>
+    List<string>? Apps = null);
 
-/// <summary>Name + layer update. Shape edits go through /shape. Layer null or blank clears it.</summary>
-public record UpdateBulkPolygonMetaRequest(string Name, string? Layer = null);
+/// <summary>Name + layer + apps update. Shape edits go through /shape. Layer null or blank
+/// clears it. Apps null leaves the apps unchanged; a list (even empty) replaces them.</summary>
+public record UpdateBulkPolygonMetaRequest(string Name, string? Layer = null, List<string>? Apps = null);
+
+/// <summary>Body for PUT /api/bulk-polygons/apps: the Builder's bulk "Used by: Set..." (spec
+/// 4.4.2). Adds then removes the listed apps on every listed polygon.</summary>
+public record BulkPolygonAppsBulkRequest(
+    List<int> PolygonIds,
+    List<string>? Add = null,
+    List<string>? Remove = null);
+
+/// <summary>Result of the bulk apps update. Updated = polygons whose app set changed.
+/// PerimeterChanged = PERIMETER was added to or removed from at least one of them.</summary>
+public record BulkPolygonAppsBulkResult(int Updated, bool PerimeterChanged);
 
 /// <summary>Reshape update. Client recomputes centroid from the new vertices.</summary>
 public record UpdateBulkPolygonShapeRequest(

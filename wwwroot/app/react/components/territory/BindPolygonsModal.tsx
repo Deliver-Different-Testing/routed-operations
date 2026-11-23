@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useToast } from '../../context/ToastContext';
-import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
+import { bulkPolygonService, type BulkPolygon, type PolygonAppCode } from '../../services/bulkPolygonService';
+import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { territoryService } from '../../services/territoryService';
 
 type Target =
@@ -33,6 +34,12 @@ interface Props {
  * a shape. The server refuses a zone that would overlap a shape already in a
  * different zone of the same group and names it, and that wording is shown
  * verbatim rather than being reworded here.
+ *
+ * Perimeter spec 4.5: the list is filtered by app. A zone group's zones are
+ * the Schedules axis (SCHEDULES, Q3); a ZoneName is zone rating
+ * (ZONE_RATING). A shape already bound to this target is listed whatever its
+ * tags (Q2) and stays listed for the life of the modal, so unbinding it does
+ * not make the row vanish. Binding a shape tags it on the server (Q1).
  */
 export function BindPolygonsModal({ open, onClose, target }: Props) {
   const toast = useToast();
@@ -41,12 +48,22 @@ export function BindPolygonsModal({ open, onClose, target }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<number | null>(null);
   const [q, setQ] = useState('');
+  // Shapes seen bound to this target since the modal opened (Q2).
+  const [keepIds, setKeepIds] = useState<Set<number>>(new Set());
+  const app: PolygonAppCode = target.kind === 'zoneName' ? 'ZONE_RATING' : 'SCHEDULES';
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await bulkPolygonService.list();
-      setPolygons(res.response ?? []);
+      const rows = res.response ?? [];
+      setPolygons(rows);
+      const bound = rows.filter((p) => target.kind === 'zoneName'
+        ? p.zoneNameId === target.id
+        : (p.zoneMemberships ?? []).some((m) => m.postcodeGroupId === target.id));
+      if (bound.length > 0) {
+        setKeepIds((prev) => new Set([...prev, ...bound.map((p) => p.polygonId)]));
+      }
       if (target.kind === 'postcodeGroup') {
         const detail = await territoryService.postcodeGroupDetail(target.id);
         setZones((detail.response.zones ?? []).map((z) => z.zone));
@@ -61,10 +78,11 @@ export function BindPolygonsModal({ open, onClose, target }: Props) {
   }, [open, load]);
 
   const filtered = useMemo(() => {
+    const forApp = polygonsForApp(polygons, app, keepIds);
     const needle = q.trim().toLowerCase();
-    if (!needle) return polygons;
-    return polygons.filter((p) => (p.name ?? '').toLowerCase().includes(needle));
-  }, [polygons, q]);
+    if (!needle) return forApp;
+    return forApp.filter((p) => (p.name ?? '').toLowerCase().includes(needle));
+  }, [polygons, app, keepIds, q]);
 
   /** The membership row this shape has in the target group, if any. */
   const membershipFor = (p: BulkPolygon) =>
@@ -81,6 +99,7 @@ export function BindPolygonsModal({ open, onClose, target }: Props) {
       setPolygons((prev) => prev.map((p) => p.polygonId === polygon.polygonId
         ? { ...p, zoneNameId: res.response.zoneNameId }
         : p));
+      if (shouldBeBound) setKeepIds((prev) => new Set(prev).add(polygon.polygonId));
       toast.show(shouldBeBound ? 'Polygon bound' : 'Polygon unbound', 'success');
     } catch (e) { toast.show((e as Error).message, 'error'); }
     finally { setSaving(null); }
@@ -147,7 +166,9 @@ export function BindPolygonsModal({ open, onClose, target }: Props) {
         <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-border bg-white">
           {loading && <div className="p-6 text-center text-xs text-text-muted italic">Loading...</div>}
           {!loading && filtered.length === 0 && (
-            <div className="p-6 text-center text-xs text-text-muted italic">No polygons.</div>
+            <div className="p-6 text-center text-xs text-text-muted italic">
+              No polygons available to {app === 'ZONE_RATING' ? 'Zone rating' : 'Schedules'}.
+            </div>
           )}
           {filtered.map((p) => {
             const busy = saving === p.polygonId;

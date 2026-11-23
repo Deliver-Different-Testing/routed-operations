@@ -66,4 +66,7 @@ public partial class BulkRunPolygon
     public virtual ICollection<BulkRunPolygonPoint> Points { get; set; } = new List<BulkRunPolygonPoint>();
 
     public virtual ICollection<Route> Routes { get; set; } = new List<Route>();
+
+    /// <summary>Apps that list this polygon (tblBulkRunPolygonApp, perimeter spec 4.2).</summary>
+    public virtual ICollection<BulkRunPolygonApp> Apps { get; set; } = new List<BulkRunPolygonApp>();
 }

@@ -50,7 +50,7 @@ function ringToGeoJson(ring: LatLng[]): Ring {
 /** Signed area of a ring via shoelace. Positive = CCW (outer), negative
  *  = CW (hole). Uses (lng, lat) as (x, y) - planar approximation is
  *  fine for winding detection at city / region scale. */
-function signedRingArea(ring: LatLng[]): number {
+export function signedRingArea(ring: LatLng[]): number {
   let sum = 0;
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i];

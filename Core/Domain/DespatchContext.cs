@@ -83,6 +83,7 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
     public virtual DbSet<BulkZonePolygon> BulkZonePolygons { get; set; }
     public virtual DbSet<BulkRunPolygonZip> BulkRunPolygonZips { get; set; }
     public virtual DbSet<BulkRunPolygonPoint> BulkRunPolygonPoints { get; set; }
+    public virtual DbSet<BulkRunPolygonApp> BulkRunPolygonApps { get; set; }
     public virtual DbSet<DispatchRouteRoster> DispatchRouteRosters { get; set; }
     public virtual DbSet<TucAgent> TucAgents { get; set; }
     // Quoting module (Stage 2 - C.3). Shadow tables for pricing scenarios;
@@ -515,6 +516,19 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
                 .HasForeignKey(pt => pt.PolygonId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("FK_tblBulkRunPolygonPoint_Polygon");
+        });
+
+        // Which apps list a polygon (perimeter spec 4.2, migration 20261123160000).
+        modelBuilder.Entity<BulkRunPolygonApp>(entity =>
+        {
+            entity.HasKey(e => new { e.PolygonId, e.AppCode });
+            entity.ToTable("tblBulkRunPolygonApp");
+            entity.Property(e => e.CreatedUtc).HasDefaultValueSql("SYSUTCDATETIME()");
+            entity.HasOne(e => e.Polygon)
+                .WithMany(p => p.Apps)
+                .HasForeignKey(e => e.PolygonId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK_BulkRunPolygonApp_Polygon");
         });
 
         // BulkImportHyper port (Phase 1 Task 3 - 2026-07-22). Minimal config
