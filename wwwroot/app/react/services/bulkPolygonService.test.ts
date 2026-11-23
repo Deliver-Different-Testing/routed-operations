@@ -74,6 +74,32 @@ describe('bulkPolygonService', () => {
     expect(r.response).toEqual([stub]);
   });
 
+  it('list sends each app as a repeated app= query parameter, none when empty', async () => {
+    const seen: string[] = [];
+    server.use(
+      http.get('/api/bulk-polygons', ({ request }) => {
+        seen.push(new URL(request.url).search);
+        return HttpResponse.json({ response: [stub] });
+      }),
+    );
+    await bulkPolygonService.list({ app: ['SCHEDULES', 'ROUTES'] });
+    await bulkPolygonService.list({ app: [] });
+    expect(seen).toEqual(['?app=SCHEDULES&app=ROUTES', '']);
+  });
+
+  it('setAppsBulk PUTs /bulk-polygons/apps with ids, add and remove', async () => {
+    let body: unknown;
+    server.use(
+      http.put('/api/bulk-polygons/apps', async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json({ response: { updated: 2, perimeterChanged: true } });
+      }),
+    );
+    const r = await bulkPolygonService.setAppsBulk([3, 4], ['PERIMETER']);
+    expect(body).toEqual({ polygonIds: [3, 4], add: ['PERIMETER'], remove: [] });
+    expect(r.response).toEqual({ updated: 2, perimeterChanged: true });
+  });
+
   it('get GETs /bulk-polygons/:id', async () => {
     server.use(
       http.get('/api/bulk-polygons/:id', ({ params }) => {

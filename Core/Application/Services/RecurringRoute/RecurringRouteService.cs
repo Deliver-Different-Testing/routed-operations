@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.RecurringRoute;
+using RoutedOperations.Core.Application.Services.BulkPolygon;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
 using Serilog;
@@ -895,9 +896,13 @@ public class RecurringRouteService(
             .Select(z => new CoverageLookupDto("postcode", z.ZipPolygonId, z.Zip!, null, z.Latitude, z.Longitude))
             .ToListAsync();
 
+        // Route coverage picker: only polygons available to Routes (perimeter
+        // spec 4.5). Shapes already on the route are shown by the modal from
+        // the route itself, so they need no exception here.
         var polygons = await Context.BulkRunPolygons
             .AsNoTracking()
-            .Where(p => p.Active && p.Name != null && p.Name.Contains(needle))
+            .Where(p => p.Active && p.Name != null && p.Name.Contains(needle)
+                && p.Apps.Any(a => a.AppCode == PolygonApps.Routes))
             .OrderBy(p => p.Name)
             .Take(max)
             .Select(p => new CoverageLookupDto(
@@ -1187,6 +1192,9 @@ public class RecurringRouteService(
             .Where(p => distinct.Contains(p.PolygonId) && p.Active)
             .ToListAsync();
         foreach (var p in found) route.BulkRunPolygons.Add(p);
+        // Attaching a shape as route coverage makes it a Routes polygon, in the
+        // same save as the attach (perimeter spec 4.5, Q1).
+        await PolygonAppTags.EnsureAsync(Context, found.Select(p => p.PolygonId), PolygonApps.Routes);
     }
 
     /// <summary>Attach schedules to a route via the M:N junction. Silently

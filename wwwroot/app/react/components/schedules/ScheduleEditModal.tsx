@@ -11,6 +11,7 @@ import {
   type DayWindow,
 } from '../../services/scheduleService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
+import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { depotLabel, postcodeGroupLabel, postcodeLabel, postcodePluralLabel } from '../../lib/tenantLabels';
 import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 import { ClientMultiPicker } from './ClientMultiPicker';
@@ -80,6 +81,13 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
   // Available polygons for the coverage picker. Fetched lazily on first
   // open; the modal caches the result so re-opening doesn't refetch.
   const [polygons, setPolygons] = useState<BulkPolygon[] | null>(null);
+  // Perimeter spec 4.5 (Q3): Schedules polygons only, plus the ones this
+  // group already uses or has ticked, so an untagged attachment stays
+  // visible and is not lost on save (Q2).
+  const schedulePolygons = useMemo(
+    () => polygons === null ? null
+      : polygonsForApp(polygons, 'SCHEDULES', [...(group?.polygonIds ?? []), ...form.polygonIds]),
+    [polygons, group?.polygonIds, form.polygonIds]);
 
   // Local mirror of lookups.linehaulRuns so the nested LinehaulRunModal
   // can mutate it (add / update / delete) without a full lookups refetch.
@@ -484,7 +492,7 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
                 <div className="p-3 text-[11px] text-text-muted italic border border-border rounded-lg">Loading polygons...</div>
               ) : (
                 <ScheduleCoverageMap
-                  polygons={polygons}
+                  polygons={schedulePolygons ?? []}
                   selectedIds={form.polygonIds}
                   onToggle={togglePolygon}
                   boundPostcodes={form.postcodeIds}
@@ -496,10 +504,10 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
               )}
             </div>
             <div className="max-h-[360px] overflow-y-auto rounded-lg border border-border bg-white">
-              {polygons?.length === 0 && (
-                <div className="p-3 text-[11px] text-text-muted italic">No polygons available.</div>
+              {schedulePolygons?.length === 0 && (
+                <div className="p-3 text-[11px] text-text-muted italic">No polygons available to Schedules.</div>
               )}
-              {polygons?.map((p) => {
+              {schedulePolygons?.map((p) => {
                 const checked = form.polygonIds.includes(p.polygonId);
                 return (
                   <label key={p.polygonId}

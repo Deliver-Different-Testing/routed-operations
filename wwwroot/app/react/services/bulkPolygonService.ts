@@ -78,6 +78,23 @@ export interface BulkPolygon {
    *  save / reshape). No 10% floor: this is what booking assesses. Optional
    *  because older fixtures omit it; empty when the overlay never ran. */
   touchedZips?: PolygonTouchedZip[];
+  /** Apps that list this polygon (tblBulkRunPolygonApp, perimeter spec 4.3),
+   *  in POLYGON_APPS order. Empty = used by no app. Optional because older
+   *  fixtures omit it. */
+  apps?: PolygonAppCode[];
+  /** Create / update responses only: the save added or removed PERIMETER,
+   *  which changes distance-rated prices. Always false on reads. */
+  perimeterChanged?: boolean;
+}
+
+/** App codes for "Used by" (perimeter spec 4.2), in display order. */
+export const POLYGON_APPS = ['SCHEDULES', 'AUTODISPATCH', 'ROUTES', 'ZONE_RATING', 'PERIMETER'] as const;
+export type PolygonAppCode = (typeof POLYGON_APPS)[number];
+
+/** Builder bulk "Used by: Set..." result. updated = polygons whose apps changed. */
+export interface BulkPolygonAppsResult {
+  updated: number;
+  perimeterChanged: boolean;
 }
 
 /** One BulkRunPolygonZip row. isFull = at least 99% inside the shape, so it
@@ -159,6 +176,8 @@ export interface CreateBulkPolygonBody {
   sourceType?: number;
   sourceCode?: string | null;
   layer?: string | null;
+  /** Omitted = SCHEDULES (server default); [] = no app. */
+  apps?: PolygonAppCode[];
 }
 
 export interface UpdateBulkPolygonShapeBody {
@@ -171,10 +190,17 @@ export interface UpdateBulkPolygonMetaBody {
   name: string;
   /** Blank or null clears the layer. */
   layer?: string | null;
+  /** Omitted = leave the apps unchanged; a list (even []) replaces them. */
+  apps?: PolygonAppCode[];
 }
 
 export const bulkPolygonService = {
-  list: () => request<{ response: BulkPolygon[] }>('/bulk-polygons'),
+  /** No app = every active polygon (the Builder). With apps, only polygons
+   *  tagged with ANY of them (perimeter spec 4.3). */
+  list: (opts?: { app?: PolygonAppCode[] }) => {
+    const qs = (opts?.app ?? []).map((a) => `app=${encodeURIComponent(a)}`).join('&');
+    return request<{ response: BulkPolygon[] }>(qs ? `/bulk-polygons?${qs}` : '/bulk-polygons');
+  },
   get: (id: number) => request<{ response: BulkPolygon }>(`/bulk-polygons/${id}`),
   create: (body: CreateBulkPolygonBody) =>
     request<{ response: BulkPolygon }>('/bulk-polygons', {
@@ -190,6 +216,12 @@ export const bulkPolygonService = {
     }),
   remove: (id: number) =>
     request<{ response: string }>(`/bulk-polygons/${id}`, { method: 'DELETE' }),
+
+  /** Bulk "Used by: Set..." (spec 4.4.2): add then remove apps on every listed polygon. */
+  setAppsBulk: (polygonIds: number[], add: PolygonAppCode[] = [], remove: PolygonAppCode[] = []) =>
+    request<{ response: BulkPolygonAppsResult }>('/bulk-polygons/apps', {
+      method: 'PUT', body: JSON.stringify({ polygonIds, add, remove }),
+    }),
 
   /** Place a shape in a zone of a zone group. The server refuses, naming the
    *  clashing shape, when this would overlap a polygon already in a different

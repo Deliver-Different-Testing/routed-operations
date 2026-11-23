@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using RoutedOperations.Core.Application.Dtos.Territory;
+using RoutedOperations.Core.Application.Services.BulkPolygon;
+using RoutedOperations.Core.Domain.Despatch;
 using RoutedOperations.Core.Domain;
 using Serilog;
 
@@ -724,6 +726,10 @@ public class TerritoryService(
                     CreatedUtc = DateTime.UtcNow,
                     CreatedBy = actor,
                 }));
+            // The copy's shapes are zone members too, so they carry the
+            // Schedules tag (perimeter spec 4.5, Q1).
+            await PolygonAppTags.EnsureAsync(
+                Context, polygonMembers.Select(m => m.PolygonId), PolygonApps.Schedules);
             await Context.SaveChangesAsync();
         }
 
