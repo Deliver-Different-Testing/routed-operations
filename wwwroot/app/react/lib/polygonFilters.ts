@@ -70,6 +70,15 @@ export const PERIMETER_CONFIRM_TEXT =
   'This changes prices for distance-rated jobs that start or end outside this area. '
   + 'Km driven outside every city boundary get the outside-perimeter charge.';
 
+/** Confirm titles for a polygon that already is a City boundary: a new
+ *  shape or removing it moves distance prices just like the tag does
+ *  (review C4). The message is PERIMETER_CONFIRM_TEXT. */
+export const PERIMETER_RESHAPE_TITLE = 'Change a city boundary?';
+export const PERIMETER_REMOVE_TITLE = 'Remove a city boundary?';
+
+/** Hint line on the polygon card (review C6). */
+export const POLYGON_CARD_HINT = 'Each app only lists the polygons ticked for it.';
+
 /** Quick links (spec 4.4.1): one click sets Used by to a single app. */
 export const QUICK_LINKS: { label: string; app: PolygonAppCode }[] = [
   { label: 'City boundaries', app: 'PERIMETER' },

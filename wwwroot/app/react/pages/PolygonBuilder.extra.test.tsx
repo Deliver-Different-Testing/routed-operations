@@ -310,7 +310,9 @@ describe('PolygonBuilder - extra branch coverage', () => {
     );
   });
 
-  it('polygon overlay click toggles polygon selection', async () => {
+  // Kevin 2026-11-24: a map click only opens the polygon card; selection
+  // (which drives Save coverage as Route) comes from the list checkboxes.
+  it('polygon overlay click opens the card and leaves selection alone', async () => {
     server.use(
       http.get('/api/bulk-polygons', () => HttpResponse.json({ response: [smallPoly] })),
     );
@@ -326,9 +328,8 @@ describe('PolygonBuilder - extra branch coverage', () => {
     act(() => {
       polyClick.cb();
     });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Save coverage as Route \(1\)/ })).toBeInTheDocument(),
-    );
+    expect(await screen.findByTestId('pb-polygon-card')).toHaveAttribute('aria-label', 'Polygon ExtraPoly');
+    expect(screen.queryByRole('button', { name: /Save coverage as Route \(1\)/ })).not.toBeInTheDocument();
   });
 
   it('Escape during pending mode discards the draft', async () => {

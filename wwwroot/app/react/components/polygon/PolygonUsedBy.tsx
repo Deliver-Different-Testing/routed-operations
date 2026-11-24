@@ -21,13 +21,16 @@ export function PolygonAppBadges({ apps }: { apps?: PolygonAppCode[] | null }) {
   );
 }
 
-/** Ask before PERIMETER is turned on or off (spec 4.4.3). Resolves true on
- *  Continue. `confirm` is the page's useConfirm() function. */
+/** Ask before PERIMETER is turned on or off (spec 4.4.3), or before a City
+ *  boundary polygon gets a new shape (review C4, pass
+ *  PERIMETER_RESHAPE_TITLE). Resolves true on Continue. `confirm` is the
+ *  page's useConfirm() function. */
 export function confirmPerimeterChange(
   confirm: (opts: { title?: string; message: string; confirmLabel?: string; cancelLabel?: string }) => Promise<boolean>,
+  title = 'City boundary',
 ): Promise<boolean> {
   return confirm({
-    title: 'City boundary',
+    title,
     message: PERIMETER_CONFIRM_TEXT,
     confirmLabel: 'Continue',
     cancelLabel: 'Cancel',
@@ -45,11 +48,14 @@ interface UsedByTogglesProps {
   polygon?: Partial<Pick<BulkPolygon, 'zoneMemberships' | 'postcodeGroupId' | 'zoneNameId' | 'attachedRouteCount' | 'attachedRoutes' | 'name'>>;
   /** Accessible-name suffix so each row's buttons are distinct. */
   nameSuffix?: string;
+  /** 'chip' draws the polygon card's chips with a tick box (review C6, as
+   *  in Steve's mock); the default is the round pill buttons. */
+  variant?: 'pill' | 'chip';
 }
 
 /** "Used by" row of toggle buttons: Schedules, Auto Dispatch, Routes, Zone
  *  rating, City boundary (spec 4.4.3). */
-export function PolygonUsedByToggles({ apps, onToggle, disabled = false, polygon, nameSuffix }: UsedByTogglesProps) {
+export function PolygonUsedByToggles({ apps, onToggle, disabled = false, polygon, nameSuffix, variant = 'pill' }: UsedByTogglesProps) {
   // Q4: unticking an app the polygon is still bound to is allowed, but
   // availability keeps reading the binding. Say so in one line.
   const notes = polygon
@@ -64,6 +70,26 @@ export function PolygonUsedByToggles({ apps, onToggle, disabled = false, polygon
         <span className="text-[9px] uppercase tracking-wide text-text-muted mr-0.5">Used by</span>
         {POLYGON_APPS.map((a) => {
           const on = apps.includes(a);
+          if (variant === 'chip') {
+            return (
+              <button key={a} type="button" disabled={disabled}
+                aria-pressed={on}
+                aria-label={nameSuffix ? `${APP_META[a].label} for ${nameSuffix}` : APP_META[a].label}
+                onClick={() => onToggle(a, !on)}
+                title={APP_META[a].hint}
+                data-testid="pb-used-by-chip"
+                className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border disabled:opacity-40 ${on
+                  ? 'font-semibold text-text-primary'
+                  : 'border-border text-text-muted hover:text-text-primary'} ${a === 'PERIMETER' && on ? 'border-dashed' : ''}`}
+                style={on ? { borderColor: APP_META[a].colour, background: `${APP_META[a].colour}22` } : undefined}>
+                <span aria-hidden="true"
+                  className="inline-flex items-center justify-center w-3 h-3 rounded-sm border border-border bg-surface-white text-[9px] leading-none">
+                  {on ? '✓' : ''}
+                </span>
+                {APP_META[a].label}
+              </button>
+            );
+          }
           return (
             <button key={a} type="button" disabled={disabled}
               aria-pressed={on}
