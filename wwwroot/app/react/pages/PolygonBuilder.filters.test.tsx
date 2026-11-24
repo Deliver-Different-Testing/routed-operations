@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
@@ -26,6 +26,12 @@ vi.mock('@googlemaps/markerclusterer', () => ({
 }));
 
 import PolygonBuilder from './PolygonBuilder';
+
+/** The last button with this name: the confirm dialog renders after the page. */
+const lastButton = (name: string) => {
+  const all = screen.getAllByRole('button', { name });
+  return all[all.length - 1];
+};
 
 const square = (lat: number, lng: number) => [
   { ringIndex: 0, orderIndex: 0, lat, lng },
@@ -82,6 +88,12 @@ const rowNames = () => screen.queryAllByTestId('pb-polygon-row')
 const countText = () => screen.getByTestId('pb-filter-count').textContent;
 const rowFor = (name: string) => screen.getAllByTestId('pb-polygon-row')
   .find((r) => r.querySelector('button')?.textContent === name)!;
+
+/** Open a polygon's card by clicking its name in the list (review C6). */
+async function openCard(name: string) {
+  fireEvent.click(within(rowFor(name)).getByRole('button', { name }));
+  return screen.findByTestId('pb-polygon-card');
+}
 
 async function openUsedBy() {
   fireEvent.click(within(screen.getByTestId('pb-filter-usedby')).getByRole('button', { name: /Used by/ }));
@@ -316,7 +328,7 @@ describe('PolygonBuilder - list badges and bulk Used by (spec 4.4.2)', () => {
   });
 });
 
-describe('PolygonBuilder - panel Used by toggles (spec 4.4.3)', () => {
+describe('PolygonBuilder - card Used by toggles (spec 4.4.3, review C6)', () => {
   it('a toggle saves the new app list through PUT /api/bulk-polygons/{id}', async () => {
     let sent: any = null;
     server.use(http.put('/api/bulk-polygons/1', async ({ request }) => {
@@ -325,7 +337,8 @@ describe('PolygonBuilder - panel Used by toggles (spec 4.4.3)', () => {
     }));
     renderWithProviders(<PolygonBuilder />);
     await screen.findByText('AD Deep East');
-    fireEvent.click(screen.getByRole('button', { name: 'Routes for AD Deep East' }));
+    const card = await openCard('AD Deep East');
+    fireEvent.click(within(card).getByRole('button', { name: 'Routes for AD Deep East' }));
     await waitFor(() => expect(sent).toEqual({ name: 'AD Deep East', layer: 'AD', apps: ['AUTODISPATCH', 'ROUTES'] }));
     await waitFor(() => expect(within(rowFor('AD Deep East')).getByTestId('pb-app-badges').textContent).toBe('ADRt'));
   });
@@ -338,7 +351,8 @@ describe('PolygonBuilder - panel Used by toggles (spec 4.4.3)', () => {
     }));
     renderWithProviders(<PolygonBuilder />);
     await screen.findByText('Marcus test 2');
-    fireEvent.click(screen.getByRole('button', { name: 'City boundary for Marcus test 2' }));
+    const card = await openCard('Marcus test 2');
+    fireEvent.click(within(card).getByRole('button', { name: 'City boundary for Marcus test 2' }));
     await screen.findByText(PERIMETER_CONFIRM_TEXT);
     expect(sent).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -352,10 +366,206 @@ describe('PolygonBuilder - panel Used by toggles (spec 4.4.3)', () => {
     }));
     renderWithProviders(<PolygonBuilder />);
     await screen.findByText('MC8 Otahuhu');
+    const card = await openCard('MC8 Otahuhu');
     expect(screen.queryByTestId('pb-used-by-note')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Schedules for MC8 Otahuhu' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Schedules for MC8 Otahuhu' }));
     const note = await screen.findByTestId('pb-used-by-note');
     expect(note.textContent).toContain('availability still uses the binding');
     expect(note.textContent).toContain('1 zone membership');
+  });
+});
+
+describe('PolygonBuilder - polygon card (review C6, Steve mock)', () => {
+  /** Click handlers registered on the coverage polygon overlays, in list order. */
+  const polygonClicks = () => {
+    const g = (window as any).google;
+    const instances: any[] = g.maps.Polygon.mock.instances;
+    return (g.__listeners.click ?? []).filter((l: any) => instances.includes(l.owner));
+  };
+
+  it('list rows carry badges but no Used by toggles', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    expect(screen.queryByTestId('pb-polygon-card')).toBeNull();
+    for (const row of screen.getAllByTestId('pb-polygon-row')) {
+      expect(within(row).queryByTestId('pb-used-by')).toBeNull();
+      expect(within(row).getByTestId('pb-app-badges')).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: 'Routes for AD Deep East' })).toBeNull();
+  });
+
+  it('clicking a row name opens one card with name, layer, zone, chips, hint and Updated; the row is highlighted', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('MC8 Otahuhu');
+    let card = await openCard('MC8 Otahuhu');
+    expect(within(card).getByTestId('pb-polygon-card-name').textContent).toBe('MC8 Otahuhu');
+    expect(within(card).getByTestId('pb-polygon-card-layer').textContent).toBe('LayerRoutes');
+    expect(within(card).getByTestId('pb-polygon-card-zone').textContent).toBe('ZoneStd Auckland - Zone 3');
+    expect(within(card).getByRole('button', { name: 'Schedules for MC8 Otahuhu' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(card).getByRole('button', { name: 'Auto Dispatch for MC8 Otahuhu' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(card).getAllByTestId('pb-used-by-chip')).toHaveLength(5);
+    expect(within(card).getByText('Each app only lists the polygons ticked for it.')).toBeInTheDocument();
+    expect(within(card).getByTestId('pb-polygon-card-updated').textContent).toMatch(/^Created /);
+    expect(rowFor('MC8 Otahuhu').getAttribute('data-card-open')).toBe('true');
+
+    // A second polygon replaces the first card: one card at a time.
+    card = await openCard('Marcus test 2');
+    expect(screen.getAllByTestId('pb-polygon-card')).toHaveLength(1);
+    expect(within(card).getByTestId('pb-polygon-card-layer').textContent).toBe('LayerNo layer');
+    expect(within(card).getByTestId('pb-polygon-card-zone').textContent).toBe('Zonenot in a zone');
+    expect(rowFor('MC8 Otahuhu').getAttribute('data-card-open')).toBe('false');
+  });
+
+  it('City boundary card shows a dashed swatch; turning it off asks first and Cancel saves nothing', async () => {
+    let calls = 0;
+    server.use(http.put('/api/bulk-polygons/3', () => { calls++; return HttpResponse.json({ response: data[2] }); }));
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('Auckland metro boundary');
+    const card = await openCard('Auckland metro boundary');
+    expect(within(card).getByTestId('pb-polygon-card-swatch').getAttribute('data-perimeter')).toBe('true');
+    fireEvent.click(within(card).getByRole('button', { name: 'City boundary for Auckland metro boundary' }));
+    await screen.findByText(PERIMETER_CONFIRM_TEXT);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText(PERIMETER_CONFIRM_TEXT)).toBeNull());
+    expect(calls).toBe(0);
+  });
+
+  it('clicking a shape on the map opens its card; x and Escape close it', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    await waitFor(() => expect(polygonClicks().length).toBe(4));
+    act(() => polygonClicks()[2].cb({}));
+    const card = await screen.findByTestId('pb-polygon-card');
+    expect(within(card).getByTestId('pb-polygon-card-name').textContent).toBe('Auckland metro boundary');
+    fireEvent.click(within(card).getByRole('button', { name: 'Close polygon card' }));
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+
+    await openCard('AD Deep East');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+  });
+
+  it('the card closes when its polygon is filtered out, and when it is removed', async () => {
+    server.use(http.delete('/api/bulk-polygons/4', () => HttpResponse.json({ response: true })));
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    await openCard('AD Deep East');
+    fireEvent.change(screen.getByLabelText('Search polygons'), { target: { value: 'otahuhu' } });
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+    // Clearing the filter does not bring the closed card back.
+    fireEvent.click(within(screen.getByTestId('pb-filter-bar')).getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(rowNames()).toHaveLength(4));
+    expect(screen.queryByTestId('pb-polygon-card')).toBeNull();
+
+    await openCard('Marcus test 2');
+    fireEvent.click(within(rowFor('Marcus test 2')).getByRole('button', { name: 'Remove' }));
+    await screen.findByText('Remove coverage polygon');
+    fireEvent.click(lastButton('Remove'));
+    await waitFor(() => expect(screen.queryByText('Marcus test 2')).toBeNull());
+    expect(screen.queryByTestId('pb-polygon-card')).toBeNull();
+  });
+
+  it('Edit shape in the card starts edit mode; the card does not open while editing', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    const card = await openCard('AD Deep East');
+    fireEvent.click(within(card).getByRole('button', { name: 'Edit shape' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Done editing/ }).length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('pb-polygon-card')).toBeNull();
+    fireEvent.click(within(rowFor('MC8 Otahuhu')).getByRole('button', { name: 'MC8 Otahuhu' }));
+    act(() => polygonClicks()[0]?.cb({}));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('pb-polygon-card')).toBeNull();
+  });
+});
+
+describe('PolygonBuilder - polygon card, Kevin addendum 1', () => {
+  const overlayClicks = () => {
+    const g = (window as any).google;
+    const instances: any[] = g.maps.Polygon.mock.instances;
+    return (g.__listeners.click ?? []).filter((l: any) => instances.includes(l.owner));
+  };
+  const checkboxFor = (name: string) => within(rowFor(name)).getByRole('checkbox') as HTMLInputElement;
+
+  it('a map click on a shape opens its card and leaves its selection alone (review C1)', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    await waitFor(() => expect(overlayClicks().length).toBe(4));
+    // Not ticked: stays unticked.
+    act(() => overlayClicks()[0].cb({}));
+    await screen.findByTestId('pb-polygon-card');
+    expect(checkboxFor('AD Deep East').checked).toBe(false);
+    // Ticked: stays ticked.
+    fireEvent.click(checkboxFor('Marcus test 2'));
+    expect(checkboxFor('Marcus test 2').checked).toBe(true);
+    act(() => overlayClicks()[3].cb({}));
+    await waitFor(() => expect(screen.getByTestId('pb-polygon-card-name').textContent).toBe('Marcus test 2'));
+    expect(checkboxFor('Marcus test 2').checked).toBe(true);
+  });
+
+  it('the City boundary swatch on the card is dashed in the polygon colour (review C3)', async () => {
+    // Its own colour (review N5): give it one so the check is exact.
+    (data[2] as any).colorHex = '#123abc';
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('Auckland metro boundary');
+    const card = await openCard('Auckland metro boundary');
+    const swatch = within(card).getByTestId('pb-polygon-card-swatch');
+    expect(swatch.className).toContain('border-dashed');
+    expect(swatch.style.borderColor).toBe('rgb(18, 58, 188)');
+  });
+
+  it('the card is a named region and takes focus when it opens (review C4)', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    const card = await openCard('AD Deep East');
+    expect(screen.getByRole('region', { name: 'Polygon AD Deep East' })).toBe(card);
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    // Escape still closes it with focus on the card.
+    fireEvent.keyDown(card, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+  });
+
+  it('closing the card with x or Escape gives focus back to its row name (review N4)', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    const rowName = () => within(rowFor('AD Deep East')).getByRole('button', { name: 'AD Deep East' });
+    let card = await openCard('AD Deep East');
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    fireEvent.click(within(card).getByRole('button', { name: 'Close polygon card' }));
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+    expect(document.activeElement).toBe(rowName());
+
+    card = await openCard('AD Deep East');
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    fireEvent.keyDown(card, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('pb-polygon-card')).toBeNull());
+    expect(document.activeElement).toBe(rowName());
+  });
+
+  it('the card does not take focus from the search box', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    await waitFor(() => expect(overlayClicks().length).toBe(4));
+    const search = screen.getByLabelText('Search polygons');
+    search.focus();
+    act(() => overlayClicks()[0].cb({}));
+    await screen.findByTestId('pb-polygon-card');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('the card Zoom button fits the map to that polygon (review C7)', async () => {
+    renderWithProviders(<PolygonBuilder />);
+    await screen.findByText('AD Deep East');
+    const card = await openCard('AD Deep East');
+    const g = (window as any).google;
+    const map = g.maps.Map.mock.instances[0];
+    map.fitBounds.mockClear();
+    const boundsBefore = g.maps.LatLngBounds.mock.instances.length;
+    fireEvent.click(within(card).getByRole('button', { name: 'Zoom' }));
+    expect(map.fitBounds).toHaveBeenCalledTimes(1);
+    const bounds = g.maps.LatLngBounds.mock.instances[boundsBefore];
+    expect(map.fitBounds).toHaveBeenCalledWith(bounds);
+    expect(bounds.extend).toHaveBeenCalledWith({ lat: -36.85, lng: 174.76 });
   });
 });

@@ -35,8 +35,10 @@ import { BoundaryNetworkCache, followBoundary, closingPath, type BoundaryRing } 
 import { NO_LAYER, groupByLayer, layerNames, layerOf, polygonColour } from '../lib/polygonLayers';
 import {
   APP_META, appsOf, clearFilters, filterPolygons, isPerimeter, loadFilters, saveFilters, withApp, zoneText,
+  PERIMETER_CONFIRM_TEXT, PERIMETER_REMOVE_TITLE, PERIMETER_RESHAPE_TITLE,
   type PolygonFilterState,
 } from '../lib/polygonFilters';
+import { PolygonCard } from '../components/polygon/PolygonCard';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -203,6 +205,13 @@ export default function PolygonBuilder() {
 
   // Bulk polygon state (Stage 3).
   const [polygons, setPolygons] = useState<BulkPolygon[]>([]);
+  // The latest polygons, for edit-mode handlers. A handle's listeners close
+  // over the polygons of the render that drew it, and a handle can outlive a
+  // save, so the shape save and its revert read the saved shape from here
+  // (Kevin 2026-11-24, review N1). commitShape also writes the server's
+  // answer here straight away, before React re-renders.
+  const polygonsRef = useRef<BulkPolygon[]>(polygons);
+  polygonsRef.current = polygons;
   const [mode, setMode] = useState<Mode>('view');
   const [drawingVertices, setDrawingVertices] = useState<LatLng[]>([]);
   // Point-by-point drawing bookkeeping (2026-11-12). One entry per click:
@@ -226,6 +235,28 @@ export default function PolygonBuilder() {
   const [bulkAppsBusy, setBulkAppsBusy] = useState(false);
   // Polygon whose Used by toggles are saving.
   const [appsSavingId, setAppsSavingId] = useState<number | null>(null);
+  // Polygon card (review C6): the one polygon whose card is open over the
+  // map, or null. Only shown in view mode.
+  const [openCardId, setOpenCardId] = useState<number | null>(null);
+  // Close the card when its polygon is removed or the filter hides it, and
+  // whenever the page leaves view mode (drawing, editing, boolean ops).
+  useEffect(() => {
+    if (openCardId == null) return;
+    if (mode !== 'view' || !matchingIds.has(openCardId)) setOpenCardId(null);
+  }, [openCardId, mode, matchingIds]);
+  // Close the card from its x or Escape, and give focus back to the
+  // polygon's row name in the list, if the row is still there, so keyboard
+  // focus does not drop to the page body (review N4).
+  const closeCard = () => {
+    const id = openCardId;
+    setOpenCardId(null);
+    if (id == null) return;
+    // Leave focus alone if the operator is typing in a box (review N6).
+    const active = document.activeElement as HTMLElement | null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'
+      || active.tagName === 'SELECT' || active.isContentEditable)) return;
+    document.querySelector<HTMLButtonElement>(`[data-pb-row-name="${id}"]`)?.focus();
+  };
 
   const [zipSaveOpen, setZipSaveOpen] = useState(false);
   const [polygonSaveOpen, setPolygonSaveOpen] = useState(false);
@@ -344,6 +375,20 @@ export default function PolygonBuilder() {
   // Cleared on stopEdit - undo is a within-session concept only.
   const MAX_UNDO_STACK = 20;
   const editUndoStackRef = useRef<Array<{ polygonId: number; rings: LatLng[][] }>>([]);
+  // The City boundary polygon whose vertex edits were already OK-ed in this
+  // edit session (Kevin 2026-11-24: ask once per session). Cleared whenever
+  // the edit session ends; see the effect below.
+  const perimeterOkEditRef = useRef<number | null>(null);
+  useEffect(() => {
+    // The boolean-op drawing modes (lassoing / rectangling / circling) are
+    // part of an edit session when a boolean op targets the edited polygon,
+    // so they keep it; any other mode or a different polygon ends it.
+    if (typeof mode === 'object') {
+      if (perimeterOkEditRef.current !== mode.edit) perimeterOkEditRef.current = null;
+    } else if (!(pendingBooleanOpRef.current && (mode === 'lassoing' || mode === 'rectangling' || mode === 'circling'))) {
+      perimeterOkEditRef.current = null;
+    }
+  }, [mode]);
   // Version counter to force re-render of the Undo button's disabled
   // state when the stack changes. The ref itself doesn't trigger
   // renders; bumping this on every push / pop does.
@@ -838,7 +883,13 @@ export default function PolygonBuilder() {
         poly = new g.maps.Polygon({
           paths: rings, map: mapRef.current, clickable,
         });
-        poly.addListener('click', () => togglePolygonSelected(p.polygonId));
+        // Clicking a shape only opens its card (review C6). Selection is
+        // left to the list checkboxes (Kevin 2026-11-24). The overlay is only
+        // clickable in view mode on a matching polygon, so drawing / editing
+        // clicks never reach here.
+        poly.addListener('click', () => {
+          setOpenCardId(p.polygonId);
+        });
         poly.addListener('rightclick', (e: any) => {
           if (!e.domEvent) return;
           setContextMenu({
@@ -1447,6 +1498,7 @@ export default function PolygonBuilder() {
     // rings differs; everything downstream (ops, undo, toast) is shared.
     const isPending = polygonId === PENDING_ID;
     let currentRings: LatLng[][];
+    let targetIsPerimeter = false;
     if (isPending) {
       if (!pendingPolygon || pendingPolygon.length === 0) {
         toast.show('No pending shape to modify.', 'error');
@@ -1460,6 +1512,7 @@ export default function PolygonBuilder() {
         return;
       }
       currentRings = pointsToLatLngRings(target.points);
+      targetIsPerimeter = isPerimeter(target);
     }
     if (currentRings.length === 0 || currentRings[0].length < 3) {
       toast.show('Target polygon has no valid geometry to modify.', 'error');
@@ -1512,6 +1565,11 @@ export default function PolygonBuilder() {
       );
       return;
     }
+
+    // A City boundary's new shape moves distance prices (review C4): ask
+    // first. Cancel saves nothing and pushes no undo step; the caller's
+    // finally() puts the operator back in edit mode on the saved shape.
+    if (targetIsPerimeter && !(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return;
 
     // Push the PRIOR shape onto the undo stack BEFORE we mutate. Same
     // stack for pending + saved (keyed by polygonId or PENDING_ID). Cap
@@ -1622,6 +1680,15 @@ export default function PolygonBuilder() {
     while (editUndoStackRef.current.length > 0
         && editUndoStackRef.current[editUndoStackRef.current.length - 1].polygonId !== targetId) {
       editUndoStackRef.current.pop();
+    }
+    // Undo puts an older shape back on a saved polygon, so for a City
+    // boundary it moves prices too (review C4): ask before taking the step
+    // off the stack, so Cancel leaves both the shape and the stack as they are.
+    const top = editUndoStackRef.current[editUndoStackRef.current.length - 1];
+    if (top && top.polygonId !== PENDING_ID) {
+      const target = polygons.find((p) => p.polygonId === top.polygonId);
+      if (target && isPerimeter(target)
+          && !(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return;
     }
     const snap = editUndoStackRef.current.pop();
     setUndoVersion((v) => v + 1);
@@ -2339,6 +2406,7 @@ export default function PolygonBuilder() {
         if (mode === 'circling') { cancelCircle(); return; }
         if (mode === 'pending') { discardPending(); return; }
         if (editingId != null) { stopEdit(); return; }
+        if (openCardId != null) { closeCard(); return; }
       }
       if (e.key === 'Enter' && mode === 'pending') {
         e.preventDefault();
@@ -2388,7 +2456,7 @@ export default function PolygonBuilder() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, contextMenu, drawingVertices]);
+  }, [mode, contextMenu, drawingVertices, openCardId]);
 
   // Pending polygon mode: renders the draft polygon on the map with
   // draggable vertex + midpoint handles so the operator can refine it
@@ -2615,6 +2683,20 @@ export default function PolygonBuilder() {
 
     // Helper: current paths for the overlay = every ring, in order.
     const currentPaths = (): LatLng[][] => workingRings;
+    // Save the working rings; if the operator cancels the City boundary
+    // confirm (review C4) or the save fails, put the saved shape back on
+    // screen so it matches the server. Edit mode stays open either way.
+    const saveOrRevert = async () => {
+      if (await commitShape(mode.edit, workingRings)) return;
+      // The latest saved shape, not the `polygon` this effect run started
+      // from: an earlier save in this session may have changed it (N1).
+      const latest = polygonsRef.current.find((p) => p.polygonId === mode.edit) ?? polygon;
+      const saved = pointsToLatLngRings(latest.points)
+        .filter((r) => r.length >= 3)
+        .map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng })));
+      workingRings.splice(0, workingRings.length, ...saved);
+      editPolyRef.current?.setPaths(currentPaths());
+    };
 
     editPolyRef.current = new g.maps.Polygon({
       paths: currentPaths(), map: mapRef.current,
@@ -2689,7 +2771,7 @@ export default function PolygonBuilder() {
               workingRings[ri][vi] = snapped;
               editPolyRef.current?.setPaths(currentPaths());
             }
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           handle.addListener('rightclick', async () => {
@@ -2700,7 +2782,7 @@ export default function PolygonBuilder() {
               if (workingRings.length > 1) {
                 workingRings.splice(ri, 1);
                 editPolyRef.current?.setPaths(currentPaths());
-                await commitShape(mode.edit, workingRings);
+                await saveOrRevert();
                 renderHandles();
                 return;
               }
@@ -2709,7 +2791,7 @@ export default function PolygonBuilder() {
             }
             workingRings[ri].splice(vi, 1);
             editPolyRef.current?.setPaths(currentPaths());
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           editHandlesRef.current.push(handle);
@@ -2742,7 +2824,7 @@ export default function PolygonBuilder() {
           marker.addListener('click', async () => {
             workingRings[ri].splice(vi + 1, 0, mid);
             editPolyRef.current?.setPaths(currentPaths());
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           editMidpointsRef.current.push(marker);
@@ -2778,11 +2860,25 @@ export default function PolygonBuilder() {
    *  the PolygonPointDto structure the API expects, snapshots the
    *  prior state onto the undo stack after server-accept, and updates
    *  local polygon state from the response. */
-  const commitShape = async (id: number, workingRings: LatLng[][]) => {
+  const commitShape = async (id: number, workingRings: LatLng[][]): Promise<boolean> => {
     // Snapshot the current state BEFORE the API round-trip so Undo can
     // revert the change (single stack entry per commit, across all
     // ops - vertex drag / midpoint insert / vertex delete / boolean).
-    const current = polygons.find((p) => p.polygonId === id);
+    // Read from polygonsRef, not `polygons`: a vertex handle can call this
+    // through a closure from before an earlier save (review N1).
+    let current = polygonsRef.current.find((p) => p.polygonId === id);
+    // A City boundary's new shape moves distance prices (review C4): ask
+    // first, once per edit session (Kevin 2026-11-24): after Continue, later
+    // vertex saves on the same polygon in this session do not ask again.
+    // Returns false on Cancel so the caller puts the saved shape back.
+    let okJustGiven = false;
+    if (current && isPerimeter(current) && perimeterOkEditRef.current !== id) {
+      if (!(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return false;
+      perimeterOkEditRef.current = id;
+      okJustGiven = true;
+      // The dialog may have been open a while: snapshot the shape as it is now.
+      current = polygonsRef.current.find((p) => p.polygonId === id);
+    }
     const currentRings = current ? pointsToLatLngRings(current.points) : [];
     const priorSnapshot = currentRings.length > 0
       ? { polygonId: id, rings: currentRings }
@@ -2801,6 +2897,8 @@ export default function PolygonBuilder() {
       const res = await bulkPolygonService.updateShape(id, {
         points, centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
       });
+      polygonsRef.current = polygonsRef.current.map((p) =>
+        p.polygonId === id ? res.response : p);
       setPolygons((prev) => prev.map((p) =>
         p.polygonId === id ? res.response : p));
       // Push the pre-op snapshot onto the undo stack only after the
@@ -2810,7 +2908,16 @@ export default function PolygonBuilder() {
         pushUndoSnapshot(priorSnapshot);
       }
       toast.show(`Shape saved.${derivedZipsToastTrailer(res.response)}`, 'success');
-    } catch (e) { toast.show((e as Error).message, 'error'); }
+    } catch (e) {
+      // The server kept the old shape: return false so the caller puts it
+      // back on screen, the same as Cancel. No undo step was pushed. An OK
+      // given for this save does not count once it failed, so the retry
+      // asks again (Kevin 2026-11-24, review N3).
+      if (okJustGiven) perimeterOkEditRef.current = null;
+      toast.show((e as Error).message, 'error');
+      return false;
+    }
+    return true;
   };
 
   const clearEditHandles = () => {
@@ -2847,9 +2954,12 @@ export default function PolygonBuilder() {
     const msg = p.attachedRouteCount > 0
       ? `"${p.name}" is attached to ${p.attachedRouteCount} active route(s). Remove anyway?`
       : `Remove "${p.name}"?`;
+    // A City boundary moves distance prices when it goes (review C4): one
+    // dialog that says so. Other polygons keep the plain remove dialog.
+    const perimeter = isPerimeter(p);
     if (!(await askConfirm({
-      title: 'Remove coverage polygon',
-      message: msg,
+      title: perimeter ? PERIMETER_REMOVE_TITLE : 'Remove coverage polygon',
+      message: perimeter ? `${msg} ${PERIMETER_CONFIRM_TEXT}` : msg,
       confirmLabel: 'Remove',
       danger: true,
     }))) return;
@@ -3259,11 +3369,15 @@ export default function PolygonBuilder() {
                   const color = polygonColour(p, POLYGON_PALETTE);
                   const isChecked = selectedPolygons.has(p.polygonId);
                   const isEditing = editingId === p.polygonId;
+                  const isCardOpen = openCardId === p.polygonId;
                   const zone = zoneText(p);
                   return (
                     <li key={p.polygonId}
                       data-testid="pb-polygon-row"
-                      className={`px-2 py-1 rounded border ${isEditing ? 'border-warning bg-warning/10' : 'border-border-light'}`}>
+                      data-card-open={isCardOpen}
+                      className={`px-2 py-1 rounded border ${isEditing
+                        ? 'border-warning bg-warning/10'
+                        : isCardOpen ? 'border-brand-purple bg-brand-purple/10' : 'border-border-light'}`}>
                       <label className="flex items-start gap-1.5">
                         <input type="checkbox" checked={isChecked} className="mt-0.5"
                           onChange={() => togglePolygonSelected(p.polygonId)} />
@@ -3286,9 +3400,12 @@ export default function PolygonBuilder() {
                               });
                               // Also pan / zoom the map to bring the shape into view.
                               zoomToPolygon(p);
+                              // And open its card (review C6), in view mode only.
+                              if (mode === 'view') setOpenCardId(p.polygonId);
                             }}
+                            data-pb-row-name={p.polygonId}
                             className="block w-full truncate font-medium text-left hover:underline"
-                            title="Click to select this polygon and zoom the map to it"
+                            title="Click to select this polygon, zoom the map to it and open its card"
                           >{p.name}</button>
                           {zone && (
                             <span className="block truncate text-[10px] text-text-muted" title={zone}>{zone}</span>
@@ -3296,15 +3413,6 @@ export default function PolygonBuilder() {
                         </span>
                         <PolygonAppBadges apps={p.apps} />
                       </label>
-                      <div className="ml-5 mt-0.5">
-                        <PolygonUsedByToggles
-                          apps={appsOf(p)}
-                          polygon={p}
-                          nameSuffix={p.name}
-                          disabled={appsSavingId === p.polygonId}
-                          onToggle={(app, on) => { void togglePolygonApp(p, app, on); }}
-                        />
-                      </div>
                       {/* Layer chip + inline "move to layer" editor. */}
                       <div className="ml-5 mt-0.5 flex items-center gap-1">
                         {layerEditing?.polygonId === p.polygonId ? (
@@ -3622,6 +3730,34 @@ export default function PolygonBuilder() {
         <div className="flex-1 relative">
           <div ref={mapContainerRef} className="h-full w-full" />
           <PolygonMapLegend />
+          {(() => {
+            // Polygon card (review C6). The close effect clears openCardId
+            // when the polygon goes, is filtered out, or the mode changes;
+            // the guards here only cover the render before it runs.
+            const p = mode === 'view' && openCardId != null && matchingIds.has(openCardId)
+              ? polygons.find((x) => x.polygonId === openCardId)
+              : undefined;
+            if (!p) return null;
+            return (
+              <PolygonCard
+                polygon={p}
+                colour={polygonColour(p, POLYGON_PALETTE)}
+                updatedText={p.lastModifiedUtc
+                  ? `Updated ${formatAuditDate(p.lastModifiedUtc)}`
+                  : `Created ${formatAuditDate(p.createdUtc)}`}
+                updatedTitle={p.lastModifiedUtc
+                  ? `Last updated by ${p.updatedBy ?? '(unknown)'}`
+                  : `Created by ${p.createdBy}`}
+                saving={appsSavingId === p.polygonId}
+                editDisabledReason={p.points.length > MAX_EDIT_HANDLE_VERTICES
+                  ? 'Too many vertices - use Cut/Add/Clip in edit mode instead' : undefined}
+                onToggleApp={(app, on) => { void togglePolygonApp(p, app, on); }}
+                onEditShape={() => startEdit(p.polygonId)}
+                onZoom={() => zoomToPolygon(p)}
+                onClose={closeCard}
+              />
+            );
+          })()}
         </div>
       </div>
 
