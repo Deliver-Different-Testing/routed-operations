@@ -1,5 +1,16 @@
 import { ApiError, request } from './api';
 
+// #333: a suburb fix remembered for a client (tblBulkSuburbAlias).
+export interface SuburbAliasDto {
+  id: number;
+  clientId: number | null;
+  rawSuburb: string;
+  rawPostCode: string | null;
+  suburbId: number;
+  suburbName: string | null;
+  postCode: string | null;
+}
+
 /**
  * Bulk Import direct-insert client (Phase 1 rewrite - 2026-07-22).
  *
@@ -497,6 +508,28 @@ export const bulkImportService = {
       method: 'POST',
       body: JSON.stringify(payload),
     }).then((raw) => ({ response: raw })),
+
+  // #333 suburb memory. Client rows first, then tenant-wide rows.
+  getSuburbAliases: (clientId: number): Promise<{ response: BulkBaseResponse & { aliases: SuburbAliasDto[] } }> =>
+    request<BulkBaseResponse & { aliases: SuburbAliasDto[] }>(
+      `/bulk-import/suburb-aliases?clientId=${encodeURIComponent(clientId)}`
+    ).then((raw) => ({ response: raw })),
+
+  rememberSuburbAlias: (payload: {
+    clientId: number;
+    rawSuburb: string;
+    rawPostCode: string | null;
+    suburbId: number;
+  }): Promise<{ response: BulkBaseResponse & { alias: SuburbAliasDto } }> =>
+    request<BulkBaseResponse & { alias: SuburbAliasDto }>('/bulk-import/suburb-aliases', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then((raw) => ({ response: raw })),
+
+  forgetSuburbAlias: (id: number): Promise<{ response: BulkBaseResponse }> =>
+    request<BulkBaseResponse>(`/bulk-import/suburb-aliases/${id}`, { method: 'DELETE' }).then((raw) => ({
+      response: raw,
+    })),
 
   deleteRouted: (id: number): Promise<{ response: BulkBaseResponse }> =>
     request<BulkBaseResponse>(`/bulk-import/jobs/${id}`, { method: 'DELETE' }).then((raw) => ({

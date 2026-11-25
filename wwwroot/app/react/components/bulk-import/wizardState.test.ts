@@ -192,6 +192,16 @@ describe('wizardReducer - primitive setters', () => {
     expect(next.fixedZips['02110']).toBe('02111');
   });
 
+  // NZ suburb names repeat (two Newtons), so the picked tucSuburb id is kept
+  // with the fix; a later fix without an id must not leave a stale one.
+  it('SET_FIXED_ZIP keeps the picked suburb id and clears it on a fix without one', () => {
+    const s = initialWizardState();
+    const picked = wizardReducer(s, { type: 'SET_FIXED_ZIP', badZip: 'nuton|1010', corrected: 'Newton', suburbId: 6 });
+    expect(picked.fixedSuburbIds['nuton|1010']).toBe(6);
+    const cleared = wizardReducer(picked, { type: 'SET_FIXED_ZIP', badZip: 'nuton|1010', corrected: '' });
+    expect(cleared.fixedSuburbIds['nuton|1010']).toBeUndefined();
+  });
+
   it('SET_FIXED_ADDRESS records coords keyed by row index', () => {
     const s = initialWizardState();
     const next = wizardReducer(s, {
@@ -290,10 +300,49 @@ describe('wizardReducer - primitive setters', () => {
 });
 
 describe('wizardReducer - Batch D export + postcode fixes', () => {
-  it('SET_FIXED_POSTCODE records the geocoder postcode per row', () => {
-    let s = wizardReducer(initialWizardState(), { type: 'SET_FIXED_POSTCODE', rowIndex: 3, postCode: '0612' });
-    s = wizardReducer(s, { type: 'SET_FIXED_POSTCODE', rowIndex: 5, postCode: '8011' });
-    expect(s.fixedPostCodes).toEqual({ 3: '0612', 5: '8011' });
+  // A suburb the map suggests replaces the operator's pick, so the picked
+  // tucSuburb id must go too, or the select shows the old pick.
+  it('an accepted suburb suggestion drops the picked suburb id for that key', () => {
+    let s = wizardReducer(initialWizardState(), { type: 'SET_FIXED_ZIP', badZip: 'nuton|1010', corrected: 'Newton', suburbId: 6 });
+    s = wizardReducer(s, {
+      type: 'ADD_GEOCODE_SUGGESTION', key: 'sub:1',
+      suggestion: { kind: 'suburb', rowIndex: 1, sheet: 'Nuton', map: 'Grafton', zipKey: 'nuton|1010', decision: 'pending' },
+    });
+    s = wizardReducer(s, { type: 'DECIDE_SUGGESTION', key: 'sub:1', decision: 'accept' });
+    expect(s.fixedZips['nuton|1010']).toBe('Grafton');
+    expect(s.fixedSuburbIds['nuton|1010']).toBeUndefined();
+  });
+
+  // #332: the map's value is used only once the operator accepts it, and
+  // keeping the sheet value takes an earlier accept back out.
+  it('a geocode suggestion reaches fixedPostCodes / fixedZips only when accepted', () => {
+    let s = wizardReducer(initialWizardState(), {
+      type: 'ADD_GEOCODE_SUGGESTION', key: 'pc:1',
+      suggestion: { kind: 'postCode', rowIndex: 1, sheet: '0614', map: '1062', decision: 'pending' },
+    });
+    s = wizardReducer(s, {
+      type: 'ADD_GEOCODE_SUGGESTION', key: 'sub:1',
+      suggestion: { kind: 'suburb', rowIndex: 1, sheet: 'Ponsonbie', map: 'Ponsonby', zipKey: 'ponsonbie|1011', decision: 'pending' },
+    });
+    expect(s.fixedPostCodes).toEqual({});
+    expect(s.fixedZips).toEqual({});
+
+    s = wizardReducer(s, { type: 'DECIDE_SUGGESTION', key: 'pc:1', decision: 'accept' });
+    s = wizardReducer(s, { type: 'DECIDE_SUGGESTION', key: 'sub:1', decision: 'accept' });
+    expect(s.fixedPostCodes).toEqual({ 1: '1062' });
+    expect(s.fixedZips).toEqual({ 'ponsonbie|1011': 'Ponsonby' });
+
+    s = wizardReducer(s, { type: 'DECIDE_SUGGESTION', key: 'pc:1', decision: 'keep' });
+    s = wizardReducer(s, { type: 'DECIDE_SUGGESTION', key: 'sub:1', decision: 'keep' });
+    expect(s.fixedPostCodes).toEqual({});
+    expect(s.fixedZips).toEqual({});
+
+    // Re-geocoding on Back / Next must not wipe the decision.
+    s = wizardReducer(s, {
+      type: 'ADD_GEOCODE_SUGGESTION', key: 'pc:1',
+      suggestion: { kind: 'postCode', rowIndex: 1, sheet: '0614', map: '1062', decision: 'pending' },
+    });
+    expect(s.geocodeSuggestions['pc:1'].decision).toBe('keep');
   });
 
   it('SET_KMRATED keeps the source row per km-rated row, null when not given', () => {

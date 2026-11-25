@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
 import { routeService } from '../../services/routeService';
 import type { MapContextTarget } from './MapContextMenu';
+import { diffPins, routeKey, routeStops, type Pin } from './mapPinDiff';
 
 interface Props {
   jobs: BulkJob[];
@@ -33,28 +34,6 @@ interface Props {
 // clusters on the map. Keep this list in sync with buildPins() below.
 export const MULTI_RUN_COLOURS = ['#ff9000', '#00a3ff', '#ffff00', '#b13cff', '#3cffb1', '#ff3cff'];
 
-interface Pin {
-  lat: number;
-  lng: number;
-  label: string;
-  // Route Viewer P8 added 'completed' (grey #c7c7c7) + 'voided' (yellow) to
-  // the palette so operator surfaces that show finished jobs (Home map
-  // box in read-only mode; Print Manager map) render them muted vs the
-  // live orange stops. Route Builder's buildPins() does not currently
-  // emit these two - they are consumed by Route Viewer callers that
-  // decide job status from `jobStatus === 'C' / 'V'` before pushing pins
-  // in. Kept in the shared union so downstream shared components
-  // (MapContextMenu etc.) don't need per-caller kind narrowing.
-  kind: 'pickup' | 'delivery' | 'start' | 'end' | 'sequenced' | 'unassigned' | 'multiRun' | 'completed' | 'voided';
-  sequence?: number;
-  bulkJobId: number;
-  jobNumber: string | null;
-  runId: number | null;
-  // Colour override for pins belonging to a multi-selected run (rotating
-  // palette). Present only when kind === 'multiRun'.
-  colour?: string;
-}
-
 /**
  * Google Maps cockpit surface. Direct port of the legacy HereMap.tpl which
  * despite the filename actually ran Google Maps via the GMaps.js wrapper.
@@ -73,11 +52,12 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
   const user = useAuth();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
-  const markersRef = useRef<any[]>([]);
-  // Index of markers by bulkJobId so `highlightPin`-style bouncing (fired when
-  // the operator clicks a job in a list) can find the marker in O(1). Cleared
-  // whenever markers are rebuilt.
+  // The markers on the map by bulkJobId, and the pin each one shows. #1018 C3:
+  // a change adds, removes or updates only the markers whose pin changed.
+  // Also lets `highlightPin`-style bouncing (fired when the operator clicks a
+  // job in a list) find the marker in O(1).
   const markersByJobIdRef = useRef<Map<number, any>>(new Map());
+  const pinsByJobIdRef = useRef<Map<number, Pin>>(new Map());
   // Multiple polylines when the route was chunked into 23-stop Google
   // Directions batches (P1.12, legacy drawDirectionsMoreThan23Waypoints).
   // Kept as an array so we tear all of them down on the next render.
@@ -110,6 +90,7 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     [jobs, selectedRun, multiSelectedRuns]
   );
   const pinsKey = `${selectedRun?.id ?? ''}|${JSON.stringify(pins)}`;
+  const lineKey = routeKey(pins);
 
   const apiKey = user.googleMapsKey;
   const google = typeof window !== 'undefined' ? (window as any).google : undefined;
@@ -170,35 +151,43 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
     });
 
     return () => {
-      markersRef.current.forEach((m) => m.setMap(null));
-      markersRef.current = [];
+      markersByJobIdRef.current.forEach((m) => m.setMap(null));
+      markersByJobIdRef.current.clear();
+      pinsByJobIdRef.current.clear();
       polylinesRef.current.forEach((p) => p.setMap(null));
       polylinesRef.current = [];
       mapRef.current = null;
     };
   }, [ready]);
 
-  // Re-render markers when the pins change (see pinsKey above).
+  // Sync the markers with the pins (see pinsKey above). #1018 C3: only the
+  // markers whose pin changed are touched, so a background reload that brings
+  // back the same pins as new objects leaves the map alone.
   useEffect(() => {
     if (!mapRef.current) return;
     const g = (window as any).google;
     if (!g?.maps) return;
 
-    // Clear the previous markers + polylines. Bump the directions token so
-    // any in-flight fetch for a prior selection resolves into a no-op.
-    markersRef.current.forEach((m) => m.setMap(null));
-    markersRef.current = [];
-    markersByJobIdRef.current.clear();
-    polylinesRef.current.forEach((p) => p.setMap(null));
-    polylinesRef.current = [];
-    directionsTokenRef.current += 1;
-    const myToken = directionsTokenRef.current;
+    const markers = markersByJobIdRef.current;
+    const shown = pinsByJobIdRef.current;
+    const { add, remove, update } = diffPins(shown, pins);
 
-    if (pins.length === 0) return;
-    const { selectedRun } = latestRef.current;
+    remove.forEach((id) => {
+      markers.get(id)?.setMap(null);
+      markers.delete(id);
+      shown.delete(id);
+    });
 
-    const bounds = new g.maps.LatLngBounds();
-    pins.forEach((p) => {
+    update.forEach((p) => {
+      const marker = markers.get(p.bulkJobId);
+      marker.setPosition({ lat: p.lat, lng: p.lng });
+      marker.setIcon(makeIcon(g, p));
+      marker.setTitle(p.label);
+      shown.set(p.bulkJobId, p);
+    });
+
+    add.forEach((p) => {
+      const id = p.bulkJobId;
       const marker = new g.maps.Marker({
         position: { lat: p.lat, lng: p.lng },
         map: mapRef.current,
@@ -209,9 +198,12 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
         // stationary during BOUNCE with path-based Symbol icons).
         title: p.label,
       });
-      bounds.extend(marker.getPosition());
 
+      // The handlers outlive this pin (an update keeps the marker), so they
+      // read the pin the marker shows now.
       marker.addListener('click', () => {
+        const cur = pinsByJobIdRef.current.get(id);
+        if (!cur) return;
         // L2.P2.3 Legacy grey-pin one-click add. When the operator has
         // a run selected AND the pin is unassigned (grey) AND the run is
         // still editable (not locked, not the Void Jobs run), fire the
@@ -219,16 +211,16 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
         // is still available on right-click for multi-run picking.
         const { selectedRun: run, onAddToRunFromMap, onPinClick } = latestRef.current;
         if (
-          p.kind === 'unassigned'
+          cur.kind === 'unassigned'
           && onAddToRunFromMap
           && run
           && !run.isVoidRun
           && (run.status ?? 0) === 0
         ) {
-          onAddToRunFromMap(p.bulkJobId, run.id);
+          onAddToRunFromMap(id, run.id);
           return;
         }
-        if (onPinClick) onPinClick(p.bulkJobId);
+        if (onPinClick) onPinClick(id);
         // Legacy bounce animation on select (HereMap.tpl:522-525 sets
         // Animation.BOUNCE for 1000ms).
         try {
@@ -240,63 +232,63 @@ export function GoogleMap({ jobs, selectedRun, selectedJobId, multiSelectedRuns,
       // Legacy right-click behaviour: fire the shared context menu at the
       // mouse pointer. The browser MouseEvent is in domEvent for Google.
       marker.addListener('rightclick', (e: any) => {
+        const cur = pinsByJobIdRef.current.get(id);
         const { onPinContextMenu } = latestRef.current;
-        if (!onPinContextMenu) return;
+        if (!cur || !onPinContextMenu) return;
         const dom = e?.domEvent as MouseEvent | undefined;
         onPinContextMenu({
-          bulkJobId: p.bulkJobId,
-          jobNumber: p.jobNumber,
-          kind: p.kind === 'pickup' ? 'pickup' : 'delivery',
-          runId: p.runId,
+          bulkJobId: id,
+          jobNumber: cur.jobNumber,
+          kind: cur.kind === 'pickup' ? 'pickup' : 'delivery',
+          runId: cur.runId,
           clientX: dom?.clientX ?? 0,
           clientY: dom?.clientY ?? 0,
         });
       });
 
-      markersRef.current.push(marker);
-      // Only index the delivery-side pin (there can be a pickup + delivery
-      // pair for the same job in future extensions). Delivery is what the
-      // Jobs list shows and what the operator wants to bounce.
-      markersByJobIdRef.current.set(p.bulkJobId, marker);
+      // One marker per job: the delivery-side pin, which is what the Jobs
+      // list shows and what the operator wants to bounce.
+      markers.set(id, marker);
+      shown.set(id, p);
     });
 
     // Fit bounds to the plotted pins so the operator lands on the actual area
     // instead of the San Francisco fallback. Skipped when the operator has
     // toggled auto-zoom off, matching legacy HereMap.tpl:634-636.
-    if (autoZoom && !bounds.isEmpty()) {
-      mapRef.current.fitBounds(bounds);
-    }
-
-    // Route line through the sequenced pins of the selected run.
-    //
-    // P1.12: legacy HereMap.tpl:908-1066 (drawDirectionsMoreThan23Waypoints)
-    // chunked the run into 23-waypoint slices for Google Directions and
-    // stitched the encoded polylines back together, because the Directions
-    // API caps at 25 waypoints per request (origin + destination + up to 23
-    // intermediates). We do the same here: for each chunk, request driving
-    // directions and render the returned overview_path as a proper Polyline
-    // that hugs the road network. If the API call fails (quota, offline,
-    // etc.), fall back to a straight-line polyline through the chunk so the
-    // operator still sees the sequence.
-    if (selectedRun) {
-      // Include start + end pins alongside sequenced pins so the polyline
-      // covers the full route (leg 1 -> 2 and leg N-1 -> N). Without this,
-      // buildPins re-tags the first and last sequenced pins to `start` /
-      // `end` (for the green/blue marker colours) and they were being
-      // filtered out here - HERE was only asked to route through the
-      // interior stops, leaving the operator to eyeball how to reach the
-      // first and last delivery.
-      const seqPins = pins
-        .filter((p) => (p.kind === 'sequenced' || p.kind === 'start' || p.kind === 'end') && p.sequence != null)
-        .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
-      if (seqPins.length > 1) {
-        drawRunPolyline(g, mapRef.current, seqPins, polylinesRef, myToken, directionsTokenRef);
-      }
+    if (autoZoom && pins.length > 0) {
+      const bounds = new g.maps.LatLngBounds();
+      pins.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng }));
+      if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
     }
     // pins is read through pinsKey, which changes exactly when the pins (or
     // the selected run) do; the handlers are read through latestRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, pinsKey, autoZoom]);
+
+  // Route line through the selected run's stops.
+  //
+  // P1.12: legacy HereMap.tpl:908-1066 (drawDirectionsMoreThan23Waypoints)
+  // chunked the run into 23-waypoint slices for Google Directions; HERE now
+  // takes the whole run in one request (see drawRunPolyline). #1018 C3: the
+  // line is redrawn (and HERE asked again) only when lineKey changes, that is
+  // when the run's stops, their order or their positions change, not on every
+  // background reload. Start + end pins are included so the line covers the
+  // first and last legs too.
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const g = (window as any).google;
+    if (!g?.maps) return;
+
+    // Clear the previous line. Bump the token so an in-flight fetch for the
+    // previous route resolves into a no-op.
+    polylinesRef.current.forEach((p) => p.setMap(null));
+    polylinesRef.current = [];
+    directionsTokenRef.current += 1;
+    if (!lineKey) return;
+    drawRunPolyline(g, mapRef.current, routeStops(pins), polylinesRef, directionsTokenRef.current, directionsTokenRef);
+    // pins is read through lineKey, which changes exactly when the stops do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, lineKey]);
 
   // P2.1 close-the-map-menu wiring. Mirrors MapContextMenu's Escape + outside-
   // click pattern. Deliberately NOT listening for contextmenu (a second right-

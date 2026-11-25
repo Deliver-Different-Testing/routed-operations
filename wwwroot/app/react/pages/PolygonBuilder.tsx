@@ -22,22 +22,30 @@ import {
   savedZipsToastTrailer,
   formatOverlapPct,
   type BulkPolygon,
+  type PolygonAppCode,
   type PolygonPoint,
 } from '../services/bulkPolygonService';
 import { ZonesDrawer } from '../components/polygon/ZonesDrawer';
+import { PolygonFilterBar } from '../components/polygon/PolygonFilterBar';
+import { PolygonAppBadges, PolygonUsedByToggles, confirmPerimeterChange } from '../components/polygon/PolygonUsedBy';
+import { PolygonBulkHeader, PolygonMapLegend } from '../components/polygon/PolygonBulkHeader';
 import { zoneService, type RatingZoneDepot } from '../services/zoneService';
-import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge, boundaryArc, closingArc } from '../lib/polygonOps';
+import { unionShapes, addRegion, cutRegion, keepRegion, splitByLine, snapToNearestEdge } from '../lib/polygonOps';
+import { BoundaryNetworkCache, followBoundary, closingPath, type BoundaryRing } from '../lib/boundaryNetwork';
+import { NO_LAYER, groupByLayer, layerNames, layerOf, polygonColour } from '../lib/polygonLayers';
 import {
-  NO_LAYER, type VisibilityState,
-  groupByLayer, isLayerHidden, isPolygonVisible, layerNames, layerOf, loadVisibility,
-  polygonColour, revealPolygon, saveVisibility, setShowPostcodes, showAllLayers, soloLayer,
-  toggleLayerHidden, togglePolygonHidden,
-} from '../lib/polygonLayers';
+  APP_META, appsOf, clearFilters, filterPolygons, isPerimeter, loadFilters, saveFilters, withApp, zoneText,
+  PERIMETER_CONFIRM_TEXT, PERIMETER_REMOVE_TITLE, PERIMETER_RESHAPE_TITLE,
+  type PolygonFilterState,
+} from '../lib/polygonFilters';
+import { PolygonCard } from '../components/polygon/PolygonCard';
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer } from '@googlemaps/markerclusterer';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const POLYGON_PALETTE = ['#f2994a', '#3bc7f4', '#606db4', '#10b981', '#ef4444', '#8b5cf6', '#eab308'];
 const SNAP_PIXELS = 14;
+/** Outline colour for polygons that do not match the filter (Others: Faded). */
+const FADED_STROKE = '#9ca3af';
 /** Target max vertex count when converting a raw ZIP polygon to editable
  *  coverage. Real coastline ZIPs can have 1000+ vertices which freezes the
  *  browser when we render one draggable Marker per vertex + midpoint. 120
@@ -169,17 +177,19 @@ export default function PolygonBuilder() {
   const parsedZipShapesRef = useRef<{ key: string; path: LatLng[] }[]>([]);
   const parsedCoverageShapesRef = useRef<{ id: number; key: string; path: LatLng[] }[]>([]);
 
-  // ── Layers + visibility (2026-11-12) ──────────────────────────────────
-  // Per-browser preference: which layers / polygons are hidden and whether
-  // postcode boundaries auto-load. Hidden shapes are not drawn, not
-  // clickable and not snap targets. Persisted to localStorage per origin.
-  const [visibility, setVisibility] = useState<VisibilityState>(() =>
-    loadVisibility(typeof window !== 'undefined' ? window.localStorage : null));
-  const showPostcodesRef = useRef(visibility.showPostcodes);
-  showPostcodesRef.current = visibility.showPostcodes;
+  // ── Filters (perimeter spec 4.4, replaced the eye toggles) ─────────────
+  // Per-browser preference: Used by / Layer filters, how non-matching
+  // shapes are drawn (Others: faded or hidden) and whether postcode
+  // boundaries auto-load. The search is not persisted. Filters only change
+  // what is drawn and listed: snapping, Add, Cut and Clip still see every
+  // polygon. Persisted to localStorage per origin (polygonBuilder.filters.v1).
+  const [filters, setFilters] = useState<PolygonFilterState>(() =>
+    loadFilters(typeof window !== 'undefined' ? window.localStorage : null));
+  const showPostcodesRef = useRef(filters.showPostcodes);
+  showPostcodesRef.current = filters.showPostcodes;
   useEffect(() => {
-    saveVisibility(typeof window !== 'undefined' ? window.localStorage : null, visibility);
-  }, [visibility]);
+    saveFilters(typeof window !== 'undefined' ? window.localStorage : null, filters);
+  }, [filters]);
   // Inline "move to layer" editor on a sidebar row: polygonId + draft text.
   const [layerEditing, setLayerEditing] = useState<{ polygonId: number; value: string } | null>(null);
 
@@ -195,6 +205,13 @@ export default function PolygonBuilder() {
 
   // Bulk polygon state (Stage 3).
   const [polygons, setPolygons] = useState<BulkPolygon[]>([]);
+  // The latest polygons, for edit-mode handlers. A handle's listeners close
+  // over the polygons of the render that drew it, and a handle can outlive a
+  // save, so the shape save and its revert read the saved shape from here
+  // (Kevin 2026-11-24, review N1). commitShape also writes the server's
+  // answer here straight away, before React re-renders.
+  const polygonsRef = useRef<BulkPolygon[]>(polygons);
+  polygonsRef.current = polygons;
   const [mode, setMode] = useState<Mode>('view');
   const [drawingVertices, setDrawingVertices] = useState<LatLng[]>([]);
   // Point-by-point drawing bookkeeping (2026-11-12). One entry per click:
@@ -202,7 +219,44 @@ export default function PolygonBuilder() {
   // vertices) and which ring it snapped to, so the next click can follow
   // the same ring and Undo removes a whole click at a time.
   const drawingClicksRef = useRef<Array<{ count: number; snap: SnapRing | null }>>([]);
+  /** Follow-boundary across shapes (spec 4.4b): shared-vertex network of every
+   *  ring the snap can hit. The cache rebuilds only when that ring set changes
+   *  (postcodes keep loading while drawing). */
+  const boundaryNetRef = useRef(new BoundaryNetworkCache());
   const [selectedPolygons, setSelectedPolygons] = useState<Set<number>>(new Set());
+  // Polygons that pass the filter bar (search -> Used by -> Layer).
+  const matchingPolygons = useMemo(() => filterPolygons(polygons, filters), [polygons, filters]);
+  const matchingIds = useMemo(() => new Set(matchingPolygons.map((p) => p.polygonId)), [matchingPolygons]);
+  // Dashed outlines for City boundary (PERIMETER) polygons, keyed on
+  // polygonId. Google Maps polygons cannot dash their stroke, so the
+  // outline is a dashed polyline per ring over a near-empty fill.
+  const perimeterLinesRef = useRef<Map<number, any[]>>(new Map());
+  // Bulk "Used by: Set..." in flight.
+  const [bulkAppsBusy, setBulkAppsBusy] = useState(false);
+  // Polygon whose Used by toggles are saving.
+  const [appsSavingId, setAppsSavingId] = useState<number | null>(null);
+  // Polygon card (review C6): the one polygon whose card is open over the
+  // map, or null. Only shown in view mode.
+  const [openCardId, setOpenCardId] = useState<number | null>(null);
+  // Close the card when its polygon is removed or the filter hides it, and
+  // whenever the page leaves view mode (drawing, editing, boolean ops).
+  useEffect(() => {
+    if (openCardId == null) return;
+    if (mode !== 'view' || !matchingIds.has(openCardId)) setOpenCardId(null);
+  }, [openCardId, mode, matchingIds]);
+  // Close the card from its x or Escape, and give focus back to the
+  // polygon's row name in the list, if the row is still there, so keyboard
+  // focus does not drop to the page body (review N4).
+  const closeCard = () => {
+    const id = openCardId;
+    setOpenCardId(null);
+    if (id == null) return;
+    // Leave focus alone if the operator is typing in a box (review N6).
+    const active = document.activeElement as HTMLElement | null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'
+      || active.tagName === 'SELECT' || active.isContentEditable)) return;
+    document.querySelector<HTMLButtonElement>(`[data-pb-row-name="${id}"]`)?.focus();
+  };
 
   const [zipSaveOpen, setZipSaveOpen] = useState(false);
   const [polygonSaveOpen, setPolygonSaveOpen] = useState(false);
@@ -321,6 +375,20 @@ export default function PolygonBuilder() {
   // Cleared on stopEdit - undo is a within-session concept only.
   const MAX_UNDO_STACK = 20;
   const editUndoStackRef = useRef<Array<{ polygonId: number; rings: LatLng[][] }>>([]);
+  // The City boundary polygon whose vertex edits were already OK-ed in this
+  // edit session (Kevin 2026-11-24: ask once per session). Cleared whenever
+  // the edit session ends; see the effect below.
+  const perimeterOkEditRef = useRef<number | null>(null);
+  useEffect(() => {
+    // The boolean-op drawing modes (lassoing / rectangling / circling) are
+    // part of an edit session when a boolean op targets the edited polygon,
+    // so they keep it; any other mode or a different polygon ends it.
+    if (typeof mode === 'object') {
+      if (perimeterOkEditRef.current !== mode.edit) perimeterOkEditRef.current = null;
+    } else if (!(pendingBooleanOpRef.current && (mode === 'lassoing' || mode === 'rectangling' || mode === 'circling'))) {
+      perimeterOkEditRef.current = null;
+    }
+  }, [mode]);
   // Version counter to force re-render of the Undo button's disabled
   // state when the stack changes. The ref itself doesn't trigger
   // renders; bumping this on every push / pop does.
@@ -509,16 +577,16 @@ export default function PolygonBuilder() {
     // targets include holes and disjoint pieces, not just the outer.
     // Same `id` may repeat if a polygon has multiple rings - snapTo
     // treats them all as candidate snap targets against the current
-    // cursor, which is what we want. Hidden polygons are left out: you
-    // cannot snap to what you cannot see.
+    // cursor, which is what we want. Every polygon is a snap target,
+    // including ones the filter fades or hides (spec 4.4.1): a new shape
+    // must still meet its neighbours.
     parsedCoverageShapesRef.current = polygons
-      .filter((poly) => isPolygonVisible(visibility, poly))
       .flatMap((poly) =>
         pointsToLatLngRings(poly.points)
           .filter((ring) => ring.length >= 3)
           .map((path, ringIndex) => ({ id: poly.polygonId, key: `poly:${poly.polygonId}:${ringIndex}`, path })),
       );
-  }, [polygons, visibility]);
+  }, [polygons]);
 
   // Load bulk polygons on mount.
   useEffect(() => {
@@ -601,11 +669,19 @@ export default function PolygonBuilder() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, zipCentroidsReady]);
 
+  // Each list request takes a number; only the latest one may write the
+  // list, so a slow older response cannot undo a newer one (review C10).
+  const reloadSeqRef = useRef(0);
   const reloadPolygons = async () => {
+    const seq = ++reloadSeqRef.current;
     try {
       const res = await bulkPolygonService.list();
+      if (seq !== reloadSeqRef.current) return;
       setPolygons(res.response ?? []);
-    } catch (e) { toast.show((e as Error).message, 'error'); }
+    } catch (e) {
+      if (seq !== reloadSeqRef.current) return;
+      toast.show((e as Error).message, 'error');
+    }
   };
 
   /** Move a polygon to a layer (blank = no layer). Name is sent unchanged;
@@ -624,6 +700,50 @@ export default function PolygonBuilder() {
     } catch (e) { toast.show((e as Error).message, 'error'); }
   };
 
+  /** Panel "Used by" toggle (spec 4.4.3): save the polygon's new app list
+   *  through PUT /api/bulk-polygons/{id}. Turning City boundary on or off
+   *  asks first because it changes distance-rated prices. */
+  const togglePolygonApp = async (p: BulkPolygon, app: PolygonAppCode, on: boolean) => {
+    if (app === 'PERIMETER' && !(await confirmPerimeterChange(askConfirm))) return;
+    const apps = withApp(appsOf(p), app, on);
+    setAppsSavingId(p.polygonId);
+    try {
+      const res = await bulkPolygonService.updateMeta(p.polygonId, {
+        name: p.name, layer: p.layer ?? null, apps,
+      });
+      setPolygons((prev) => prev.map((x) => (x.polygonId === p.polygonId ? res.response : x)));
+      toast.show(`"${p.name}" ${on ? 'now used by' : 'no longer used by'} ${APP_META[app].label}.`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setAppsSavingId(null); }
+  };
+
+  /** Bulk "Used by: Set..." (spec 4.4.2): tick adds the app to every
+   *  selected polygon the filter shows, untick removes it. Ticked rows the
+   *  filter hides are left alone (review C3); the header says how many. */
+  const setAppOnSelected = async (app: PolygonAppCode, on: boolean) => {
+    const ids = Array.from(selectedPolygons).filter((id) => matchingIds.has(id));
+    if (ids.length === 0) return;
+    if (app === 'PERIMETER' && !(await confirmPerimeterChange(askConfirm))) return;
+    setBulkAppsBusy(true);
+    try {
+      const res = await bulkPolygonService.setAppsBulk(ids, on ? [app] : [], on ? [] : [app]);
+      await reloadPolygons();
+      const n = res.response?.updated ?? 0;
+      toast.show(`${APP_META[app].label} ${on ? 'added to' : 'removed from'} ${n} polygon${n === 1 ? '' : 's'}.`, 'success');
+    } catch (e) { toast.show((e as Error).message, 'error'); }
+    finally { setBulkAppsBusy(false); }
+  };
+
+  /** Zoom to results: fit the map to every polygon that passes the filter. */
+  const zoomToMatching = () => {
+    const g = (window as any).google;
+    if (!mapRef.current || !g?.maps) return;
+    const bounds = new g.maps.LatLngBounds();
+    let n = 0;
+    matchingPolygons.forEach((p) => p.points.forEach((pt) => { bounds.extend({ lat: pt.lat, lng: pt.lng }); n++; }));
+    if (n > 0) mapRef.current.fitBounds(bounds);
+  };
+
   // Sync zip overlays.
   useEffect(() => {
     const g = (window as any).google;
@@ -635,7 +755,7 @@ export default function PolygonBuilder() {
     // off the map and draw none. The shapes stay in loadedShapes so
     // switching back on is instant, and the snap cache still lists them
     // only while they are shown (see parsedZipShapesRef below).
-    if (!visibility.showPostcodes) {
+    if (!filters.showPostcodes) {
       zipOverlaysRef.current.forEach((poly) => poly.setMap(null));
       zipOverlaysRef.current.clear();
       return;
@@ -718,16 +838,20 @@ export default function PolygonBuilder() {
     // polygon. Coverage-polygon effect below already has `mode` in deps
     // and works correctly; this is the counterpart fix for zip overlays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedShapes, selected, partialZipIds, mode, visibility.showPostcodes]);
+  }, [loadedShapes, selected, partialZipIds, mode, filters.showPostcodes]);
 
   // Sync coverage-polygon overlays.
   useEffect(() => {
     const g = (window as any).google;
     if (!mapRef.current || !g?.maps) return;
     const editingId = typeof mode === 'object' ? mode.edit : null;
-    // Hidden layers / polygons (2026-11-12) come off the map entirely. The
-    // one being edited is always shown by the edit-mode overlay instead.
-    const shown = polygons.filter((p) => isPolygonVisible(visibility, p));
+    // Filters (spec 4.4.1): matching polygons draw as normal. The rest
+    // draw as thin grey outlines that cannot be clicked (Others: Faded)
+    // or not at all (Others: Hidden). The one being edited is always shown
+    // by the edit-mode overlay instead.
+    const shown = filters.others === 'hidden'
+      ? polygons.filter((p) => matchingIds.has(p.polygonId))
+      : polygons;
     const activeIds = new Set(shown.map((p) => p.polygonId));
 
     polygonOverlaysRef.current.forEach((poly, id) => {
@@ -736,6 +860,9 @@ export default function PolygonBuilder() {
         polygonOverlaysRef.current.delete(id);
       }
     });
+    // Dashed City boundary outlines are cheap and few: rebuild them each run.
+    perimeterLinesRef.current.forEach((lines) => lines.forEach((l) => l.setMap(null)));
+    perimeterLinesRef.current.clear();
 
     shown.forEach((p) => {
       if (p.polygonId === editingId) return;
@@ -745,15 +872,24 @@ export default function PolygonBuilder() {
       const rings = pointsToLatLngRings(p.points);
       if (rings.length === 0 || rings[0].length < 3) return;
       // Colour keyed on the polygon, not its position in the list, so a
-      // shape keeps its colour when others are added, removed or hidden.
+      // shape keeps its colour when others are added, removed or filtered.
       const color = polygonColour(p, POLYGON_PALETTE);
       const isSelected = selectedPolygons.has(p.polygonId);
+      const matches = matchingIds.has(p.polygonId);
+      const perimeter = isPerimeter(p);
+      const clickable = mode === 'view' && matches;
       let poly = polygonOverlaysRef.current.get(p.polygonId);
       if (!poly) {
         poly = new g.maps.Polygon({
-          paths: rings, map: mapRef.current, clickable: mode === 'view',
+          paths: rings, map: mapRef.current, clickable,
         });
-        poly.addListener('click', () => togglePolygonSelected(p.polygonId));
+        // Clicking a shape only opens its card (review C6). Selection is
+        // left to the list checkboxes (Kevin 2026-11-24). The overlay is only
+        // clickable in view mode on a matching polygon, so drawing / editing
+        // clicks never reach here.
+        poly.addListener('click', () => {
+          setOpenCardId(p.polygonId);
+        });
         poly.addListener('rightclick', (e: any) => {
           if (!e.domEvent) return;
           setContextMenu({
@@ -766,17 +902,61 @@ export default function PolygonBuilder() {
       } else {
         poly.setPaths(rings);
       }
-      poly.setOptions({
-        clickable: mode === 'view',
-        strokeColor: color,
-        strokeOpacity: isSelected ? 1 : 0.85,
-        strokeWeight: isSelected ? 3 : 2,
-        fillColor: color,
-        fillOpacity: isSelected ? 0.35 : 0.18,
-      });
+      const lineColour = matches ? APP_META.PERIMETER.colour : FADED_STROKE;
+      if (!matches) {
+        poly.setOptions({
+          clickable: false,
+          strokeColor: FADED_STROKE,
+          strokeOpacity: perimeter ? 0 : 0.8,
+          strokeWeight: 1,
+          fillColor: FADED_STROKE,
+          fillOpacity: 0,
+          zIndex: 0,
+        });
+      } else if (perimeter) {
+        // City boundary: dashed outline, almost no fill (spec 4.4.4).
+        poly.setOptions({
+          clickable,
+          strokeColor: lineColour,
+          strokeOpacity: 0,
+          strokeWeight: isSelected ? 3 : 2,
+          fillColor: lineColour,
+          fillOpacity: isSelected ? 0.1 : 0.03,
+          zIndex: 1,
+        });
+      } else {
+        poly.setOptions({
+          clickable,
+          strokeColor: color,
+          strokeOpacity: isSelected ? 1 : 0.85,
+          strokeWeight: isSelected ? 3 : 2,
+          fillColor: color,
+          fillOpacity: isSelected ? 0.35 : 0.18,
+          zIndex: 2,
+        });
+      }
+      if (perimeter) {
+        const lines = rings.filter((r) => r.length >= 2).map((ring) => new g.maps.Polyline({
+          path: [...ring, ring[0]],
+          map: mapRef.current,
+          clickable: false,
+          strokeOpacity: 0,
+          icons: [{
+            icon: {
+              path: 'M 0,-1 0,1',
+              strokeOpacity: matches ? 1 : 0.8,
+              strokeColor: lineColour,
+              scale: matches ? (isSelected ? 3 : 2) : 1,
+            },
+            offset: '0',
+            repeat: '10px',
+          }],
+        }));
+        perimeterLinesRef.current.set(p.polygonId, lines);
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [polygons, selectedPolygons, mode, visibility]);
+  }, [polygons, selectedPolygons, mode, matchingIds, filters.others]);
 
   const toggleZip = (shape: ZipPolygonShape) => {
     setSelected((prev) =>
@@ -1318,6 +1498,7 @@ export default function PolygonBuilder() {
     // rings differs; everything downstream (ops, undo, toast) is shared.
     const isPending = polygonId === PENDING_ID;
     let currentRings: LatLng[][];
+    let targetIsPerimeter = false;
     if (isPending) {
       if (!pendingPolygon || pendingPolygon.length === 0) {
         toast.show('No pending shape to modify.', 'error');
@@ -1331,6 +1512,7 @@ export default function PolygonBuilder() {
         return;
       }
       currentRings = pointsToLatLngRings(target.points);
+      targetIsPerimeter = isPerimeter(target);
     }
     if (currentRings.length === 0 || currentRings[0].length < 3) {
       toast.show('Target polygon has no valid geometry to modify.', 'error');
@@ -1383,6 +1565,11 @@ export default function PolygonBuilder() {
       );
       return;
     }
+
+    // A City boundary's new shape moves distance prices (review C4): ask
+    // first. Cancel saves nothing and pushes no undo step; the caller's
+    // finally() puts the operator back in edit mode on the saved shape.
+    if (targetIsPerimeter && !(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return;
 
     // Push the PRIOR shape onto the undo stack BEFORE we mutate. Same
     // stack for pending + saved (keyed by polygonId or PENDING_ID). Cap
@@ -1494,6 +1681,15 @@ export default function PolygonBuilder() {
         && editUndoStackRef.current[editUndoStackRef.current.length - 1].polygonId !== targetId) {
       editUndoStackRef.current.pop();
     }
+    // Undo puts an older shape back on a saved polygon, so for a City
+    // boundary it moves prices too (review C4): ask before taking the step
+    // off the stack, so Cancel leaves both the shape and the stack as they are.
+    const top = editUndoStackRef.current[editUndoStackRef.current.length - 1];
+    if (top && top.polygonId !== PENDING_ID) {
+      const target = polygons.find((p) => p.polygonId === top.polygonId);
+      if (target && isPerimeter(target)
+          && !(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return;
+    }
     const snap = editUndoStackRef.current.pop();
     setUndoVersion((v) => v + 1);
     if (!snap) return;
@@ -1553,6 +1749,26 @@ export default function PolygonBuilder() {
     return p ? { x: p.x, y: p.y } : null;
   };
 
+  /** Keyed rings the snap can hit; the follow-boundary network is built from
+   *  exactly this set so the two never drift apart. Zip boundaries only while
+   *  shown; every saved polygon, faded or hidden ones included (spec 4.4.1 /
+   *  4.4b), except the one being edited so it does not snap to itself. */
+  const snapRings = (editingId: number | null): BoundaryRing[] => {
+    const out: BoundaryRing[] = [];
+    if (showPostcodesRef.current) {
+      for (const entry of parsedZipShapesRef.current) out.push(entry);
+    }
+    for (const entry of parsedCoverageShapesRef.current) {
+      if (entry.id === editingId) continue;
+      out.push({ key: entry.key, path: entry.path });
+    }
+    return out;
+  };
+  const currentNetwork = () => {
+    const currentMode = modeRef.current;
+    return boundaryNetRef.current.get(snapRings(typeof currentMode === 'object' ? currentMode.edit : null));
+  };
+
   const snapTo = (raw: LatLng): { point: LatLng; kind: 'vertex' | 'edge' | null; ring: SnapRing | null } => {
     const clickPx = latLngToPixel(raw.lat, raw.lng);
     if (!clickPx) return { point: raw, kind: null, ring: null };
@@ -1569,17 +1785,7 @@ export default function PolygonBuilder() {
     // Every candidate ring carries a key so follow-boundary can tell
     // whether two clicks hit the same ring. The in-progress polygon has
     // no key: snapping back onto it closes the loop, it is never followed.
-    const shapes: { key: string | null; path: LatLng[] }[] = [];
-    // Zip boundary shapes - all get snapped to, but only while shown.
-    if (showPostcodesRef.current) {
-      for (const entry of parsedZipShapesRef.current) shapes.push(entry);
-    }
-    // Coverage polygons - skip the one currently being edited so its own
-    // vertices don't act as snap targets for themselves.
-    for (const entry of parsedCoverageShapesRef.current) {
-      if (entry.id === editingId) continue;
-      shapes.push({ key: entry.key, path: entry.path });
-    }
+    const shapes: { key: string | null; path: LatLng[] }[] = [...snapRings(editingId)];
     // In-progress polygon vertices are snap targets too (close-the-loop).
     if (currentDrawingVertices.length > 0) shapes.push({ key: null, path: currentDrawingVertices });
 
@@ -2019,8 +2225,11 @@ export default function PolygonBuilder() {
       }
       const ring: SnapRing | null = snap.ring;
       let added: LatLng[] = [snap.point];
-      if (!altHeld && prev?.snap && ring && prev.snap.key === ring.key && prevVertex) {
-        const arc = boundaryArc(ring.path, prev.snap.pos, ring.pos, prevVertex, snap.point);
+      // Across shapes (spec 4.4b): when the two clicks snapped to different
+      // rings, follow the shortest path through the shared-vertex network;
+      // the same ring keeps the single-ring path. No path / > 3x = straight.
+      if (!altHeld && prev?.snap && ring && prevVertex) {
+        const arc = followBoundary(currentNetwork(), prev.snap, ring, prevVertex, snap.point);
         added = [...arc, snap.point];
       }
       drawingClicksRef.current.push({ count: added.length, snap: ring });
@@ -2103,6 +2312,7 @@ export default function PolygonBuilder() {
   // lands in pending mode like every other tool, so the draft gets the
   // same Add / Cut / Clip / Split + Undo before it is named and saved.
   const startPoints = () => {
+    boundaryNetRef.current.clear();
     drawingClicksRef.current = [];
     setDrawingVertices([]);
     setMode('drawing');
@@ -2137,7 +2347,7 @@ export default function PolygonBuilder() {
       : drawingVertices;
     const closing = straight
       ? []
-      : closingArc(vertices, drawingClicksRef.current.map((c) => c.snap));
+      : closingPath(currentNetwork(), vertices, drawingClicksRef.current.map((c) => c.snap));
     drawingClicksRef.current = [];
     setPendingPolygon([[...vertices, ...closing]]);
     setDrawingVertices([]);
@@ -2196,6 +2406,7 @@ export default function PolygonBuilder() {
         if (mode === 'circling') { cancelCircle(); return; }
         if (mode === 'pending') { discardPending(); return; }
         if (editingId != null) { stopEdit(); return; }
+        if (openCardId != null) { closeCard(); return; }
       }
       if (e.key === 'Enter' && mode === 'pending') {
         e.preventDefault();
@@ -2245,7 +2456,7 @@ export default function PolygonBuilder() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, contextMenu, drawingVertices]);
+  }, [mode, contextMenu, drawingVertices, openCardId]);
 
   // Pending polygon mode: renders the draft polygon on the map with
   // draggable vertex + midpoint handles so the operator can refine it
@@ -2472,6 +2683,20 @@ export default function PolygonBuilder() {
 
     // Helper: current paths for the overlay = every ring, in order.
     const currentPaths = (): LatLng[][] => workingRings;
+    // Save the working rings; if the operator cancels the City boundary
+    // confirm (review C4) or the save fails, put the saved shape back on
+    // screen so it matches the server. Edit mode stays open either way.
+    const saveOrRevert = async () => {
+      if (await commitShape(mode.edit, workingRings)) return;
+      // The latest saved shape, not the `polygon` this effect run started
+      // from: an earlier save in this session may have changed it (N1).
+      const latest = polygonsRef.current.find((p) => p.polygonId === mode.edit) ?? polygon;
+      const saved = pointsToLatLngRings(latest.points)
+        .filter((r) => r.length >= 3)
+        .map((r) => r.map((p) => ({ lat: p.lat, lng: p.lng })));
+      workingRings.splice(0, workingRings.length, ...saved);
+      editPolyRef.current?.setPaths(currentPaths());
+    };
 
     editPolyRef.current = new g.maps.Polygon({
       paths: currentPaths(), map: mapRef.current,
@@ -2535,9 +2760,10 @@ export default function PolygonBuilder() {
             // Only snaps when something is genuinely close: moving a vertex
             // the operator did not ask to move would be worse than the
             // overlap it prevents.
+            // Every polygon counts, including ones the filter fades or
+            // hides (spec 4.4.1).
             const neighbours = polygons
-              .filter((other) => other.polygonId !== mode.edit && other.active
-                && isPolygonVisible(visibility, other))
+              .filter((other) => other.polygonId !== mode.edit && other.active)
               .map((other) => pointsToLatLngRings(other.points));
             const snapped = snapToNearestEdge(
               workingRings[ri][vi], neighbours, SNAP_TOLERANCE_METRES);
@@ -2545,7 +2771,7 @@ export default function PolygonBuilder() {
               workingRings[ri][vi] = snapped;
               editPolyRef.current?.setPaths(currentPaths());
             }
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           handle.addListener('rightclick', async () => {
@@ -2556,7 +2782,7 @@ export default function PolygonBuilder() {
               if (workingRings.length > 1) {
                 workingRings.splice(ri, 1);
                 editPolyRef.current?.setPaths(currentPaths());
-                await commitShape(mode.edit, workingRings);
+                await saveOrRevert();
                 renderHandles();
                 return;
               }
@@ -2565,7 +2791,7 @@ export default function PolygonBuilder() {
             }
             workingRings[ri].splice(vi, 1);
             editPolyRef.current?.setPaths(currentPaths());
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           editHandlesRef.current.push(handle);
@@ -2598,7 +2824,7 @@ export default function PolygonBuilder() {
           marker.addListener('click', async () => {
             workingRings[ri].splice(vi + 1, 0, mid);
             editPolyRef.current?.setPaths(currentPaths());
-            await commitShape(mode.edit, workingRings);
+            await saveOrRevert();
             renderHandles();
           });
           editMidpointsRef.current.push(marker);
@@ -2634,11 +2860,25 @@ export default function PolygonBuilder() {
    *  the PolygonPointDto structure the API expects, snapshots the
    *  prior state onto the undo stack after server-accept, and updates
    *  local polygon state from the response. */
-  const commitShape = async (id: number, workingRings: LatLng[][]) => {
+  const commitShape = async (id: number, workingRings: LatLng[][]): Promise<boolean> => {
     // Snapshot the current state BEFORE the API round-trip so Undo can
     // revert the change (single stack entry per commit, across all
     // ops - vertex drag / midpoint insert / vertex delete / boolean).
-    const current = polygons.find((p) => p.polygonId === id);
+    // Read from polygonsRef, not `polygons`: a vertex handle can call this
+    // through a closure from before an earlier save (review N1).
+    let current = polygonsRef.current.find((p) => p.polygonId === id);
+    // A City boundary's new shape moves distance prices (review C4): ask
+    // first, once per edit session (Kevin 2026-11-24): after Continue, later
+    // vertex saves on the same polygon in this session do not ask again.
+    // Returns false on Cancel so the caller puts the saved shape back.
+    let okJustGiven = false;
+    if (current && isPerimeter(current) && perimeterOkEditRef.current !== id) {
+      if (!(await confirmPerimeterChange(askConfirm, PERIMETER_RESHAPE_TITLE))) return false;
+      perimeterOkEditRef.current = id;
+      okJustGiven = true;
+      // The dialog may have been open a while: snapshot the shape as it is now.
+      current = polygonsRef.current.find((p) => p.polygonId === id);
+    }
     const currentRings = current ? pointsToLatLngRings(current.points) : [];
     const priorSnapshot = currentRings.length > 0
       ? { polygonId: id, rings: currentRings }
@@ -2657,6 +2897,8 @@ export default function PolygonBuilder() {
       const res = await bulkPolygonService.updateShape(id, {
         points, centroidLatitude: centroid.lat, centroidLongitude: centroid.lng,
       });
+      polygonsRef.current = polygonsRef.current.map((p) =>
+        p.polygonId === id ? res.response : p);
       setPolygons((prev) => prev.map((p) =>
         p.polygonId === id ? res.response : p));
       // Push the pre-op snapshot onto the undo stack only after the
@@ -2666,7 +2908,16 @@ export default function PolygonBuilder() {
         pushUndoSnapshot(priorSnapshot);
       }
       toast.show(`Shape saved.${derivedZipsToastTrailer(res.response)}`, 'success');
-    } catch (e) { toast.show((e as Error).message, 'error'); }
+    } catch (e) {
+      // The server kept the old shape: return false so the caller puts it
+      // back on screen, the same as Cancel. No undo step was pushed. An OK
+      // given for this save does not count once it failed, so the retry
+      // asks again (Kevin 2026-11-24, review N3).
+      if (okJustGiven) perimeterOkEditRef.current = null;
+      toast.show((e as Error).message, 'error');
+      return false;
+    }
+    return true;
   };
 
   const clearEditHandles = () => {
@@ -2703,9 +2954,12 @@ export default function PolygonBuilder() {
     const msg = p.attachedRouteCount > 0
       ? `"${p.name}" is attached to ${p.attachedRouteCount} active route(s). Remove anyway?`
       : `Remove "${p.name}"?`;
+    // A City boundary moves distance prices when it goes (review C4): one
+    // dialog that says so. Other polygons keep the plain remove dialog.
+    const perimeter = isPerimeter(p);
     if (!(await askConfirm({
-      title: 'Remove coverage polygon',
-      message: msg,
+      title: perimeter ? PERIMETER_REMOVE_TITLE : 'Remove coverage polygon',
+      message: perimeter ? `${msg} ${PERIMETER_CONFIRM_TEXT}` : msg,
       confirmLabel: 'Remove',
       danger: true,
     }))) return;
@@ -2957,14 +3211,6 @@ export default function PolygonBuilder() {
               title="Open the rating postcode / ZIP drawer (read-only Client Manager data).">
               View Zones
             </Button>
-            <Button variant="neutral" size="sm"
-              onClick={() => setVisibility((v) => setShowPostcodes(v, !v.showPostcodes))}
-              aria-pressed={visibility.showPostcodes}
-              title={visibility.showPostcodes
-                ? `${zipShortLower} boundaries are shown and auto-load as you pan. Click to hide them and stop loading more.`
-                : `${zipShortLower} boundaries are hidden. Click to show them again.`}>
-              {visibility.showPostcodes ? `Hide ${zipShortLower} boundaries` : `Show ${zipShortLower} boundaries`}
-            </Button>
             <Button variant="neutral" size="sm" onClick={clearAll}
               disabled={loadedShapes.length === 0 && selected.length === 0}>
               Clear {zipShortLower}s
@@ -2993,6 +3239,17 @@ export default function PolygonBuilder() {
           </>
         )}
       </div>
+
+      {/* Filter bar (perimeter spec 4.4.1, Design B). Replaces the layer /
+          polygon eye toggles and the Hide / Show postcode boundaries button. */}
+      <PolygonFilterBar
+        polygons={polygons}
+        filters={filters}
+        onChange={setFilters}
+        matchCount={matchingPolygons.length}
+        onZoomToResults={zoomToMatching}
+        zipShortLower={zipShortLower}
+      />
 
       <div className="flex-1 flex min-h-0">
         <div className="w-72 border-r border-border overflow-y-auto">
@@ -3059,102 +3316,102 @@ export default function PolygonBuilder() {
                 <span className="text-text-secondary text-[10px] uppercase tracking-wide flex-1">
                   Coverage polygons ({polygons.length})
                 </span>
-                {(visibility.hiddenLayers.length > 0 || visibility.hiddenPolygons.length > 0) && (
-                  <button type="button"
-                    onClick={() => setVisibility((v) => showAllLayers(v))}
-                    className="text-[9px] font-semibold text-brand-purple hover:underline"
-                    title="Show every layer and polygon again">
-                    Show all
-                  </button>
-                )}
               </div>
               {polygons.length === 0 && (
                 <div className="text-text-muted italic text-[10px]">
                   None yet. Click "+ Draw new polygon" or "Use as starting shape" on a loaded {zipShortLower}.
                 </div>
               )}
+              {polygons.length > 0 && (
+                <div className="mb-1">
+                  <PolygonBulkHeader
+                    matchingIds={matchingPolygons.map((p) => p.polygonId)}
+                    selected={selectedPolygonList.filter((p) => matchingIds.has(p.polygonId))}
+                    hiddenCount={selectedPolygonList.filter((p) => !matchingIds.has(p.polygonId)).length}
+                    onSelectAll={() => setSelectedPolygons(new Set(matchingPolygons.map((p) => p.polygonId)))}
+                    onClearSelection={() => setSelectedPolygons(new Set())}
+                    onSetApp={(app, on) => { void setAppOnSelected(app, on); }}
+                    busy={bulkAppsBusy}
+                  />
+                </div>
+              )}
+              {polygons.length > 0 && matchingPolygons.length === 0 && (
+                <div className="text-text-muted italic text-[10px]" data-testid="pb-no-match">
+                  No polygons match.{' '}
+                  <button type="button" onClick={() => setFilters((f) => clearFilters(f))}
+                    className="not-italic font-semibold text-brand-purple hover:underline">
+                    Clear
+                  </button>
+                </div>
+              )}
               {/* Layer names offered by every layer input on the page. */}
               <datalist id="pb-layer-names">
                 {layerNames(polygons).map((l) => <option key={l} value={l} />)}
               </datalist>
-              {/* Grouped by layer (2026-11-12). Each layer header has a show /
-                  hide toggle and "Only"; each polygon has its own toggle.
-                  Hidden shapes stay in the list, greyed, so they can be
-                  found and shown again. */}
+              {/* Grouped by layer (2026-11-12), showing only the polygons
+                  that pass the filter bar, with a count per group. */}
               <ul className="space-y-2">
-                {groupByLayer(polygons).map((group) => {
-                  const layerHidden = isLayerHidden(visibility, group.layer);
+                {groupByLayer(matchingPolygons).map((group) => {
                   const layerLabel = group.layer === NO_LAYER ? 'No layer' : group.layer;
-                  const shownCount = group.polygons.filter((p) => isPolygonVisible(visibility, p)).length;
                   return (
                     <li key={group.layer === NO_LAYER ? '\u0000no-layer' : group.layer}
                       data-testid="pb-layer-group" data-layer={group.layer}>
-                      <div className={`flex items-center gap-1 px-1 py-0.5 rounded bg-surface-cream/60 ${layerHidden ? 'opacity-60' : ''}`}>
-                        <button type="button"
-                          onClick={() => setVisibility((v) => toggleLayerHidden(v, group.layer))}
-                          aria-pressed={!layerHidden}
-                          aria-label={`${layerHidden ? 'Show' : 'Hide'} layer ${layerLabel}`}
-                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-surface-white text-text-secondary"
-                          title={layerHidden ? `Show layer "${layerLabel}"` : `Hide layer "${layerLabel}"`}>
-                          {layerHidden ? <IconEyeOff /> : <IconEye />}
-                        </button>
-                        <span className="flex-1 truncate font-semibold text-[11px]" title={layerLabel}>
+                      <div className="flex items-center gap-1 px-1 py-0.5 rounded bg-surface-cream/60">
+                        <span className="flex-1 truncate font-semibold text-[11px] uppercase tracking-wide" title={layerLabel}>
                           {layerLabel}
                         </span>
-                        <span className="text-[9px] text-text-muted" title={`${shownCount} of ${group.polygons.length} shown`}>
-                          {shownCount === group.polygons.length ? group.polygons.length : `${shownCount}/${group.polygons.length}`}
+                        <span className="text-[9px] text-text-muted" data-testid="pb-layer-count">
+                          {group.polygons.length}
                         </span>
-                        <button type="button"
-                          onClick={() => setVisibility((v) => soloLayer(v, group.layer, polygons))}
-                          className="text-[9px] font-semibold text-brand-purple hover:underline px-1"
-                          title={`Show only "${layerLabel}" and hide every other layer`}>
-                          Only
-                        </button>
                       </div>
                       <ul className="space-y-1 mt-1">
                 {group.polygons.map((p) => {
                   const color = polygonColour(p, POLYGON_PALETTE);
                   const isChecked = selectedPolygons.has(p.polygonId);
                   const isEditing = editingId === p.polygonId;
-                  const isShown = isPolygonVisible(visibility, p);
-                  const selfHidden = visibility.hiddenPolygons.includes(p.polygonId);
+                  const isCardOpen = openCardId === p.polygonId;
+                  const zone = zoneText(p);
                   return (
                     <li key={p.polygonId}
-                      data-testid="pb-polygon-row" data-hidden={!isShown}
-                      className={`px-2 py-1 rounded border ${isEditing ? 'border-warning bg-warning/10' : 'border-border-light'} ${isShown ? '' : 'opacity-50'}`}>
-                      <label className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={isChecked}
+                      data-testid="pb-polygon-row"
+                      data-card-open={isCardOpen}
+                      className={`px-2 py-1 rounded border ${isEditing
+                        ? 'border-warning bg-warning/10'
+                        : isCardOpen ? 'border-brand-purple bg-brand-purple/10' : 'border-border-light'}`}>
+                      <label className="flex items-start gap-1.5">
+                        <input type="checkbox" checked={isChecked} className="mt-0.5"
                           onChange={() => togglePolygonSelected(p.polygonId)} />
-                        <button type="button"
-                          onClick={() => setVisibility((v) => togglePolygonHidden(v, p.polygonId))}
-                          aria-pressed={!selfHidden}
-                          aria-label={`${selfHidden ? 'Show' : 'Hide'} polygon ${p.name}`}
-                          className="w-4 h-4 flex items-center justify-center rounded hover:bg-surface-cream text-text-secondary"
-                          title={selfHidden
-                            ? 'Show this polygon on the map'
-                            : (isShown ? 'Hide this polygon from the map' : 'Hidden because its layer is hidden. Click to hide it on its own too.')}>
-                          {selfHidden ? <IconEyeOff /> : <IconEye />}
-                        </button>
-                        <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            // Select the polygon (adds to selection if not already selected).
-                            setSelectedPolygons((prev) => {
-                              if (prev.has(p.polygonId)) return prev;
-                              const next = new Set(prev);
-                              next.add(p.polygonId);
-                              return next;
-                            });
-                            // Also pan / zoom the map to bring the shape into view,
-                            // showing it (and its layer) if it was hidden.
-                            setVisibility((v) => revealPolygon(v, p));
-                            zoomToPolygon(p);
-                          }}
-                          className="flex-1 truncate font-medium text-left hover:underline"
-                          title="Click to select this polygon and zoom the map to it"
-                        >{p.name}</button>
+                        <span data-testid="pb-polygon-swatch" data-perimeter={isPerimeter(p)}
+                          className={`mt-0.5 w-2.5 h-2.5 rounded-sm shrink-0 ${isPerimeter(p) ? 'border border-dashed' : ''}`}
+                          style={isPerimeter(p)
+                            ? { borderColor: APP_META.PERIMETER.colour, background: 'transparent' }
+                            : { background: color }} />
+                        <span className="flex-1 min-w-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              // Select the polygon (adds to selection if not already selected).
+                              setSelectedPolygons((prev) => {
+                                if (prev.has(p.polygonId)) return prev;
+                                const next = new Set(prev);
+                                next.add(p.polygonId);
+                                return next;
+                              });
+                              // Also pan / zoom the map to bring the shape into view.
+                              zoomToPolygon(p);
+                              // And open its card (review C6), in view mode only.
+                              if (mode === 'view') setOpenCardId(p.polygonId);
+                            }}
+                            data-pb-row-name={p.polygonId}
+                            className="block w-full truncate font-medium text-left hover:underline"
+                            title="Click to select this polygon, zoom the map to it and open its card"
+                          >{p.name}</button>
+                          {zone && (
+                            <span className="block truncate text-[10px] text-text-muted" title={zone}>{zone}</span>
+                          )}
+                        </span>
+                        <PolygonAppBadges apps={p.apps} />
                       </label>
                       {/* Layer chip + inline "move to layer" editor. */}
                       <div className="ml-5 mt-0.5 flex items-center gap-1">
@@ -3470,8 +3727,37 @@ export default function PolygonBuilder() {
           </div>
         </div>
 
-        <div className="flex-1">
+        <div className="flex-1 relative">
           <div ref={mapContainerRef} className="h-full w-full" />
+          <PolygonMapLegend />
+          {(() => {
+            // Polygon card (review C6). The close effect clears openCardId
+            // when the polygon goes, is filtered out, or the mode changes;
+            // the guards here only cover the render before it runs.
+            const p = mode === 'view' && openCardId != null && matchingIds.has(openCardId)
+              ? polygons.find((x) => x.polygonId === openCardId)
+              : undefined;
+            if (!p) return null;
+            return (
+              <PolygonCard
+                polygon={p}
+                colour={polygonColour(p, POLYGON_PALETTE)}
+                updatedText={p.lastModifiedUtc
+                  ? `Updated ${formatAuditDate(p.lastModifiedUtc)}`
+                  : `Created ${formatAuditDate(p.createdUtc)}`}
+                updatedTitle={p.lastModifiedUtc
+                  ? `Last updated by ${p.updatedBy ?? '(unknown)'}`
+                  : `Created by ${p.createdBy}`}
+                saving={appsSavingId === p.polygonId}
+                editDisabledReason={p.points.length > MAX_EDIT_HANDLE_VERTICES
+                  ? 'Too many vertices - use Cut/Add/Clip in edit mode instead' : undefined}
+                onToggleApp={(app, on) => { void togglePolygonApp(p, app, on); }}
+                onEditShape={() => startEdit(p.polygonId)}
+                onZoom={() => zoomToPolygon(p)}
+                onClose={closeCard}
+              />
+            );
+          })()}
         </div>
       </div>
 
@@ -3563,7 +3849,15 @@ const LAST_LAYER_KEY = 'polygonBuilder.lastLayer';
 
 function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNewPolygonProps) {
   const toast = useToast();
+  const askConfirm = useConfirm();
   const [name, setName] = useState('');
+  // Used by (perimeter spec 4.3 / 4.4): a new drawing defaults to Schedules;
+  // the operator can change it before saving.
+  const [apps, setApps] = useState<PolygonAppCode[]>(['SCHEDULES']);
+  const toggleApp = async (app: PolygonAppCode, on: boolean) => {
+    if (app === 'PERIMETER' && !(await confirmPerimeterChange(askConfirm))) return;
+    setApps((prev) => withApp(prev, app, on));
+  };
   const [layer, setLayer] = useState(() => {
     try { return window.localStorage.getItem(LAST_LAYER_KEY) ?? ''; } catch { return ''; }
   });
@@ -3592,6 +3886,7 @@ function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNe
         sourceType: 0,
         sourceCode: null,
         layer: layerTrimmed.length === 0 ? null : layerTrimmed,
+        apps,
       });
       try { window.localStorage.setItem(LAST_LAYER_KEY, layerTrimmed); } catch { /* preference only */ }
       onCreated(res.response);
@@ -3619,11 +3914,12 @@ function SaveNewPolygonModal({ rings, layers = [], onCancel, onCreated }: SaveNe
         <Field label="Layer (optional)">
           <input type="text" list="pb-save-layer-names" value={layer}
             onChange={(e) => setLayer(e.target.value)}
-            className={INPUT_CLASS} placeholder="e.g. AD. Groups the sidebar; each layer can be hidden or shown alone." />
+            className={INPUT_CLASS} placeholder="e.g. AD. Groups the sidebar and the Layer filter." />
           <datalist id="pb-save-layer-names">
             {layers.map((l) => <option key={l} value={l} />)}
           </datalist>
         </Field>
+        <PolygonUsedByToggles apps={apps} onToggle={(app, on) => { void toggleApp(app, on); }} />
         <p className="text-[11px] text-text-muted italic">
           The shape is saved to tblBulkRunPolygon and can be attached to one or more Routes later.
           Bookings whose pickup falls inside this shape will auto-assign to those Routes via the
@@ -4294,18 +4590,6 @@ const IconPolygon = () => (
     <circle cx="12" cy="13" r="1.1" fill="currentColor" />
     <circle cx="4" cy="13" r="1.1" fill="currentColor" />
     <circle cx="2" cy="6" r="1.1" fill="currentColor" />
-  </svg>
-);
-const IconEye = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M1.5 8 C3.5 4.5 6 3 8 3 C10 3 12.5 4.5 14.5 8 C12.5 11.5 10 13 8 13 C6 13 3.5 11.5 1.5 8 Z" />
-    <circle cx="8" cy="8" r="2.2" />
-  </svg>
-);
-const IconEyeOff = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M1.5 8 C3.5 4.5 6 3 8 3 C10 3 12.5 4.5 14.5 8 C12.5 11.5 10 13 8 13 C6 13 3.5 11.5 1.5 8 Z" />
-    <path d="M2.5 13.5 L13.5 2.5" />
   </svg>
 );
 const IconPencil = () => (

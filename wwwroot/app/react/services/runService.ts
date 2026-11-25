@@ -1,6 +1,12 @@
 import { buildQuery, request } from './api';
 import type { JobFilters, Run } from '../types';
 
+/** #1018 C2: POST /runs, /runs/with-jobs, /runs/{id}/assign-many and PUT /runs/{id} also
+ *  return the runs they touched (null on failure, absent from older servers). */
+interface SaveResponse {
+  response: { result: string; message: string; runs?: Run[] | null };
+}
+
 interface RunsResponse {
   response: Run[];
   maxJsonLength: number;
@@ -37,13 +43,13 @@ export const runService = {
     })}`),
 
   insertOrUpdate: (body: InsertOrUpdateRunBody) =>
-    request<{ response: { result: string; message: string } }>('/runs', {
+    request<SaveResponse>('/runs', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
   update: (id: number, body: InsertOrUpdateRunBody) =>
-    request<{ response: { result: string; message: string } }>(`/runs/${id}`, {
+    request<SaveResponse>(`/runs/${id}`, {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
@@ -61,7 +67,7 @@ export const runService = {
 
   /** Create a run and assign its jobs in one server transaction. */
   createWithJobs: (body: InsertOrUpdateRunBody) =>
-    request<{ response: { result: string; message: string } }>('/runs/with-jobs', {
+    request<SaveResponse>('/runs/with-jobs', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -73,7 +79,7 @@ export const runService = {
     jobs: { jobId: number; fromRunId: number | null }[],
     deleteRunId: number | null = null,
   ) =>
-    request<{ response: { result: string; message: string } }>(`/runs/${runId}/assign-many`, {
+    request<SaveResponse>(`/runs/${runId}/assign-many`, {
       method: 'POST',
       body: JSON.stringify({ jobs, deleteRunId }),
     }),

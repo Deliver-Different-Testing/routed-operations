@@ -29,6 +29,18 @@ import { MoveBackToRunBuilderDialog } from './MoveBackToRunBuilderDialog';
 /** Tooltip on the items that stay single-job when 2+ jobs are selected. */
 export const SINGLE_JOB_ONLY_TOOLTIP = 'Select one job';
 
+/** tucJobStatus code for Missing (ucjsID 1001, NZ and US) as
+ *  RVW_stpBulkRunJobs sends it in JobStatus. */
+export const MISSING_STATUS_CODE = 'MIS';
+
+/** #320: 'Mark lost (Undeliverable)' is offered only when every selected
+ *  job is Missing; RVW_stpMarkJobLost refuses any other job anyway. */
+export function canMarkLost(jobs: ReadonlyArray<Pick<BulkJob, 'jobStatus' | 'jobId'>>): boolean {
+  return jobs.length > 0 && jobs.every(
+    (j) => j.jobId > 0 && (j.jobStatus ?? '').trim().toUpperCase() === MISSING_STATUS_CODE,
+  );
+}
+
 interface Props {
   x: number;
   y: number;
@@ -121,6 +133,21 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
     const podName = window.prompt('POD Name (recipient signature)') ?? '';
     if (!podName.trim()) return;
     await bulkRunSimple('Complete', (j) => routeViewerService.completeJob(j.jobId, podName, null));
+  };
+  const doMarkLost = async () => {
+    onClose();
+    if (!(await confirm({
+      title: 'Mark lost (Undeliverable)',
+      message: `Mark ${pluralJob()} as lost? It closes as Undeliverable and cannot be reopened from Route Viewer.`,
+      danger: true,
+      confirmLabel: 'Mark lost',
+    }))) return;
+    // updated false = the job was no longer Missing; count it as failed.
+    await bulkRunSimple('Mark lost', async (j) => {
+      const r = await routeViewerService.markJobLost(j.jobId);
+      if (!r.updated) throw new Error('Job is no longer Missing');
+      return r;
+    });
   };
   const doMakeLmc = async () => {
     onClose();
@@ -219,6 +246,9 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
             <MenuItem onClick={doPickup} disabled={running}>Pickup</MenuItem>
             <MenuItem onClick={doMissing} disabled={running}>Missing</MenuItem>
             <MenuItem onClick={doComplete} disabled={running}>Complete</MenuItem>
+            {canMarkLost(jobs) && (
+              <MenuItem onClick={doMarkLost} disabled={running}>Mark lost (Undeliverable)</MenuItem>
+            )}
             <MenuItem onClick={doMakeLmc} disabled={running}>Make LMC</MenuItem>
             <MenuItem onClick={doRelease} disabled={running}>Release</MenuItem>
             <MenuItem onClick={doVoid} disabled={running}>Void</MenuItem>

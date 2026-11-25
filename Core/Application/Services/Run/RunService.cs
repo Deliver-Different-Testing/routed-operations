@@ -58,10 +58,13 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// <summary>
     /// Read-side lift of `UTL_stpJob_tblBulkRunWithFilter`: returns all jobs that
     /// belong to an existing run for the filter set, grouped into RunDto rows.
+    /// onlyRunIds (#1018 C2, see GetRunsByIdAsync) limits it to those runs.
     /// </summary>
     public async Task<List<RunDto>> GetBulkRunsAsync(
-        DateTime? dateTime, string? clientIds, string? regionIds, string? ourRefs, string? speeds)
+        DateTime? dateTime, string? clientIds, string? regionIds, string? ourRefs, string? speeds,
+        IReadOnlyCollection<int>? onlyRunIds = null)
     {
+        var onlyRunIdList = onlyRunIds?.ToList();
         // Phase 1 perf: pre-fetch the set of schedule IDs with AutoBook=true
         // in one indexed scan so the main query filters via a set lookup
         // instead of a correlated NOT EXISTS subquery evaluated per row.
@@ -76,6 +79,7 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var jobQuery = Context.TblBulkJobs
             .AsNoTracking()
             .Where(j => j.BulkRunId.HasValue)
+            .Where(j => onlyRunIdList == null || onlyRunIdList.Contains(j.BulkRunId!.Value))
             // Legacy filters (match UTL_stpJob_tblBulkRunWithFilter):
             //   ISNULL(Done, 0) = 0
             //   ISNULL(JobRelationshipTypeID, 0) <> 19  (linehaul siblings)
@@ -261,7 +265,11 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         var hasJobFilter = clientIdSet.Count > 0 || regionIdSet.Count > 0
                            || ourRefSet.Count > 0 || speedSet.Count > 0;
         var runQuery = Context.TblBulkRuns.AsNoTracking().AsQueryable();
-        if (dateTime.HasValue && !hasJobFilter)
+        if (onlyRunIdList != null)
+        {
+            runQuery = runQuery.Where(r => onlyRunIdList.Contains(r.Id));
+        }
+        else if (dateTime.HasValue && !hasJobFilter)
         {
             var d = dateTime.Value.Date;
             runQuery = runQuery.Where(r =>
@@ -411,6 +419,18 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             })
             .ToList();
     }
+
+    /// <summary>
+    /// #1018 C2: the given runs exactly as GET /api/runs shows them, so a
+    /// Route Builder save can hand back the runs it touched and the cockpit
+    /// patches its lists instead of waiting on a full reload. No job filter:
+    /// a touched run comes back with all its jobs (the background reload that
+    /// follows re-applies the operator's filters).
+    /// </summary>
+    public Task<List<RunDto>> GetRunsByIdAsync(IReadOnlyCollection<int> runIds) =>
+        runIds.Count == 0
+            ? Task.FromResult(new List<RunDto>())
+            : GetBulkRunsAsync(null, null, null, null, null, onlyRunIds: runIds);
 
     /// <summary>
     /// Lock-a-run. Inserts a new tblBulkRun if ID is missing, otherwise updates
@@ -627,7 +647,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         if (items.Count == 0) return ("Failed", "No jobs to assign");
         if (!await CanMoveJobsAsync([.. items.Select(i => i.JobId)])) return ("Failed", "Job not found");   // Branches B2c
 
-        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
+        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
             run.Jobs = new List<RunJobDto>();
@@ -669,7 +690,8 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             || !await CanMoveJobsAsync([.. items.Select(i => i.JobId)]))
             return ("Failed", "Run or job not found");
 
-        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+        // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
+        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
             var error = await StageJobAssignmentsAsync(runId, items);
@@ -703,9 +725,9 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
     /// <summary>
     /// EF equivalent of the per-job tblBulkJobRun MERGE + tblBulkJob mirror
     /// update, staged on the change tracker for the caller's transaction
-    /// (Serializable, matching the legacy HOLDLOCK). Returns an operator-facing
-    /// error (and logs the job ids) when the batch can't be applied as a whole;
-    /// null on success.
+    /// (ReadCommitted; the jobs' rows are locked first, see RunAssignLocks).
+    /// Returns an operator-facing error (and logs the job ids) when the batch
+    /// can't be applied as a whole; null on success.
     /// </summary>
     private async Task<string?> StageJobAssignmentsAsync(int runId, IReadOnlyList<AssignJobItem> items)
     {
@@ -713,6 +735,27 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             return "Run not found. Please refresh.";
 
         var ids = items.Select(i => i.JobId).ToList();
+        // #1018 C4: on SQL Server the link rows and then the job rows are
+        // locked (and the links read) before anything else, so the fromRunId
+        // check below sees the result of any other assign of these jobs. See
+        // RunAssignLocks. SQLite (tests) locks the whole database for a write
+        // transaction and takes no hints.
+        List<TblBulkJobRun> links;
+        if (IsSqlServer())
+        {
+            links = [];
+            foreach (var (sql, args) in RunAssignLocks.LinkRowCommands(ids))
+                links.AddRange(await Context.TblBulkJobRuns.FromSqlRaw(sql, args).ToListAsync());
+            foreach (var (sql, args) in RunAssignLocks.JobRowCommands(ids))
+                await Context.Database.ExecuteSqlRawAsync(sql, args);
+        }
+        else
+        {
+            links = await Context.TblBulkJobRuns
+                .Where(l => l.BulkJobId.HasValue && ids.Contains(l.BulkJobId.Value))
+                .ToListAsync();
+        }
+
         var jobs = await Context.TblBulkJobs.Where(j => ids.Contains(j.BulkJobId)).ToListAsync();
         var missing = ids.Except(jobs.Select(j => j.BulkJobId)).ToList();
         if (missing.Count > 0)
@@ -720,10 +763,6 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             Log.Warning("Assign to run {RunId} aborted; bulk job ids not found: {JobIds}", runId, missing);
             return $"{missing.Count} job(s) no longer exist. Please refresh.";
         }
-
-        var links = await Context.TblBulkJobRuns
-            .Where(l => l.BulkJobId.HasValue && ids.Contains(l.BulkJobId.Value))
-            .ToListAsync();
 
         // Same optimistic-concurrency rule as UpdateJobToRunAsync, applied to
         // the whole batch: one stale job fails the lot.
@@ -867,6 +906,9 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         await Context.SaveChangesAsync();
         return ("Success", "Job removed from run");
     }
+
+    private bool IsSqlServer() =>
+        Context.Database.ProviderName?.Contains("SqlServer", StringComparison.OrdinalIgnoreCase) == true;
 
     private static List<int> ParseIntList(string? csv)
     {

@@ -15,6 +15,7 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
@@ -76,6 +77,54 @@ public class RouteViewerJobActionService(
             SpParam.Of("@JobID", jobId),
             SpParam.Of("@PODName", podName ?? string.Empty),
             SpParam.Of("@CompletedTime", stamp));
+    }
+
+    /// <summary>POD name stamped on a job marked lost. A lost job has no
+    /// recipient, so this is a marker, not a signature (decision record).</summary>
+    public const string MarkLostPodName = "LOST";
+
+    /// <summary>#320: close a Missing (1001) job as Undeliverable (10).
+    /// RVW_stpMarkJobLost acts only on a job still Missing and not done and
+    /// returns Updated 1 / 0; false means the job was left untouched.
+    /// The UPDATE fires the legacy tucJob triggers, which send their own
+    /// result sets BEFORE the proc's SELECT ... AS Updated, so this reads
+    /// every result set and takes Updated from the last one that has it.</summary>
+    public async Task<bool> MarkLostAsync(int jobId)
+    {
+        await GuardByJobAsync(jobId);
+        logger.LogInformation("RVW_stpMarkJobLost jobId={JobId}", jobId);
+        var conn = Context.Database.GetDbConnection();
+        await Context.Database.OpenConnectionAsync();
+        bool updated;
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            // No @CompletedTime: the proc stamps the tenant's local time.
+            cmd.CommandText = "EXEC dbo.RVW_stpMarkJobLost @JobID = @JobID, @PODName = @PODName";
+            cmd.CommandType = CommandType.Text;
+            // Join the caller's EF transaction when there is one.
+            cmd.Transaction = Context.Database.CurrentTransaction?.GetDbTransaction();
+            cmd.Parameters.Add(SpParam.Of("@JobID", jobId));
+            cmd.Parameters.Add(SpParam.Of("@PODName", MarkLostPodName));
+            await using var reader = await cmd.ExecuteReaderAsync();
+            int? last = null;
+            do
+            {
+                var col = -1;
+                for (var i = 0; i < reader.FieldCount; i++)
+                    if (string.Equals(reader.GetName(i), "Updated", StringComparison.OrdinalIgnoreCase)) { col = i; break; }
+                if (col < 0) continue;
+                last = null;
+                if (await reader.ReadAsync() && !reader.IsDBNull(col)) last = Convert.ToInt32(reader.GetValue(col));
+            } while (await reader.NextResultAsync());
+            updated = last == 1;
+        }
+        finally
+        {
+            await Context.Database.CloseConnectionAsync();
+        }
+        logger.LogInformation("RVW_stpMarkJobLost jobId={JobId} updated={Updated}", jobId, updated);
+        return updated;
     }
 
     public async Task LmcAsync(int jobId, int bulkJobId, string fromCourierCode)

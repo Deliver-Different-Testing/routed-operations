@@ -10,6 +10,10 @@ import { mockRouteViewerApis } from './fixtures/routeViewerMocks';
 // payload shaped like RVW_stpScanJobsRouted output (Legs is a JSON string,
 // CurrentLeg names the first non-completed leg), and the item-progress panel
 // against a payload shaped like RVW_stpScanManagerItemProgress.
+//
+// Round 2 (ruling 18 Nov): "Awaiting <Leg> pickup" is the Accepted job status
+// blue (RunViewer.tsx jobStatusClass 'A'), on the Stage pill and on the
+// pending chip of the current leg, for leg chips and item chips alike.
 
 const RUN_DATE = '2026-11-06';
 const wrap = (data: unknown) => ({ response: data });
@@ -44,6 +48,14 @@ const ROUTED_ROWS = [
   },
 ];
 
+const AWAITING_BLUE = /bg-blue-200 text-blue-900/;
+
+const ITEM_PROGRESS_9004 = [
+  ['LHP', 'pending', true], ['LH1', 'pending', false], ['DEL', 'pending', false],
+].map(([leg, state, isCurrent]) => ({
+  jobId: 9004, itemBarcode: 'ZZ9004-1', leg, state, tote: null, isCurrent, scanTime: null,
+}));
+
 const ITEM_PROGRESS_9001 = [
   ['LHP', 'completed', false], ['LH1', 'completed', false], ['LH2', 'picked', true], ['LH3', 'pending', false], ['DEL', 'pending', false],
 ].map(([leg, state, isCurrent]) => ({
@@ -56,9 +68,11 @@ test.describe('Scan Manager routed chips (#897)', () => {
     await page.route(/\/api\/runviewer\/scans\/routed(\?.*)?$/, (route: Route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(wrap(ROUTED_ROWS)) }),
     );
-    await page.route(/\/api\/runviewer\/scans\/item-progress(\?.*)?$/, (route: Route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(wrap(ITEM_PROGRESS_9001)) }),
-    );
+    await page.route(/\/api\/runviewer\/scans\/item-progress(\?.*)?$/, (route: Route) => {
+      const rootJobId = new URL(route.request().url()).searchParams.get('rootJobId');
+      const rows = rootJobId === '9004' ? ITEM_PROGRESS_9004 : ITEM_PROGRESS_9001;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(wrap(rows)) });
+    });
   });
 
   test('leg chips, stage pills and item chips take the proc state colours; current leg is ringed', async ({ page }) => {
@@ -87,7 +101,7 @@ test.describe('Scan Manager routed chips (#897)', () => {
     await expect(stage('ZZ9001')).toHaveClass(/bg-amber-100/);
     await expect(stage('ZZ9002')).toHaveClass(/bg-red-100/);
     await expect(stage('ZZ9003')).toHaveClass(/bg-amber-100/);
-    await expect(stage('ZZ9004')).toHaveClass(/bg-slate-100/);
+    await expect(stage('ZZ9004')).toHaveClass(AWAITING_BLUE);
 
     // Item chips in the expanded panel use the same state colours.
     await row('ZZ9001').getByRole('button', { name: 'Expand' }).click();
@@ -96,5 +110,22 @@ test.describe('Scan Manager routed chips (#897)', () => {
     await expect(itemChip('LH2')).toHaveClass(/bg-amber-100/);
     await expect(itemChip('LH2')).toHaveClass(/ring-brand-cyan/);
     await expect(itemChip('DEL')).toHaveClass(/bg-slate-100/);
+  });
+
+  test('Awaiting: the current pending leg chip and item chip are Accepted blue, later legs stay grey', async ({ page }) => {
+    await page.goto('/route-viewer/scans');
+    await page.getByRole('button', { name: 'Routed', exact: true }).click();
+
+    const row = page.locator('tr', { has: page.getByRole('cell', { name: 'ZZ9004', exact: true }) });
+    const legChip = (leg: string) => row.getByTitle(new RegExp(`^${leg}: `));
+    await expect(row.getByTestId('sm-stage-swatch')).toHaveClass(AWAITING_BLUE);
+    await expect(legChip('LHP')).toHaveClass(AWAITING_BLUE);
+    await expect(legChip('LH1')).toHaveClass(/bg-slate-100/);
+    await expect(legChip('DEL')).toHaveClass(/bg-slate-100/);
+
+    await row.getByRole('button', { name: 'Expand' }).click();
+    const itemChip = (leg: string) => page.locator('tr', { has: page.getByRole('cell', { name: 'ZZ9004-1', exact: true }) }).getByTitle(new RegExp(`^${leg}: `));
+    await expect(itemChip('LHP')).toHaveClass(AWAITING_BLUE);
+    await expect(itemChip('LH1')).toHaveClass(/bg-slate-100/);
   });
 });

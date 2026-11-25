@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { buildGoogleMapsStub, installBaseHandlers } from './PolygonBuilder.testHelpers';
-import { VISIBILITY_STORAGE_KEY } from '../lib/polygonLayers';
+import { FILTERS_STORAGE_KEY } from '../lib/polygonFilters';
 
 vi.mock('@googlemaps/markerclusterer', () => ({
   MarkerClusterer: class {
@@ -56,7 +56,7 @@ beforeEach(() => {
   };
   (window as any).google = buildGoogleMapsStub();
   vi.clearAllMocks();
-  window.localStorage.removeItem(VISIBILITY_STORAGE_KEY);
+  window.localStorage.removeItem(FILTERS_STORAGE_KEY);
   installBaseHandlers();
   server.use(
     http.get('/api/bulk-polygons', () => HttpResponse.json({
@@ -72,7 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as any).google;
-  window.localStorage.removeItem(VISIBILITY_STORAGE_KEY);
+  window.localStorage.removeItem(FILTERS_STORAGE_KEY);
 });
 
 const rowsIn = (layer: string) => {
@@ -80,7 +80,7 @@ const rowsIn = (layer: string) => {
   return Array.from(group.querySelectorAll('[data-testid="pb-polygon-row"]'));
 };
 
-describe('PolygonBuilder - layers and visibility', () => {
+describe('PolygonBuilder - layers', () => {
   it('groups the sidebar by layer, named layers first and "No layer" last', async () => {
     renderWithProviders(<PolygonBuilder />);
     await screen.findByText('AD Deep East');
@@ -88,50 +88,6 @@ describe('PolygonBuilder - layers and visibility', () => {
     expect(groups).toEqual(['AD', 'MC', '']);
     expect(rowsIn('AD')).toHaveLength(2);
     expect(screen.getByText('No layer')).toBeInTheDocument();
-  });
-
-  it('hiding a layer greys its rows, "Only" hides every other layer, and the choice persists', async () => {
-    renderWithProviders(<PolygonBuilder />);
-    await screen.findByText('AD Deep East');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Hide layer AD' }));
-    await waitFor(() => {
-      expect(rowsIn('AD').every((r) => r.getAttribute('data-hidden') === 'true')).toBe(true);
-    });
-    expect(rowsIn('MC')[0].getAttribute('data-hidden')).toBe('false');
-    expect(screen.getByRole('button', { name: 'Show layer AD' })).toBeInTheDocument();
-
-    // "Only" on MC: AD stays hidden, No layer becomes hidden, MC shows.
-    fireEvent.click(screen.getByTitle('Show only "MC" and hide every other layer'));
-    await waitFor(() => {
-      expect(rowsIn('')[0].getAttribute('data-hidden')).toBe('true');
-    });
-    expect(rowsIn('MC')[0].getAttribute('data-hidden')).toBe('false');
-
-    const saved = JSON.parse(window.localStorage.getItem(VISIBILITY_STORAGE_KEY) ?? '{}');
-    expect(saved.hiddenLayers.sort()).toEqual(['', 'AD']);
-
-    // Show all clears every hide.
-    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
-    await waitFor(() => {
-      expect(rowsIn('AD').every((r) => r.getAttribute('data-hidden') === 'false')).toBe(true);
-    });
-  });
-
-  it('hiding one polygon only affects that polygon and clicking its name reveals it again', async () => {
-    renderWithProviders(<PolygonBuilder />);
-    await screen.findByText('AD Deep East');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Hide polygon AD Deep East' }));
-    await waitFor(() => {
-      expect(rowsIn('AD')[0].getAttribute('data-hidden')).toBe('true');
-    });
-    expect(rowsIn('AD')[1].getAttribute('data-hidden')).toBe('false');
-
-    fireEvent.click(screen.getByRole('button', { name: 'AD Deep East' }));
-    await waitFor(() => {
-      expect(rowsIn('AD')[0].getAttribute('data-hidden')).toBe('false');
-    });
   });
 
   it('moves a polygon to a layer through the meta endpoint', async () => {
@@ -154,12 +110,14 @@ describe('PolygonBuilder - layers and visibility', () => {
     await waitFor(() => expect(rowsIn('AD')).toHaveLength(3));
   });
 
-  it('postcode boundaries can be switched off and on from the toolbar', async () => {
+  it('Postcode lines in the filter bar switches postcode boundaries off and on', async () => {
     renderWithProviders(<PolygonBuilder />);
-    const btn = await screen.findByRole('button', { name: /Hide postcode boundaries/ });
+    const btn = await screen.findByRole('button', { name: /Postcode lines/ });
+    expect(btn.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByRole('button', { name: /Hide postcode boundaries/ })).toBeNull();
     fireEvent.click(btn);
-    await screen.findByRole('button', { name: /Show postcode boundaries/ });
-    expect(JSON.parse(window.localStorage.getItem(VISIBILITY_STORAGE_KEY) ?? '{}').showPostcodes).toBe(false);
+    await waitFor(() => expect(btn.getAttribute('aria-pressed')).toBe('false'));
+    expect(JSON.parse(window.localStorage.getItem(FILTERS_STORAGE_KEY) ?? '{}').showPostcodes).toBe(false);
   });
 });
 

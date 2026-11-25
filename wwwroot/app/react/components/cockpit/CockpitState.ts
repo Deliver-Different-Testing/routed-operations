@@ -1,6 +1,7 @@
 import { useReducer } from 'react';
 import type { BulkJob, Fleet, JobFilters, Region, Run, Speed } from '../../types';
 import { todayIso } from '../../lib/formatters';
+import { applyCockpitPatch, type CockpitPatch } from './cockpitPatch';
 
 export type JobSizeFilter = 'all' | 'moreThan100Cubic';
 
@@ -41,6 +42,7 @@ type Action =
   | { type: 'SET_FILTER'; payload: Partial<JobFilters> }
   | { type: 'SET_JOBS'; payload: BulkJob[] }
   | { type: 'SET_RUNS'; payload: Run[] }
+  | { type: 'PATCH_JOBS_RUNS'; payload: CockpitPatch }
   | { type: 'SET_REGIONS'; payload: Region[] }
   | { type: 'SET_SPEEDS'; payload: Speed[] }
   | { type: 'SET_FLEETS'; payload: Fleet[] }
@@ -103,6 +105,8 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       return { ...state, jobs: action.payload };
     case 'SET_RUNS':
       return { ...state, runs: action.payload };
+    case 'PATCH_JOBS_RUNS':
+      return { ...state, ...applyCockpitPatch(state.jobs, state.runs, action.payload) };
     case 'SET_REGIONS':
       return { ...state, regions: action.payload };
     case 'SET_SPEEDS':

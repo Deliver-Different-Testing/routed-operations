@@ -17,5 +17,9 @@ namespace RoutedOperations.Core.Application.Dtos.BulkImport.Address
 
         // For US - using LocationZipcodesDto (kept for backward compatibility)
         public IEnumerable<LocationZipcodesDto> Locations { get; set; }
+
+        // #1017: one line per postcode covered by more than one depot, naming
+        // the winning depot and the rule that picked it. Also logged.
+        public List<string> Decisions { get; set; } = new List<string>();
     }
 }

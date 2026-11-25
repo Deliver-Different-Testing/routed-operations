@@ -32,6 +32,7 @@ import { RvClientIntelBox } from '../../components/route-viewer/RvClientIntelBox
 import { RvUtilityActions } from '../../components/route-viewer/RvUtilityActions';
 import { TopUpDialog } from '../../components/route-viewer/TopUpDialog';
 import { DEFAULT_LAYOUT, type CockpitLayout } from '../../lib/layouts';
+import { ACCEPTED_STATUS_TINT } from '../../lib/jobStatusTint';
 import { routeViewerService, type BulkJob, type BulkRun } from '../../services/routeViewerService';
 import { useToast } from '../../context/ToastContext';
 
@@ -937,17 +938,6 @@ export default function RunViewer() {
                           <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                         </svg>
                       </button>
-                      <button
-                        type="button"
-                        title="More"
-                        className="w-6 h-6 flex items-center justify-center rounded hover:bg-black/5 text-text-secondary"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                          <circle cx="12" cy="5" r="1.7" />
-                          <circle cx="12" cy="12" r="1.7" />
-                          <circle cx="12" cy="19" r="1.7" />
-                        </svg>
-                      </button>
                     </>
                   }
                 >
@@ -1290,6 +1280,8 @@ export default function RunViewer() {
           onClose={() => setCtxMenu(null)}
           onDone={() => {
             runsQuery.refetch();
+            // Run actions change the region totals too (same keys as the auto-poll).
+            queryClient.invalidateQueries({ queryKey: ['rv-overview', filters.runDate] });
             if (singleRunId != null) {
               queryClient.invalidateQueries({ queryKey: ['rv-run-jobs', singleRunId] });
             }
@@ -1316,6 +1308,9 @@ export default function RunViewer() {
           onDone={() => {
             runJobsQuery.refetch();
             runsQuery.refetch();
+            // Complete / Mark lost / Missing move the region TODO count; without
+            // this the Overview box waited for the 25 s auto-poll.
+            queryClient.invalidateQueries({ queryKey: ['rv-overview', filters.runDate] });
           }}
         />
       )}
@@ -1366,7 +1361,7 @@ function jobStatusClass(status: string | null | undefined): string {
   switch (s) {
     case 'N':   return 'bg-sky-200 text-sky-900';
     case 'D':   return 'bg-green-200 text-green-900';
-    case 'A':   return 'bg-blue-200 text-blue-900';
+    case 'A':   return ACCEPTED_STATUS_TINT;
     case 'R':   return 'bg-white text-slate-700 border border-slate-200';
     case 'LP':
     case 'V':   return 'bg-orange-200 text-orange-900';

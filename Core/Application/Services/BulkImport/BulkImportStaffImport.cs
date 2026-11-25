@@ -48,6 +48,9 @@ public partial class BulkImportServiceV2
         var clientCache = new Dictionary<int, dynamic>();
         var clientCodeCache = new Dictionary<string, dynamic>();
         var clientFacts = new Dictionary<int, TruckClientFacts>();
+        var staffAliases = new Dictionary<int, List<TblBulkSuburbAlias>>();
+        var staffAliasNames = new Dictionary<int, string>();
+        Func<string, string> staffExactSuburb = null;
 
         try
         {
@@ -178,6 +181,24 @@ public partial class BulkImportServiceV2
                     string toState = GetStringValue(jobData, "ToState", "To State", "tostate");
                     int? toPostCode = GetIntValue(jobData, "ToPostCode", "To PostCode", "topostcode");
                     int? toZipCode = GetIntValue(jobData, "ToZipCode", "To Zip Code", "tozipcode");
+
+                    // #333: book the suburb the client remembered in Fix Suburbs,
+                    // the same lookup the routed import uses, so both agree. An
+                    // exact tucSuburb name still wins over the (normalised) alias.
+                    if (isNz)
+                    {
+                        var aliases = await StaffClientAliasesAsync((int)client.Id, staffAliases, staffAliasNames);
+                        async Task<string> StaffSuburb(string raw, int? postCode)
+                        {
+                            var aliased = AliasedSuburbName(aliases, staffAliasNames, (int)client.Id, raw, postCode?.ToString());
+                            if (aliased == null) return raw;
+                            staffExactSuburb ??= BulkSuburbAliases.ExactSuburbMatcher(
+                                await Context.TucSuburbs.AsNoTracking().Select(s => s.UcsuName).ToListAsync());
+                            return staffExactSuburb(raw) ?? aliased;
+                        }
+                        fromSuburb = await StaffSuburb(fromSuburb, fromPostCode);
+                        toSuburb = await StaffSuburb(toSuburb, toPostCode);
+                    }
                     string toContact = GetStringValue(jobData, "ToContact", "To Contact", "tocontact");
                     string toContactPhone = GetStringValue(jobData, "ToContactPhone", "To Contact Phone", "tocontactphone");
 

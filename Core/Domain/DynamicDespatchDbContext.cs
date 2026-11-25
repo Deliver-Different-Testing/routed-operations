@@ -20,6 +20,9 @@ public class DynamicDespatchDbContext(DbContextOptions options) : DespatchContex
     public virtual DbSet<TucJobArchive> TucJobArchives { get; set; }
     public virtual DbSet<HistoricArchiveImportBatch> HistoricArchiveImportBatches { get; set; }
 
+    // #333 Bulk Import suburb memory (dbo.tblBulkSuburbAlias).
+    public virtual DbSet<TblBulkSuburbAlias> TblBulkSuburbAliases { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -39,6 +42,23 @@ public class DynamicDespatchDbContext(DbContextOptions options) : DespatchContex
                 tb.HasTrigger("tucJobArchive_Update_UpdatedTimeStamp");
                 tb.HasTrigger("tucJobArchive_Update_BlockChanges");
             });
+        });
+
+        modelBuilder.Entity<TblBulkSuburbAlias>(entity =>
+        {
+            entity.ToTable("tblBulkSuburbAlias");
+            entity.HasKey(e => e.SuburbAliasId);
+            entity.Property(e => e.SuburbAliasId).HasColumnName("SuburbAliasId");
+            entity.Property(e => e.RawSuburb).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.RawPostCode).HasMaxLength(10);
+            entity.Property(e => e.CreatedBy).HasMaxLength(100);
+            entity.Property(e => e.Created).HasColumnType("datetime2(0)").HasDefaultValueSql("sysutcdatetime()");
+            entity.HasIndex(e => new { e.ClientId, e.RawSuburb, e.RawPostCode })
+                .IsUnique()
+                .HasDatabaseName("UX_tblBulkSuburbAlias_Client_Suburb_PostCode")
+                // Unfiltered, as migration 20261125140500 creates it: without
+                // this EF adds "IS NOT NULL" for the nullable columns.
+                .HasFilter(null);
         });
 
         modelBuilder.Entity<HistoricArchiveImportBatch>(entity =>

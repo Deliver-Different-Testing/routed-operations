@@ -165,6 +165,45 @@ describe('SelectRegionsModal - NZ tenant path', () => {
     });
   });
 
+  it('an accepted postcode wins over a sheet postcode that also matches a depot (#332)', async () => {
+    server.use(
+      http.get('/api/address/depots/postcodes', () =>
+        HttpResponse.json({
+          ...env,
+          depots: [
+            { id: 1, name: 'Auckland South', postcodes: ['1062'] },
+            { id: 2, name: 'Auckland CBD', postcodes: ['1010'] },
+          ],
+        })
+      )
+    );
+    const dispatch = vi.fn();
+    const s = nzState([{ ToPostCode: '1062' }, { ToPostCode: '1062' }]);
+    // Row 1: the operator clicked Accept on "sheet says 1062, map says 1010".
+    s.fixedPostCodes = { 1: '1010' };
+    renderWithProviders(
+      <SelectRegionsModal
+        open
+        state={s}
+        dispatch={dispatch}
+        onBack={vi.fn()}
+        onNext={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'SEED_DEPOTS',
+          depots: [
+            expect.objectContaining({ depotId: 2, jobIndexes: [1], postCodeOverrides: { 1: '1010' } }),
+            expect.objectContaining({ depotId: 1, jobIndexes: [0] }),
+          ],
+        })
+      );
+    });
+  });
+
   it('Cancel and Back buttons wire through their handlers', async () => {
     server.use(
       http.get('/api/address/depots/postcodes', () =>

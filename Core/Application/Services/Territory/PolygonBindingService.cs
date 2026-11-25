@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using RoutedOperations.Core.Application.Dtos.Territory;
+using RoutedOperations.Core.Application.Services.BulkPolygon;
 using RoutedOperations.Core.Domain;
+using RoutedOperations.Core.Domain.Despatch;
 
 namespace RoutedOperations.Core.Application.Services.Territory;
 
@@ -51,7 +53,9 @@ public class PolygonBindingService(IDbContextFactory<DynamicDespatchDbContext> c
 
     /// <summary>Bind (or clear) a polygon's US ZoneName. Pass null to clear.
     /// Group membership is not touched here; it lives in BulkZonePolygon and
-    /// is written through BulkPolygonService.</summary>
+    /// is written through BulkPolygonService. Binding (not clearing) adds the
+    /// ZONE_RATING app tag in the same save if the shape lacks it
+    /// (perimeter spec 4.5, Q1).</summary>
     public async Task<BoundPolygonDto> BindZoneNameAsync(int polygonId, int? zoneNameId)
     {
         var entity = await Context.BulkRunPolygons
@@ -59,6 +63,8 @@ public class PolygonBindingService(IDbContextFactory<DynamicDespatchDbContext> c
             ?? throw new InvalidOperationException("Polygon not found.");
         entity.ZoneNameId = zoneNameId;
         entity.LastModifiedUtc = DateTime.UtcNow;
+        if (zoneNameId is not null)
+            await PolygonAppTags.EnsureAsync(Context, [polygonId], PolygonApps.ZoneRating);
         await Context.SaveChangesAsync();
         return new BoundPolygonDto(
             entity.PolygonId, entity.Name, entity.ZoneNameId, entity.PostcodeGroupId,

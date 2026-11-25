@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Dtos.BulkImport.SuburbAlias;
 using RoutedOperations.Core.Application.Security;
 using RoutedOperations.Core.Application.Services.BulkImport;
 using Serilog;
@@ -167,6 +168,61 @@ public class BulkImportController(
         catch (Exception e)
         {
             logger.LogError(e, "PreviewTruckRows failed");
+            throw;
+        }
+    }
+
+    // GET /api/bulk-import/suburb-aliases?clientId= - the suburb fixes remembered
+    // in Fix Suburbs (#333): the client's rows first, then tenant-wide rows.
+    [HttpGet("suburb-aliases")]
+    public async Task<IActionResult> GetSuburbAliases([FromQuery] int clientId)
+    {
+        try
+        {
+            var messageId = Guid.NewGuid();
+            LogRequestStart(messageId);
+            return HandleBulkResponse(await bulkService.GetSuburbAliases(GetCurrentContactId(), clientId, messageId));
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "GetSuburbAliases failed");
+            throw;
+        }
+    }
+
+    // POST /api/bulk-import/suburb-aliases - remember the operator's pick for
+    // this client so the same sheet suburb is not asked again.
+    [HttpPost("suburb-aliases")]
+    public async Task<IActionResult> RememberSuburbAlias([FromBody] RememberSuburbAliasRequest request)
+    {
+        try
+        {
+            LogRequestStart(request.MessageId);
+            if (!ModelState.IsValid)
+                return HandleBulkInvalidModelState(request.MessageId);
+            return HandleBulkResponse(await bulkService.RememberSuburbAlias(GetCurrentContactId(), request));
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "RememberSuburbAlias failed");
+            throw;
+        }
+    }
+
+    // DELETE /api/bulk-import/suburb-aliases/{id} - clear a remembered fix.
+    [HttpDelete("suburb-aliases/{id}")]
+    public async Task<IActionResult> ForgetSuburbAlias([FromRoute] IdRequest request)
+    {
+        try
+        {
+            LogRequestStart(request.MessageId);
+            if (!ModelState.IsValid)
+                return HandleBulkInvalidModelState(request.MessageId);
+            return HandleBulkResponse(await bulkService.ForgetSuburbAlias(GetCurrentContactId(), request));
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "ForgetSuburbAlias failed");
             throw;
         }
     }
