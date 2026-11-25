@@ -362,4 +362,48 @@ public class BulkImportP2PGuardTests
 
         Assert.Equal(1, Assert.Single(CallsTo(rig.Procs, "INT_stpJob_BulkInsertAsync"))["speed"]);
     }
+
+    // #333: Staff Import books the suburb the client remembered in Fix
+    // Suburbs, the same one New Import books, instead of the sheet's spelling.
+    [Fact]
+    public async Task Staff_import_books_the_clients_remembered_suburb()
+    {
+        var rig = NewRig();
+        rig.Seed.TucSuburbs.Add(new TucSuburb { UcsuId = 1, UcsuName = "Albany", PostCode = "0632" });
+        rig.Seed.TblBulkSuburbAliases.Add(new TblBulkSuburbAlias { SuburbAliasId = 1, ClientId = ClientId, RawSuburb = "albanee", RawPostCode = "0632", SuburbId = 1 });
+        rig.Seed.SaveChanges();
+        var row = StaffRow();
+        row["ToSuburb"] = "Albanee";
+        row["ToPostCode"] = 632;
+
+        await rig.Svc.StaffImport(ContactId, new StaffImportRequest { Jobs = new[] { row } });
+
+        Assert.Equal("Albany", Assert.Single(CallsTo(rig.Procs, "INT_stpJob_BulkInsertAsync"))["toSuburb"]);
+    }
+
+    // The alias key is normalised, so 'St. Albans' -> Saint Albans is stored
+    // as 'saint albans' and also matches a sheet reading 'St Albans'. That is
+    // a different real suburb: the exact name must win over the alias, also
+    // when the sheet spaces it differently or ends it with a dot.
+    [Theory]
+    [InlineData("St Albans", "St Albans")]
+    [InlineData("St  Albans", "St Albans")]
+    [InlineData("St Albans.", "St Albans")]
+    [InlineData(" saint  albans ", "Saint Albans")]
+    public async Task Staff_import_books_an_exact_suburb_name_over_a_remembered_fix(string sheet, string booked)
+    {
+        var rig = NewRig();
+        rig.Seed.TucSuburbs.AddRange(
+            new TucSuburb { UcsuId = 1, UcsuName = "St Albans", PostCode = "8014" },
+            new TucSuburb { UcsuId = 3, UcsuName = "Saint Albans", PostCode = "8014" });
+        rig.Seed.TblBulkSuburbAliases.Add(new TblBulkSuburbAlias { SuburbAliasId = 1, ClientId = ClientId, RawSuburb = "saint albans", RawPostCode = "8014", SuburbId = 3 });
+        rig.Seed.SaveChanges();
+        var row = StaffRow();
+        row["ToSuburb"] = sheet;
+        row["ToPostCode"] = 8014;
+
+        await rig.Svc.StaffImport(ContactId, new StaffImportRequest { Jobs = new[] { row } });
+
+        Assert.Equal(booked, Assert.Single(CallsTo(rig.Procs, "INT_stpJob_BulkInsertAsync"))["toSuburb"]);
+    }
 }

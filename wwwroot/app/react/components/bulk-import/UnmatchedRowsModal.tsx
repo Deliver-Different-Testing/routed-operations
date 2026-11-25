@@ -39,6 +39,12 @@ export function UnmatchedRowsModal({ open, state, isUs, bucket, onClose }: Props
   const reason = (rowIndex: number) => {
     if (!isUnmatched) return `No service for this client at ${bucket?.depotName ?? 'this depot'}`;
     if (!m[codeField]) return `${codeLabel} column not mapped`;
+    // #332: a geocoder postcode only counts once accepted in Fix Addresses.
+    const sg = isUs ? undefined : state.geocodeSuggestions[`pc:${rowIndex}`];
+    if (sg?.decision === 'keep') {
+      return `Sheet postcode ${sg.sheet || '(blank)'} kept (map says ${sg.map}); not covered by any depot`;
+    }
+    if (sg?.decision === 'pending') return `Map says ${sg.map}: accept it in Fix Addresses to use it`;
     return cell(rowIndex, codeField)
       ? `${codeLabel} not covered by any ${isUs ? 'region' : 'depot'}`
       : `Missing ${codeLabel.toLowerCase()}`;

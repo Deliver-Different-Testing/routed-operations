@@ -331,7 +331,62 @@ public class BulkImportServiceV2JobFactoryTests
         Assert.DoesNotContain("'Ponsonby'", msg);
     }
 
-    private static void SeedMinimalClient(DynamicDespatchDbContext seed, int clientId, int speedId)
+    // #316/#319 server side. A blank name / address / job number cell hit a
+    // bare .Trim() in the job build and threw, so the operator saw
+    // "Import failed: <stack>". Each blank cell must come back as one line
+    // naming the row (1-based within this request) and the column, with the
+    // labels the Map Columns step shows for the tenant.
+    [Theory]
+    [InlineData("NZ", "To Contact", "To Address")]
+    [InlineData("US", "Contact", "Address")]
+    public async Task Import_Routed_BlankRequiredCells_NameTheRowAndColumn(string country, string contactLabel, string addressLabel)
+    {
+        var svc = BulkImportServiceV2CoreTests.NewSvc(out var seed, out _, countryCode: country, clientTypeId: "4", timeZone: "UTC");
+        SeedMinimalClient(seed, 5, speedId: 1);
+        seed.TucSuburbs.Add(new TucSuburb { UcsuId = 1, UcsuName = "Ponsonby", PostCode = "1011" });
+        await seed.SaveChangesAsync();
+
+        var req = new BulkImportRequest
+        {
+            ClientId = 5,
+            SpeedId = 1,
+            BookDate = DateTime.UtcNow.AddDays(10),
+            JobType = "routed",
+            RouteFromClientSite = true,
+            Jobs = new List<BulkImportJobCreateDto>
+            {
+                new() { JobNumber = "J1", FromAddress = "1 Pick St", ToAddress = "T", ToContact = "C", ToSuburb = "Ponsonby", ToPostCode = "1011" },
+                new() { JobNumber = "J2", FromAddress = "1 Pick St", ToAddress = "T", ToContact = null, ToSuburb = "Ponsonby", ToPostCode = "1011" },
+                new() { JobNumber = "J3", FromAddress = "1 Pick St", ToAddress = "  ", ToContact = "C", ToSuburb = "Ponsonby", ToPostCode = "1011" },
+                new() { JobNumber = null, FromAddress = "1 Pick St", ToAddress = "T", ToContact = "C", ToSuburb = "Ponsonby", ToPostCode = "1011" },
+            }
+        };
+        var resp = await svc.Import(contactId: 1, req);
+
+        Assert.False(resp.Success);
+        Assert.Equal(new[]
+        {
+            $"Row 2: {contactLabel} is blank",
+            $"Row 3: {addressLabel} is blank",
+            "Row 4: Job Number is blank",
+        }, resp.Messages.Select(m => m.Message).ToArray());
+    }
+
+    // #332 server half: the on-demand / truck pickup geocode overwrote a
+    // filled-in sheet postcode with HERE's suggestion. There is no accept
+    // step for the pickup, so the sheet value must win and the geocoder may
+    // only fill a blank cell.
+    [Theory]
+    [InlineData("0614", "1062", "0614", "0614")]   // sheet filled: kept
+    [InlineData("02110", "02139", "02110", "02110")] // US zip: kept
+    [InlineData("", "1062", "0614", "1062")]       // blank: suggestion fills it
+    [InlineData(null, null, "0614", "0614")]       // blank, no suggestion: geocoded echo
+    public void OriginPostCodeAfterGeocode_SheetValueWins(string sheet, string suggested, string geocoded, string expected)
+    {
+        Assert.Equal(expected, BulkImportServiceV2.OriginPostCodeAfterGeocode(sheet, suggested, geocoded));
+    }
+
+    internal static void SeedMinimalClient(DynamicDespatchDbContext seed, int clientId, int speedId)
     {
         seed.TucClients.Add(new TucClient
         {

@@ -67,4 +67,26 @@ public partial class TblBulkRegion
     public string AddressLine3 { get; set; }
     public string AddressLine4 { get; set; }
     public string AddressLine8 { get; set; }
+    // #1017: set by ops on depots (airline / rating-only) that must never
+    // take postcodes in Bulk Import depot grouping. Column added by the DB
+    // run's migration (bit NOT NULL DEFAULT 0).
+    public bool ExcludeFromBulkGrouping { get; set; }
+}
+
+// ---- TblBulkSuburbAlias ---------------------------------------------------
+
+// #333: a suburb fix the operator chose in Fix Suburbs, remembered so the
+// same sheet value is not asked again. ClientId NULL = tenant-wide fallback.
+// RawSuburb / RawPostCode are stored normalised (BulkSuburbAliases.Normalise
+// / NormalisePostCode). Table added by the DB run's migration; the grant is
+// SELECT, INSERT, DELETE only, so a changed fix is delete + insert.
+public partial class TblBulkSuburbAlias
+{
+    public int SuburbAliasId { get; set; }
+    public int? ClientId { get; set; }
+    public string RawSuburb { get; set; }
+    public string RawPostCode { get; set; }
+    public int SuburbId { get; set; }
+    public string CreatedBy { get; set; }
+    public DateTime Created { get; set; }
 }

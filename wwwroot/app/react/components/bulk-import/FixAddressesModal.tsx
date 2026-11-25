@@ -138,24 +138,29 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
               corrected: g.suggestedZipCode,
             });
           }
-          // NZ: keep the geocoder's corrected postcode per row so depot
-          // grouping can rescue rows whose own postcode matches no depot.
-          const rawPostCode = (toAddresses[i]?.postCode ?? '').trim();
-          if (
-            !isUs
-            && g.suggestedPostCode
-            && digitsOnly(g.suggestedPostCode) !== digitsOnly(rawPostCode)
-            && state.fixedPostCodes[i] == null
-          ) {
-            dispatch({ type: 'SET_FIXED_POSTCODE', rowIndex: i, postCode: g.suggestedPostCode });
-          }
-          if (!isUs && g.suggestedPostCode && g.suburb) {
-            const key = `${g.suburb.toLowerCase()}|${g.postCode ?? ''}`;
-            if (!state.fixedZips[key]) {
+          // NZ (#332): the geocoder's postcode / suburb is a SUGGESTION. It
+          // is listed below as "sheet says X, map says Y" and only reaches
+          // depot grouping or the import once the operator accepts it.
+          if (!isUs) {
+            const rawPostCode = (toAddresses[i]?.postCode ?? '').trim();
+            if (g.suggestedPostCode && digitsOnly(g.suggestedPostCode) !== digitsOnly(rawPostCode)) {
               dispatch({
-                type: 'SET_FIXED_ZIP',
-                badZip: key,
-                corrected: g.suburb,
+                type: 'ADD_GEOCODE_SUGGESTION',
+                key: `pc:${i}`,
+                suggestion: { kind: 'postCode', rowIndex: i, sheet: rawPostCode, map: g.suggestedPostCode, decision: 'pending' },
+              });
+            }
+            // The geocode DTO echoes the sheet suburb today, so this only
+            // fires if the server starts returning its own suburb.
+            const rawSuburb = (toAddresses[i]?.suburb ?? '').trim();
+            if (g.suburb && rawSuburb && g.suburb.trim().toLowerCase() !== rawSuburb.toLowerCase()) {
+              dispatch({
+                type: 'ADD_GEOCODE_SUGGESTION',
+                key: `sub:${i}`,
+                suggestion: {
+                  kind: 'suburb', rowIndex: i, sheet: rawSuburb, map: g.suburb.trim(),
+                  zipKey: `${rawSuburb.toLowerCase()}|${rawPostCode}`, decision: 'pending',
+                },
               });
             }
           }
@@ -209,6 +214,12 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
     }
     return list;
   }, [geocodedTo, geocodedFrom, state.fixedAddresses, state.fixedFromAddresses]);
+
+  const suggestions = useMemo(
+    () => Object.entries(state.geocodeSuggestions)
+      .sort(([, a], [, b]) => a.rowIndex - b.rowIndex || a.kind.localeCompare(b.kind)),
+    [state.geocodeSuggestions]
+  );
 
   const active =
     selected != null
@@ -273,6 +284,45 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
       }
     >
       <div className="max-h-[70vh] overflow-y-auto">
+        {!loading && suggestions.length > 0 && (
+          <div className="mb-3 border border-warning/40 bg-warning/5 rounded p-2 space-y-1">
+            <p className="text-xs text-text-secondary">
+              The map suggests a different value for {suggestions.length} cell
+              {suggestions.length === 1 ? '' : 's'}. Nothing changes unless you accept it.
+            </p>
+            {suggestions.map(([key, sg]) => (
+              <div
+                key={key}
+                data-testid={`geocode-suggestion-${key.replace(':', '-')}`}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                {/* +2: header row plus 1-based numbering, matching the spreadsheet. */}
+                <span>
+                  Row {sg.rowIndex + 2}: {sg.kind === 'postCode' ? 'postcode' : 'suburb'} - sheet says{' '}
+                  {sg.sheet || '(blank)'}, map says {sg.map}
+                </span>
+                <span className="flex gap-1 shrink-0">
+                  <Button
+                    size="sm"
+                    variant={sg.decision === 'accept' ? 'primary' : 'neutral'}
+                    aria-pressed={sg.decision === 'accept'}
+                    onClick={() => dispatch({ type: 'DECIDE_SUGGESTION', key, decision: 'accept' })}
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={sg.decision === 'keep' ? 'primary' : 'neutral'}
+                    aria-pressed={sg.decision === 'keep'}
+                    onClick={() => dispatch({ type: 'DECIDE_SUGGESTION', key, decision: 'keep' })}
+                  >
+                    Keep sheet
+                  </Button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {loading && (
           <p className="text-xs text-text-muted text-center py-3">Geocoding addresses...</p>
         )}

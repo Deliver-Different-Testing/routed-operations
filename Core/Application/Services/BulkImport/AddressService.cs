@@ -596,7 +596,9 @@ public class AddressService(
 
         // Use defaults for now and ignore groupings
         var postcodeDepots = await Context.BulkZonePostcodes
-            .Where(p => !p.PostcodeGroupId.HasValue && p.DepotId.HasValue && p.Depot.Active != false)
+            .Where(p => !p.PostcodeGroupId.HasValue && p.DepotId.HasValue && p.Depot.Active != false
+                // #1017: ops-flagged airline / rating-only depots never group.
+                && !p.Depot.ExcludeFromBulkGrouping)
             .Select(p => new {
                 p.PostCode,
                 p.Zone,
@@ -629,13 +631,27 @@ public class AddressService(
             ? ScheduleRank.NoSchedule
             : depotScheduleRank.GetValueOrDefault(depotId, ScheduleRank.NoSchedule);
 
-        var owners = postcodeDepots
+        var ranked = postcodeDepots
             .GroupBy(p => p.PostCode)
             .Select(g => g
                 .OrderByDescending(p => RankOf(p.DepotId))
                 .ThenBy(p => p.Zone)
                 .ThenBy(p => p.DepotId)
-                .First());
+                .ToList())
+            .ToList();
+        var owners = ranked.Select(r => r[0]).ToList();
+
+        // One line per contested postcode: winner, deciding rule, losers.
+        foreach (var r in ranked.Where(r => r.Count > 1))
+        {
+            var (win, next) = (r[0], r[1]);
+            var rule = RankOf(win.DepotId) != RankOf(next.DepotId)
+                ? (RankOf(win.DepotId) == ScheduleRank.OwnSchedule ? "client schedule" : "default schedule")
+                : win.Zone != next.Zone ? "zone" : "depot id";
+            var line = $"{win.PostCode.ToString().PadLeft(4, '0')} -> depot {win.DepotId} {win.Name} by {rule} (over {string.Join(", ", r.Skip(1).Select(p => p.DepotId))})";
+            response.Decisions.Add(line);
+            Log.Information($"({messageId}) GetPostcodesByDepot client {clientId?.ToString() ?? "none"}: {line}");
+        }
 
         response.Depots = owners
             .GroupBy(p => new { p.DepotId, p.Name })
