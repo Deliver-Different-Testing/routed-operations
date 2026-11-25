@@ -112,7 +112,8 @@ describe('FixZipCodesModal - NZ suburbs', () => {
       />
     );
     await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Auckland' } });
+    // NZ options carry the suburb id; the dispatched fix is still the name.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '1' } });
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'SET_FIXED_ZIP', corrected: 'Auckland' })
     );
@@ -282,6 +283,191 @@ describe('FixZipCodesModal - NZ suburbs', () => {
       <FixZipCodesModal open state={s} dispatch={vi.fn()} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
     );
     await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+  });
+
+  // B5: the shared normaliser on the main match, so 'Mt Eden' needs no fix.
+  it('accepts Mt Eden for the reference Mount Eden without asking', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [{ id: 1, name: 'Mount Eden', city: null, postCode: '1024', alias: null }],
+        })
+      )
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'Mt Eden', ToPostCode: '1024' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByText(/Suburbs seems OK/)).toBeInTheDocument());
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip: 'mt eden|1024', corrected: 'Mount Eden' })
+    );
+  });
+
+  // Two real suburbs normalise alike: a spelling that matches neither
+  // exactly is asked about, not guessed.
+  it('asks about St. Albans when both St Albans and Saint Albans exist', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [
+            { id: 1, name: 'St Albans', city: null, postCode: '8014', alias: null },
+            { id: 2, name: 'Saint Albans', city: null, postCode: '8014', alias: null },
+          ],
+        })
+      )
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'St. Albans', ToPostCode: '8014' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+    expect(screen.getByText('St. Albans (8014)')).toBeInTheDocument();
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'SET_FIXED_ZIP' }));
+  });
+
+  // Order is exact name, then remembered fix, then normalised match. Alias
+  // keys are normalised, so the fix saved for 'St. Albans' -> Saint Albans
+  // ('saint albans') also matches a sheet 'St Albans', a different real
+  // suburb, which must stay as itself; 'St. Albans' still takes the fix.
+  it('keeps an exact suburb name even when a remembered fix matches it', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [
+            { id: 1, name: 'St Albans', city: null, postCode: '8014', alias: null },
+            { id: 3, name: 'Saint Albans', city: null, postCode: '8014', alias: null },
+          ],
+        })
+      ),
+      http.get('/api/bulk-import/suburb-aliases', () =>
+        HttpResponse.json({
+          ...env,
+          aliases: [
+            { id: 9, clientId: 7, rawSuburb: 'saint albans', rawPostCode: '8014', suburbId: 3, suburbName: 'Saint Albans', postCode: '8014' },
+          ],
+        })
+      )
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      client: { id: 7, code: 'C', name: 'C', isUsTenant: false },
+      parsed: {
+        headers: ['ToSuburb', 'ToPostCode'],
+        rows: [
+          { ToSuburb: 'St Albans', ToPostCode: '8014' },
+          { ToSuburb: 'St. Albans', ToPostCode: '8014' },
+          { ToSuburb: 'St  Albans', ToPostCode: '8014' },
+          { ToSuburb: 'St Albans.', ToPostCode: '8014' },
+          { ToSuburb: ' saint  albans ', ToPostCode: '8014' },
+        ],
+      },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip: 'st. albans|8014', corrected: 'Saint Albans' })
+      )
+    );
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ badZip: 'st albans|8014' }));
+    // Spacing and a trailing dot are still the exact name, not the alias.
+    for (const badZip of ['st  albans|8014', 'st albans.|8014']) {
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip, corrected: 'St Albans' }));
+      expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ badZip, corrected: 'Saint Albans' }));
+      expect(screen.queryByTestId(`remembered-fix-${badZip}`)).toBeNull();
+    }
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip: 'saint  albans|8014', corrected: 'Saint Albans' })
+    );
+    expect(screen.queryByTestId('remembered-fix-saint  albans|8014')).toBeNull();
+    expect(screen.queryByTestId('remembered-fix-st albans|8014')).toBeNull();
+    expect(screen.getByTestId('remembered-fix-st. albans|8014')).toBeInTheDocument();
+  });
+
+  // NZ has duplicate suburb names. The remembered fix must be the exact
+  // tucSuburb the operator picked, not the first one with that name.
+  it('remembers the picked suburb id when two suburbs share a name', async () => {
+    let posted: unknown = null;
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [
+            { id: 5, name: 'Newton', city: 'Auckland', postCode: '1010', alias: null },
+            { id: 6, name: 'Newton', city: 'Wellington', postCode: '6021', alias: null },
+          ],
+        })
+      ),
+      http.get('/api/bulk-import/suburb-aliases', () => HttpResponse.json({ ...env, aliases: [] })),
+      http.post('/api/bulk-import/suburb-aliases', async ({ request }) => {
+        posted = await request.json();
+        return HttpResponse.json({
+          ...env,
+          alias: { id: 9, clientId: 7, rawSuburb: 'nuton', rawPostCode: '1010', suburbId: 6, suburbName: 'Newton', postCode: '6021' },
+        });
+      })
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      client: { id: 7, code: 'C', name: 'C', isUsTenant: false },
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'Nuton', ToPostCode: '1010' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+    });
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '6' } });
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'SET_FIXED_ZIP', badZip: 'nuton|1010', corrected: 'Newton' })
+    );
+    await waitFor(() => expect(posted).not.toBeNull());
+    expect(posted).toMatchObject({ clientId: 7, rawSuburb: 'Nuton', rawPostCode: '1010', suburbId: 6 });
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ badZip: 'nuton|1010', suburbId: 6 }));
+  });
+
+  // Back then Next remounts the modal. The pick lives in wizard state, so
+  // the select still shows the Newton that was picked (id 6), not the first
+  // suburb with that name (id 5).
+  it('shows the picked suburb again after a remount', async () => {
+    server.use(
+      http.get('/api/address/suburbs', () =>
+        HttpResponse.json({
+          ...env,
+          suburbs: [
+            { id: 5, name: 'Newton', city: 'Auckland', postCode: '1010', alias: null },
+            { id: 6, name: 'Newton', city: 'Wellington', postCode: '6021', alias: null },
+          ],
+        })
+      ),
+      http.get('/api/bulk-import/suburb-aliases', () => HttpResponse.json({ ...env, aliases: [] }))
+    );
+    const s = seed({
+      client: { id: 7, code: 'C', name: 'C', isUsTenant: false },
+      parsed: { headers: ['ToSuburb', 'ToPostCode'], rows: [{ ToSuburb: 'Nuton', ToPostCode: '1010' }] },
+      mapping: { toSuburb: 'ToSuburb', toPostCode: 'ToPostCode' },
+      fixedZips: { 'nuton|1010': 'Newton' },
+      fixedSuburbIds: { 'nuton|1010': 6 },
+    } as Partial<WizardState>);
+    renderWithProviders(
+      <FixZipCodesModal open state={s} dispatch={vi.fn()} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+    expect(screen.getByRole('combobox')).toHaveValue('6');
   });
 });
 
