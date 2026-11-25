@@ -647,23 +647,26 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
         if (items.Count == 0) return ("Failed", "No jobs to assign");
         if (!await CanMoveJobsAsync([.. items.Select(i => i.JobId)])) return ("Failed", "Job not found");   // Branches B2c
 
-        // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
-        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
-            run.Jobs = new List<RunJobDto>();
-            var (result, message) = await InsertOrUpdateRunAsync(run);
-            if (result != "Success") return (result, message);
-            var runId = int.Parse(message, CultureInfo.InvariantCulture);
+            return await WithAssignDeadlockRetryAsync("CreateRunWithJobs", "new", async () =>
+            {
+                // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
+                await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+                run.Jobs = new List<RunJobDto>();
+                var (result, message) = await InsertOrUpdateRunAsync(run);
+                if (result != "Success") return (result, message);
+                var runId = int.Parse(message, CultureInfo.InvariantCulture);
 
-            var error = await StageJobAssignmentsAsync(runId, items);
-            if (error != null) return ("Failed", error); // dispose rolls back the run insert
+                var error = await StageJobAssignmentsAsync(runId, items);
+                if (error != null) return ("Failed", error); // dispose rolls back the run insert
 
-            await Context.SaveChangesAsync();
-            await tx.CommitAsync();
+                await Context.SaveChangesAsync();
+                await tx.CommitAsync();
 
-            Log.Information("Run {RunName} (id {RunId}) created with {JobCount} job(s)", run.Name, runId, items.Count);
-            return ("Success", runId.ToString(CultureInfo.InvariantCulture));
+                Log.Information("Run {RunName} (id {RunId}) created with {JobCount} job(s)", run.Name, runId, items.Count);
+                return ("Success", runId.ToString(CultureInfo.InvariantCulture));
+            });
         }
         catch (Exception ex)
         {
@@ -690,29 +693,33 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
             || !await CanMoveJobsAsync([.. items.Select(i => i.JobId)]))
             return ("Failed", "Run or job not found");
 
-        // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
-        await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
-            var error = await StageJobAssignmentsAsync(runId, items);
-            if (error != null) return ("Failed", error);
-            await Context.SaveChangesAsync();
-
-            if (deleteRunId.HasValue)
+            var runIds = deleteRunId.HasValue ? $"{runId} (merging {deleteRunId})" : runId.ToString(CultureInfo.InvariantCulture);
+            return await WithAssignDeadlockRetryAsync("AssignJobsToRun", runIds, async () =>
             {
-                var source = await Context.TblBulkRuns.FindAsync(deleteRunId.Value);
-                if (source != null)
+                // #1018 C4: ReadCommitted plus row locks (RunAssignLocks), not Serializable.
+                await using var tx = await Context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+                var error = await StageJobAssignmentsAsync(runId, items);
+                if (error != null) return ("Failed", error);
+                await Context.SaveChangesAsync();
+
+                if (deleteRunId.HasValue)
                 {
-                    await RemoveRunTrackedAsync(source);
-                    await Context.SaveChangesAsync();
+                    var source = await Context.TblBulkRuns.FindAsync(deleteRunId.Value);
+                    if (source != null)
+                    {
+                        await RemoveRunTrackedAsync(source);
+                        await Context.SaveChangesAsync();
+                    }
                 }
-            }
 
-            await tx.CommitAsync();
+                await tx.CommitAsync();
 
-            Log.Information("Assigned {JobCount} job(s) to run {RunId}; merged-from run {DeleteRunId}",
-                items.Count, runId, deleteRunId);
-            return ("Success", items.Count.ToString(CultureInfo.InvariantCulture));
+                Log.Information("Assigned {JobCount} job(s) to run {RunId}; merged-from run {DeleteRunId}",
+                    items.Count, runId, deleteRunId);
+                return ("Success", items.Count.ToString(CultureInfo.InvariantCulture));
+            });
         }
         catch (Exception ex)
         {
@@ -720,6 +727,51 @@ public class RunService(IDbContextFactory<DynamicDespatchDbContext> contextFacto
                 runId, items.Select(i => i.JobId));
             throw;
         }
+    }
+
+    /// <summary>
+    /// #1018 (Steve 26 Nov): attempts an assign gets when SQL Server picks it as
+    /// the deadlock victim (1205). 2 = one retry. Since C4 the assign locks
+    /// tblBulkJobRun before tblBulkJob while EF SaveChanges paths and several
+    /// legacy procs take tblBulkJob first, so a victim is possible (see
+    /// RunAssignLocks); a moment later the same assign normally goes through.
+    /// </summary>
+    public const int MaxAssignDeadlockAttempts = 2;
+
+    /// <summary>
+    /// Runs one assign unit of work (its own transaction, locks and fromRunId
+    /// check), and on a 1205 runs the whole of it again, never the rest of the
+    /// failed attempt. SQL Server has already rolled the victim back and the
+    /// unit's transaction is disposed by the time this catches; the change
+    /// tracker still holds the first attempt's staged rows (a link already
+    /// moved in memory would fail the fromRunId check), so it is cleared before
+    /// the retry. The run-changed conflict and every other error are not
+    /// retried; the last 1205 surfaces unchanged.
+    /// </summary>
+    private async Task<(string Result, string Message)> WithAssignDeadlockRetryAsync(
+        string operation, string runIds, Func<Task<(string Result, string Message)>> unitOfWork)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await unitOfWork();
+            }
+            catch (Exception ex) when (attempt < MaxAssignDeadlockAttempts && IsDeadlockVictim(ex))
+            {
+                Context.ChangeTracker.Clear();
+                Log.Warning(ex, "{Operation} run {RunIds} was the deadlock victim (1205) on attempt {Attempt} of {MaxAttempts}; retrying",
+                    operation, runIds, attempt, MaxAssignDeadlockAttempts);
+            }
+        }
+    }
+
+    /// <summary>1205 raised by a raw statement, or wrapped by EF SaveChanges (DbUpdateException).</summary>
+    private static bool IsDeadlockVictim(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+            if (e is SqlException { Number: 1205 }) return true;
+        return false;
     }
 
     /// <summary>
