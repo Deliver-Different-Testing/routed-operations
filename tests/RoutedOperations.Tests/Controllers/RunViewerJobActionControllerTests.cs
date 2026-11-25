@@ -299,4 +299,45 @@ public class RunViewerJobActionControllerTests
         var r = Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status403Forbidden, r.StatusCode);
     }
+
+    // ── MarkLost (#320) ─────────────────────────────────────────────────
+    // Unlike the "ok" actions, MarkLost answers { response: { updated } } so
+    // the Run Viewer can tell "marked lost" from "job was no longer Missing".
+    // Same 403 / 400 mapping as every other action.
+
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(0, false)]
+    public async Task MarkLost_Returns200WithWhatTheProcReported(int procUpdated, bool expected)
+    {
+        var (svc, _, _) = RoutedOperations.Tests.Services.RouteViewer.RouteViewerMarkLostTests.NewSvc(updatedRows: [procUpdated]);
+        var ctl = new RunViewerJobActionController(svc);
+        ControllerTestHarness.AttachHttpContext(ctl);
+
+        var ok = Assert.IsType<OkObjectResult>(await ctl.MarkLost(new JobActionRequest { JobId = 7 }));
+
+        var response = ok.Value!.GetType().GetProperty("response")!.GetValue(ok.Value)!;
+        Assert.Equal(expected, response.GetType().GetProperty("updated")!.GetValue(response));
+    }
+
+    [Fact]
+    public async Task MarkLost_NpGuardThrows_Returns403()
+    {
+        var (ctl, guard, _) = NewCtl();
+        guard.EnsureTucJobInScopeAsync(Arg.Any<int>())
+            .Returns(Task.FromException(new NpLabelScopeException("nope")));
+
+        var r = Assert.IsType<ObjectResult>(await ctl.MarkLost(new JobActionRequest { JobId = 7 }));
+        Assert.Equal(StatusCodes.Status403Forbidden, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task MarkLost_ArgumentException_Returns400()
+    {
+        var (ctl, guard, _) = NewCtl();
+        guard.EnsureTucJobInScopeAsync(Arg.Any<int>())
+            .Returns(Task.FromException(new ArgumentException("bad job")));
+
+        Assert.IsType<BadRequestObjectResult>(await ctl.MarkLost(new JobActionRequest { JobId = 7 }));
+    }
 }

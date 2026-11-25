@@ -94,6 +94,30 @@ export function buildBulkJobsLabelPayload(
   };
 }
 
+/** #880: payloads for one Print Manager print. Bulk rows keep the payload
+ *  above unchanged (Mode 4, which also expands multibox children). On-demand
+ *  rows have bulkJobId 0 and go as a second payload by tucJob id, which
+ *  GetBulkLabelsAsync turns into Mode 8. Two payloads rather than one mixed
+ *  Mode 8 call because Mode 8 does not expand multibox children of named
+ *  bulk jobs, so mixing would change what the bulk rows print. */
+export function buildPrintManagerLabelPayloads(
+  bookDate: string,
+  rows: ReadonlyArray<LabelRow>,
+  sortMode = 1,
+): LabelPayload[] {
+  const out: LabelPayload[] = [];
+  const bulkIds = rows.map((r) => r.bulkJobId ?? 0).filter((id) => id > 0);
+  if (bulkIds.length > 0) out.push(buildBulkJobsLabelPayload(bookDate, bulkIds, sortMode));
+  const onDemandIds = toIdCsv(rows.filter((r) => !((r.bulkJobId ?? 0) > 0)).map((r) => r.jobId));
+  if (onDemandIds) {
+    out.push({
+      bookDate, sortMode, runName: null, jobIds: onDemandIds, bulkJobIds: null,
+      clientIds: null, regionIds: null, speedIds: null,
+    });
+  }
+  return out;
+}
+
 /** Text for the toast when a label print fails. "Nothing to print" (the
  *  server's 422) is not an error and is shown as the server words it; any
  *  other failure keeps the "<prefix>: <real cause>" form from 1de3414. */

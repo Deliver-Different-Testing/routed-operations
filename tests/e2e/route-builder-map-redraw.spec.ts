@@ -34,11 +34,15 @@ async function fakeGoogleMaps(page: Page) {
   await page.addInitScript(() => {
     const w = window as any;
     w.__markersCreated = 0;
+    w.__positionsSet = [];
     const handle = function (this: any) {
       this.setMap = () => {};
       this.setAnimation = () => {};
       this.addListener = () => ({ remove: () => {} });
       this.getPosition = () => ({ lat: () => 0, lng: () => 0 });
+      this.setPosition = (pos: unknown) => { w.__positionsSet.push(pos); };
+      this.setIcon = () => {};
+      this.setTitle = () => {};
     };
     w.google = {
       maps: {
@@ -99,7 +103,7 @@ test('Refresh that brings back the same jobs does not redraw the map pins', asyn
   expect(await page.evaluate(() => (window as any).__markersCreated)).toBe(3);
 });
 
-test('Refresh that moves a pin does redraw the map', async ({ page }) => {
+test('Refresh that moves a pin moves that marker, without rebuilding the others', async ({ page }) => {
   await applyUserOverride(page, { googleMapsKey: 'e2e-fake-key' });
   await fakeGoogleMaps(page);
   await mockCockpit(page);
@@ -114,5 +118,74 @@ test('Refresh that moves a pin does redraw the map', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => (window as any).__markersCreated)).toBe(3);
   moved = true;
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as any).__markersCreated)).toBe(6);
+  // #1018 C3: the moved marker is moved in place; nothing is rebuilt.
+  await expect.poll(() => page.evaluate(() => (window as any).__positionsSet))
+    .toEqual([{ lat: -36.95, lng: 174.8 }]);
+  expect(await page.evaluate(() => (window as any).__markersCreated)).toBe(3);
+});
+
+const runJob = (id: number, builderIndex: number) => ({
+  bulkJobId: id, builderIndex, jobNumber: `J-${id}`, isStart: false, isEnd: false, clientCode: 'EXMPL',
+  deliveryDate: '2031-01-01', bookTime: '09:00:00', toAddress: `${id} Sample Street`, toSuburb: 'Otahuhu',
+  toPostCode: 1062, courierName: null, speedName: 'Standard', deliveryLatitude: null, amount: 0,
+});
+
+const run = (id: number, name: string, jobs: ReturnType<typeof runJob>[] = []) => ({
+  id, name, mins: 0, kms: 0, courierId: null, courierName: null, status: 0, revenue: null, payout: null,
+  courierPercentage: null, googleRouteResponse: null, despatchDateTime: '2031-01-01', noReroute: false,
+  routingMode: 0, finishAtBulkJobId: null, isVoidRun: false, fleet: null, jobs,
+});
+
+// #1018 C3: every save reloads the jobs and runs in the background. The route
+// line of the selected run is a HERE request; it must not be made again when
+// the reload changed nothing on that run.
+test('A background reload that changes a job outside the selected run does not re-request the HERE route', async ({ page }) => {
+  await applyUserOverride(page, { googleMapsKey: 'e2e-fake-key' });
+  await fakeGoogleMaps(page);
+  await mockCockpit(page);
+  let moved = false;
+  let jobLoads = 0;
+  await page.route(/\/api\/jobs(\?.*)?$/, (r) => {
+    jobLoads += 1;
+    return json(r, { ...env, bulkJobs: [
+      { ...job(1, '-36.90'), bulkRunId: 20, runName: 'Target' },
+      { ...job(2, '-36.91'), bulkRunId: 20, runName: 'Target' },
+      // Not on the run. The save's reload moves it.
+      job(3, moved ? '-36.99' : '-36.92'),
+    ] });
+  });
+  await page.route(/\/api\/runs(\?.*)?$/, (r) => {
+    if (r.request().method() !== 'GET') return r.fallback();
+    return json(r, { ...env, response: [run(20, 'Target', [runJob(1, 1), runJob(2, 2)])], maxJsonLength: 0 });
+  });
+  await page.route(/\/api\/runs$/, (r) => {
+    if (r.request().method() !== 'POST') return r.fallback();
+    moved = true;
+    return json(r, { ...env, response: { result: 'Success', message: '30', runs: [run(30, 'Fast lane')] } });
+  });
+  let routeRequests = 0;
+  await page.route(/\/api\/routes\/polyline/, (r) => {
+    routeRequests += 1;
+    return json(r, { points: [] });
+  });
+
+  await page.goto('/routes');
+  await expect.poll(() => page.evaluate(() => (window as any).__markersCreated)).toBe(3);
+  await page.getByText('Target', { exact: true }).click();
+  await expect.poll(() => routeRequests).toBeGreaterThan(0);
+  // The dev build can mount twice; count from wherever selection settled.
+  await page.waitForTimeout(500);
+  const routeRequestsBefore = routeRequests;
+  const loadsBefore = jobLoads;
+  // Selecting the run recoloured its two pins; count only what the save does.
+  await page.evaluate(() => { (window as any).__positionsSet = []; });
+
+  await page.getByPlaceholder(/New run name/).fill('Fast lane');
+  await page.getByRole('button', { name: '+ Create' }).click();
+
+  await expect.poll(() => jobLoads).toBeGreaterThan(loadsBefore);
+  await page.waitForTimeout(500);
+  expect(routeRequests).toBe(routeRequestsBefore);
+  // And the reload did land: job 3's marker moved, in place.
+  expect(await page.evaluate(() => (window as any).__positionsSet)).toEqual([{ lat: -36.99, lng: 174.8 }]);
 });

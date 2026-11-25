@@ -443,7 +443,7 @@ export const routeViewerService = {
    *  regionIds / clientIds filters are optional. */
   getPrintJobList: (
     runDate: string,
-    opts?: { clientId?: number | null; clientIds?: number[]; regionIds?: number[] },
+    opts?: { clientId?: number | null; clientIds?: number[]; regionIds?: number[]; includeOnDemand?: boolean },
   ) =>
     unwrap<BulkJob[]>(
       `/runviewer/jobs/print-list${buildQuery({
@@ -451,6 +451,8 @@ export const routeViewerService = {
         clientId: opts?.clientId ?? undefined,
         clientIds: toCsv(opts?.clientIds),
         regionIds: toCsv(opts?.regionIds),
+        // #880: only sent when on, so the default request is unchanged.
+        includeOnDemand: opts?.includeOnDemand ? 'true' : undefined,
       })}`,
     ),
 
@@ -726,6 +728,10 @@ export const routeViewerService = {
   missingJob: (jobId: number) => unwrapPost<string>('/runviewer/jobs/missing', { jobId }),
   completeJob: (jobId: number, podName: string, completedTime?: string | null) =>
     unwrapPost<string>('/runviewer/jobs/complete', { jobId, podName, completedTime }),
+  // #320: closes a Missing job as Undeliverable. updated false = the job was
+  // no longer Missing (RVW_stpMarkJobLost changed nothing).
+  markJobLost: (jobId: number) =>
+    unwrapPost<{ updated: boolean }>('/runviewer/jobs/mark-lost', { jobId }),
   lmcJob: (jobId: number, bulkJobId: number, fromCourierCode: string) =>
     unwrapPost<string>('/runviewer/jobs/lmc', { jobId, bulkJobId, fromCourierCode }),
   releaseJob: (jobId: number) => unwrapPost<string>('/runviewer/jobs/release', { jobId }),

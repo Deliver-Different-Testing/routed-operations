@@ -24,6 +24,9 @@ const g = {
       this.setAnimation = vi.fn();
       this.addListener = vi.fn((_type: string, _cb: any) => ({ remove: vi.fn() }));
       this.getPosition = vi.fn(() => ({ lat: () => 0, lng: () => 0 }));
+      this.setPosition = vi.fn();
+      this.setIcon = vi.fn();
+      this.setTitle = vi.fn();
     }),
     Polyline: vi.fn(function (this: any, _opts: any) {
       this.setMap = vi.fn();
@@ -283,10 +286,25 @@ describe('GoogleMap', () => {
     expect(first).not.toHaveBeenCalled();
   });
 
-  it('still rebuilds the markers when a pin really changes', () => {
+  // #1018 C3: a moved pin is moved, not torn down and rebuilt with the rest.
+  it('moves the marker in place when a pin really changes', () => {
     const { rerender } = renderWithProviders(<GoogleMap jobs={[makeJob({ bulkJobId: 1 })]} selectedRun={null} />);
     expect(g.maps.Marker).toHaveBeenCalledTimes(1);
     rerender(<GoogleMap jobs={[makeJob({ bulkJobId: 1, deliveryLatitude: '-36.90' })]} selectedRun={null} />);
+    expect(g.maps.Marker).toHaveBeenCalledTimes(1);
+    const marker = g.maps.Marker.mock.instances[0] as any;
+    expect(marker.setPosition).toHaveBeenCalledWith({ lat: -36.9, lng: expect.any(Number) });
+    expect(marker.setMap).not.toHaveBeenCalledWith(null);
+  });
+
+  it('removes only the marker of a job that is gone', () => {
+    const { rerender } = renderWithProviders(
+      <GoogleMap jobs={[makeJob({ bulkJobId: 1 }), makeJob({ bulkJobId: 2, jobNumber: 'J-2' })]} selectedRun={null} />
+    );
+    const [kept, gone] = g.maps.Marker.mock.instances as any[];
+    rerender(<GoogleMap jobs={[makeJob({ bulkJobId: 1 })]} selectedRun={null} />);
+    expect(gone.setMap).toHaveBeenCalledWith(null);
+    expect(kept.setMap).not.toHaveBeenCalled();
     expect(g.maps.Marker).toHaveBeenCalledTimes(2);
   });
 });
