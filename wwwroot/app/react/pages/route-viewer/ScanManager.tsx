@@ -10,6 +10,7 @@ import { MultiSelect } from '../../components/common/MultiSelect';
 import { RvBox } from '../../components/route-viewer/RvBox';
 import { RvOverviewBox } from '../../components/route-viewer/RvOverviewBox';
 import { RowContextMenu } from '../../components/cockpit/RowContextMenu';
+import { ACCEPTED_STATUS_TINT } from '../../lib/jobStatusTint';
 
 // Route Viewer Scan Manager page (master Section 10). Two swappable
 // modes: Bulk (parent-child-item tree with tri-state Sort/Run icons
@@ -46,6 +47,9 @@ const TINT_GREEN = 'bg-emerald-100 text-emerald-800';
 const TINT_AMBER = 'bg-amber-100 text-amber-800';
 const TINT_RED = 'bg-red-100 text-red-800';
 const TINT_GREY = 'bg-slate-100 text-slate-700';
+// #897 round 2 (ruling 18 Nov): "Awaiting <Leg> pickup" uses the Accepted
+// job status blue, the same constant as the Run Viewer 'A' pill.
+const TINT_AWAITING = ACCEPTED_STATUS_TINT;
 
 // Leg state -> tone (#897). Keys are the lowercase states that
 // RVW_stpScanJobsRouted (Legs JSON State) and RVW_stpScanManagerItemProgress
@@ -61,6 +65,15 @@ const LEG_STATE_TINT: Record<string, string> = {
 
 export function legTint(state: string | null | undefined): string {
   return LEG_STATE_TINT[(state ?? '').trim().toLowerCase()] ?? TINT_GREY;
+}
+
+/** #897: a pending chip on the current leg counts as "Awaiting", the state
+ *  the proc turns into the "Awaiting <Leg> pickup" Stage. Pending chips on
+ *  later legs stay grey.
+ *  Used for both the leg chips and the item chips. */
+export function chipTint(state: string | null | undefined, isCurrent: boolean): string {
+  if (isCurrent && (state ?? '').trim().toLowerCase() === 'pending') return TINT_AWAITING;
+  return legTint(state);
 }
 
 function parseLegs(json: string | null): LegChip[] {
@@ -79,7 +92,7 @@ function parseLegs(json: string | null): LegChip[] {
 //   '<Leg> - exception'                         -> exception
 //   '<Leg> - in transit' / 'DEL - out for delivery' -> picked
 //   '<Leg> - staged at depot'                   -> packed
-//   'Awaiting <Leg> pickup'                     -> pending
+//   'Awaiting <Leg> pickup'                     -> Awaiting blue (#897 round 2)
 // 'short' / 'missing' wording stays red (reconciliation phrases).
 const STAGE_PHRASE_STATE: Array<[string, string]> = [
   ['short', 'exception'],
@@ -91,13 +104,13 @@ const STAGE_PHRASE_STATE: Array<[string, string]> = [
   ['in-transit', 'picked'],
   ['out for delivery', 'picked'],
   ['staged at depot', 'packed'],
-  ['awaiting', 'pending'],
 ];
 
 export function stageTint(stage: string | null | undefined): string {
   const s = (stage ?? '').toLowerCase();
   const hit = STAGE_PHRASE_STATE.find(([phrase]) => s.includes(phrase));
-  return hit ? legTint(hit[1]) : TINT_GREY;
+  if (hit) return legTint(hit[1]);
+  return s.includes('awaiting') ? TINT_AWAITING : TINT_GREY;
 }
 
 // Item-progress row shape used for the Tote-column derivation (task #47.2).
@@ -277,7 +290,7 @@ export function FragmentRow({
             {legs.map((l: any, i: number) => (
               <span
                 key={i}
-                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${legTint(l.State)} ${
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${chipTint(l.State, !!row.currentLeg && l.Leg === row.currentLeg)} ${
                   row.currentLeg && l.Leg === row.currentLeg ? 'ring-1 ring-brand-cyan' : ''
                 }`}
                 title={l.LinehaulRunName ? `${l.Leg}: ${l.LinehaulRunName} (${l.State ?? '?'})` : `${l.Leg}: ${l.State ?? '?'}`}
@@ -336,7 +349,7 @@ export function FragmentRow({
                           {its.map((it, i) => (
                             <span
                               key={i}
-                              className={`inline-flex items-center px-1 py-0.5 rounded text-[9px] font-medium ${legTint(it.state)} ${
+                              className={`inline-flex items-center px-1 py-0.5 rounded text-[9px] font-medium ${chipTint(it.state, it.isCurrent)} ${
                                 it.isCurrent ? 'ring-1 ring-brand-cyan' : ''
                               }`}
                               title={it.tote ? `${it.leg}: ${it.state ?? '?'} (${it.tote})` : `${it.leg}: ${it.state ?? '?'}`}

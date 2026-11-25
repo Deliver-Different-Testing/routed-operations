@@ -35,8 +35,18 @@ public class BulkPolygonService(
     IHttpContextAccessor httpContextAccessor)
     : BaseService(contextFactory)
 {
-    public async Task<List<BulkPolygonDto>> GetAllAsync()
+    /// <summary>Active polygons, by name. <paramref name="apps"/> null or empty = every polygon
+    /// (the Builder); otherwise only polygons tagged with ANY of the listed apps in
+    /// tblBulkRunPolygonApp (perimeter spec 4.3). Unknown codes throw InvalidOperationException.</summary>
+    public async Task<List<BulkPolygonDto>> GetAllAsync(IReadOnlyCollection<string>? apps = null)
     {
+        var appFilter = apps is { Count: > 0 } ? PolygonApps.Normalise(apps) : null;
+        // "?app=" with only blank values asked for a filter but named no app. Refuse it like an
+        // unknown code rather than fall back to every polygon (review C7).
+        if (appFilter is { Count: 0 })
+            throw new InvalidOperationException(
+                $"Name at least one polygon app. Allowed: {string.Join(", ", PolygonApps.All)}.");
+
         // Schedule-name bindings via tblSchedulePolygon (Phase-8 junction).
         // Small table - one dictionary lookup is cheaper than a per-row
         // subquery and lets the projection stay as EF-translatable as
@@ -83,9 +93,13 @@ public class BulkPolygonService(
                     .OrderBy(x => x.DepotName).ThenBy(x => x.Zone)
                     .ToList());
 
-        var rows = await Context.BulkRunPolygons
+        var query = Context.BulkRunPolygons
             .AsNoTracking()
-            .Where(p => p.Active)
+            .Where(p => p.Active);
+        if (appFilter is { Count: > 0 })
+            query = query.Where(p => p.Apps.Any(a => appFilter.Contains(a.AppCode)));
+
+        var rows = await query
             .OrderBy(p => p.Name)
             .Select(p => new
             {
@@ -115,6 +129,7 @@ public class BulkPolygonService(
                     .OrderBy(pt => pt.RingIndex).ThenBy(pt => pt.OrderIndex)
                     .Select(pt => new PolygonPointDto(pt.RingIndex, pt.OrderIndex, pt.Lat, pt.Lng))
                     .ToList(),
+                Apps = p.Apps.Select(a => a.AppCode).ToList(),
             })
             .ToListAsync();
 
@@ -140,7 +155,8 @@ public class BulkPolygonService(
             r.ZoneNameId is int zid && zoneNames.TryGetValue(zid, out var zName) ? zName : null,
             r.PostcodeGroupId is int gid && groupNames.TryGetValue(gid, out var gName) ? gName : null,
             NormaliseLayer(r.TagLocation),
-            touchedZips.TryGetValue(r.PolygonId, out var tz) ? tz : new List<BulkPolygonZipDto>())).ToList();
+            touchedZips.TryGetValue(r.PolygonId, out var tz) ? tz : new List<BulkPolygonZipDto>(),
+            PolygonApps.Order(r.Apps))).ToList();
     }
 
     /// <summary>BulkRunPolygonZip rows to DTOs: fully covered first, then by overlap
@@ -188,6 +204,7 @@ public class BulkPolygonService(
                     .OrderBy(pt => pt.RingIndex).ThenBy(pt => pt.OrderIndex)
                     .Select(pt => new PolygonPointDto(pt.RingIndex, pt.OrderIndex, pt.Lat, pt.Lng))
                     .ToList(),
+                Apps = p.Apps.Select(a => a.AppCode).ToList(),
             })
             .FirstOrDefaultAsync();
 
@@ -218,7 +235,8 @@ public class BulkPolygonService(
             // Read after the overlay on create / reshape (both return through
             // here), so the panel gets the refreshed rows.
             ToTouchedZipDtos(await Context.BulkRunPolygonZips.AsNoTracking()
-                .Where(z => z.PolygonId == row.PolygonId).ToListAsync()));
+                .Where(z => z.PolygonId == row.PolygonId).ToListAsync()),
+            PolygonApps.Order(row.Apps));
     }
 
     public async Task<BulkPolygonDto> CreateAsync(CreateBulkPolygonRequest req)
@@ -227,64 +245,95 @@ public class BulkPolygonService(
         ValidatePoints(req.Points);
         var layer = NormaliseLayer(req.Layer);
         ValidateLayer(layer);
+        // A new drawing defaults to Schedules (spec 4.3); validated before the insert so a bad
+        // code never leaves a half-saved polygon.
+        var apps = req.Apps is null ? [PolygonApps.Schedules] : PolygonApps.Normalise(req.Apps);
         var createdBy = CurrentUser();
         var wkt = BuildPolygonWkt(req.Points);
 
-        // Insert parent + compute GeographyData in one round-trip so a
-        // malformed / self-intersecting ring surfaces atomically (no
-        // orphan parent row). MakeValid handles self-intersection;
-        // EnvelopeAngle > 90 signals an inverted ring and we ReorientObject
-        // (Google Maps click order is CW-in-map-coords which SQL Server
-        // reads as "interior = everything outside the shape").
+        // The polygon row, its points, the postcode overlay and the app tags are one unit
+        // (review C8): if the tag save failed on its own, the polygon would exist with no tags
+        // and no picker would ever list it. Every helper below goes through Context.Database,
+        // so it runs on this transaction. When the caller already has a transaction open, use
+        // a savepoint so a failure here undoes only this create.
+        var outerTx = Context.Database.CurrentTransaction;
+        await using var ownTx = outerTx is null ? await Context.Database.BeginTransactionAsync() : null;
+        if (outerTx is not null) await outerTx.CreateSavepointAsync(CreateSavepoint);
         int newId;
         try
         {
-            var stream = Context.Database
-                .SqlQueryRaw<int>(
-                    """
-                    DECLARE @Geog geography = geography::STGeomFromText(@wkt, 4326).MakeValid();
-                    IF @Geog.EnvelopeAngle() > 90 SET @Geog = @Geog.ReorientObject();
-                    INSERT INTO dbo.tblBulkRunPolygon
-                        (Name, SourceType, SourceCode, TagLocation,
-                         CentroidLatitude, CentroidLongitude,
-                         GeographyData, Active,
-                         CreatedUtc, CreatedBy)
-                    OUTPUT INSERTED.PolygonId AS Value
-                    VALUES
-                        (@name, @sourceType, @sourceCode, @layer,
-                         @lat, @lng,
-                         @Geog, 1,
-                         GETUTCDATE(), @createdBy);
-                    """,
-                    new SqlParameter("@name", req.Name.Trim()),
-                    new SqlParameter("@sourceType", req.SourceType),
-                    new SqlParameter("@sourceCode",
-                        (object?)req.SourceCode?.Trim() ?? DBNull.Value),
-                    new SqlParameter("@layer", (object?)layer ?? DBNull.Value),
-                    new SqlParameter("@lat", req.CentroidLatitude),
-                    new SqlParameter("@lng", req.CentroidLongitude),
-                    new SqlParameter("@wkt", wkt),
-                    new SqlParameter("@createdBy", createdBy))
-                .AsAsyncEnumerable();
+            // Insert parent + compute GeographyData in one round-trip so a
+            // malformed / self-intersecting ring surfaces atomically (no
+            // orphan parent row). MakeValid handles self-intersection;
+            // EnvelopeAngle > 90 signals an inverted ring and we ReorientObject
+            // (Google Maps click order is CW-in-map-coords which SQL Server
+            // reads as "interior = everything outside the shape").
+            try
+            {
+                var stream = Context.Database
+                    .SqlQueryRaw<int>(
+                        """
+                        DECLARE @Geog geography = geography::STGeomFromText(@wkt, 4326).MakeValid();
+                        IF @Geog.EnvelopeAngle() > 90 SET @Geog = @Geog.ReorientObject();
+                        INSERT INTO dbo.tblBulkRunPolygon
+                            (Name, SourceType, SourceCode, TagLocation,
+                             CentroidLatitude, CentroidLongitude,
+                             GeographyData, Active,
+                             CreatedUtc, CreatedBy)
+                        OUTPUT INSERTED.PolygonId AS Value
+                        VALUES
+                            (@name, @sourceType, @sourceCode, @layer,
+                             @lat, @lng,
+                             @Geog, 1,
+                             GETUTCDATE(), @createdBy);
+                        """,
+                        new SqlParameter("@name", req.Name.Trim()),
+                        new SqlParameter("@sourceType", req.SourceType),
+                        new SqlParameter("@sourceCode",
+                            (object?)req.SourceCode?.Trim() ?? DBNull.Value),
+                        new SqlParameter("@layer", (object?)layer ?? DBNull.Value),
+                        new SqlParameter("@lat", req.CentroidLatitude),
+                        new SqlParameter("@lng", req.CentroidLongitude),
+                        new SqlParameter("@wkt", wkt),
+                        new SqlParameter("@createdBy", createdBy))
+                    .AsAsyncEnumerable();
 
-            newId = 0;
-            await foreach (var id in stream) { newId = id; break; }
-            if (newId == 0)
-                throw new InvalidOperationException("BulkRunPolygon insert did not return an id.");
+                newId = 0;
+                await foreach (var id in stream) { newId = id; break; }
+                if (newId == 0)
+                    throw new InvalidOperationException("BulkRunPolygon insert did not return an id.");
+            }
+            catch (SqlException ex)
+            {
+                throw new InvalidOperationException(
+                    $"Bulk polygon insert rejected by SQL Server (likely an invalid geometry): {ex.Message}", ex);
+            }
+
+            await InsertPointsAsync(newId, req.Points);
+            await RefreshPartiallyIncludedZipsAsync(newId);
+            if (apps.Count > 0)
+            {
+                Context.BulkRunPolygonApps.AddRange(apps.Select(code => new BulkRunPolygonApp
+                {
+                    PolygonId = newId, AppCode = code, CreatedUtc = DateTime.UtcNow,
+                }));
+                await Context.SaveChangesAsync();
+            }
+
+            if (ownTx is not null) await ownTx.CommitAsync();
+            else await outerTx!.ReleaseSavepointAsync(CreateSavepoint);
         }
-        catch (SqlException ex)
+        catch
         {
-            throw new InvalidOperationException(
-                $"Bulk polygon insert rejected by SQL Server (likely an invalid geometry): {ex.Message}", ex);
+            // Our own transaction rolls back when it is disposed uncommitted.
+            if (outerTx is not null) await outerTx.RollbackToSavepointAsync(CreateSavepoint);
+            throw;
         }
-
-        await InsertPointsAsync(newId, req.Points);
-        await RefreshPartiallyIncludedZipsAsync(newId);
 
         Log.Information(
-            "BulkRunPolygon {Id} ({Name}) created; source={Src}, code={Code}, points={PointCount}",
-            newId, req.Name, req.SourceType, req.SourceCode ?? "(null)", req.Points.Count);
-        return (await GetByIdAsync(newId))!;
+            "BulkRunPolygon {Id} ({Name}) created; source={Src}, code={Code}, points={PointCount}, apps={Apps}",
+            newId, req.Name, req.SourceType, req.SourceCode ?? "(null)", req.Points.Count, string.Join(",", apps));
+        return (await GetByIdAsync(newId))! with { PerimeterChanged = apps.Contains(PolygonApps.Perimeter) };
     }
 
     public async Task<BulkPolygonDto?> UpdateShapeAsync(int id, UpdateBulkPolygonShapeRequest req)
@@ -340,6 +389,8 @@ public class BulkPolygonService(
         ValidateName(req.Name);
         var layer = NormaliseLayer(req.Layer);
         ValidateLayer(layer);
+        // Null = leave the apps alone (spec 4.3), so older callers that only rename keep working.
+        var apps = req.Apps is null ? null : PolygonApps.Normalise(req.Apps);
         var row = await Context.BulkRunPolygons.FirstOrDefaultAsync(p =>
             p.PolygonId == id && p.Active);
         if (row is null) return null;
@@ -348,9 +399,93 @@ public class BulkPolygonService(
         row.TagLocation = layer;
         row.LastModifiedUtc = DateTime.UtcNow;
         row.UpdatedBy = CurrentUser();
+        var perimeterChanged = false;
+        if (apps is not null)
+        {
+            var existing = await Context.BulkRunPolygonApps.Where(a => a.PolygonId == id).ToListAsync();
+            perimeterChanged = ApplyApps(id, existing, apps.Except(existing.Select(e => e.AppCode)),
+                existing.Select(e => e.AppCode).Except(apps));
+        }
         await Context.SaveChangesAsync();
-        Log.Information("BulkRunPolygon {Id} renamed to {Name}, layer {Layer}", id, row.Name, layer ?? "(none)");
-        return await GetByIdAsync(id);
+        Log.Information("BulkRunPolygon {Id} renamed to {Name}, layer {Layer}, apps {Apps}",
+            id, row.Name, layer ?? "(none)", apps is null ? "(unchanged)" : string.Join(",", apps));
+        return (await GetByIdAsync(id))! with { PerimeterChanged = perimeterChanged };
+    }
+
+    /// <summary>Bulk "Used by: Set..." (spec 4.4.2): add then remove apps on many polygons in one
+    /// save. Only active polygons are touched; unknown ids are skipped. Naming the same app in
+    /// both Add and Remove is refused because the result would depend on order.</summary>
+    public async Task<BulkPolygonAppsBulkResult> SetAppsBulkAsync(BulkPolygonAppsBulkRequest req)
+    {
+        var ids = (req.PolygonIds ?? []).Distinct().ToList();
+        if (ids.Count == 0)
+            throw new InvalidOperationException("Pick at least one polygon.");
+        if (ids.Count > MaxBulkPolygons)
+            throw new InvalidOperationException($"At most {MaxBulkPolygons} polygons can be updated at once.");
+        var add = PolygonApps.Normalise(req.Add ?? []);
+        var remove = PolygonApps.Normalise(req.Remove ?? []);
+        var both = add.Intersect(remove).ToList();
+        if (both.Count > 0)
+            throw new InvalidOperationException($"{string.Join(", ", both)} is both added and removed.");
+        if (add.Count == 0 && remove.Count == 0)
+            return new BulkPolygonAppsBulkResult(0, false);
+
+        var polygons = await Context.BulkRunPolygons
+            .Where(p => ids.Contains(p.PolygonId) && p.Active)
+            .ToListAsync();
+        var activeIds = polygons.Select(p => p.PolygonId).ToList();
+        var existingByPolygon = (await Context.BulkRunPolygonApps
+                .Where(a => activeIds.Contains(a.PolygonId))
+                .ToListAsync())
+            .GroupBy(a => a.PolygonId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var updatedBy = CurrentUser();
+        var updated = 0;
+        var perimeterChanged = false;
+        foreach (var polygon in polygons)
+        {
+            var existing = existingByPolygon.TryGetValue(polygon.PolygonId, out var list) ? list : [];
+            var codes = existing.Select(e => e.AppCode).ToList();
+            var toAdd = add.Except(codes).ToList();
+            var toRemove = remove.Intersect(codes).ToList();
+            if (toAdd.Count == 0 && toRemove.Count == 0) continue;
+            perimeterChanged |= ApplyApps(polygon.PolygonId, existing, toAdd, toRemove);
+            polygon.LastModifiedUtc = DateTime.UtcNow;
+            polygon.UpdatedBy = updatedBy;
+            updated++;
+        }
+        await Context.SaveChangesAsync();
+        Log.Information(
+            "BulkRunPolygon bulk apps: {Updated} of {Requested} polygons changed (add {Add}, remove {Remove}) by {User}",
+            updated, ids.Count, string.Join(",", add), string.Join(",", remove), updatedBy);
+        return new BulkPolygonAppsBulkResult(updated, perimeterChanged);
+    }
+
+    private const int MaxBulkPolygons = 1000;
+
+    private const string CreateSavepoint = "BulkPolygonCreate";
+
+    /// <summary>Stages app row inserts / deletes on the context (caller saves). Returns true when
+    /// PERIMETER is among the changes.</summary>
+    private bool ApplyApps(int polygonId, List<BulkRunPolygonApp> existing,
+        IEnumerable<string> toAdd, IEnumerable<string> toRemove)
+    {
+        var perimeter = false;
+        foreach (var code in toRemove.ToList())
+        {
+            Context.BulkRunPolygonApps.RemoveRange(existing.Where(e => e.AppCode == code));
+            perimeter |= code == PolygonApps.Perimeter;
+        }
+        foreach (var code in toAdd.ToList())
+        {
+            Context.BulkRunPolygonApps.Add(new BulkRunPolygonApp
+            {
+                PolygonId = polygonId, AppCode = code, CreatedUtc = DateTime.UtcNow,
+            });
+            perimeter |= code == PolygonApps.Perimeter;
+        }
+        return perimeter;
     }
 
     /// <summary>Layer names are trimmed; blank means "no layer" and is stored as NULL so the
@@ -465,6 +600,9 @@ public class BulkPolygonService(
             };
             Context.BulkZonePolygons.Add(existing);
         }
+        // Zone groups are the Schedules axis: a shape placed in a zone joins the
+        // Schedules pickers in the same save (perimeter spec 4.5, Q1).
+        await PolygonAppTags.EnsureAsync(Context, [polygonId], PolygonApps.Schedules);
         await Context.SaveChangesAsync();
         Log.Information(
             "BulkZonePolygon: polygon {PolygonId} placed in zone {Zone} of group {GroupId} by {Actor}",

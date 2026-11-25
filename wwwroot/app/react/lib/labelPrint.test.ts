@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildBulkJobsLabelPayload,
+  buildPrintManagerLabelPayloads,
   buildRunLabelPayload,
   isRoutedRunId,
   jobLabelTarget,
@@ -77,6 +78,34 @@ describe('buildBulkJobsLabelPayload', () => {
       bookDate: '2026-11-04', sortMode: 1, runName: null, jobIds: null,
       bulkJobIds: '1,2', clientIds: null, regionIds: null, speedIds: null,
     });
+  });
+});
+
+describe('buildPrintManagerLabelPayloads (#880)', () => {
+  it('bulk rows only: one payload, identical to the pre-#880 Print Manager payload', () => {
+    expect(buildPrintManagerLabelPayloads('2026-11-04', [
+      { bulkJobId: 1, jobId: 11 }, { bulkJobId: 2, jobId: 0 },
+    ])).toEqual([buildBulkJobsLabelPayload('2026-11-04', [1, 2])]);
+  });
+
+  it('on-demand rows (bulkJobId 0) go by tucJob id, so the server picks Mode 8', () => {
+    expect(buildPrintManagerLabelPayloads('2026-11-04', [{ bulkJobId: 0, jobId: 8001 }])).toEqual([{
+      bookDate: '2026-11-04', sortMode: 1, runName: null, jobIds: '8001',
+      bulkJobIds: null, clientIds: null, regionIds: null, speedIds: null,
+    }]);
+  });
+
+  it('a mixed selection keeps the bulk payload unchanged and adds the on-demand one', () => {
+    const out = buildPrintManagerLabelPayloads('2026-11-04', [
+      { bulkJobId: 1, jobId: 11 }, { bulkJobId: 0, jobId: 8001 }, { bulkJobId: 0, jobId: 8002 },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual(buildBulkJobsLabelPayload('2026-11-04', [1]));
+    expect(out[1]).toMatchObject({ jobIds: '8001,8002', bulkJobIds: null });
+  });
+
+  it('nothing printable: no payloads', () => {
+    expect(buildPrintManagerLabelPayloads('2026-11-04', [{ bulkJobId: 0, jobId: 0 }])).toEqual([]);
   });
 });
 

@@ -208,11 +208,16 @@ describe('PolygonBuilder - save polygon to backend', () => {
     fireEvent.click(screen.getByRole('button', { name: /Finish drawing/ }));
     const nameInput = await screen.findByPlaceholderText(/Zimmer AM Med Auckland/);
     fireEvent.change(nameInput, { target: { value: 'FreshPolygon' } });
+    // Used by defaults to Schedules; add Routes before saving (spec 4.4).
+    expect(screen.getByRole('button', { name: 'Schedules' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Routes' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Routes' }).getAttribute('aria-pressed')).toBe('true'));
     // Save button (variant secondary, data-primary=true).
     const saveBtn = screen.getByRole('button', { name: /Save \(\d+ vertices\)/ });
     fireEvent.click(saveBtn);
     await waitFor(() => expect(posted).not.toBeNull());
     expect((posted as any).name).toBe('FreshPolygon');
+    expect((posted as any).apps).toEqual(['SCHEDULES', 'ROUTES']);
     await waitFor(() =>
       expect(document.body.textContent).toMatch(/Coverage polygon "FreshPolygon" saved/),
     );

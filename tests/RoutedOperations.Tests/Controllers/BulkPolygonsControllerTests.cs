@@ -79,6 +79,34 @@ public class BulkPolygonsControllerTests
     }
 
     [Fact]
+    public async Task GetAll_UnknownApp_ReturnsBadRequest_KnownAppReturnsOk()
+    {
+        var ctl = NewCtl();
+        Assert.IsType<BadRequestObjectResult>(await ctl.GetAll(["NOPE"]));
+        Assert.IsType<OkObjectResult>(await ctl.GetAll(["SCHEDULES"]));
+    }
+
+    [Fact]
+    public async Task GetAll_OnlyBlankApps_ReturnsBadRequest_NoAppParamReturnsOk()
+    {
+        // Review C7: "?app=" asked for a filter but named no app. Returning
+        // every polygon would quietly show a picker shapes it should not list.
+        var ctl = NewCtl();
+        Assert.IsType<BadRequestObjectResult>(await ctl.GetAll([""]));
+        Assert.IsType<BadRequestObjectResult>(await ctl.GetAll(["  ", null!]));
+        Assert.IsType<OkObjectResult>(await ctl.GetAll());
+        Assert.IsType<OkObjectResult>(await ctl.GetAll([]));
+    }
+
+    [Fact]
+    public async Task SetAppsBulk_NoPolygons_ReturnsBadRequest()
+    {
+        var ctl = NewCtl();
+        Assert.IsType<BadRequestObjectResult>(
+            await ctl.SetAppsBulk(new BulkPolygonAppsBulkRequest([], Add: ["ROUTES"])));
+    }
+
+    [Fact]
     public async Task Delete_UnknownPolygon_ReturnsNotFound()
     {
         var ctl = NewCtl();

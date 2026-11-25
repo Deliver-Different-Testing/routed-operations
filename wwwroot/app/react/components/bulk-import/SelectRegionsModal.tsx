@@ -191,8 +191,9 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
       const raw = rawValue.trim();
       let lookupKey = isUs ? zipBase(raw) : nzPostCode(raw);
       let hit = depotLookup[lookupKey];
-      // The row's own postcode / zip wins. Only when it matches no depot do
-      // the corrections from the Fix steps get a say.
+      // The row's own postcode / zip wins, except over a postcode the operator
+      // accepted (NZ, below). Otherwise the Fix-step corrections only get a
+      // say when the row matches no depot.
       let overridePostCode: string | null = null;
       // US (#332): fixedZips is keyed on the zip value, the same key buildJobs
       // uses to rewrite toZipCode, so a fix suggested for one row would
@@ -204,11 +205,14 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
         lookupKey = zipBase(usFix);
         hit = depotLookup[lookupKey];
       }
-      // NZ: the bucket records the geocoder's suggested postcode so the job is
+      // NZ: fixedPostCodes only holds postcodes the operator ACCEPTED in Fix
+      // Addresses (#332), so an accepted one that matches a depot wins over
+      // the sheet postcode too; otherwise Accept would do nothing whenever the
+      // sheet postcode already matched. The bucket records it so the job is
       // booked with the postcode it was grouped by.
-      if (!hit && !isUs && state.fixedPostCodes[i]) {
+      if (!isUs && state.fixedPostCodes[i]) {
         const suggested = nzPostCode(state.fixedPostCodes[i]);
-        if (depotLookup[suggested]) {
+        if (depotLookup[suggested] && suggested !== lookupKey) {
           hit = depotLookup[suggested];
           overridePostCode = suggested;
         }

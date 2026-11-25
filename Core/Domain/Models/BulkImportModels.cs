@@ -119,3 +119,15 @@ public class SuburbIDResult
 {
     public int SuburbID { get; set; }
 }
+
+/// <summary>
+/// One rating-zone row returned by dbo.UTL_fncBulkZone_ResolveAt for a bulk job's delivery end
+/// (same resolver the booking and rating procs use). JobIndex is the job's position in the batch.
+/// </summary>
+public class ResolvedBulkZone
+{
+    public int JobIndex { get; set; }
+    public int? DepotId { get; set; }
+    public int? PostcodeGroupId { get; set; }
+    public int? Zone { get; set; }
+}

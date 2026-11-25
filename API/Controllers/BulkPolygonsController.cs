@@ -23,13 +23,25 @@ namespace RoutedOperations.API.Controllers;
 [RequireFeature("ro-polygon-builder")]
 public class BulkPolygonsController(BulkPolygonService svc) : BaseController
 {
+    /// <summary>
+    /// GET /api/bulk-polygons?app=SCHEDULES&amp;app=ROUTES - active polygons tagged with ANY
+    /// listed app (tblBulkRunPolygonApp, perimeter spec 4.3). No app = every polygon, which is
+    /// what the Builder uses. An unknown code is a 400.
+    /// </summary>
     [HttpGet]
     // polygon pickers on both schedule editors and Bind Polygons.
     [RequireFeature("ro-polygon-builder", "ro-schedules", "ro-schedules-new", "ro-client-overrides")]
-    public async Task<IActionResult> GetAll()
+    public async Task<IActionResult> GetAll([FromQuery(Name = "app")] string[]? app = null)
     {
-        var list = await svc.GetAllAsync();
-        return Ok(new { response = list });
+        try
+        {
+            var list = await svc.GetAllAsync(app);
+            return Ok(new { response = list });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpGet("{id:int}")]
@@ -82,6 +94,27 @@ public class BulkPolygonsController(BulkPolygonService svc) : BaseController
         {
             var updated = await svc.UpdateMetaAsync(id, req);
             return updated is null ? NotFound() : Ok(new { response = updated });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// PUT /api/bulk-polygons/apps - the Builder's bulk "Used by: Set..." (spec 4.4.2). Adds then
+    /// removes apps on every listed active polygon. PerimeterChanged in the result tells the UI
+    /// a City boundary was set or unset.
+    /// </summary>
+    [HttpPut("apps")]
+    [Authorize(Policy = "RouteBuilder.Admin")]
+    public async Task<IActionResult> SetAppsBulk([FromBody] BulkPolygonAppsBulkRequest req)
+    {
+        if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
+        try
+        {
+            var result = await svc.SetAppsBulkAsync(req);
+            return Ok(new { response = result });
         }
         catch (InvalidOperationException ex)
         {

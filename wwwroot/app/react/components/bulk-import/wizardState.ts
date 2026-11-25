@@ -100,11 +100,18 @@ export interface WizardState {
   mapping: Record<string, string>;
   options: WizardOptions;
   fixedZips: Record<string, string>;                   // bad zip -> corrected
+  // NZ: the tucSuburb id picked for a fixedZips key. Suburb names repeat
+  // (two Newtons), so the select shows this id, and it survives a remount.
+  fixedSuburbIds: Record<string, number>;
   fixedAddresses: Record<number, { lat: number; lng: number }>;
-  // NZ geocoder-suggested destination postcode keyed on rowIndex, recorded
-  // by FixAddressesModal when it differs from the row's own postcode. Depot
-  // grouping falls back to it when the raw postcode matches no depot.
+  // NZ geocoder postcode the operator ACCEPTED in FixAddressesModal, keyed
+  // on rowIndex. Depot grouping falls back to it when the raw postcode
+  // matches no depot. Only DECIDE_SUGGESTION (accept) writes it (#332).
   fixedPostCodes: Record<number, string>;
+  // NZ geocoder suggestions that differ from the sheet (#332): 'pc:<row>'
+  // for a postcode, 'sub:<row>' for a suburb. A suggestion is never applied
+  // until the operator accepts it.
+  geocodeSuggestions: Record<string, GeocodeSuggestion>;
   // Fixed FROM (pickup) coordinates keyed on rowIndex. On-demand batches
   // need accurate pickup coords for immediate dispatch; the FixAddresses
   // step lets the operator pin-correct any flagged row's origin the same
@@ -175,6 +182,16 @@ function defaultBookDate(tenantTimeZone: string | null): string {
   return addDaysYmd(tenantTodayYmd({ isUsTenant: false, timeZone: tenantTimeZone }), 1);
 }
 
+export interface GeocodeSuggestion {
+  kind: 'postCode' | 'suburb';
+  rowIndex: number;
+  sheet: string;
+  map: string;
+  // fixedZips key the accepted suburb is written under (suburb only).
+  zipKey?: string;
+  decision: 'pending' | 'accept' | 'keep';
+}
+
 /** `tenantTimeZone` is the auth claim (Windows or IANA name); null = browser zone. */
 export function initialWizardState(tenantTimeZone: string | null = null): WizardState {
   return {
@@ -202,8 +219,10 @@ export function initialWizardState(tenantTimeZone: string | null = null): Wizard
       truckDefaults: {},
     },
     fixedZips: {},
+    fixedSuburbIds: {},
     fixedAddresses: {},
     fixedPostCodes: {},
+    geocodeSuggestions: {},
     fixedFromAddresses: {},
     selectedRegions: new Set(),
     rateByDistanceDate: null,
@@ -238,9 +257,11 @@ export type WizardAction =
   | { type: 'SET_MAPPING'; mapping: Record<string, string> }
   | { type: 'PATCH_MAPPING'; field: string; column: string }
   | { type: 'SET_OPTIONS'; options: Partial<WizardOptions> }
-  | { type: 'SET_FIXED_ZIP'; badZip: string; corrected: string }
+  | { type: 'SET_FIXED_ZIP'; badZip: string; corrected: string; suburbId?: number }
   | { type: 'SET_FIXED_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
-  | { type: 'SET_FIXED_POSTCODE'; rowIndex: number; postCode: string }
+  // Records a suggestion; an existing one keeps its decision (#332).
+  | { type: 'ADD_GEOCODE_SUGGESTION'; key: string; suggestion: GeocodeSuggestion }
+  | { type: 'DECIDE_SUGGESTION'; key: string; decision: 'accept' | 'keep' }
   | { type: 'SET_FIXED_FROM_ADDRESS'; rowIndex: number; coords: { lat: number; lng: number } }
   | { type: 'SET_SELECTED_REGIONS'; regions: Set<string> }
   | { type: 'TOGGLE_REGION'; region: string }
@@ -312,21 +333,55 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return { ...state, mapping: { ...state.mapping, [action.field]: action.column } };
     case 'SET_OPTIONS':
       return { ...state, options: { ...state.options, ...action.options } };
-    case 'SET_FIXED_ZIP':
+    case 'SET_FIXED_ZIP': {
+      // A fix without an id drops any earlier pick so the two never disagree.
+      const fixedSuburbIds = { ...state.fixedSuburbIds };
+      if (action.suburbId !== undefined) fixedSuburbIds[action.badZip] = action.suburbId;
+      else delete fixedSuburbIds[action.badZip];
       return {
         ...state,
         fixedZips: { ...state.fixedZips, [action.badZip]: action.corrected },
+        fixedSuburbIds,
       };
+    }
     case 'SET_FIXED_ADDRESS':
       return {
         ...state,
         fixedAddresses: { ...state.fixedAddresses, [action.rowIndex]: action.coords },
       };
-    case 'SET_FIXED_POSTCODE':
+    case 'ADD_GEOCODE_SUGGESTION': {
+      const prev = state.geocodeSuggestions[action.key];
+      if (prev && prev.sheet === action.suggestion.sheet && prev.map === action.suggestion.map) return state;
       return {
         ...state,
-        fixedPostCodes: { ...state.fixedPostCodes, [action.rowIndex]: action.postCode },
+        geocodeSuggestions: { ...state.geocodeSuggestions, [action.key]: action.suggestion },
       };
+    }
+    case 'DECIDE_SUGGESTION': {
+      const sg = state.geocodeSuggestions[action.key];
+      if (!sg) return state;
+      const accept = action.decision === 'accept';
+      const next = { ...state, geocodeSuggestions: { ...state.geocodeSuggestions, [action.key]: { ...sg, decision: action.decision } } };
+      if (sg.kind === 'postCode') {
+        const fixedPostCodes = { ...state.fixedPostCodes };
+        if (accept) fixedPostCodes[sg.rowIndex] = sg.map;
+        else delete fixedPostCodes[sg.rowIndex];
+        return { ...next, fixedPostCodes };
+      }
+      if (!sg.zipKey) return next;
+      const fixedZips = { ...state.fixedZips };
+      const fixedSuburbIds = { ...state.fixedSuburbIds };
+      // The suggestion replaces (or takes back) the fix, so a picked
+      // tucSuburb id for this key no longer describes it.
+      if (accept) {
+        fixedZips[sg.zipKey] = sg.map;
+        delete fixedSuburbIds[sg.zipKey];
+      } else if (fixedZips[sg.zipKey] === sg.map) {
+        delete fixedZips[sg.zipKey];
+        delete fixedSuburbIds[sg.zipKey];
+      }
+      return { ...next, fixedZips, fixedSuburbIds };
+    }
     case 'SET_FIXED_FROM_ADDRESS':
       return {
         ...state,

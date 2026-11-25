@@ -256,6 +256,16 @@ describe('routeViewerService - scans / events', () => {
     expect(seen.searchParams.has('clientInternal')).toBe(false);
     expect(seen.searchParams.get('clientIds')).toBe('1,2');
     expect(seen.searchParams.get('regionIds')).toBe('7');
+    expect(seen.searchParams.has('includeOnDemand')).toBe(false);
+  });
+
+  it('getPrintJobList sends includeOnDemand only when it is on (#880)', async () => {
+    const seen: URL[] = [];
+    server.use(wrapGet('/api/runviewer/jobs/print-list', [], (u) => seen.push(u)));
+    await routeViewerService.getPrintJobList('2026-08-14', { includeOnDemand: false });
+    await routeViewerService.getPrintJobList('2026-08-14', { includeOnDemand: true });
+    expect(seen[0].searchParams.has('includeOnDemand')).toBe(false);
+    expect(seen[1].searchParams.get('includeOnDemand')).toBe('true');
   });
 
   it('getRoutedScanJobs GETs /runviewer/scans/routed', async () => {

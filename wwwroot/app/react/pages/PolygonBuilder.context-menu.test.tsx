@@ -97,8 +97,13 @@ describe('PolygonBuilder - context menu', () => {
     renderWithProviders(<PolygonBuilder />);
     await screen.findByRole('button', { name: 'CtxPoly' });
     const g = (window as any).google;
-    const rcListeners = g.__listeners['rightclick'] as any[];
-    const polygonRC = rcListeners.find((l) => l.owner?.setPaths);
+    // Wait for the overlay's listener: on a busy runner the list can render
+    // before the map overlay is drawn.
+    let polygonRC: any;
+    await waitFor(() => {
+      polygonRC = (g.__listeners['rightclick'] as any[] | undefined)?.find((l) => l.owner?.setPaths);
+      expect(polygonRC).toBeDefined();
+    });
     act(() => {
       polygonRC.cb({ domEvent: { clientX: 50, clientY: 50 } as MouseEvent });
     });

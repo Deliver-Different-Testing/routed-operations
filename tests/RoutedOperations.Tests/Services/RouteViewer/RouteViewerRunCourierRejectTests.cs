@@ -45,7 +45,7 @@ public class RouteViewerRunCourierRejectTests
 
     // SqlException has no public constructor; build one the way the client
     // does when the server sends an error token.
-    private static SqlException MakeSqlException(int number, string message)
+    internal static SqlException MakeSqlException(int number, string message)
     {
         const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
         var errorCtor = typeof(SqlError).GetConstructors(Any).OrderByDescending(c => c.GetParameters().Length).First();

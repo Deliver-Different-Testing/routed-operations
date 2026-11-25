@@ -757,8 +757,36 @@ public partial class BulkImportServiceV2
 
     // ---- ProcessRoutedJobs ------------------------------------------------
 
+    // #316/#319 server side. Blank required cells used to reach a bare
+    // .Trim() in the job build and surface as "Import failed: <stack>". Row N
+    // is 1-based within THIS request; the wizard sends one request per depot,
+    // so on a multi-depot import N counts that depot's rows, not the
+    // spreadsheet row. Labels match the Map Columns step for the tenant.
+    private List<string> ValidateRows(IEnumerable<BulkImportJobCreateDto> rows)
+    {
+        var contactLabel = IsNzTenant() ? "To Contact" : "Contact";
+        var addressLabel = IsNzTenant() ? "To Address" : "Address";
+        var jobs = rows?.ToList() ?? new List<BulkImportJobCreateDto>();
+        var errors = new List<string>();
+        for (var i = 0; i < jobs.Count; i++)
+        {
+            var j = jobs[i];
+            if (string.IsNullOrWhiteSpace(j.ToContact)) errors.Add($"Row {i + 1}: {contactLabel} is blank");
+            if (string.IsNullOrWhiteSpace(j.ToAddress)) errors.Add($"Row {i + 1}: {addressLabel} is blank");
+            if (string.IsNullOrWhiteSpace(j.JobNumber)) errors.Add($"Row {i + 1}: Job Number is blank");
+        }
+        return errors;
+    }
+
     private async Task<BulkImportResponse> ProcessRoutedJobs(int contactId, BulkImportRequest request, BulkImportResponse response, dynamic client)
     {
+        var rowErrors = ValidateRows(request.Jobs);
+        if (rowErrors.Count > 0)
+        {
+            foreach (var e in rowErrors) BulkImportResponseUtility.AddMessageAndReturnResponse(response, e);
+            return response;
+        }
+
         var schedule = await Context.TblBulkRunSchedules.Include(s => s.RegionNavigation)
             .FirstOrDefaultAsync(s => s.BulkRunScheduleId == request.ScheduleId);
 
@@ -979,10 +1007,28 @@ public partial class BulkImportServiceV2
         var suburbs = await Context.TucSuburbs
           .Select(s => new
           {
+              s.UcsuId,
               s.UcsuName,
               s.PostCode
           })
           .ToListAsync();
+
+        // #333: the exact tucSuburb name, then a suburb the client (or
+        // tenant-wide) remembered in Fix Suburbs, then the shared normaliser
+        // (only when unambiguous); the same order the wizard's Fix Suburbs
+        // uses. Exact goes first because alias keys are normalised: a fix
+        // for 'St. Albans' must not capture a sheet 'St Albans'. Staff
+        // Import uses the same order.
+        var suburbAliases = IsNzTenant()
+            ? await BulkSuburbAliases.LoadAsync(Context, new[] { request.ClientId })
+            : new List<TblBulkSuburbAlias>();
+        var suburbNamesById = suburbs.GroupBy(s => s.UcsuId).ToDictionary(g => g.Key, g => g.First().UcsuName);
+        var exactSuburb = BulkSuburbAliases.ExactSuburbMatcher(suburbs.Select(s => s.UcsuName));
+        var matchSuburb = BulkSuburbAliases.SuburbMatcher(suburbs.Select(s => s.UcsuName));
+        string NzSuburb(string raw, string postCode) =>
+            exactSuburb(raw)
+            ?? AliasedSuburbName(suburbAliases, suburbNamesById, request.ClientId, raw, postCode)
+            ?? matchSuburb(raw);
 
         // Steve's 4-step origin precedence (US tenant only - NZ always
         // resolves at Step 1). Local function so it can close over the
@@ -1005,7 +1051,7 @@ public partial class BulkImportServiceV2
                 {
                     nzAL5 = request.ScheduleId.HasValue
                         ? (string)client.Schedule.FromSuburb
-                        : suburbs.FirstOrDefault(s => s.UcsuName?.Trim().ToLower() == j.FromSuburb?.Trim().ToLower().Replace('ā', 'a').Replace('ē', 'e').Replace('ī', 'i').Replace('ō', 'o').Replace('ū', 'u'))?.UcsuName;
+                        : NzSuburb(j.FromSuburb, j.FromPostCode);
                     nzAL7 = request.ScheduleId.HasValue
                         ? ((int?)client.Schedule.FromPostCode)?.ToString()
                         : j.FromPostCode?.Trim();
@@ -1149,7 +1195,7 @@ public partial class BulkImportServiceV2
         List<TblBulkJob> jobs = request.Jobs
             .Select(j => new TblBulkJob()
             {
-                JobNumber = j.JobNumber.Trim().ToUpper(),
+                JobNumber = j.JobNumber?.Trim().ToUpper(),
                 BookDate = request.BookDate.Date,
                 BookTime = request.ScheduleId.HasValue
                     ? DateTime.SpecifyKind(request.BookDate.Date.AddTicks(client.Schedule.StartTime.Ticks), request.BookDate.Kind)
@@ -1173,11 +1219,11 @@ public partial class BulkImportServiceV2
                 PickupAddressLine6 = resolvedOrigins[j].AddressLine6,
                 PickupAddressLine7 = resolvedOrigins[j].AddressLine7,
                 PickupAddressLine8 = resolvedOrigins[j].AddressLine8,
-                DeliverToContact = j.ToContact.Trim(),
+                DeliverToContact = j.ToContact?.Trim(),
                 DeliverToPhone = string.IsNullOrWhiteSpace(j.ToContactPhone) ? null : j.ToContactPhone.Trim(),
                 ToCompany = string.IsNullOrWhiteSpace(j.ToCompany) ? null : j.ToCompany.Trim(),
-                ToAddress = string.IsNullOrWhiteSpace(j.ToCompany) ? j.ToAddress.Trim() : j.ToCompany.Trim() + AddressService.TO_COMPANY_SEPERATOR + j.ToAddress.Trim(),
-                ToSuburb = IsNzTenant() ? suburbs.FirstOrDefault(s => s.UcsuName?.Trim().ToLower() == j.ToSuburb?.Trim().ToLower().Replace('ā', 'a').Replace('ē', 'e').Replace('ī', 'i').Replace('ō', 'o').Replace('ū', 'u'))?.UcsuName : null,
+                ToAddress = string.IsNullOrWhiteSpace(j.ToCompany) ? j.ToAddress?.Trim() : j.ToCompany.Trim() + AddressService.TO_COMPANY_SEPERATOR + j.ToAddress?.Trim(),
+                ToSuburb = IsNzTenant() ? NzSuburb(j.ToSuburb, j.ToPostCode) : null,
                 ToPostCode = ParseNullableIntSafe(IsNzTenant() ? j.ToPostCode : j.ToZipCode) ?? 0,
                 DeliveryLatitude = string.IsNullOrWhiteSpace(j.ToLatitude) ? null : j.ToLatitude.Trim(),
                 DeliveryLongitude = string.IsNullOrWhiteSpace(j.ToLongitude) ? null : j.ToLongitude.Trim(),
@@ -1185,9 +1231,9 @@ public partial class BulkImportServiceV2
                 DeliveryAddressLine1 = string.IsNullOrWhiteSpace(j.ToCompany) ? null : j.ToCompany.Trim(),
                 DeliveryAddressLine2 = null,
                 DeliveryAddressLine3 = null,
-                DeliveryAddressLine4 = j.ToAddress.Trim(),
+                DeliveryAddressLine4 = j.ToAddress?.Trim(),
                 DeliveryAddressLine5 = IsNzTenant()
-                    ? suburbs.FirstOrDefault(s => s.UcsuName?.Trim().ToLower() == j.ToSuburb?.Trim().ToLower().Replace('ā', 'a').Replace('ē', 'e').Replace('ī', 'i').Replace('ō', 'o').Replace('ū', 'u'))?.UcsuName
+                    ? NzSuburb(j.ToSuburb, j.ToPostCode)
                     : j.ToCity,
                 DeliveryAddressLine6 = IsNzTenant() ? null : j.ToState,
                 DeliveryAddressLine7 = IsNzTenant() ? j.ToPostCode?.Trim() : j.ToZipCode,
@@ -1452,6 +1498,17 @@ public partial class BulkImportServiceV2
 
     // ---- geocode helpers --------------------------------------------------
 
+    // #332: the pickup postcode / zip the import books after the server
+    // geocodes the origin of on-demand pickups. The operator has no accept
+    // step for the pickup, so the sheet value always wins; the geocoder only
+    // fills a blank cell. ONE place to change if Steve wants the suggestion
+    // applied. The truck path still overwrites the pickup postcode with the
+    // geocoded one (open item for Steve, pinned by BulkTruckPreviewTests).
+    public static string OriginPostCodeAfterGeocode(string sheet, string suggested, string geocoded)
+    {
+        return string.IsNullOrWhiteSpace(sheet) ? (suggested ?? geocoded) : sheet;
+    }
+
     private async Task GeocodeJobFromAddress(BulkImportJobCreateDto job, Guid messageId, int contactId)
     {
         try
@@ -1493,32 +1550,17 @@ public partial class BulkImportServiceV2
                 job.FromLatitude = geocodedAddress.Latitude;
                 job.FromLongitude = geocodedAddress.Longitude;
 
-                if (IsNzTenant())
+                var sheetCode = IsNzTenant() ? job.FromPostCode : job.FromZipCode;
+                var originCode = OriginPostCodeAfterGeocode(sheetCode, geocodedAddress.SuggestedPostCode, geocodedAddress.PostCode);
+                if (originCode != sheetCode)
                 {
-                    if (string.IsNullOrWhiteSpace(job.FromPostCode))
-                    {
-                        job.FromPostCode = geocodedAddress.SuggestedPostCode ?? geocodedAddress.PostCode;
-                        Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Populated missing FromPostCode: {job.FromPostCode}");
-                    }
-                    else if (!string.IsNullOrWhiteSpace(geocodedAddress.SuggestedPostCode))
-                    {
-                        job.FromPostCode = geocodedAddress.SuggestedPostCode;
-                        Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Updated FromPostCode to suggested: {job.FromPostCode}");
-                    }
+                    if (!string.IsNullOrWhiteSpace(originCode))
+                        Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Populated missing From{(IsNzTenant() ? "PostCode" : "ZipCode")}: {originCode}");
                 }
-                else
-                {
-                    if (string.IsNullOrWhiteSpace(job.FromZipCode))
-                    {
-                        job.FromZipCode = geocodedAddress.SuggestedPostCode ?? geocodedAddress.PostCode;
-                        Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Populated missing FromZipCode: {job.FromZipCode}");
-                    }
-                    else if (!string.IsNullOrWhiteSpace(geocodedAddress.SuggestedPostCode))
-                    {
-                        job.FromZipCode = geocodedAddress.SuggestedPostCode;
-                        Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Updated FromZipCode to suggested: {job.FromZipCode}");
-                    }
-                }
+                else if (!string.IsNullOrWhiteSpace(geocodedAddress.SuggestedPostCode) && geocodedAddress.SuggestedPostCode != sheetCode)
+                    Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Kept sheet From{(IsNzTenant() ? "PostCode" : "ZipCode")} {sheetCode}; geocoder suggested {geocodedAddress.SuggestedPostCode}");
+                if (IsNzTenant()) job.FromPostCode = originCode;
+                else job.FromZipCode = originCode;
 
                 Log.Information($"({messageId})({contactId}) [GeocodeJobFromAddress] Successfully geocoded: Lat={job.FromLatitude}, Lng={job.FromLongitude}, PostCode={job.FromPostCode ?? job.FromZipCode}");
             }

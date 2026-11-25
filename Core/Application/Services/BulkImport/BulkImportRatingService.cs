@@ -256,6 +256,7 @@ public partial class BulkImportServiceV2
                 x.Zone,
                 depotId = x.ScheduleId.HasValue ? x.Schedule.Region : schedule.Region,
                 ScheduleId = x.ScheduleId ?? schedule.BulkRunScheduleId,
+                PostcodeGroupId = x.Schedule.PostcodeGroupId,
                 x.Active,
                 postcodes = IsUsTenant()
                                 ? Context.ZoneZips
@@ -357,16 +358,51 @@ public partial class BulkImportServiceV2
             }
         }
 
+        // NZ zone pricing resolves each job's delivery zone through dbo.UTL_fncBulkZone_ResolveAt
+        // (postcode + delivery lat/lng), the resolver booking and rating use
+        // (WS_stpJob_Scheduler_Rates, WS_stpBulkScheduleJob_Insert): rating rows only (IsRatingZone = 1),
+        // matched on the schedule's postcode group and depot. A postcode's own zone in a group wins;
+        // a polygon placed in that group only covers a postcode that has no row in the group.
+        // With tblSetting.PolygonZoneResolutionEnabled = 0 the resolver returns exactly the
+        // BulkZonePostcode rows. The KM fallback below still uses zipCodes.
+        // Zone and SiteId come from the row in the schedule's postcode group whose DepotId is the
+        // schedule's Region, the same filter booking applies to @ToZones. Before this change the pick
+        // had no depot filter, so a postcode with rows on several depots in one group could take
+        // another depot's zone.
+        Dictionary<TblBulkJob, List<ResolvedBulkZone>>? nzDeliveryZones = null;
+        Dictionary<TblBulkJob, ResolvedBulkZone?>? nzPricingZone = null;
+        var activeZones = activeZonesBySchedule
+            .Select(a => new BulkZonePick.ActiveZone(a.Zone, a.depotId, a.PostcodeGroupId))
+            .ToList();
+
+        if (!IsUsTenant())
+        {
+            nzDeliveryZones = await ResolveNzDeliveryZonesAsync(jobs.Where(j => zoneSpeedIds.Contains(j.Speed)).ToList());
+            nzPricingZone = new Dictionary<TblBulkJob, ResolvedBulkZone?>(ReferenceEqualityComparer.Instance);
+            foreach (var (job, rows) in nzDeliveryZones)
+                nzPricingZone[job] = BulkZonePick.PricingRow(rows, scheduleId, schedule?.PostcodeGroupId, schedule?.Region, activeZones);
+        }
+
+        bool IsInActiveZone(TblBulkJob j) =>
+            nzDeliveryZones == null
+                ? activePostCodes.Contains(j.ToPostCode.ToString())
+                : nzDeliveryZones.TryGetValue(j, out var resolvedRows)
+                    && BulkZonePick.IsInActiveZone(resolvedRows, activeZones);
+
         var zonesToPrice = jobs
-            .Where(j => zoneSpeedIds.Contains(j.Speed) && activePostCodes.Contains(j.ToPostCode.ToString()))
+            .Where(j => zoneSpeedIds.Contains(j.Speed) && IsInActiveZone(j))
             .GroupBy(j => new
             {
                 BookDate = j.BookDate.Date,
                 j.ClientId,
-                SiteId = postCodeLocationMap.GetValueOrDefault(AddressUtility.FormatPostCode(j.ToPostCode.ToString())),
-                Zone = zipCodes.FirstOrDefault(x =>
-                    AddressUtility.FormatPostCode(x.Zip) ==
-                    AddressUtility.FormatPostCode(j.ToPostCode.ToString()))?.ZoneNumber,
+                SiteId = nzPricingZone != null
+                    ? nzPricingZone.GetValueOrDefault(j)?.DepotId
+                    : postCodeLocationMap.GetValueOrDefault(AddressUtility.FormatPostCode(j.ToPostCode.ToString())),
+                Zone = nzPricingZone != null
+                    ? nzPricingZone.GetValueOrDefault(j)?.Zone
+                    : zipCodes.FirstOrDefault(x =>
+                        AddressUtility.FormatPostCode(x.Zip) ==
+                        AddressUtility.FormatPostCode(j.ToPostCode.ToString()))?.ZoneNumber,
                 Cubic = j.Length * j.Width * j.Height,
                 SpeedId = j.Speed,
                 BulkRunScheduleId = scheduleId,
@@ -616,6 +652,38 @@ public partial class BulkImportServiceV2
     }
 
     // ---- split / apply amount --------------------------------------------
+
+    /// <summary>
+    /// NZ: delivery-end rating zones per job from dbo.UTL_fncBulkZone_ResolveAt, one round trip for the batch.
+    /// Coordinates that do not parse or are out of range are sent as NULL (postcode-only lookup).
+    /// </summary>
+    private async Task<Dictionary<TblBulkJob, List<ResolvedBulkZone>>> ResolveNzDeliveryZonesAsync(List<TblBulkJob> jobs)
+    {
+        var result = new Dictionary<TblBulkJob, List<ResolvedBulkZone>>(ReferenceEqualityComparer.Instance);
+        foreach (var j in jobs)
+            result[j] = new List<ResolvedBulkZone>();
+        var inputs = jobs
+            .Select((j, i) => new { i, p = j.ToPostCode, a = BulkZonePick.ParseCoordinate(j.DeliveryLatitude, 90m), o = BulkZonePick.ParseCoordinate(j.DeliveryLongitude, 180m) })
+            .Where(x => x.p.HasValue)
+            .ToList();
+        if (!inputs.Any())
+            return result;
+
+        var rows = await Context.Database
+            .SqlQueryRaw<ResolvedBulkZone>(
+                @"SELECT j.i AS JobIndex, r.DepotId, r.PostcodeGroupId, r.Zone
+                  FROM OPENJSON(@jobs) WITH (i int '$.i', p int '$.p', a decimal(18,9) '$.a', o decimal(18,9) '$.o') j
+                  CROSS APPLY dbo.UTL_fncBulkZone_ResolveAt(j.p, j.a, j.o) r
+                  WHERE r.IsRatingZone = 1",
+                new SqlParameter("@jobs", SqlDbType.NVarChar, -1) { Value = JsonConvert.SerializeObject(inputs) })
+            .ToListAsync();
+
+        foreach (var row in rows)
+            result[jobs[row.JobIndex]].Add(row);
+
+        return result;
+    }
+
 
     private void SplitJobAndApplyAmount(List<TblBulkJob> jobs, TblBulkJob job, decimal? amount, List<TblBulkJob> splitJobs, TblBulkRunSchedule schedule = null, ZoneLinehaulRate zoneRates = null, List<PendingBulkJobItem> pendingJobItems = null)
     {

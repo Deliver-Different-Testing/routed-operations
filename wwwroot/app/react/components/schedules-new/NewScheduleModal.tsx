@@ -4,6 +4,7 @@ import { Modal } from '../common/Modal';
 import { scheduleService, type ScheduleGroupUpsertBody } from '../../services/scheduleService';
 import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
+import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { ClientMultiPicker } from './ClientMultiPicker';
 import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
 import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
@@ -130,6 +131,12 @@ export function NewScheduleModal({ open, onClose }: Props) {
     staleTime: 5 * 60_000,
     enabled: open,
   });
+  // Perimeter spec 4.5: the picker lists Schedules polygons only. The query
+  // stays unfiltered (cache shared with ScheduleDetailModal) and the ticked
+  // ones are kept so a selection never vanishes from the list.
+  const schedulePolygons = useMemo(
+    () => polygonsForApp(polygonsQuery.data ?? [], 'SCHEDULES', polygonIds),
+    [polygonsQuery.data, polygonIds]);
 
   const lookupsQuery = useQuery({
     queryKey: schedulesV2Keys.lookups(tenantId),
@@ -827,7 +834,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
               )}
               {!polygonsQuery.isLoading && !polygonsQuery.isError && (
                 <ScheduleCoverageMap
-                  polygons={polygonsQuery.data ?? []}
+                  polygons={schedulePolygons}
                   selectedIds={polygonIds}
                   onToggle={togglePolygon}
                   boundPostcodes={postcodeIds}
@@ -842,12 +849,12 @@ export function NewScheduleModal({ open, onClose }: Props) {
               )}
             </div>
             <div className="max-h-[360px] overflow-y-auto border border-border rounded">
-              {polygonsQuery.data?.length === 0 && (
+              {polygonsQuery.data && schedulePolygons.length === 0 && (
                 <div className="p-3 text-xs text-text-muted italic">
-                  No polygons defined yet. Draw one in Polygon Builder.
+                  No polygons available to Schedules. Draw one, or tick Schedules on one, in Polygon Builder.
                 </div>
               )}
-              {polygonsQuery.data?.map((p) => {
+              {polygonsQuery.data && schedulePolygons.map((p) => {
                 const checked = polygonIds.includes(p.polygonId);
                 return (
                   <label

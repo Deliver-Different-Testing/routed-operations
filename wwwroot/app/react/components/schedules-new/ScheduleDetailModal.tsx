@@ -16,6 +16,7 @@ import {
   type LinehaulRosterRow,
 } from '../../services/linehaulService';
 import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygonService';
+import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
 import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE, INACTIVE_DEPOT_OVERRIDE_MESSAGE } from '../../lib/depotOptions';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
@@ -767,6 +768,13 @@ export function ScheduleDetailModal({
     staleTime: 5 * 60_000,
     enabled: scheduleId != null,
   });
+  // Perimeter spec 4.5: Schedules polygons only, plus every polygon this
+  // schedule already uses (as loaded, or ticked since) so an untagged one
+  // still shows and survives the next save (Q2).
+  const schedulePolygons = useMemo(
+    () => polygonsForApp(polygonsQuery.data ?? [], 'SCHEDULES',
+      [...(query.data?.polygonIds ?? []), ...formPolygonIds]),
+    [polygonsQuery.data, query.data?.polygonIds, formPolygonIds]);
 
   // Override-mode: fetch every override on this schedule and pick out
   // the one for our client, if any. No single-client GET endpoint
@@ -1651,7 +1659,7 @@ export function ScheduleDetailModal({
                 onPostcodeIdsChange={setFormPostcodeIds}
                 polygonIds={formPolygonIds}
                 onTogglePolygon={togglePolygon}
-                polygons={polygonsQuery.data ?? []}
+                polygons={schedulePolygons}
                 polygonsError={polygonsQuery.error ? (polygonsQuery.error as Error).message : null}
                 polygonsLoading={polygonsQuery.isLoading}
                 // destinationDepotId here MUST be a depot id (used by the
@@ -2607,7 +2615,7 @@ function CoverageTab({
           <div className="max-h-[360px] overflow-y-auto rounded-lg border border-border">
             {polygons?.length === 0 && (
               <div className="p-3 text-xs text-text-muted italic">
-                No polygons defined yet. Draw one in Polygon Builder.
+                No polygons available to Schedules. Draw one, or tick Schedules on one, in Polygon Builder.
               </div>
             )}
             {polygons?.map((p) => {
