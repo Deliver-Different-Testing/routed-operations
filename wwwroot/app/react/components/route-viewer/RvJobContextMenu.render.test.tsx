@@ -146,3 +146,41 @@ describe('RvJobContextMenu (render)', () => {
     expect(await screen.findByText('Create client intel')).toBeInTheDocument();
   });
 });
+
+// #320: 'Mark lost (Undeliverable)' closes a Missing job as Undeliverable.
+// RVW_stpBulkRunJobs sends status 1001 as tucJobStatus code 'MIS' (padded
+// like the other codes). Offering it on any other job would let an operator
+// write off a job that is still moving, so it shows only when every selected
+// job is Missing.
+describe('RvJobContextMenu: Mark lost only for Missing jobs', () => {
+  const MARK_LOST = 'Mark lost (Undeliverable)';
+  beforeEach(() => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isNetworkPartner: false, fullName: 'Kev' };
+  });
+
+  it.each(['MIS', 'MIS ', 'mis'])('shows for a Missing job (status code %j)', (code) => {
+    renderMenu({ jobs: [mkJob({ jobStatus: code })] });
+    expect(screen.getByRole('button', { name: MARK_LOST })).toBeInTheDocument();
+  });
+
+  it.each(['D', 'A', 'UD', 'C', null])('is hidden for a job that is not Missing (%j)', (code) => {
+    renderMenu({ jobs: [mkJob({ jobStatus: code })] });
+    expect(screen.queryByRole('button', { name: MARK_LOST })).not.toBeInTheDocument();
+  });
+
+  it('shows for a selection that is all Missing, hidden when one is not', () => {
+    renderMenu({ jobs: [mkJob({ jobId: 1, jobStatus: 'MIS' }), mkJob({ jobId: 2, jobStatus: 'MIS' })] });
+    expect(screen.getByRole('button', { name: MARK_LOST })).toBeInTheDocument();
+  });
+
+  it('is hidden for a mixed selection', () => {
+    renderMenu({ jobs: [mkJob({ jobId: 1, jobStatus: 'MIS' }), mkJob({ jobId: 2, jobStatus: 'A' })] });
+    expect(screen.queryByRole('button', { name: MARK_LOST })).not.toBeInTheDocument();
+  });
+
+  it('is hidden for a network partner, like the other status actions', () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, isNetworkPartner: true };
+    renderMenu({ jobs: [mkJob({ jobStatus: 'MIS' })] });
+    expect(screen.queryByRole('button', { name: MARK_LOST })).not.toBeInTheDocument();
+  });
+});

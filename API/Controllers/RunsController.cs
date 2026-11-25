@@ -34,16 +34,23 @@ public class RunsController(
     }
 
     // POST /api/runs               body: InsertOrUpdateRunRequest
+    // #1018 C2: POST /runs, /runs/with-jobs and /runs/{id}/assign-many also
+    // return Runs, the touched runs as GET shows them (null on failure), so
+    // the cockpit can patch its lists and reload in the background.
     [HttpPost]
     [Authorize(Policy = "RouteBuilder.Build")]
     public async Task<IActionResult> InsertOrUpdate([FromBody] InsertOrUpdateRunRequest body)
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         var (result, message) = await runService.InsertOrUpdateRunAsync(body);
-        return Ok(new { response = new { Result = result, Message = message } });
+        // #1018 C2: on success the message is the run id.
+        var runs = await TouchedRunsAsync(result, RunIdFromMessage(message));
+        return Ok(new { response = new { Result = result, Message = message, Runs = runs } });
     }
 
     // PUT /api/runs/{id}           body: InsertOrUpdateRunRequest
+    // #1018 C2: courier assign and lock / unlock save here, so this returns
+    // the run too and the cockpit patches it instead of a foreground reload.
     [HttpPut("{id:int}")]
     [Authorize(Policy = "RouteBuilder.Build")]
     public async Task<IActionResult> Update(int id, [FromBody] InsertOrUpdateRunRequest body)
@@ -51,7 +58,8 @@ public class RunsController(
         body.Id = id;
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         var (result, message) = await runService.UpdateRunAsync(body);
-        return Ok(new { response = new { Result = result, Message = message } });
+        var runs = await TouchedRunsAsync(result, [id]);
+        return Ok(new { response = new { Result = result, Message = message, Runs = runs } });
     }
 
     // DELETE /api/runs/{id}
@@ -81,7 +89,8 @@ public class RunsController(
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         var (result, message) = await runService.CreateRunWithJobsAsync(body);
-        return Ok(new { response = new { Result = result, Message = message } });
+        var runs = await TouchedRunsAsync(result, RunIdFromMessage(message));
+        return Ok(new { response = new { Result = result, Message = message, Runs = runs } });
     }
 
     // POST /api/runs/{runId}/assign-many     body: AssignJobsToRunRequest
@@ -92,7 +101,11 @@ public class RunsController(
     {
         if (!ModelState.IsValid) return HandleInvalidModelState(Guid.NewGuid());
         var (result, message) = await runService.AssignJobsToRunAsync(runId, body.Jobs, body.DeleteRunId);
-        return Ok(new { response = new { Result = result, Message = message } });
+        // #1018 C2: the target plus every run the jobs came from, bar a merged-away (deleted) one.
+        var touched = body.Jobs.Where(j => j.FromRunId.HasValue).Select(j => j.FromRunId!.Value)
+            .Append(runId).Where(id => id != body.DeleteRunId).Distinct().ToList();
+        var runs = await TouchedRunsAsync(result, touched);
+        return Ok(new { response = new { Result = result, Message = message, Runs = runs } });
     }
 
     // DELETE /api/runs/jobs/{jobId}
@@ -136,4 +149,13 @@ public class RunsController(
         var results = await runCommitService.DispatchJobsAsync(body);
         return Ok(new { response = results });
     }
+
+    /// <summary>#1018 C2: the runs a successful save touched, as GET /api/runs
+    /// shows them, for the cockpit to patch from. Null on failure, or when
+    /// there is no run id to fetch, so the cockpit falls back to a reload.</summary>
+    private async Task<List<RunDto>?> TouchedRunsAsync(string result, IReadOnlyCollection<int>? runIds) =>
+        result == "Success" && runIds is { Count: > 0 } ? await runService.GetRunsByIdAsync(runIds) : null;
+
+    /// <summary>Create calls answer Success with the new run id as the message.</summary>
+    private static int[]? RunIdFromMessage(string message) => int.TryParse(message, out var id) ? [id] : null;
 }

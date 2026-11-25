@@ -47,4 +47,10 @@ public class BulkRunListRequest
     /// previous attempt passed it to RVW_stpBulkJobSearchData positionally
     /// and broke the call outright.</summary>
     public string? Group { get; set; }
+
+    /// <summary>#880: Print Manager's "Include on-demand" toggle. True adds
+    /// the tucJob-only jobs for the date (BulkJobId 0) via
+    /// RVW_stpPrintJobsV2's @IncludeOnDemand. Null / false sends today's
+    /// call unchanged. Only the print list reads it.</summary>
+    public bool? IncludeOnDemand { get; set; }
 }

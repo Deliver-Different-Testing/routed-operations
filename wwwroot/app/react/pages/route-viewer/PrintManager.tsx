@@ -13,7 +13,8 @@ import { RvScanDetailBox } from '../../components/route-viewer/RvScanDetailBox';
 import { useToast } from '../../context/ToastContext';
 import type { ListSort } from '../../components/cockpit/CockpitState';
 import { nextSortDirection, sortIndicator } from '../../lib/sortLists';
-import { buildBulkJobsLabelPayload, labelFailureText } from '../../lib/labelPrint';
+import { buildPrintManagerLabelPayloads, labelFailureText } from '../../lib/labelPrint';
+import { decodePrintRowKey, isOnDemandKey, printRowKey, type PrintRowKey } from '../../lib/printRowKey';
 
 // Print Manager page (master Section 11). Wires to the dedicated
 // Print list endpoint (`GET /runviewer/jobs/print-list` -> wraps
@@ -75,8 +76,10 @@ export default function PrintManager() {
   // the arrow indicator + list order stay consistent.
   const [sortMode, setSortMode] = useState<SortMode>(1);
   const [columnSort, setColumnSort] = useState<ListSort | null>(null);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [selectedIds, setSelectedIds] = useState<PrintRowKey[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  // #880: also list the date's tucJob-only (on-demand) jobs. Off by default.
+  const [includeOnDemand, setIncludeOnDemand] = useState(false);
   const [editItemsFor, setEditItemsFor] = useState<{ bulkJobId: number; qty: number } | null>(null);
   // Focused job for the right-side JobDetail + ScanList panels. Legacy
   // Print Manager surfaces these to the right of the list; operators
@@ -122,10 +125,11 @@ export default function PrintManager() {
     // Include the lookup array lengths so the query refetches once
     // lookups arrive (initial paint has 0 clients/regions, then the
     // lookup responses land and the query key changes).
-    queryKey: ['pm-list', runDate, defaultClientIds.length, defaultRegionIds.length],
+    queryKey: ['pm-list', runDate, defaultClientIds.length, defaultRegionIds.length, includeOnDemand],
     queryFn: () => routeViewerService.getPrintJobList(runDate, {
       clientIds: defaultClientIds.length > 0 ? defaultClientIds : undefined,
       regionIds: defaultRegionIds.length > 0 ? defaultRegionIds : undefined,
+      includeOnDemand,
     }),
     // Wait until the lookups settle so we don't waste a call with
     // empty arrays that reproduces the exact bug this fix is closing.
@@ -174,10 +178,12 @@ export default function PrintManager() {
     [sorted, searchQuery],
   );
 
-  const toggle = (id: number) => {
+  const toggle = (id: PrintRowKey) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id]));
   };
-  const selectAll = () => setSelectedIds(visible.map((r) => r.bulkJobId));
+  const selectAll = () => setSelectedIds(visible.map(printRowKey));
+  // Cancel and Edit qty act on tblBulkJob rows only.
+  const selectedBulkIds = selectedIds.filter((k) => !isOnDemandKey(k)).map((k) => decodePrintRowKey(k).bulkJobId);
   const clearAll = () => setSelectedIds([]);
 
   // Chevron click on a multibox parent row. Toggle-only when the row is
@@ -224,8 +230,13 @@ export default function PrintManager() {
     try {
       // #855: LabelRequest.BulkJobIds is a CSV string (an array never
       // bound) and the response is a PDF, so open it like Print Run does.
-      const blob = await routeViewerService.printRunLabelsPdf(buildBulkJobsLabelPayload(runDate, selectedIds));
-      window.open(URL.createObjectURL(blob), '_blank');
+      // #880: on-demand rows print by tucJob id (Mode 8) in a second
+      // request; bulk rows send the same payload as before.
+      const picked = selectedIds.map(decodePrintRowKey);
+      for (const payload of buildPrintManagerLabelPayloads(runDate, picked)) {
+        const blob = await routeViewerService.printRunLabelsPdf(payload);
+        window.open(URL.createObjectURL(blob), '_blank');
+      }
       setSelectedIds([]);
     } catch (e) {
       const msg = labelFailureText('Print failed', (e as Error).message);
@@ -240,16 +251,16 @@ export default function PrintManager() {
   // cancel is not reversible from this surface (operator has to
   // Activate the job again).
   const cancelSelected = async () => {
-    if (selectedIds.length === 0) return;
+    if (selectedBulkIds.length === 0) return;
     if (!(await confirm({
       title: 'Cancel jobs',
-      message: `Cancel ${selectedIds.length} job(s)? This voids them and cannot be undone from this surface.`,
+      message: `Cancel ${selectedBulkIds.length} job(s)? This voids them and cannot be undone from this surface.`,
       danger: true,
     }))) return;
     setSubmitting(true);
     try {
-      await routeViewerService.cancelJobs(selectedIds);
-      toast.show(`Cancelled ${selectedIds.length} job(s).`, 'success');
+      await routeViewerService.cancelJobs(selectedBulkIds);
+      toast.show(`Cancelled ${selectedBulkIds.length} job(s).`, 'success');
       setSelectedIds([]);
       q.refetch();
     } catch (e) {
@@ -313,13 +324,25 @@ export default function PrintManager() {
           aria-label="Search jobs"
           className="border border-border rounded px-2 py-0.5 text-xs bg-surface-white"
         />
+        <label className="flex items-center gap-1 text-xs text-text-secondary">
+          <input
+            type="checkbox"
+            checked={includeOnDemand}
+            onChange={(e) => {
+              setIncludeOnDemand(e.target.checked);
+              setSelectedIds((prev) => prev.filter((k) => !isOnDemandKey(k)));
+            }}
+            className="accent-brand-cyan"
+          />
+          <span>Include on-demand</span>
+        </label>
         <Button variant="neutral" size="sm" onClick={selectAll}>Select all</Button>
         <Button variant="neutral" size="sm" onClick={clearAll} disabled={selectedIds.length === 0}>Clear</Button>
         <Button variant="primary" size="sm" onClick={printSelected} disabled={selectedIds.length === 0 || submitting}>
           {submitting ? 'Printing...' : `Print Labels (${selectedIds.length})`}
         </Button>
-        <Button variant="neutral" size="sm" onClick={cancelSelected} disabled={selectedIds.length === 0 || submitting}>
-          Cancel ({selectedIds.length})
+        <Button variant="neutral" size="sm" onClick={cancelSelected} disabled={selectedBulkIds.length === 0 || submitting}>
+          Cancel ({selectedBulkIds.length})
         </Button>
         <div className="ml-auto text-xs text-text-muted">
           {q.isLoading ? 'Loading...' : `${visible.length} jobs`}
@@ -368,16 +391,18 @@ export default function PrintManager() {
             </thead>
             <tbody>
               {visible.map((r) => {
-                const selected = selectedIds.includes(r.bulkJobId);
-                const focused = focusedJobId === r.bulkJobId;
-                const isMultiBox = r.multiBox === true;
+                const key = printRowKey(r);
+                const isOnDemand = isOnDemandKey(key);
+                const selected = selectedIds.includes(key);
+                const focused = !isOnDemand && focusedJobId === r.bulkJobId;
+                const isMultiBox = r.multiBox === true && !isOnDemand;
                 const isExpanded = expandedIds.has(r.bulkJobId);
                 const isLoadingChildren = childrenLoading.has(r.bulkJobId);
                 const children = childrenCache.get(r.bulkJobId) ?? [];
                 return (
-                  <Fragment key={r.bulkJobId}>
+                  <Fragment key={key}>
                     <tr
-                      onClick={() => { toggle(r.bulkJobId); setFocusedJobId(r.bulkJobId); }}
+                      onClick={() => { toggle(key); if (!isOnDemand) setFocusedJobId(r.bulkJobId); }}
                       className={`cursor-pointer border-b border-border/50 ${
                         focused ? 'bg-brand-cyan/30' : selected ? 'bg-brand-cyan/20' : 'hover:bg-surface-cream/60'
                       }`}
@@ -386,7 +411,7 @@ export default function PrintManager() {
                         <input
                           type="checkbox"
                           checked={selected}
-                          onChange={() => toggle(r.bulkJobId)}
+                          onChange={() => toggle(key)}
                           onClick={(e) => e.stopPropagation()}
                           className="accent-brand-cyan"
                         />
@@ -431,16 +456,18 @@ export default function PrintManager() {
                         );
                       })}
                       <td className="px-2 py-1">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditItemsFor({ bulkJobId: r.bulkJobId, qty: r.qty ?? 1 });
-                          }}
-                          className="text-[10px] px-2 py-0.5 rounded border border-border hover:bg-brand-cyan/10"
-                        >
-                          Edit qty
-                        </button>
+                        {!isOnDemand && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditItemsFor({ bulkJobId: r.bulkJobId, qty: r.qty ?? 1 });
+                            }}
+                            className="text-[10px] px-2 py-0.5 rounded border border-border hover:bg-brand-cyan/10"
+                          >
+                            Edit qty
+                          </button>
+                        )}
                       </td>
                     </tr>
                     {isExpanded && children.map((child) => (

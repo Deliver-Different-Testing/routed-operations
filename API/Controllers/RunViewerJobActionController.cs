@@ -42,6 +42,12 @@ public class RunViewerJobActionController(
     public Task<IActionResult> Complete([FromBody] CompleteJobRequest r) =>
         Run(() => actions.CompleteAsync(r.JobId, r.PodName, r.CompletedTime));
 
+    // #320: close a Missing job as Undeliverable. 200 { response: { updated } };
+    // updated false = the job was no longer Missing and nothing changed.
+    [HttpPost("mark-lost")]
+    public Task<IActionResult> MarkLost([FromBody] JobActionRequest r) =>
+        Run(async () => new { updated = await actions.MarkLostAsync(r.JobId) });
+
     [HttpPost("lmc")]
     public Task<IActionResult> Lmc([FromBody] LmcJobRequest r) =>
         Run(() => actions.LmcAsync(r.JobId, r.BulkJobId, r.FromCourierCode));
@@ -94,12 +100,15 @@ public class RunViewerJobActionController(
     // Shared try/catch wrapper - every action returns 200 { response:
     // "ok" } on success + 403 NpLabelScopeException / 400 on validation
     // failure. Keeps each endpoint one line.
-    private async Task<IActionResult> Run(Func<Task> fn)
+    private Task<IActionResult> Run(Func<Task> fn) =>
+        Run<object>(async () => { await fn(); return "ok"; });
+
+    // Same, for an action that answers with a value: 200 { response: value }.
+    private async Task<IActionResult> Run<T>(Func<Task<T>> fn)
     {
         try
         {
-            await fn();
-            return Ok(new { response = "ok" });
+            return Ok(new { response = await fn() });
         }
         catch (NpLabelScopeException ex)
         {

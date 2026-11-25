@@ -18,6 +18,8 @@
 // service does not additionally short-circuit for degenerate NP scope
 // because the SP already returns empty in that case. Belt-and-braces
 // added on the run/filter services matches legacy defence-in-depth.
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RoutedOperations.Core.Application.Dtos.RouteViewer;
@@ -227,13 +229,14 @@ public class RouteViewerJobService(
         int? effectiveClientId = scope.IsAdmin ? request.ClientId : null;
         string? effectiveClientIds = scope.IsAdmin ? request.ClientIds : null;
 
-        var rows = await Context.Database.SqlQueryRaw<RawPrintJobRow>(
-            @"EXEC dbo.RVW_stpPrintJobsV2
+        var sql = @"EXEC dbo.RVW_stpPrintJobsV2
                 @ClientID = @ClientID,
                 @RunDate = @RunDate,
                 @Regions = @Regions,
                 @ClientIDs = @ClientIDs,
-                @NpAgentId = @NpAgentId",
+                @NpAgentId = @NpAgentId";
+        var parameters = new List<SqlParameter>
+        {
             SpParam.Of("@ClientID", effectiveClientId),
             SpParam.Of("@RunDate", request.RunDate),
             SpParam.Of("@Regions", request.RegionIds),
@@ -241,7 +244,19 @@ public class RouteViewerJobService(
             // NP leak K1 (2026-11-13, migration 20261113140200): NP sessions
             // pass their agent so the SP keeps only their jobs; admin NULL = all.
             // B2: branch scope (BranchIds) joins here once B2 lands.
-            SpParam.Of("@NpAgentId", scope.IsAdmin ? null : scope.NpAgentId))
+            SpParam.Of("@NpAgentId", scope.IsAdmin ? null : scope.NpAgentId),
+        };
+        // #880: the "Include on-demand" toggle adds the tucJob-only jobs
+        // (BulkJobId 0). Sent only when on, as the SP's last parameter
+        // (bit = 0), so the default call is today's call unchanged.
+        if (request.IncludeOnDemand == true)
+        {
+            sql += @",
+                @IncludeOnDemand = @IncludeOnDemand";
+            parameters.Add(new SqlParameter("@IncludeOnDemand", SqlDbType.Bit) { Value = true });
+        }
+
+        var rows = await Context.Database.SqlQueryRaw<RawPrintJobRow>(sql, parameters.ToArray())
             .ToListAsync();
 
         // Branches B2: branch-limited staff see only the jobs whose family is theirs (the procedure takes no branch parameter).

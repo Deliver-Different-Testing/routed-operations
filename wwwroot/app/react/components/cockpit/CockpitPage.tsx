@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelGroupHandle } from 'react-resizable-panels';
 import { useCockpitState } from './CockpitState';
+import type { CockpitPatch } from './cockpitPatch';
 import { Button } from '../common/Button';
 import { FiltersBar } from './FiltersBar';
 import { JobsList } from './JobsList';
@@ -126,24 +127,73 @@ export function CockpitPage() {
     }
   }, [dispatch, toast]);
 
-  const loadJobsAndRuns = useCallback(async (filters: JobFilters) => {
-    dispatch({ type: 'SET_LOADING', payload: true });
-    dispatch({ type: 'SET_ERROR', payload: null });
+  // #1018 C2: only the latest load's result is applied, so a slow
+  // background reload can't overwrite a later save's patch or reload.
+  const loadSeq = useRef(0);
+  // The filters on screen now. A save that is not under the busy overlay
+  // (courier assign, lock) can finish after the operator changed the date or
+  // a filter, so reloads read this rather than the filters of the render that
+  // started the save.
+  const filtersRef = useRef(state.filters);
+  filtersRef.current = state.filters;
+
+  /**
+   * Fetches jobs and runs for the filters on screen. `background` (after a
+   * save that already patched the lists) skips the Loading overlay, so the
+   * screen stays usable while the reload catches up.
+   */
+  const loadJobsAndRuns = useCallback(async (opts: { background?: boolean } = {}) => {
+    const filters = filtersRef.current;
+    const seq = ++loadSeq.current;
+    if (!opts.background) {
+      dispatch({ type: 'SET_LOADING', payload: true });
+      dispatch({ type: 'SET_ERROR', payload: null });
+    }
     try {
       const [jobs, runs] = await Promise.all([
         jobService.getBulkJobs(filters),
         runService.getRuns(filters),
       ]);
+      if (seq !== loadSeq.current) return;
       dispatch({ type: 'SET_JOBS', payload: jobs.bulkJobs });
       dispatch({ type: 'SET_RUNS', payload: runs.response });
+      // A background reload clears an error an earlier load left behind.
+      if (opts.background) dispatch({ type: 'SET_ERROR', payload: null });
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       const msg = (e as Error).message;
       dispatch({ type: 'SET_ERROR', payload: msg });
       toast.show(msg, 'error');
     } finally {
-      dispatch({ type: 'SET_LOADING', payload: false });
+      // Only the newest load ends Loading. A superseded foreground load that
+      // answers late must not drop the overlay while the newer load is still
+      // out; and when the newest is a background reload it ends it, so the
+      // overlay can never stick.
+      if (seq === loadSeq.current) dispatch({ type: 'SET_LOADING', payload: false });
     }
   }, [dispatch, toast]);
+
+  /**
+   * #1018 C2: after a successful save, apply what changed at once and reload
+   * in the background, so the busy overlay clears when the write commits.
+   * With no patch (an older server sent no runs) it reloads as before.
+   */
+  const afterSave = useCallback(async (patch: CockpitPatch | null) => {
+    if (!patch) {
+      await loadJobsAndRuns();
+      return;
+    }
+    // The patch belongs to the filters the save started under (this render's
+    // state.filters). If the operator has moved on since, it is skipped and
+    // the filters now on screen get a foreground load: their own load may
+    // still be out, and this newer one keeps Loading up until it lands.
+    if (filtersKey(state.filters) !== filtersKey(filtersRef.current)) {
+      void loadJobsAndRuns();
+      return;
+    }
+    dispatch({ type: 'PATCH_JOBS_RUNS', payload: patch });
+    void loadJobsAndRuns({ background: true });
+  }, [state.filters, dispatch, loadJobsAndRuns]);
 
   /**
    * Runs a mutation under the busy overlay. The 2026-09-22 report found the
@@ -165,7 +215,7 @@ export function CockpitPage() {
   }, [loadLookups, state.filters.date]);
 
   useEffect(() => {
-    void loadJobsAndRuns(state.filters);
+    void loadJobsAndRuns();
     // Reload when any of the filter dimensions change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.filters.date, state.filters.regionIds.join(','), state.filters.speeds.join(','), state.filters.clientIds.join(','), state.filters.ourRefs.join(',')]);
@@ -273,7 +323,7 @@ export function CockpitPage() {
       const { result, message } = res.response;
       if (result === 'Success') {
         toast.show('EH/HD jobs synced', 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(message ?? 'EH/HD sync failed', 'error');
       }
@@ -288,7 +338,7 @@ export function CockpitPage() {
       const res = await jobService.updateDetail(jobId, field, value);
       if (res.response === 'Success') {
         toast.show(`Job ${field} updated`, 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(`Update failed: ${res.response}`, 'error');
       }
@@ -341,7 +391,8 @@ export function CockpitPage() {
       toast.show(`${isVoid ? 'Voided' : 'Un-voided'} ${ids.length} job(s)`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
       setVoidDialog(null);
-      await loadJobsAndRuns(state.filters);
+      // Un-voided jobs come back with the background reload.
+      await afterSave(isVoid ? { removeJobIds: ids } : {});
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
@@ -353,7 +404,7 @@ export function CockpitPage() {
       toast.show(`Moved ${state.selectedJobIds.length} job(s) to ${newDate}`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
       setBulkMoveOpen(false);
-      await loadJobsAndRuns(state.filters);
+      await loadJobsAndRuns();
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
@@ -384,7 +435,7 @@ export function CockpitPage() {
       const res = await runService.insertOrUpdate(body);
       if (res.response.result === 'Success') {
         toast.show(`Run "${name}" created`, 'success');
-        await loadJobsAndRuns(state.filters);
+        await afterSave(res.response.runs ? { upsertRuns: res.response.runs } : null);
       } else {
         toast.show(res.response.message ?? 'Create run failed', 'error');
       }
@@ -401,7 +452,7 @@ export function CockpitPage() {
       const res = await runService.update(runId, body);
       if (res.response.result === 'Success') {
         toast.show('Run renamed', 'success');
-        await loadJobsAndRuns(state.filters);
+        await afterSave({ renameRun: { runId, name } });
       } else {
         toast.show(res.response.message ?? 'Rename failed', 'error');
       }
@@ -416,7 +467,7 @@ export function CockpitPage() {
       if (res.response.result === 'Success') {
         toast.show('Run deleted', 'success');
         if (state.selectedRunId === runId) dispatch({ type: 'SELECT_RUN', payload: null });
-        await loadJobsAndRuns(state.filters);
+        await afterSave({ removeRunIds: [runId] });
       } else {
         toast.show(res.response.message ?? 'Delete failed', 'error');
       }
@@ -446,7 +497,7 @@ export function CockpitPage() {
             ? opts?.preassign ? `Preassigned ${courier.displayName} (Status 18)` : `Assigned ${courier.displayName}`
             : 'Courier removed',
           'success');
-        await loadJobsAndRuns(state.filters);
+        await afterSave(res.response.runs ? { upsertRuns: res.response.runs } : null);
       } else {
         toast.show(res.response.message ?? 'Assign failed', 'error');
       }
@@ -463,7 +514,7 @@ export function CockpitPage() {
       const res = await runService.update(runId, body);
       if (res.response.result === 'Success') {
         toast.show(locked ? 'Run locked' : 'Run unlocked', 'success');
-        await loadJobsAndRuns(state.filters);
+        await afterSave(res.response.runs ? { upsertRuns: res.response.runs } : null);
       } else {
         toast.show(res.response.message ?? 'Lock/unlock failed', 'error');
       }
@@ -477,7 +528,9 @@ export function CockpitPage() {
    * Replaces N parallel POST /assign calls, which could deadlock and leave
    * jobs half-moved with a success toast (2026-09-22 report). Pass
    * `deleteRunId` to merge: the source run is only deleted if every job
-   * moved. Always reloads so the screen reflects what the server committed.
+   * moved. On success the lists are patched from the runs the server returns
+   * and reloaded in the background (#1018 C2); on failure they reload under
+   * the overlay as before, so the screen shows what the server has.
    * Resolves true only on real success.
    */
   const assignJobsToRun = useCallback(async (
@@ -495,18 +548,21 @@ export function CockpitPage() {
       const res = await runService.assignJobs(runId, jobs, opts.deleteRunId ?? null);
       if (res.response.result !== 'Success') {
         toast.show(res.response.message ?? 'Assign failed - no jobs were moved', 'error');
+        await loadJobsAndRuns();
         return false;
       }
       if (!opts.silent) toast.show(`Assigned ${expanded.length} job(s)`, 'success');
       dispatch({ type: 'CLEAR_MULTISELECT' });
+      await afterSave(res.response.runs
+        ? { upsertRuns: res.response.runs, removeRunIds: opts.deleteRunId ? [opts.deleteRunId] : [] }
+        : null);
       return true;
     } catch (e) {
       toast.show(`Assign failed - no jobs were moved. ${(e as Error).message}`, 'error');
+      await loadJobsAndRuns();
       return false;
-    } finally {
-      await loadJobsAndRuns(state.filters);
     }
-  }), [state.jobs, state.filters, dispatch, loadJobsAndRuns, toast, withBusy]);
+  }), [state.jobs, state.filters, dispatch, loadJobsAndRuns, afterSave, toast, withBusy]);
 
   const handleAssignSelectedJobs = (runId: number) => assignJobsToRun(runId, state.selectedJobIds);
   const handleDropJobs = (runId: number, jobIds: number[]) => assignJobsToRun(runId, jobIds);
@@ -531,7 +587,7 @@ export function CockpitPage() {
       const res = await runService.removeJob(jobId);
       if (res.response.result === 'Success') {
         toast.show('Job removed from run', 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(res.response.message ?? 'Remove failed', 'error');
       }
@@ -546,7 +602,7 @@ export function CockpitPage() {
       const res = await runService.setJobStartEnd(run.id, job.bulkJobId, { isStart: !job.isStart });
       if (res.response.result === 'Success') {
         toast.show(job.isStart ? 'Start point cleared' : 'Start point set', 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(res.response.message ?? 'Toggle failed', 'error');
       }
@@ -558,7 +614,7 @@ export function CockpitPage() {
       const res = await runService.setJobStartEnd(run.id, job.bulkJobId, { isEnd: !job.isEnd });
       if (res.response.result === 'Success') {
         toast.show(job.isEnd ? 'End point cleared' : 'End point set', 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(res.response.message ?? 'Toggle failed', 'error');
       }
@@ -589,7 +645,7 @@ export function CockpitPage() {
       const upsert = await runService.insertOrUpdate(body);
       if (upsert.response.result === 'Success') {
         toast.show(`Reordered ${orderedJobs.length} stop(s) on "${run.name}"`, 'success');
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       } else {
         toast.show(upsert.response.message ?? 'Reorder failed', 'error');
       }
@@ -685,7 +741,7 @@ export function CockpitPage() {
         const upsert = await runService.insertOrUpdate(body);
         if (upsert.response.result === 'Success') {
           toast.show(`Routed + locked "${run.name}" (${stops.length} stops)`, 'success');
-          await loadJobsAndRuns(state.filters);
+          await loadJobsAndRuns();
         } else {
           toast.show(upsert.response.message ?? 'Route + lock failed', 'error');
         }
@@ -707,7 +763,7 @@ export function CockpitPage() {
           if (upsert.response.result === 'Success') {
             toast.show(`Applied new order (${stops.length} stops)`, 'success');
             setOptimizePreview(null);
-            await loadJobsAndRuns(state.filters);
+            await loadJobsAndRuns();
           } else {
             toast.show(upsert.response.message ?? 'Optimise persist failed', 'error');
           }
@@ -743,7 +799,7 @@ export function CockpitPage() {
       } catch { /* individual failure, keep going */ }
     }
     toast.show(`Staged ${ok} of ${locked.length} run(s) as prebook`, ok === locked.length ? 'success' : 'warning');
-    await loadJobsAndRuns(state.filters);
+    await loadJobsAndRuns();
   };
 
   const handleDispatch = async () => {
@@ -793,7 +849,7 @@ export function CockpitPage() {
       } else {
         toast.show(`${failures} of ${res.response.length} assignments failed`, 'warning');
       }
-      await loadJobsAndRuns(state.filters);
+      await loadJobsAndRuns();
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
@@ -840,7 +896,7 @@ export function CockpitPage() {
       }
       dispatch({ type: 'CLEAR_MULTISELECT' });
       setSendSelectedModal(null);
-      await loadJobsAndRuns(state.filters);
+      await loadJobsAndRuns();
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
@@ -1185,7 +1241,7 @@ export function CockpitPage() {
     toast.show(`Built ${createdRuns} run(s) with ${assignedJobs} job(s)`, 'success');
     dispatch({ type: 'CLEAR_MULTISELECT' });
     setBuildConfigModal({ open: false });
-    await loadJobsAndRuns(state.filters);
+    await loadJobsAndRuns();
     // Auto-select the first newly-built run so the operator immediately
     // sees its jobs in Run Builder and coloured/sequenced pins on the map,
     // instead of having to manually click the row after Build closes.
@@ -1291,7 +1347,7 @@ export function CockpitPage() {
       } catch { /* keep going */ }
     }
     toast.show(`${lock ? 'Locked' : 'Unlocked'} ${ok} of ${targets.length} run(s)`, ok === targets.length ? 'success' : 'warning');
-    await loadJobsAndRuns(state.filters);
+    await loadJobsAndRuns();
   };
 
   const handleBulkDispatchSelected = async () => {
@@ -1310,7 +1366,7 @@ export function CockpitPage() {
       if (failures === 0) toast.show(`Dispatched ${res.response.length} assignment(s)`, 'success');
       else toast.show(`${failures} of ${res.response.length} failed`, 'warning');
       dispatch({ type: 'CLEAR_RUN_MULTISELECT' });
-      await loadJobsAndRuns(state.filters);
+      await loadJobsAndRuns();
     } catch (e) {
       toast.show((e as Error).message, 'error');
     }
@@ -1339,7 +1395,7 @@ export function CockpitPage() {
     }
     toast.show(`Deleted ${ok} of ${targetIds.length} run(s)`, ok === targetIds.length ? 'success' : 'warning');
     dispatch({ type: 'CLEAR_RUN_MULTISELECT' });
-    await loadJobsAndRuns(state.filters);
+    await loadJobsAndRuns();
   };
 
   // ---- context-menu factories ----------------------------------------------
@@ -1436,14 +1492,15 @@ export function CockpitPage() {
         const created = await runService.createWithJobs(body);
         if (created.response.result !== 'Success') {
           toast.show(created.response.message ?? 'Create run failed - no jobs were moved', 'error');
+          await loadJobsAndRuns();
           return;
         }
         dispatch({ type: 'CLEAR_MULTISELECT' });
         toast.show(`Created run "${groupLabel}" with ${ids.length} job(s)`, 'success');
+        await afterSave(created.response.runs ? { upsertRuns: created.response.runs } : null);
       } catch (e) {
         toast.show(`Create run failed - no jobs were moved. ${(e as Error).message}`, 'error');
-      } finally {
-        await loadJobsAndRuns(state.filters);
+        await loadJobsAndRuns();
       }
     });
   };
@@ -1628,7 +1685,7 @@ export function CockpitPage() {
         clients={clients}
         ourRefs={ourRefs}
         onChange={(patch) => dispatch({ type: 'SET_FILTER', payload: patch })}
-        onRefresh={() => loadJobsAndRuns(state.filters)}
+        onRefresh={() => loadJobsAndRuns()}
         onSyncHd={handleSyncHd}
       />
 
@@ -1948,7 +2005,7 @@ export function CockpitPage() {
             const res = await jobService.updateGps(jobId, address, lat, lng, postCode);
             if (res.response === 'Success') {
               toast.show('GPS updated', 'success');
-              await loadJobsAndRuns(state.filters);
+              await loadJobsAndRuns();
             } else {
               toast.show('GPS update failed', 'error');
             }
@@ -1969,6 +2026,11 @@ export function CockpitPage() {
       )}
     </div>
   );
+}
+
+/** The filter dimensions that trigger a reload, as one comparable string. */
+function filtersKey(f: JobFilters): string {
+  return [f.date, f.regionIds.join(','), f.speeds.join(','), f.clientIds.join(','), f.ourRefs.join(',')].join('|');
 }
 
 /**
