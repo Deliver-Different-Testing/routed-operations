@@ -47,9 +47,10 @@ export interface DepotBucket {
   // imported.
   noService?: boolean;
   // Source row index -> postcode (NZ) or zip (US) to send instead of what
-  // buildJobs produced. NZ: set only for rows the raw postcode left unmatched
-  // but the geocoder's suggested postcode (fixedPostCodes) placed in this
-  // depot, so the job is booked against the postcode it was grouped by.
+  // buildJobs produced. NZ: set for rows the geocoder's postcode placed in
+  // this depot (accepted, or untouched with a sheet postcode that has no
+  // depot; see effectiveNzPostCode), so the job is booked against the
+  // postcode it was grouped by.
   // US (#332): set for rows whose own zip matched this depot while fixedZips
   // holds a different value for that zip, so the sheet zip is sent unchanged.
   postCodeOverrides?: Record<number, string>;
@@ -105,12 +106,14 @@ export interface WizardState {
   fixedSuburbIds: Record<string, number>;
   fixedAddresses: Record<number, { lat: number; lng: number }>;
   // NZ geocoder postcode the operator ACCEPTED in FixAddressesModal, keyed
-  // on rowIndex. Depot grouping falls back to it when the raw postcode
-  // matches no depot. Only DECIDE_SUGGESTION (accept) writes it (#332).
+  // on rowIndex. Depot grouping uses it even over a sheet postcode that
+  // matches a depot. Only DECIDE_SUGGESTION (accept) writes it (#332).
   fixedPostCodes: Record<number, string>;
   // NZ geocoder suggestions that differ from the sheet (#332): 'pc:<row>'
-  // for a postcode, 'sub:<row>' for a suburb. A suggestion is never applied
-  // until the operator accepts it.
+  // for a postcode, 'sub:<row>' for a suburb. A suburb suggestion is applied
+  // only once accepted. A postcode suggestion left pending is used for depot
+  // grouping only when the sheet postcode matches no depot (see
+  // effectiveNzPostCode); Keep sheet stops that.
   geocodeSuggestions: Record<string, GeocodeSuggestion>;
   // Fixed FROM (pickup) coordinates keyed on rowIndex. On-demand batches
   // need accurate pickup coords for immediate dispatch; the FixAddresses
@@ -190,6 +193,33 @@ export interface GeocodeSuggestion {
   // fixedZips key the accepted suburb is written under (suburb only).
   zipKey?: string;
   decision: 'pending' | 'accept' | 'keep';
+}
+
+/**
+ * NZ (#332): the postcode depot grouping tries instead of the sheet postcode,
+ * or null to keep the sheet one. `sheetHasDepot` is whether the sheet postcode
+ * matches a depot; `accepted` is fixedPostCodes[row]; `suggestion` is
+ * geocodeSuggestions['pc:<row>'].
+ * - Accept: the accepted postcode, even when the sheet postcode has a depot.
+ * - Untouched (pending): the map postcode, only when the sheet postcode has no
+ *   depot, as before round 2 (Steve 2026-11-26).
+ * - Keep sheet: never.
+ */
+export function effectiveNzPostCode(
+  sheetHasDepot: boolean,
+  accepted: string | undefined,
+  suggestion: GeocodeSuggestion | undefined
+): string | null {
+  if (accepted) return accepted;
+  if (suggestion?.kind !== 'postCode') return null;
+  if (suggestion.decision === 'pending' && !sheetHasDepot) return suggestion.map;
+  return null;
+}
+
+function sameMapping(a: Record<string, string>, b: Record<string, string>): boolean {
+  const ka = Object.keys(a).filter((k) => a[k]);
+  const kb = Object.keys(b).filter((k) => b[k]);
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
 }
 
 /** `tenantTimeZone` is the auth claim (Windows or IANA name); null = browser zone. */
@@ -325,12 +355,24 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
       return { ...state, file: action.file };
     case 'SET_IMPORT_TYPE':
       return { ...state, importType: action.importType };
+    // #332: geocodeSuggestions and fixedPostCodes are keyed on row index and a
+    // pending postcode suggestion now moves a row, so a new file or a changed
+    // mapping drops them; Fix Addresses re-geocodes and adds them again.
     case 'SET_PARSED':
-      return { ...state, parsed: action.parsed };
+      return { ...state, parsed: action.parsed, geocodeSuggestions: {}, fixedPostCodes: {} };
     case 'SET_MAPPING':
-      return { ...state, mapping: action.mapping };
+      return sameMapping(state.mapping, action.mapping)
+        ? { ...state, mapping: action.mapping }
+        : { ...state, mapping: action.mapping, geocodeSuggestions: {}, fixedPostCodes: {} };
     case 'PATCH_MAPPING':
-      return { ...state, mapping: { ...state.mapping, [action.field]: action.column } };
+      return state.mapping[action.field] === action.column
+        ? state
+        : {
+            ...state,
+            mapping: { ...state.mapping, [action.field]: action.column },
+            geocodeSuggestions: {},
+            fixedPostCodes: {},
+          };
     case 'SET_OPTIONS':
       return { ...state, options: { ...state.options, ...action.options } };
     case 'SET_FIXED_ZIP': {
@@ -352,8 +394,12 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     case 'ADD_GEOCODE_SUGGESTION': {
       const prev = state.geocodeSuggestions[action.key];
       if (prev && prev.sheet === action.suggestion.sheet && prev.map === action.suggestion.map) return state;
+      // A replaced postcode suggestion takes its earlier Accept with it (#332).
+      const fixedPostCodes = { ...state.fixedPostCodes };
+      if (prev && action.suggestion.kind === 'postCode') delete fixedPostCodes[action.suggestion.rowIndex];
       return {
         ...state,
+        fixedPostCodes,
         geocodeSuggestions: { ...state.geocodeSuggestions, [action.key]: action.suggestion },
       };
     }
