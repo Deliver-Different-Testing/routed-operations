@@ -757,6 +757,14 @@ public class RecurringRouteService(
                 "Exactly one of RosterDate or DayOfWeek must be set.");
         }
 
+        // Route roster DayOfWeek is 0-6 with Sunday = 0, the convention every
+        // SQL reader uses. ISO 7 would be stored but never match.
+        if (req.DayOfWeek > 6)
+        {
+            throw new InvalidOperationException(
+                "DayOfWeek must be 0-6 (0 = Sunday).");
+        }
+
         // Guard: the controller returns NotFound when this method returns null,
         // so surface unknown-route as null rather than orphaning a roster row.
         if (!await Context.Routes.AnyAsync(r => r.RouteId == routeId)) return null;

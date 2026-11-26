@@ -339,6 +339,51 @@ public class RecurringRouteServiceTests
                 .GetAwaiter().GetResult());
     }
 
+    // Route roster DayOfWeek is 0-6 with Sunday = 0 (uspPrebookSet,
+    // WS_stpJob_Insert, fnRouteCourierForDate all read it that way). An ISO 7
+    // for Sunday is stored fine but never matches any reader, so the Sunday
+    // assignment silently does nothing. Reject it at the API instead.
+    [Theory]
+    [InlineData((byte)7)]
+    [InlineData((byte)255)]
+    public async Task AddRosterAsync_DayOfWeekOutsideZeroToSixThrows(byte dow)
+    {
+        var svc = NewSvc(out var seed);
+        seed.Routes.Add(new RouteEntity
+        {
+            RouteId = 1, Name = "R", Area = "", Active = true,
+            CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        });
+        await seed.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.AddRosterAsync(1, new UpsertRouteRosterRequest(
+                TargetType: 1, TargetId: 5, RosterDate: null, DayOfWeek: dow)));
+        Assert.Contains("0-6", ex.Message);
+        Assert.Empty(seed.DispatchRouteRosters);
+    }
+
+    [Theory]
+    [InlineData((byte)0)]
+    [InlineData((byte)6)]
+    public async Task AddRosterAsync_DayOfWeekZeroToSixIsStored(byte dow)
+    {
+        var svc = NewSvc(out var seed);
+        seed.Routes.Add(new RouteEntity
+        {
+            RouteId = 1, Name = "R", Area = "", Active = true,
+            CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        });
+        seed.TucCouriers.Add(new TucCourier { UccrId = 5, Code = "5", UccrName = "X", Active = true });
+        await seed.SaveChangesAsync();
+
+        var row = await svc.AddRosterAsync(1, new UpsertRouteRosterRequest(
+            TargetType: 1, TargetId: 5, RosterDate: null, DayOfWeek: dow));
+
+        Assert.NotNull(row);
+        Assert.Equal((byte?)dow, row!.DayOfWeek);
+    }
+
     [Fact]
     public async Task AddRosterAsync_DeactivatesCollidingActiveDateRow()
     {

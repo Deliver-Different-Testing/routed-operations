@@ -197,7 +197,9 @@ public class RouteViewerRunService(
         public int ReturnsTotal { get; set; }
     }
 
-    private static BulkRunDto MapBulkRun(RawBulkRunRow r, bool isMissing) => new()
+    /// <summary>Maps one RVW_stpBulkRuns_2 row onto the DTO. Public static
+    /// rather than internal because this repo avoids InternalsVisibleTo.</summary>
+    public static BulkRunDto MapBulkRun(RawBulkRunRow r, bool isMissing) => new()
     {
         Id = int.TryParse(r.ID, out var i) ? i : 0,
         Name = r.Name,
@@ -222,6 +224,8 @@ public class RouteViewerRunService(
         CourierOfflineMins = r.CourierOfflineMins,
         AgentName = r.AgentName,
         IsNpAgent = r.IsNpAgent,
+        OriginLatitude = r.OriginLatitude,
+        OriginLongitude = r.OriginLongitude,
     };
 
     // Row shape matching what RVW_stpBulkRuns_2 + RVW_stpGetMissingJobRuns
@@ -229,7 +233,7 @@ public class RouteViewerRunService(
     // HashKey / IsActive / CourierPercentageFormatted from the master
     // list Section 16.6 are NOT emitted by the current SP; they land
     // when a future migration adds them SP-side.
-    private class RawBulkRunRow
+    public class RawBulkRunRow
     {
         public string? velocity { get; set; }
         public string? Status { get; set; }
@@ -257,6 +261,13 @@ public class RouteViewerRunService(
         public bool IsNpAgent { get; set; }
         public bool HasReturns { get; set; }
         public int ReturnsTotal { get; set; }
+        // M3 (Cheetah): Routes.OriginLatitude / OriginLongitude on synthetic
+        // route rows (negative ID), NULL on real tblBulkRun rows. Needs the
+        // dbmigrationsv2 20261127120300_RVW_BulkRunsRouteOrigin, which appends both columns to every branch
+        // of RVW_stpBulkRuns_2; without it EF throws "required column was
+        // not present". DEPLOY ORDER: migration first, then this build.
+        public decimal? OriginLatitude { get; set; }
+        public decimal? OriginLongitude { get; set; }
     }
 
     /// <summary>
