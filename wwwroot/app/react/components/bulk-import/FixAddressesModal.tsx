@@ -138,9 +138,10 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
               corrected: g.suggestedZipCode,
             });
           }
-          // NZ (#332): the geocoder's postcode / suburb is a SUGGESTION. It
-          // is listed below as "sheet says X, map says Y" and only reaches
-          // depot grouping or the import once the operator accepts it.
+          // NZ (#332): the geocoder's postcode / suburb is a SUGGESTION,
+          // listed below as "sheet says X, map says Y". A suburb is used only
+          // once accepted; an untouched postcode is used only when the sheet
+          // postcode matches no depot (wizardState effectiveNzPostCode).
           if (!isUs) {
             const rawPostCode = (toAddresses[i]?.postCode ?? '').trim();
             if (g.suggestedPostCode && digitsOnly(g.suggestedPostCode) !== digitsOnly(rawPostCode)) {
@@ -288,7 +289,8 @@ export function FixAddressesModal({ open, state, dispatch, onBack, onNext, onCan
           <div className="mb-3 border border-warning/40 bg-warning/5 rounded p-2 space-y-1">
             <p className="text-xs text-text-secondary">
               The map suggests a different value for {suggestions.length} cell
-              {suggestions.length === 1 ? '' : 's'}. Nothing changes unless you accept it.
+              {suggestions.length === 1 ? '' : 's'}. A sheet postcode with no depot uses the
+              map's when the map's has one, unless you keep it; anything else changes only if you accept it.
             </p>
             {suggestions.map(([key, sg]) => (
               <div

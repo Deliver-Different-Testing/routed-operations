@@ -6,9 +6,9 @@ import { mockEverything } from './fixtures/npSession';
 // Addresses used to store HERE's suggestedPostCode for every row whose sheet
 // postcode differed, with no prompt, and Select Depots then grouped (and
 // booked) the row under the suggested postcode. Now the operator sees
-// "sheet says X, map says Y" and chooses: only an accepted value reaches
-// depot grouping, and a kept sheet postcode that matches no depot lands in
-// Unmatched with that reason.
+// "sheet says X, map says Y" and chooses: an accepted value wins, a kept sheet
+// postcode that matches no depot lands in Unmatched with that reason, and an
+// untouched one is used only when the sheet postcode matches no depot (round 4).
 //
 // SCOPE. Client-side only, every /api call intercepted (same harness as
 // bulk-import-b2.spec.ts).
@@ -139,17 +139,39 @@ test.describe('New Import: geocoder postcode is a suggestion (#332 NZ)', () => {
     expect(captured.body.jobs.map((j: any) => j.toPostCode)).toEqual(['1062', '1062']);
   });
 
-  // Behaviour only: the operator walks straight past Fix Addresses. Before the
-  // fix the suggestion was applied silently and row 3 joined Central.
-  test('an undecided suggestion is not applied', async ({ page }) => {
-    await mockWizard(page, [nzRow(1), nzRow(2, { 'To Post Code': '0614' })]);
+  // #332 round 4 (Steve 26 Nov): the operator walks straight past Fix
+  // Addresses. Round 2 sent the untouched row to Unmatched until someone
+  // clicked Accept; it now falls back to the map postcode, as before round 2,
+  // because its sheet postcode 0614 matches no depot. It is booked with 1062.
+  test('an untouched suggestion is used when the sheet postcode matches no depot', async ({ page }) => {
+    const captured = await mockWizard(page, [nzRow(1), nzRow(2, { 'To Post Code': '0614' })]);
     await toFixAddresses(page);
-    await expect(page.getByText(/Addresses seems OK|map says/).first()).toBeVisible();
+    await expect(page.getByTestId('geocode-suggestion-pc-1')).toContainText('sheet says 0614, map says 1062');
     await next(page, 'Select Depots');
+    await expect(page.getByText('Central ( 0 of 2 jobs imported )')).toBeVisible();
+    await expect(page.getByText(/Unmatched/)).toHaveCount(0);
+
+    await next(page, /Central/);
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect.poll(() => captured.body).not.toBeNull();
+    expect(captured.body.jobs.map((j: any) => j.toPostCode)).toEqual(['1062', '1062']);
+  });
+
+  // An untouched suggestion changes nothing when the sheet postcode is fine.
+  test('an untouched suggestion does not move a row whose sheet postcode matches a depot', async ({ page }) => {
+    await mockWizard(
+      page,
+      [nzRow(1), nzRow(2, { 'To Post Code': '1010' })],
+      [
+        { id: 1, name: 'Central', postcodes: ['1062'] },
+        { id: 2, name: 'Auckland CBD', postcodes: ['1010'] },
+      ],
+    );
+    await toFixAddresses(page);
+    await expect(page.getByTestId('geocode-suggestion-pc-1')).toContainText('sheet says 1010, map says 1062');
+    await next(page, 'Select Depots');
+    await expect(page.getByText('Auckland CBD ( 0 of 1 jobs imported )')).toBeVisible();
     await expect(page.getByText('Central ( 0 of 1 jobs imported )')).toBeVisible();
-    await expect(page.getByText('Unmatched ( 0 of 1 jobs imported )')).toBeVisible();
-    await page.getByRole('button', { name: 'View / export' }).click();
-    await expect(page.getByText('Map says 1062: accept it in Fix Addresses to use it')).toBeVisible();
   });
 
   // Browser test 23 Nov: the sheet postcode 1062 already matched a depot, so

@@ -1,4 +1,6 @@
+using System.Data;
 using System.Data.Common;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using RoutedOperations.Core.Application.Dtos.Run;
@@ -165,5 +167,112 @@ public class RunAssignConcurrencySqlServerTests
 
         Assert.True(bWaited, "B read job " + job1 + " while A still held it");
         await AssertNothingWrittenAsync(conn, job1);
+    }
+
+    /// <summary>
+    /// #1018 rework (Steve 26 Nov): drives a GENUINE deadlock. Session X takes
+    /// the job's tblBulkJob row then asks for its tblBulkJobRun row (the order
+    /// EF SaveChanges and several legacy procs take, see RunAssignLocks), with
+    /// DEADLOCK_PRIORITY HIGH so SQL Server picks the assign as the victim.
+    /// The assign must come back on its own second attempt and succeed. X
+    /// rolls back; the assign's commit is suppressed, so nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task An_assign_chosen_as_the_deadlock_victim_is_retried_once_and_succeeds()
+    {
+        var conn = Conn();
+        var ct = TestContext.Current.CancellationToken;
+        await using var x = new SqlConnection(conn);
+        await x.OpenAsync(ct);
+        var server = (string)(await Cmd(x, null, "SELECT @@SERVERNAME").ExecuteScalarAsync(ct))!;
+        if (!server.EndsWith(@"\MSSQL", StringComparison.OrdinalIgnoreCase))
+            Assert.Fail($"Refusing to run against {server}: local \\MSSQL only.");
+        var (job, fromRun, toRun) = await PickLinkedAsync(x, ct);
+
+        var probe = new DeadlockProbe();
+        var opts = new DbContextOptionsBuilder<DespatchContext>().UseSqlServer(conn)
+            .AddInterceptors(probe, new HoldThenRollback(Task.CompletedTask)).Options;
+        var svc = new RunService(CockpitTestHarness.Factory(opts), RoutedOperations.Tests.Branches.BranchTestDoubles.Unrestricted());
+
+        await using var xtx = (SqlTransaction)await x.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        await Cmd(x, xtx, "SET DEADLOCK_PRIORITY HIGH").ExecuteNonQueryAsync(ct);
+        await Cmd(x, xtx, "SELECT COUNT(*) FROM dbo.tblBulkJob WITH (UPDLOCK, ROWLOCK) WHERE BulkJobID = @id", job).ExecuteScalarAsync(ct);
+
+        // The assign locks the link row, then queues on X's job row.
+        var aTask = svc.AssignJobsToRunAsync(toRun, new List<AssignJobItem> { new() { JobId = job, FromRunId = fromRun } });
+        await probe.JobLockRequested.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        await Task.Delay(500, ct);
+
+        // X now asks for the link row the assign holds: a cycle. X waits until
+        // the deadlock monitor kills the assign's first attempt. SELECT * so X
+        // takes the clustered key, as a writer would: a COUNT(*) is covered by
+        // UX_tblBulkJobRun_BulkJobID and never meets the assign's keys
+        // (index_BulkJobID + clustered lookup on local US).
+        await Cmd(x, xtx, "SELECT * FROM dbo.tblBulkJobRun WITH (UPDLOCK, ROWLOCK, FORCESEEK) WHERE BulkJobID = @id", job)
+            .ExecuteScalarAsync(ct);
+        await xtx.RollbackAsync(ct);
+
+        var (result, message) = await aTask.WaitAsync(TimeSpan.FromSeconds(60), ct);
+
+        var seen = $"job {job} run {fromRun} -> {toRun}: failed [{string.Join(",", probe.FailedWith)}], attempts {probe.Transactions}, result {result} {message}";
+        Assert.True(probe.FailedWith.Contains(1205), seen);
+        Assert.Equal(RunService.MaxAssignDeadlockAttempts, probe.Transactions);
+        Assert.Equal(("Success", "1"), (result, message));
+        await using var db = Plain(conn);
+        var links = await db.TblBulkJobRuns.AsNoTracking().Where(l => l.BulkJobId == job).Select(l => l.RunId).ToListAsync(ct);
+        Assert.Equal([fromRun], links);
+        TestContext.Current.SendDiagnosticMessage(
+            $"{server}/{x.Database}: job {job} run {fromRun} -> {toRun}: attempt 1 failed {string.Join(",", probe.FailedWith)}, attempts {probe.Transactions}, result {result}; rolled back, link still on {fromRun}");
+    }
+
+    /// <summary>Counts the service's transactions, records failed commands'
+    /// error numbers, and signals when attempt 1 asks for the job-row locks.</summary>
+    private sealed class DeadlockProbe : DbCommandInterceptor, IDbTransactionInterceptor
+    {
+        public TaskCompletionSource JobLockRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public List<int> FailedWith { get; } = [];
+        public int Transactions { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("dbo.tblBulkJob AS t", StringComparison.Ordinal)) JobLockRequested.TrySetResult();
+            return ValueTask.FromResult(result);
+        }
+
+        public override Task CommandFailedAsync(DbCommand command, CommandErrorEventData eventData, CancellationToken cancellationToken = default)
+        {
+            if (eventData.Exception is SqlException sql) FailedWith.Add(sql.Number);
+            return Task.CompletedTask;
+        }
+
+        public ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData,
+            DbTransaction result, CancellationToken cancellationToken = default)
+        {
+            Transactions++;
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private static SqlCommand Cmd(SqlConnection c, SqlTransaction? tx, string sql, int? id = null)
+    {
+        var cmd = new SqlCommand(sql, c, tx) { CommandTimeout = 60 };
+        if (id.HasValue) cmd.Parameters.Add("@id", SqlDbType.Int).Value = id.Value;
+        return cmd;
+    }
+
+    /// <summary>A job with exactly one link row on an existing run, and another run to move it to.</summary>
+    private static async Task<(int Job, int FromRun, int ToRun)> PickLinkedAsync(SqlConnection c, CancellationToken ct)
+    {
+        await using var r = await Cmd(c, null, @"
+            SELECT TOP 1 l.BulkJobID, l.RunID,
+                   (SELECT TOP 1 r2.ID FROM dbo.tblBulkRun r2 WHERE r2.ID <> l.RunID ORDER BY r2.ID DESC)
+            FROM dbo.tblBulkJobRun l
+            JOIN dbo.tblBulkJob j ON j.BulkJobID = l.BulkJobID
+            JOIN dbo.tblBulkRun r ON r.ID = l.RunID
+            WHERE (SELECT COUNT(*) FROM dbo.tblBulkJobRun l2 WHERE l2.BulkJobID = l.BulkJobID) = 1
+            ORDER BY l.BulkJobID DESC").ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct) || await r.IsDBNullAsync(2, ct)) Assert.Skip("No linked job and second run in this database.");
+        return (r.GetInt32(0), r.GetInt32(1), r.GetInt32(2));
     }
 }

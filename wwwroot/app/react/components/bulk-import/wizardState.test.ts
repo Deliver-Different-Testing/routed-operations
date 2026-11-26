@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   autoMatchColumn,
+  effectiveNzPostCode,
   includedDepotBuckets,
   initialWizardState,
   nextPendingDepotIndex,
@@ -678,5 +679,78 @@ describe('importError', () => {
     expect(s.importError).toContain('already exist');
     s = wizardReducer(s, { type: 'SET_IMPORT_ERROR', message: null });
     expect(s.importError).toBeNull();
+  });
+});
+
+// #332 round 4 (Steve 26 Nov): which postcode NZ depot grouping tries instead
+// of the sheet's. Untouched (pending) falls back to the map postcode only when
+// the sheet postcode matches no depot; Keep sheet never does; Accept always does.
+describe('effectiveNzPostCode', () => {
+  const sg = (decision: 'pending' | 'accept' | 'keep') =>
+    ({ kind: 'postCode' as const, rowIndex: 0, sheet: '0614', map: '1062', decision });
+
+  it('pending + sheet postcode has no depot -> map postcode', () => {
+    expect(effectiveNzPostCode(false, undefined, sg('pending'))).toBe('1062');
+  });
+  it('pending + sheet postcode has a depot -> sheet stands', () => {
+    expect(effectiveNzPostCode(true, undefined, sg('pending'))).toBeNull();
+  });
+  it('keep -> sheet stands, depot or not', () => {
+    expect(effectiveNzPostCode(false, undefined, sg('keep'))).toBeNull();
+    expect(effectiveNzPostCode(true, undefined, sg('keep'))).toBeNull();
+  });
+  it('accept -> accepted postcode, even when the sheet has a depot', () => {
+    expect(effectiveNzPostCode(true, '1062', sg('accept'))).toBe('1062');
+    expect(effectiveNzPostCode(false, '1062', sg('accept'))).toBe('1062');
+  });
+  it('no suggestion, or a suburb suggestion -> sheet stands', () => {
+    expect(effectiveNzPostCode(false, undefined, undefined)).toBeNull();
+    expect(effectiveNzPostCode(false, undefined, { ...sg('pending'), kind: 'suburb' })).toBeNull();
+  });
+});
+
+// #332 round 4 review: row-keyed suggestions must not survive a new file or a
+// changed mapping, because a pending postcode suggestion now moves a row.
+describe('wizardReducer - stale #332 suggestions', () => {
+  const withSuggestion = (): WizardState => ({
+    ...initialWizardState(),
+    mapping: { toPostCode: 'Postcode' },
+    geocodeSuggestions: {
+      'pc:0': { kind: 'postCode', rowIndex: 0, sheet: '0614', map: '1062', decision: 'pending' },
+    },
+    fixedPostCodes: { 0: '1062' },
+  });
+
+  it('SET_PARSED drops suggestions and accepted postcodes', () => {
+    const next = wizardReducer(withSuggestion(), { type: 'SET_PARSED', parsed: { headers: [], rows: [] } });
+    expect(next.geocodeSuggestions).toEqual({});
+    expect(next.fixedPostCodes).toEqual({});
+  });
+
+  it('SET_MAPPING with the same mapping keeps them, a changed one drops them', () => {
+    const same = wizardReducer(withSuggestion(), { type: 'SET_MAPPING', mapping: { toPostCode: 'Postcode' } });
+    expect(Object.keys(same.geocodeSuggestions)).toEqual(['pc:0']);
+    expect(same.fixedPostCodes).toEqual({ 0: '1062' });
+    const changed = wizardReducer(withSuggestion(), { type: 'SET_MAPPING', mapping: { toPostCode: 'PC' } });
+    expect(changed.geocodeSuggestions).toEqual({});
+    expect(changed.fixedPostCodes).toEqual({});
+  });
+
+  it('PATCH_MAPPING to the same column keeps them, a new column drops them', () => {
+    const same = wizardReducer(withSuggestion(), { type: 'PATCH_MAPPING', field: 'toPostCode', column: 'Postcode' });
+    expect(Object.keys(same.geocodeSuggestions)).toEqual(['pc:0']);
+    const changed = wizardReducer(withSuggestion(), { type: 'PATCH_MAPPING', field: 'toPostCode', column: 'PC' });
+    expect(changed.geocodeSuggestions).toEqual({});
+    expect(changed.fixedPostCodes).toEqual({});
+  });
+
+  it('a replaced postcode suggestion drops the earlier Accept', () => {
+    const next = wizardReducer(withSuggestion(), {
+      type: 'ADD_GEOCODE_SUGGESTION',
+      key: 'pc:0',
+      suggestion: { kind: 'postCode', rowIndex: 0, sheet: '0614', map: '1063', decision: 'pending' },
+    });
+    expect(next.geocodeSuggestions['pc:0'].map).toBe('1063');
+    expect(next.fixedPostCodes).toEqual({});
   });
 });
