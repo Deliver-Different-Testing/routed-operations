@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../../test/server';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import { SelectRegionsModal } from './SelectRegionsModal';
-import { initialWizardState, type WizardState } from './wizardState';
+import { initialWizardState, type DepotBucket, type WizardState } from './wizardState';
 
 const env = { messageId: 'x', success: true, messages: [] };
 
@@ -429,5 +429,105 @@ describe('SelectRegionsModal - US tenant path', () => {
         })
       );
     });
+  });
+});
+
+// #332 round 4 (Steve 26 Nov): an untouched postcode suggestion falls back to
+// the map postcode when the sheet postcode matches no depot, as before round 2.
+// Only an explicit Keep sheet sends such a row to Unmatched. A pending
+// suggestion never overrides a sheet postcode that already matches a depot.
+describe('SelectRegionsModal - #332 untouched suggestion (NZ)', () => {
+  const depots = [
+    { id: 1, name: 'Central', postcodes: ['1062'] },
+    { id: 2, name: 'Auckland CBD', postcodes: ['1010'] },
+  ];
+  const pc = (rowIndex: number, sheet: string, map: string, decision: 'pending' | 'accept' | 'keep') => ({
+    [`pc:${rowIndex}`]: { kind: 'postCode' as const, rowIndex, sheet, map, decision },
+  });
+
+  async function seeded(s: WizardState) {
+    server.use(http.get('/api/address/depots/postcodes', () => HttpResponse.json({ ...env, depots })));
+    const dispatch = vi.fn();
+    renderWithProviders(
+      <SelectRegionsModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    // Before the depot lookup arrives every row sits in Unmatched; wait for a
+    // seed that has a real depot bucket or an Unmatched built from the lookup.
+    await waitFor(() => expect(screen.queryByText('Loading depots...')).not.toBeInTheDocument());
+    const calls = dispatch.mock.calls.map((c) => c[0]).filter((a) => a.type === 'SEED_DEPOTS');
+    return calls[calls.length - 1].depots as DepotBucket[];
+  }
+
+  it('pending + sheet postcode with no depot: grouped under the map depot and booked with the map postcode', async () => {
+    const s = nzState([{ ToPostCode: '0614' }]);
+    s.geocodeSuggestions = pc(0, '0614', '1062', 'pending');
+    const buckets = await seeded(s);
+    expect(buckets).toEqual([
+      expect.objectContaining({ depotId: 1, jobIndexes: [0], postCodeOverrides: { 0: '1062' } }),
+    ]);
+  });
+
+  it('pending + sheet postcode that matches a depot: stays on the sheet depot with no override', async () => {
+    const s = nzState([{ ToPostCode: '1010' }]);
+    s.geocodeSuggestions = pc(0, '1010', '1062', 'pending');
+    const buckets = await seeded(s);
+    expect(buckets).toEqual([expect.objectContaining({ depotId: 2, jobIndexes: [0] })]);
+    expect(buckets[0].postCodeOverrides).toBeUndefined();
+  });
+
+  it('keep + sheet postcode with no depot: Unmatched, with the kept reason', async () => {
+    const s = nzState([{ ToPostCode: '0614' }]);
+    s.geocodeSuggestions = pc(0, '0614', '1062', 'keep');
+    const buckets = await seeded(s);
+    expect(buckets).toEqual([expect.objectContaining({ depotId: 0, jobIndexes: [0] })]);
+    fireEvent.click(screen.getByRole('button', { name: 'View / export' }));
+    expect(screen.getByText('Sheet postcode 0614 kept (map says 1062); not covered by any depot')).toBeInTheDocument();
+  });
+
+  it('pending where neither the sheet nor the map postcode has a depot: Unmatched, and the reason says both', async () => {
+    const s = nzState([{ ToPostCode: '0614' }]);
+    s.geocodeSuggestions = pc(0, '0614', '9998', 'pending');
+    server.use(http.get('/api/address/depots/postcodes', () => HttpResponse.json({ ...env, depots })));
+    renderWithProviders(
+      <SelectRegionsModal open state={s} dispatch={vi.fn()} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByText(/Unmatched/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'View / export' }));
+    expect(
+      screen.getByText('Sheet postcode 0614 and map postcode 9998 are not covered by any depot')
+    ).toBeInTheDocument();
+  });
+
+  it('accept wins over a sheet postcode that matches a depot', async () => {
+    const s = nzState([{ ToPostCode: '1010' }]);
+    s.geocodeSuggestions = pc(0, '1010', '1062', 'accept');
+    s.fixedPostCodes = { 0: '1062' };
+    const buckets = await seeded(s);
+    expect(buckets).toEqual([
+      expect.objectContaining({ depotId: 1, jobIndexes: [0], postCodeOverrides: { 0: '1062' } }),
+    ]);
+  });
+
+  it('US: a pending postcode suggestion is ignored (zip grouping unchanged)', async () => {
+    server.use(
+      http.get('/api/address/locations/zipcodes', () =>
+        HttpResponse.json({ ...env, locations: [{ id: 1, name: 'Boston', zipCodes: ['02110'] }] })
+      ),
+      http.get('/api/address/zip-polygons', () => HttpResponse.json({ ...env, zones: [] }))
+    );
+    const dispatch = vi.fn();
+    const s = seed({
+      parsed: { headers: ['ToZipCode'], rows: [{ ToZipCode: '99999' }] },
+      mapping: { toZipCode: 'ToZipCode' },
+      importType: 'onDemand',
+      client: { id: 1, code: 'X', name: 'X', isUsTenant: true },
+    });
+    s.geocodeSuggestions = pc(0, '99999', '02110', 'pending');
+    renderWithProviders(
+      <SelectRegionsModal open state={s} dispatch={dispatch} onBack={vi.fn()} onNext={vi.fn()} onCancel={vi.fn()} />
+    );
+    await waitFor(() => expect(screen.getByText(/Unmatched/)).toBeInTheDocument());
+    const seeds = dispatch.mock.calls.map((c) => c[0]).filter((a) => a.type === 'SEED_DEPOTS');
+    expect(seeds[seeds.length - 1].depots).toEqual([expect.objectContaining({ depotId: 0, jobIndexes: [0] })]);
   });
 });
