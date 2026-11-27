@@ -2,7 +2,7 @@
 //   - PriceAndSplitJobsAndReturnKmRatedJobs (main entry)
 //   - SplitJobAndApplyAmount / InsertLinehaulJobsAndApplyAmount
 //   - InsertLinehaulJobs / InsertPickupJobs / InsertDeliveryJobs
-//   - GetLinehaulAmount / CalculatePickupBookingDateTime / CalculateLinehaulBookingDateTime
+//   - GetLinehaulLegWeights / CalculatePickupBookingDateTime / CalculateLinehaulBookingDateTime
 //   - GetZoneZipsForCountry / GetLocationForZip / GetLocationIdFromZipCode /
 //     GetFromLatLngFromZipCode / GetStateMapping
 //   - GetPickupRate / BookPickup / GetBulkHomeDeliveryPickupJob
@@ -17,6 +17,7 @@ using Newtonsoft.Json;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Address;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Bulk;
 using RoutedOperations.Core.Application.Dtos.BulkImport.Common;
+using RoutedOperations.Core.Application.Services.Pricing;
 using RoutedOperations.Core.Application.Utilities;
 using RoutedOperations.Core.Domain;
 using RoutedOperations.Core.Domain.Despatch;
@@ -737,37 +738,7 @@ public partial class BulkImportServiceV2
 
             if (specialAddtionalAmount == null)
             {
-                var clientAvailableSpeed = Context.TblClientAvailableSpeeds
-                                        .FirstOrDefault(s => jobs.Select(j => j.ClientId).Distinct().Contains(s.ClientId) && jobs.Select(j => j.Speed).Distinct().Contains(s.SpeedId) && s.Active == true && s.UseSchedules == true);
-                decimal? clientAvailableSpeedAddonPercentage = clientAvailableSpeed?.AddonPercentage;
-
-                if (clientAvailableSpeedAddonPercentage != null)
-                {
-                    addonPercentage = clientAvailableSpeedAddonPercentage.Value;
-                }
-                else
-                {
-                    var clients = Context.TucClients
-                  .Where(c => c.UcclId == job.ClientId)
-                  .Select(c => new
-                  {
-                      c.UcclId,
-                      AddonPercentage = c.AddonPercentage > 0 && c.AddonPercentage <= 1 ? c.AddonPercentage : null
-                  })
-                  .ToList();
-
-                    // SplitJobAndApplyAmount is a sync method; use the sync EF
-                    // API instead of blocking on .Result which risks deadlock
-                    // under sync-context schedulers and starves the thread pool.
-                    var speed = Context.TucJobTypes.FirstOrDefault(s => s.UcjtId == job.Speed);
-                    decimal? speedAddonPercentage = speed?.AddonPercentage;
-
-                    // Client row may not exist (soft-deleted between validate
-                    // + price, or a race on tenant contact-perm). Fall back
-                    // to speed default -> env/appsettings -> constant.
-                    var clientAddon = clients.FirstOrDefault()?.AddonPercentage;
-                    addonPercentage = clientAddon ?? (speedAddonPercentage ?? GetDefaultAddonPercentage());
-                }
+                addonPercentage = ResolveAddOnPercentageLegacyBulkSplit(jobs, job);
             }
         }
 
@@ -809,23 +780,45 @@ public partial class BulkImportServiceV2
         }
     }
 
-    // Default multi-box add-on percentage when the client has no per-account
-    // override AND the speed has no default. Legacy sources use 0.8 in every
-    // environment (envfile / appsettings). Env var stays a first-class
-    // override so ops can tune per-tenant without a redeploy; the constant
-    // is the safety net so a missing config never crashes /import.
-    private const decimal DefaultAddonPercentageFallback = 0.8M;
-
-    private static decimal GetDefaultAddonPercentage()
+    /// <summary>
+    /// Additional item percentage for the multi-item split in SplitJobAndApplyAmount,
+    /// which can set the parent job.Amount (zoneRates null: km-priced jobs and the
+    /// zone path with no linehaul rate). Kept exactly as develop (eace92a) to avoid
+    /// changing non-linehaul parent amounts under UC #1115: client + speed row of ANY
+    /// client x ANY speed in the batch (no "above 0" filter), else the client's own
+    /// when 0 &lt; x &lt;= 1, else the speed's, else the default. The batch-wide lookup is
+    /// a known pre-existing issue raised separately. Do not route this through
+    /// LinehaulLegPricing.ResolveAddOnPercentage (the SQL rule, linehaul legs only).
+    /// </summary>
+    public decimal ResolveAddOnPercentageLegacyBulkSplit(List<TblBulkJob> jobs, TblBulkJob job)
     {
-        var raw = Environment.GetEnvironmentVariable("DefaultAddonPercentage");
-        if (!string.IsNullOrWhiteSpace(raw)
-            && decimal.TryParse(raw, System.Globalization.NumberStyles.Number,
-                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
-        {
-            return parsed;
-        }
-        return DefaultAddonPercentageFallback;
+        var clientAvailableSpeed = Context.TblClientAvailableSpeeds
+                                .FirstOrDefault(s => jobs.Select(j => j.ClientId).Distinct().Contains(s.ClientId) && jobs.Select(j => j.Speed).Distinct().Contains(s.SpeedId) && s.Active == true && s.UseSchedules == true);
+        decimal? clientAvailableSpeedAddonPercentage = clientAvailableSpeed?.AddonPercentage;
+
+        if (clientAvailableSpeedAddonPercentage != null)
+            return clientAvailableSpeedAddonPercentage.Value;
+
+        var clients = Context.TucClients
+            .Where(c => c.UcclId == job.ClientId)
+            .Select(c => new
+            {
+                c.UcclId,
+                AddonPercentage = c.AddonPercentage > 0 && c.AddonPercentage <= 1 ? c.AddonPercentage : null
+            })
+            .ToList();
+
+        // SplitJobAndApplyAmount is a sync method; use the sync EF
+        // API instead of blocking on .Result which risks deadlock
+        // under sync-context schedulers and starves the thread pool.
+        var speed = Context.TucJobTypes.FirstOrDefault(s => s.UcjtId == job.Speed);
+        decimal? speedAddonPercentage = speed?.AddonPercentage;
+
+        // Client row may not exist (soft-deleted between validate
+        // + price, or a race on tenant contact-perm). Fall back
+        // to speed default -> env/appsettings -> constant.
+        var clientAddon = clients.FirstOrDefault()?.AddonPercentage;
+        return clientAddon ?? (speedAddonPercentage ?? LinehaulLegPricing.DefaultAddOnPercentage());
     }
 
     private void InsertLinehaulJobsAndApplyAmount(List<TblBulkJob> jobs, TblBulkJob job, ZoneLinehaulRate zoneRates, List<TblBulkJob> splitJobs, TblBulkRunSchedule schedule = null, List<PendingBulkJobItem> pendingJobItems = null)
@@ -905,17 +898,15 @@ public partial class BulkImportServiceV2
     {
         var linehaulDetails = Context.TblBulkScheduleLinehauls.Where(l => l.BulkRunScheduleId == schedule.BulkRunScheduleId && l.Active.HasValue && l.Active == true).ToList();
 
-        var legSingleAmounts = linehaulDetails
-            .Select(l => GetLinehaulAmount(l, zoneRates.ZoneBaseAmount, client.UcclId, job.BookDate, job.Speed, job.Size))
-            .ToList();
-        var totalSingleLH = legSingleAmounts.Sum();
-        var linehaulSumAmount = zoneRates.LinehaulSumAmount ?? totalSingleLH;
+        // UC #1115 M3: split weights = what each leg charges for this booking.
+        var mfv = GetLinehaulMfv(job.ClientId, job.BookDate, job.Speed, job.Size);
+        var legWeights = GetLinehaulLegWeights(linehaulDetails, job, schedule, zoneRates.ZoneBaseAmount, mfv);
+        var linehaulSumAmount = zoneRates.LinehaulSumAmount ?? legWeights.Sum();
+        var legSplit = SplitLinehaulSum(linehaulSumAmount, legWeights);
 
         var jobNumberStartCount = 1;
         foreach (var linehaul in linehaulDetails)
         {
-            var linehaulAmount = legSingleAmounts[linehaulDetails.IndexOf(linehaul)];
-
             var linehaulFrom = Context.TblBulkRegions.Where(r => r.BulkRegionId == linehaul.FromDepotId && r.Active == true)
                                 .Select(r => new LinehaulAddressDto()
                                 {
@@ -980,9 +971,7 @@ public partial class BulkImportServiceV2
                 linehaulBookingTime = linehaulBookingDateTime.Date.Add(linehaulRun.StartTime.Value.ToTimeSpan());
             }
 
-            var summedAmount = totalSingleLH > 0
-                ? Math.Round(linehaulSumAmount * (linehaulAmount / totalSingleLH), 2)
-                : Math.Round(linehaulSumAmount / linehaulDetails.Count, 2);
+            var summedAmount = legSplit[linehaulDetails.IndexOf(linehaul)];
 
             jobs.Insert(jobs.IndexOf(job) + 1, new TblBulkJob()
             {
@@ -1071,38 +1060,61 @@ public partial class BulkImportServiceV2
         }
     }
 
-    private decimal GetLinehaulAmount(TblBulkScheduleLinehaul linehaul, decimal? baseAmount, int clientId, DateTime? bookDate, int jobTypeId, int? vehicleSize = null)
+    /// <summary>
+    /// UC #1115 M3. Split weight per leg = what that leg charges for this booking:
+    /// run rate else leg (J2), Amount else zone % (D2), fuel, PPD, "Apply client
+    /// discount", and the additional item factor for job.Qty when "Discount
+    /// additional items" is ticked. Rules live in LinehaulLegPricing, shared with
+    /// the schedule builder's price preview. Only the split uses this; the parent
+    /// and the linehaul total stay from fncT_BulkZoneRate_WithLinehaul.
+    /// Not modelled: the per-item dimension RATE (the same factor on every leg, so
+    /// it only shifts weights between legs whose ticks differ).
+    /// </summary>
+    public List<decimal> GetLinehaulLegWeights(IReadOnlyList<TblBulkScheduleLinehaul> legs, TblBulkJob job, TblBulkRunSchedule schedule, decimal? zoneBase, decimal mfv)
+    {
+        // Client may have been soft-deleted between validation and pricing:
+        // treat it as zero PPD / zero discount so the batch still lands.
+        var client = Context.TucClients.SingleOrDefault(c => c.UcclId == job.ClientId);
+        decimal ppdRate = client?.Ppdrate ?? 0m;
+        decimal ppdDivisor = ppdRate >= 0 ? (1 - ppdRate) : 1;
+        int qty = job.Qty ?? 1;
+        decimal addOnPercentage = qty > 1
+            ? LinehaulLegPricing.ResolveAddOnPercentage(Context, job.ClientId, job.Speed)
+            : 1M;
+
+        return legs.Select(linehaul =>
+        {
+            var runRate = LinehaulLegPricing.FindRunRate(Context, linehaul.LinehaulRunId, schedule?.ScheduleId, job.ClientId, job.Speed);
+            var figures = LinehaulLegPricing.ResolveFigures(linehaul.Amount, linehaul.AmountPercentage, runRate);
+            var raw = LinehaulLegPricing.RawLegPrice(figures, zoneBase ?? 0M) ?? 0M;
+            var single = LinehaulLegPricing.SingleItemPrice(raw, mfv, ppdDivisor,
+                LinehaulLegPricing.DiscountDivisor(linehaul.ApplyDiscount, client?.Discount));
+            return LinehaulLegPricing.LegTotal(single, qty,
+                LinehaulLegPricing.AdditionalItemFactor(linehaul.ApplyAddOnPercentage, addOnPercentage));
+        }).ToList();
+    }
+
+    /// <summary>UC #1115 M3: the fnc's LinehaulSumAmount split pro rata over the leg weights.</summary>
+    public static List<decimal> SplitLinehaulSum(decimal linehaulSumAmount, IReadOnlyList<decimal> weights)
+    {
+        var total = weights.Sum();
+        return weights.Select(w => total > 0
+            ? Math.Round(linehaulSumAmount * (w / total), 2)
+            : Math.Round(linehaulSumAmount / weights.Count, 2)).ToList();
+    }
+
+    /// <summary>
+    /// Fuel / MFV factor for the linehaul legs (UTL_fncMFV_FAF_Rates), read once per
+    /// booking. Was inside the per-leg GetLinehaulAmount before UC #1115 M3.
+    /// </summary>
+    private decimal GetLinehaulMfv(int clientId, DateTime? bookDate, int jobTypeId, int? vehicleSize = null)
     {
         // UTL_fncMFV_FAF_Rates returns a single scalar wrapped in a Rates row.
         // If the function returns no row (missing rate config for this client
         // + speed + date), treat MFV as 0 rather than NRE.
-        var mfv = Context.Rates
+        return Context.Rates
             .FromSqlInterpolated($"SELECT dbo.UTL_fncMFV_FAF_Rates({clientId}, CAST({bookDate ?? DateTime.Now} AS DATE), {jobTypeId}, {vehicleSize}) as rate")
             .FirstOrDefault()?.rate ?? 0m;
-
-        // Client may have been soft-deleted between validation and pricing.
-        // SingleOrDefault returns null cleanly instead of throwing; the
-        // callsite treats a missing client as zero PPD / zero discount so
-        // the batch still lands with the base linehaul math.
-        var client = Context.TucClients.SingleOrDefault(c => c.UcclId == clientId);
-        decimal ppdRate = client?.Ppdrate ?? 0m;
-        decimal clientDiscount = client?.Discount ?? 0m;
-        decimal linehaulStaticAmount = ((linehaul?.Amount) ?? 0) > 0 ? linehaul.Amount.Value : 0;
-        decimal linehaulAmountPercentage = ((linehaul?.AmountPercentage) ?? 0) > 0 ? linehaul.AmountPercentage.Value : 0;
-
-        var linehaulAmount = Math.Round(
-            Math.Round(
-                (decimal)((Math.Round(
-                    (linehaulStaticAmount > 0 ? linehaulStaticAmount :
-                        linehaulAmountPercentage > 0 ? baseAmount.Value * linehaulAmountPercentage :
-                    0),
-                    2) * (1 + mfv) /
-                (ppdRate >= 0 ? (1 - ppdRate) : 1)) /
-            (1 + (linehaul.ApplyDiscount.HasValue && linehaul.ApplyDiscount.Value ? clientDiscount : 0))),
-            4),
-        2);
-
-        return linehaulAmount;
     }
 
     private void InsertPickupJobs(List<TblBulkJob> jobs, TblBulkJob job, ZoneLinehaulRate zoneRates, List<TblBulkJob> splitJobs, TblBulkRunSchedule schedule, TucClient client)

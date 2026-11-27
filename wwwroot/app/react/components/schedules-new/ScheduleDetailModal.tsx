@@ -19,6 +19,7 @@ import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygon
 import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
 import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE, INACTIVE_DEPOT_OVERRIDE_MESSAGE } from '../../lib/depotOptions';
+import { firstLinehaulPricingError } from '../../lib/linehaulLegRules';
 // Kevin 2026-09-25: `<ClientOverrideEditor>` popup is retired as an
 // entry point (both nested-row click on the Schedules list and the
 // Clients tab "Edit / Configure override" buttons now re-open this
@@ -1047,6 +1048,10 @@ export function ScheduleDetailModal({
     const enabledDays = formDays.filter((d) => d.enabled);
     if (enabledDays.length === 0) { setSaveError('Enable at least one operating day.'); return; }
     if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(formLegs))) { setSaveError(INACTIVE_DEPOT_MESSAGE); return; }
+    // UC #1115: only legs that will be sent. Untouched legs go as null and the
+    // server leaves them alone, so an old stored value cannot block this save.
+    const pricingError = linehaulsDirty ? firstLinehaulPricingError(derived.linehauls) : null;
+    if (pricingError) { setSaveError(pricingError); return; }
     // Spec 6.1 rule 3, operator-facing half. The backend refuses this too;
     // catching it here names the fix in the operator's own terms instead of
     // surfacing a server error after a round trip. legacyClientId counts as
@@ -1611,6 +1616,7 @@ export function ScheduleDetailModal({
           {tab === 'route' && (
             <RouteTab
               data={data}
+              isDefault={formIsDefault}
               legs={formLegs}
               onLegsChange={setFormLegs}
               lookups={lookups}
@@ -2130,6 +2136,8 @@ function formatSinceDate(iso: string): string {
 
 interface RouteTabProps {
   data: ScheduleGroup;
+  /** UC #1115 F2: the form's IsDefault (all clients can book). */
+  isDefault: boolean;
   legs: Leg[];
   onLegsChange: (legs: Leg[]) => void;
   lookups: {
@@ -2231,7 +2239,7 @@ function DayZonesDifferBanner({
   );
 }
 
-function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = false, overrideMode = null, applyZonesToAllDays = false, onApplyZonesToAllDaysChange }: RouteTabProps) {
+function RouteTab({ data, isDefault, legs, onLegsChange, lookups, advanced, readOnly = false, overrideMode = null, applyZonesToAllDays = false, onApplyZonesToAllDaysChange }: RouteTabProps) {
   const [advOpen, setAdvOpen] = useState(false);
   return (
     <div className="space-y-4">
@@ -2270,6 +2278,11 @@ function RouteTab({ data, legs, onLegsChange, lookups, advanced, readOnly = fals
           onPickupBoxDiscountChange={advanced.onPickupBoxDiscountChange}
           dropOffLocationId={advanced.dropOffLocationId}
           onDropOffLocationIdChange={advanced.onDropOffLocationIdChange}
+          pricing={data ? {
+            // UC #1115 F2: any client can book an all-clients schedule, so check the generic rows only.
+            clientIds: isDefault ? [] : data.clientIds.length > 0 ? data.clientIds : (data.legacyClientId != null ? [data.legacyClientId] : []),
+            scheduleId: data.scheduleId,
+          } : undefined}
         />
       </div>
 
