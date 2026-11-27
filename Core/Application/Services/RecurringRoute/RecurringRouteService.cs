@@ -93,8 +93,9 @@ public class RecurringRouteService(
             if (routeIds.Count == 0) return new Dictionary<int, int>();
             await using var ctx = await contextFactory.CreateDbContextAsync();
             return await ctx.TucJobBookings.AsNoTracking()
+                // No UcbkDone term: Done = 1 only means this cycle's job has been created.
                 .Where(b => b.RouteId != null && routeIds.Contains(b.RouteId.Value)
-                            && b.UcbkActive == true && b.UcbkDone != true)
+                            && b.UcbkActive == true)
                 .GroupBy(b => b.RouteId!.Value)
                 .Select(g => new { RouteId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.RouteId, x => x.Count);
@@ -258,7 +259,8 @@ public class RecurringRouteService(
     public async Task<List<RouteBookingDto>> GetBookingsAsync(int routeId)
     {
         return await Context.TucJobBookings.AsNoTracking()
-            .Where(b => b.RouteId == routeId && b.UcbkActive == true && b.UcbkDone != true)
+            // No UcbkDone term: Done = 1 only means this cycle's job has been created.
+            .Where(b => b.RouteId == routeId && b.UcbkActive == true)
             .OrderBy(b => b.UcbkNextDue ?? b.UcbkFirstDue ?? b.UcbkTime)
             .Take(200)
             .Select(b => new RouteBookingDto(
@@ -755,6 +757,14 @@ public class RecurringRouteService(
         {
             throw new InvalidOperationException(
                 "Exactly one of RosterDate or DayOfWeek must be set.");
+        }
+
+        // Route roster DayOfWeek is 0-6 with Sunday = 0, the convention every
+        // SQL reader uses. ISO 7 would be stored but never match.
+        if (req.DayOfWeek > 6)
+        {
+            throw new InvalidOperationException(
+                "DayOfWeek must be 0-6 (0 = Sunday).");
         }
 
         // Guard: the controller returns NotFound when this method returns null,

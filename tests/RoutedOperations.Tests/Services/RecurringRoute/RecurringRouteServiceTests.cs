@@ -339,6 +339,51 @@ public class RecurringRouteServiceTests
                 .GetAwaiter().GetResult());
     }
 
+    // Route roster DayOfWeek is 0-6 with Sunday = 0 (uspPrebookSet,
+    // WS_stpJob_Insert, fnRouteCourierForDate all read it that way). An ISO 7
+    // for Sunday is stored fine but never matches any reader, so the Sunday
+    // assignment silently does nothing. Reject it at the API instead.
+    [Theory]
+    [InlineData((byte)7)]
+    [InlineData((byte)255)]
+    public async Task AddRosterAsync_DayOfWeekOutsideZeroToSixThrows(byte dow)
+    {
+        var svc = NewSvc(out var seed);
+        seed.Routes.Add(new RouteEntity
+        {
+            RouteId = 1, Name = "R", Area = "", Active = true,
+            CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        });
+        await seed.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.AddRosterAsync(1, new UpsertRouteRosterRequest(
+                TargetType: 1, TargetId: 5, RosterDate: null, DayOfWeek: dow)));
+        Assert.Contains("0-6", ex.Message);
+        Assert.Empty(seed.DispatchRouteRosters);
+    }
+
+    [Theory]
+    [InlineData((byte)0)]
+    [InlineData((byte)6)]
+    public async Task AddRosterAsync_DayOfWeekZeroToSixIsStored(byte dow)
+    {
+        var svc = NewSvc(out var seed);
+        seed.Routes.Add(new RouteEntity
+        {
+            RouteId = 1, Name = "R", Area = "", Active = true,
+            CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        });
+        seed.TucCouriers.Add(new TucCourier { UccrId = 5, Code = "5", UccrName = "X", Active = true });
+        await seed.SaveChangesAsync();
+
+        var row = await svc.AddRosterAsync(1, new UpsertRouteRosterRequest(
+            TargetType: 1, TargetId: 5, RosterDate: null, DayOfWeek: dow));
+
+        Assert.NotNull(row);
+        Assert.Equal((byte?)dow, row!.DayOfWeek);
+    }
+
     [Fact]
     public async Task AddRosterAsync_DeactivatesCollidingActiveDateRow()
     {
@@ -642,5 +687,70 @@ public class RecurringRouteServiceTests
 
         Assert.Single(rows);
         Assert.Equal(1, rows[0].Id);
+    }
+
+    // ucbkDone = 1 means "this cycle's job has already been created", not
+    // "booking finished". A healthy recurring booking sits at Done = 1 most of
+    // the time, so it must still be listed against its route.
+    private static TucJobBooking RouteBooking(int id, int routeId, bool? active, bool? done) => new()
+    {
+        UcbkId = id, UcbkClientId = 1,
+        UcbkActive = active, UcbkDone = done,
+        UcbkTime = new DateTime(2026, 8, 13),
+        RouteId = routeId,
+        UcbkDays = "Mon",
+    };
+
+    [Fact]
+    public async Task GetBookingsAsync_IncludesBookingWhoseCycleIsDone()
+    {
+        var svc = NewSvc(out var seed);
+        seed.TucClients.Add(new TucClient { UcclId = 1 });
+        seed.TucJobBookings.Add(RouteBooking(1, 42, active: true, done: true));
+        await seed.SaveChangesAsync();
+
+        var rows = await svc.GetBookingsAsync(42);
+
+        Assert.Equal(1, Assert.Single(rows).Id);
+    }
+
+    [Fact]
+    public async Task GetBookingsAsync_ExcludesInactiveBooking()
+    {
+        var svc = NewSvc(out var seed);
+        seed.TucClients.Add(new TucClient { UcclId = 1 });
+        seed.TucJobBookings.AddRange(
+            RouteBooking(1, 42, active: true, done: false),
+            RouteBooking(2, 42, active: false, done: false));
+        await seed.SaveChangesAsync();
+
+        var rows = await svc.GetBookingsAsync(42);
+
+        Assert.Equal(1, Assert.Single(rows).Id);
+    }
+
+    [Fact]
+    public async Task GetAllAsync_BookingCountIncludesDoneCycleAndExcludesInactive()
+    {
+        var svc = NewSvc(out var seed);
+        seed.TucClients.Add(new TucClient { UcclId = 1 });
+        seed.Routes.Add(new RouteEntity
+        {
+            RouteId = 42, Name = "R", Area = "",
+            Active = true, CreatedAt = DateTime.UtcNow, CreatedBy = "sys",
+        });
+        seed.TucJobBookings.AddRange(
+            RouteBooking(1, 42, active: true, done: true),
+            RouteBooking(2, 42, active: true, done: false),
+            RouteBooking(3, 42, active: false, done: false),
+            // NULL Active is not live (ucbkActive = 1 only): excluded.
+            RouteBooking(4, 42, active: null, done: false),
+            // NULL Done is no longer filtered on: an active booking counts.
+            RouteBooking(5, 42, active: true, done: null));
+        await seed.SaveChangesAsync();
+
+        var row = Assert.Single(await svc.GetAllAsync());
+
+        Assert.Equal(3, row.BookingCount);
     }
 }

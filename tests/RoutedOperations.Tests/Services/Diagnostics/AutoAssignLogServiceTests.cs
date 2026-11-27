@@ -224,6 +224,27 @@ public class AutoAssignLogServiceTests
     }
 
     [Fact]
+    public async Task GetLogAsync_BookingKind6RendersOneOffRoutedSpeed()
+    {
+        // Kind 6 is written by DD_stpJob_InsertExcelerator for a one-off job
+        // on a plain Routed speed. Without a name it shows as the opaque
+        // "Kind 6" fallback, which operators cannot read in the log.
+        var svc = NewSvc(out var seed);
+        var now = DateTime.UtcNow;
+        seed.RouteAutoAssignLogs.Add(new RouteAutoAssignLog
+        {
+            LogId = 1, CreatedAtUtc = now.AddMinutes(-1),
+            BookingKind = 6,
+            Outcome = "X", Side = "Pickup", TriggerSource = "src",
+        });
+        await seed.SaveChangesAsync();
+
+        var page = await svc.GetLogAsync(new RouteAutoAssignLogQuery());
+
+        Assert.Equal("OneOffRoutedSpeed", page.Entries[0].BookingKindName);
+    }
+
+    [Fact]
     public async Task GetLogAsync_NullBookingKindGetsUnknown()
     {
         var svc = NewSvc(out var seed);

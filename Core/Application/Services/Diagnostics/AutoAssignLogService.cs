@@ -28,6 +28,7 @@ public class AutoAssignLogService(IDbContextFactory<DynamicDespatchDbContext> co
         [3] = "NonRecurringSchedule",
         [4] = "LiveJob",
         [5] = "OneOffSchedule",
+        [6] = "OneOffRoutedSpeed",
     };
 
     public async Task<RouteAutoAssignLogPageDto> GetLogAsync(RouteAutoAssignLogQuery query)

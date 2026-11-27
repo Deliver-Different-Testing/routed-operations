@@ -142,10 +142,13 @@ public class RouteViewerSplitRunTests
         t.Columns.Add("IsNpAgent", typeof(bool));
         t.Columns.Add("HasReturns", typeof(bool));
         t.Columns.Add("ReturnsTotal", typeof(int));
+        // M3: real tblBulkRun rows emit NULL route origin.
+        t.Columns.Add("OriginLatitude", typeof(decimal));
+        t.Columns.Add("OriginLongitude", typeof(decimal));
         t.Rows.Add("green", "LP", "41", "RUN41", "A", DBNull.Value, 7, "Driver Seven", "C7", DBNull.Value, 0,
-            null, null, 2, 1, 0, 0, null, null, null, DBNull.Value, null, false, false, 0);
+            null, null, 2, 1, 0, 0, null, null, null, DBNull.Value, null, false, false, 0, DBNull.Value, DBNull.Value);
         t.Rows.Add("green", "READY", "41", "RUN41", "A", DBNull.Value, DBNull.Value, null, null, DBNull.Value, 0,
-            null, null, 1, 1, 0, 0, null, null, null, DBNull.Value, null, false, false, 0);
+            null, null, 1, 1, 0, 0, null, null, null, DBNull.Value, null, false, false, 0, DBNull.Value, DBNull.Value);
         return t;
     }
 

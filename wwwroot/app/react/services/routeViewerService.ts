@@ -66,6 +66,11 @@ export interface BulkRun {
   courierOfflineMins: string | null;
   agentName: string | null;
   isNpAgent: boolean;
+  /** Routes.OriginLatitude / OriginLongitude on synthetic route runs;
+   *  null on real bulk runs. Centres the map on an empty run (M3).
+   *  Optional so older fixtures and a pre-migration payload type-check. */
+  originLatitude?: number | null;
+  originLongitude?: number | null;
 }
 
 export interface BulkJob {
