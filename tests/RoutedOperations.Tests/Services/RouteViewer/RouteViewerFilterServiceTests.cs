@@ -4,6 +4,9 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
+using RoutedOperations.Core.Application.Dtos.RouteViewer;
 using RoutedOperations.Core.Application.Services.Branches;
 using RoutedOperations.Core.Application.Services.Np;
 using RoutedOperations.Core.Application.Services.RouteViewer;
@@ -88,6 +91,38 @@ public class RouteViewerFilterServiceTests
     {
         var (sut, _) = NewSvc();
         await Assert.ThrowsAnyAsync<Exception>(() => sut.GetRegionListAsync(DateTime.Today));
+    }
+
+    // The "Active regions only" box hides a region only when the server
+    // says it is inactive, so the SP's Active flag must reach the DTO for
+    // both values. If it were dropped, Cheetah's inactive Phoenix / Las
+    // Vegas depots would show as active again.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ToRegionLookup_CarriesActiveFlag(bool active)
+    {
+        var dto = RouteViewerFilterService.ToRegionLookup(30, "Phoenix", active);
+        Assert.Equal(30, dto.id);
+        Assert.Equal("Phoenix", dto.label);
+        Assert.Equal(active, dto.active);
+    }
+
+    // The region endpoint emits `active`; the other lookup endpoints must
+    // keep their {id, label} shape, so the flag lives on a subclass only.
+    [Fact]
+    public void RegionLookupJson_HasActive_PlainLookupJsonDoesNot()
+    {
+        var settings = new JsonSerializerSettings
+        {
+            ContractResolver = new CamelCasePropertyNamesContractResolver(),
+        };
+        var region = JsonConvert.SerializeObject(
+            RouteViewerFilterService.ToRegionLookup(31, "Las Vegas", false), settings);
+        var plain = JsonConvert.SerializeObject(
+            new LookupDto { id = 1, label = "X" }, settings);
+        Assert.Contains("\"active\":false", region);
+        Assert.DoesNotContain("active", plain);
     }
 
     [Fact]
