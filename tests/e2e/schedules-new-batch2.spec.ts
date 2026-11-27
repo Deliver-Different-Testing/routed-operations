@@ -14,7 +14,8 @@ import { test, expect, type Route, type Page } from '@playwright/test';
 //      the /api/recurring-routes list, filtered by scheduleId. Prior
 //      behaviour was a stub italic note "the join lands in a follow-up".
 //   4. New Schedule modal Linehaul leg exposes Speed override, Amount,
-//      Add-on %, Insert-to-bulk, Apply-discount, Apply-add-on-%.
+//      % of delivery zone rate, Insert-to-bulk, Apply client discount,
+//      Discount additional items.
 //   5. New Schedule modal Delivery leg exposes a Z1..Zn pill multi-select
 //      driven by lookups.zoneNumbers, and clicking a pill toggles it.
 
@@ -307,7 +308,7 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
     await expect(page.getByText('0 routes')).toBeVisible();
   });
 
-  test('New Schedule Linehaul leg exposes Speed override + Amount + Add-on % + 3 charging flags', async ({ page }) => {
+  test('New Schedule Linehaul leg exposes Speed override + Amount + % of delivery zone rate + 3 charging flags', async ({ page }) => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
@@ -321,13 +322,15 @@ test.describe('Schedules NEW - batch-2 (lookups, storage state, recurring routes
 
     // Editor auto-expands. Scope every assertion to a <label> so the
     // footer help copy ("Save picks up ... speed override + amount +
-    // add-on % + charging flags") doesn't collide.
+    // % of delivery zone rate + charging flags") doesn't collide.
     await expect(page.locator('label').filter({ hasText: 'Speed override' })).toBeVisible();
     await expect(page.locator('label').filter({ hasText: 'Amount ($)' })).toBeVisible();
-    await expect(page.locator('label').filter({ hasText: 'Add-on %' })).toBeVisible();
+    await expect(page.locator('label').filter({ hasText: 'Plus % of delivery zone rate' })).toBeVisible();
     await expect(page.locator('label').filter({ hasText: /Insert into bulk/ })).toBeVisible();
-    await expect(page.locator('label').filter({ hasText: 'Apply schedule discount' })).toBeVisible();
-    await expect(page.locator('label').filter({ hasText: 'Apply add-on percentage' })).toBeVisible();
+    await expect(page.locator('label').filter({ hasText: 'Apply client discount' })).toBeVisible();
+    await expect(page.locator('label').filter({ hasText: 'Discount additional items' })).toBeVisible();
+    // UC #1115: a new leg starts with additional items discounted.
+    await expect(page.getByRole('checkbox', { name: /Discount additional items/ })).toBeChecked();
   });
 
   test('Detail modal Save wire PUTs ScheduleGroupUpsertBody with scheduleId + edited name', async ({ page }) => {

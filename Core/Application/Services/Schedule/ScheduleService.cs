@@ -3355,6 +3355,12 @@ public class ScheduleService(
                 return $"Linehaul {label}: To Depot is required.";
             if (l.WeekDay == null || !l.WeekDay.Any(d => d == 1))
                 return $"Linehaul {label}: At least one active day is required.";
+            // UC #1115: a fraction of the delivery zone rate (0.5 = 50%). Same
+            // rule and wording as the editors (linehaulLegRules.ts).
+            if (l.AmountPercentage < 0)
+                return $"Linehaul {label}: The zone rate percentage cannot be negative.";
+            if (l.AmountPercentage > 1)
+                return $"Linehaul {label}: Enter a fraction: 0.5 means 50%. 50 would be fifty times the zone rate.";
         }
         return null;
     }

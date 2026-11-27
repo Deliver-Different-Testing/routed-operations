@@ -700,6 +700,114 @@ public class ScheduleServiceTests : IDisposable
         Assert.Contains("at least one active day", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    // UC #1115: AmountPercentage is a fraction of the delivery zone rate
+    // (0.5 = 50%). Someone typing 50 meaning 50% would charge fifty times the
+    // zone rate on every quote, so the server refuses it even if a client skips
+    // the editor's own check.
+    private static ScheduleLinehaulUpsertRequest PricedLeg(decimal? amount, decimal? pct, bool? addOn = false) => new()
+    {
+        Name = "WLG to Mainfreight AKL", FromDepotId = 1, ToDepotId = 2,
+        WeekDay = new[] { 1, 1, 1, 1, 1, 0, 0 },
+        Amount = amount, AmountPercentage = pct, ApplyDiscount = true, ApplyAddOnPercentage = addOn,
+    };
+
+    [Theory]
+    [InlineData(50, "Enter a fraction")]
+    [InlineData(1.01, "Enter a fraction")]
+    [InlineData(-0.1, "cannot be negative")]
+    public async Task UpsertAsync_linehaul_zone_percentage_out_of_range_is_rejected(double pct, string expected)
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(0, (decimal)pct));
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpsertAsync(req));
+        Assert.Contains("WLG to Mainfreight AKL", ex.Message);
+        Assert.Contains(expected, ex.Message);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(0.5)]
+    [InlineData(1)]
+    public async Task UpsertAsync_linehaul_zone_percentage_in_range_saves(double pct)
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(0, (decimal)pct));
+        var result = await svc.UpsertAsync(req);
+        Assert.Equal((decimal)pct, result.Linehauls.Single().AmountPercentage);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_linehaul_amount_and_zone_percentage_together_is_a_warning_not_an_error()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(30, 0.5m));
+        var result = await svc.UpsertAsync(req);
+        Assert.Equal(30, result.Linehauls.Single().Amount);
+        Assert.Equal(0.5m, result.Linehauls.Single().AmountPercentage);
+    }
+
+    // UC #1115 ZB save check. Prod schedules 2894 / 2736 hold
+    // ApplyAddOnPercentage 0 next to an AmountPercentage 0.5 typed in the same
+    // edit. Each save deletes and re-adds every leg, so these resave an
+    // EXISTING leg and read it back to prove the tick survives that cycle.
+    // The resave carries the first save's ScheduleId: without it UpsertAsync
+    // creates a second schedule and the update path never runs.
+    [Fact]
+    public async Task UpsertAsync_ticking_add_on_on_an_existing_leg_persists()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(30, 0m, addOn: false));
+        var first = await svc.UpsertAsync(req);
+
+        req.ScheduleId = first.ScheduleId;
+        req.Linehauls[0].ApplyAddOnPercentage = true;
+        var saved = await svc.UpsertAsync(req);
+        Assert.Equal(first.ScheduleId, saved.ScheduleId);
+        var reread = await svc.GetDetailAsync(first.ScheduleId);
+
+        Assert.True(reread.Linehauls.Single().ApplyAddOnPercentage);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_ticking_add_on_plus_half_zone_rate_on_an_existing_leg_persists_both()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(30, 0m, addOn: false));
+        var first = await svc.UpsertAsync(req);
+
+        req.ScheduleId = first.ScheduleId;
+        req.Linehauls[0].ApplyAddOnPercentage = true;
+        req.Linehauls[0].AmountPercentage = 0.5m;
+        var saved = await svc.UpsertAsync(req);
+        Assert.Equal(first.ScheduleId, saved.ScheduleId);
+        var leg = (await svc.GetDetailAsync(first.ScheduleId)).Linehauls.Single();
+
+        Assert.True(leg.ApplyAddOnPercentage);
+        Assert.Equal(0.5m, leg.AmountPercentage);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_unticking_add_on_on_an_existing_leg_saves_false_not_null()
+    {
+        var svc = NewSvc();
+        var req = ValidRequest();
+        req.Linehauls!.Add(PricedLeg(30, 0m, addOn: true));
+        var first = await svc.UpsertAsync(req);
+
+        req.ScheduleId = first.ScheduleId;
+        req.Linehauls[0].ApplyAddOnPercentage = false;
+        var saved = await svc.UpsertAsync(req);
+        Assert.Equal(first.ScheduleId, saved.ScheduleId);
+        var leg = (await svc.GetDetailAsync(first.ScheduleId)).Linehauls.Single();
+
+        Assert.False(leg.ApplyAddOnPercentage);
+    }
+
     [Fact]
     public async Task UpsertAsync_creates_one_row_per_day_window_and_returns_hydrated_group()
     {
