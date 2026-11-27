@@ -5,9 +5,9 @@
 // these DTOs use lowercase property names so the Newtonsoft camelCase
 // policy emits them verbatim.
 //
-// One DTO covers Client / Speed / Region / TopUpService / Suburb - all
-// have the same {id, label} shape. Legacy split them into six VMs; we
-// unify.
+// LookupDto covers Client / Speed / TopUpService, which share the
+// {id, label} shape. Region and Suburb add one field each:
+// RegionLookupDto (active) and SuburbLookupDto (alias).
 
 namespace RoutedOperations.Core.Application.Dtos.RouteViewer;
 
@@ -21,6 +21,17 @@ public class LookupDto
 {
     public int id { get; set; }
     public string? label { get; set; }
+}
+
+/// <summary>
+/// Region dropdown row. Adds `active` (tblBulkRegion.Active via
+/// RVW_stpBulkRegions) so the Route Viewer "Active regions only" box can
+/// hide inactive regions. A subclass rather than a nullable field on
+/// LookupDto so the other lookup endpoints keep their {id, label} JSON.
+/// </summary>
+public class RegionLookupDto : LookupDto
+{
+    public bool active { get; set; }
 }
 
 /// <summary>
