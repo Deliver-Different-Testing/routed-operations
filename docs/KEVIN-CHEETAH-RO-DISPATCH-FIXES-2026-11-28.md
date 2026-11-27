@@ -2,26 +2,35 @@
 
 **Owner:** Kevin · **Written by:** Steve (via EasyEA), Sat 28 Nov 2026 · **Priority:** URGENT
 **Due:** on Cheetah prod before Ruth's dispatch session, **Mon 30 Nov US Eastern (Tue 1 Dec NZ morning)**. Cheetah go-live is **Sun 6 Dec**.
-**Follows:** `KEVIN-CHEETAH-ROUTE-VIEWER-FIXES-2026-11-26.md` (branch `docs/cheetah-route-viewer-fixes-2026-11-26`). This spec replaces that card's M8 and M9 notes, which named the wrong driver and overstated M9 (see "Corrections").
+**Follows:** `KEVIN-CHEETAH-ROUTE-VIEWER-FIXES-2026-11-26.md` (branch `docs/cheetah-route-viewer-fixes-2026-11-26`). This spec replaces that card's M8 and M9 notes, which overstated M9 (see "Corrections").
+**Corrected 28 Nov after Kevin's M0:** Bruce is courier id 22 and Ruth is courier id 2 (the first version had them the other way round), and Release keeps its legacy meaning (R2).
 **Overtime:** Steve would like R1–R4 in by Monday. Can you do some overtime this weekend? Tell Steve in Slack.
 
 ## What happened on the 27 Nov call (Ruth, George, Emilio, Kenneth)
 
 George assigned a CAPS route to Ruth's phone and then moved it to Bruce. Ruth's phone kept the old jobs, and Bruce never got the new ones. Nothing on the screen said it had failed. Ruth then tried Unassign and got "Unassign failed: RunId + CourierCode required." Bruce was on the Dispatch map but not on the Routed Ops map. The job detail showed no POD photo after George delivered a job on his own phone.
 
-Courier ids (they matter for the logs): **Bruce = code 22 = courier id 2** (device 5AA9369D). Code 2222 = courier id 22 (device F6246AEA).
+Courier ids (they matter for the logs), confirmed by Steve 28 Nov:
+
+| Person | Courier id | Courier code in Routed Ops | Phone login | Device |
+|---|---|---|---|---|
+| Ruth | 2 | `1` | 22 | 5AA9369D |
+| Bruce | 22 | `512` | 2222 | F6246AEA |
+| George | 17 | `555` | | |
+
+Routed Ops shows the courier code, so messages read "from 1 to 512", not "from 2 to 22".
 
 Log evidence, `routed-operations-835-cheetah-prod`, 27 Nov UTC:
 
 | Time (UTC) | Call | Effect |
 |---|---|---|
-| 18:09:59 | `POST /api/runviewer/jobs/assign` Courier=2, jobs 251–253 (Route 4, P30–P32MR) | Bruce's phone gets them at 18:10:06 |
-| 18:14:16 | same 3 jobs, Courier=22 | DB moves them to courier 22. **Bruce's phone gets no removal**, because no restore ran |
-| 18:14:28 | Route 9's 8 jobs, Courier=2 | Bruce's phone never received them (separate phone-sync fault, Garry: see "Not in this spec") |
+| 18:09:59 | `POST /api/runviewer/jobs/assign` Courier=2, jobs 251–253 (Route 4, P30–P32MR) | Ruth's phone (courier id 2) gets them at 18:10:06 |
+| 18:14:16 | same 3 jobs, Courier=22 | DB moves them to courier 22 (Bruce). **Ruth's phone gets no removal**, because no restore ran |
+| 18:14:28 | Route 9's 8 jobs, Courier=2 | Ruth's phone (courier id 2) never received them (separate phone-sync fault, Garry: see "Not in this spec") |
 | 18:20:22 | Route 8's 4 jobs, Courier=17 | |
 | 18:38:04 onward | `GET /api/runviewer/couriers/available` | **500**, every 30 s while All couriers was on |
 
-I fixed the data by hand: Dispatch `POST /job/ReAllocate` (restore, then despatch) moved 251–253 to courier 22 and later back to courier 2 at 18:41:13Z. The code-2222 phone got the removal 5 s later. That is the behaviour Routed Ops should have.
+I fixed the data by hand: Dispatch `POST /job/ReAllocate` (restore, then despatch) moved 251–253 to courier 22 and later back to courier 2 at 18:41:13Z. The courier id 22 phone (Bruce) got the removal 5 s later. That is the behaviour Routed Ops should have.
 
 ## R1. Assigning a job to a different driver must take it off the old phone
 
@@ -38,7 +47,7 @@ Everything else that moves a job restores first:
 - In `AssignAsync`, for each job that already has a courier **different** from the target, run the restore first (`uspRestoreJobs`, migration `20260703140000`, which calls `UTL_stpJob_RestoreDevice`), then despatch.
 - Jobs with no courier, or already on the target courier, skip the restore.
 - Keep the completed-job guard from `20260511134131`: never restore a completed job.
-- The toast tells the operator what happened, e.g. "Moved 3 jobs from 22 to 2". If any job is rejected (for example, completed), list it.
+- The toast tells the operator what happened, e.g. "Moved 3 jobs from 512 to 1" (courier codes). If any job is rejected (for example, completed), list it.
 
 ## R2. Run-level actions must work on route runs (negative run ids)
 
@@ -55,7 +64,8 @@ That is the "Unassign failed" George hit. Even without the guard, `RVW_stpPreAss
 - For `RunId < 0`, resolve the run's jobs **with the same query as the route branch of `RVW_stpBulkRunJobs`** (migration `20261127160000_RVW_RouteRunsSelfParentedJobs`), for the run date shown.
 - Then:
   - **Pre-assign / Re-assign / Transfer:** run the R1 path (restore if the courier is different, then despatch) for those jobs.
-  - **Unassign / Release:** restore those jobs, so they go back to unassigned and come off the phone.
+  - **Unassign:** restore those jobs, so they go back to unassigned and come off the phone.
+  - **Release:** keeps its legacy meaning, "Release To Courier". It sends pre-assigned jobs (status 18) to the driver's phone and keeps the courier (`RVW_stpReleaseRun`). It does not take jobs off a phone. Because Pre-assign and Re-assign on a route run already send the jobs, Ruth should not need Release there. (Kevin's M0 finding, agreed by Steve 28 Nov.)
   - **Transfer original run order:** hide it on route runs (no `tblBulkRun` row to store it on), unless you see a clean place for it.
 - Keep the guard for `RunId == 0`.
 - Change the guard messages to plain English, e.g. "Pick a driver first." Operators should never see "RunId + CourierCode required".
@@ -93,12 +103,12 @@ System.InvalidOperationException: The required column 'CourierCode' was not pres
 
 ## Corrections to the 26 Nov card
 
-- **M8:** the driver on courier id 2 is **Bruce**, not Ruth. R1 and R2 above replace M8.
+- **M8:** the 26 Nov card was right that courier id 2 is **Ruth**. R1 and R2 above replace M8.
 - **M9 (`/api/runviewer/runs` 500, `OriginLatitude`):** this was **only the deploy window**, 27 Nov 01:00–05:00Z (plus one call at 08:00Z). Every call since has returned 200. Both migrations (`20261127120300`, `20261127160000`) carry the column. Nothing to fix. Close M9 once you've glanced at the logs.
 
 ## Not in this spec (owners noted so you know they're covered)
 
-- **Bruce's phone isn't syncing (Garry, URGENT).** Since 18:14:30Z, every sync from device 5AA9369D fails in marsapi `SynchronizeJobs` with `XmlException: Unexpected end of file ... not closed: V, SSZ, J, D…`. It was still failing at 19:49Z. One queued `tblHostToDevice` row for code 22 looks truncated, so the joined reply is invalid XML and nothing after it is ever delivered.
+- **The courier id 2 phone (Ruth's, device 5AA9369D) isn't syncing (Garry, URGENT).** Since 18:14:30Z, every sync from device 5AA9369D fails in marsapi `SynchronizeJobs` with `XmlException: Unexpected end of file ... not closed: V, SSZ, J, D…`. It was still failing at 19:49Z. One queued `tblHostToDevice` row for phone login 22 (courier id 2) looks truncated, so the joined reply is invalid XML and nothing after it is ever delivered.
 - **CAPS route master job** (the one carrying the main courier payment) should be CAPS → CAPS, not a copy of the furthest stop. Steve/EasyEA will change the recurring bookings.
 - **Tote menu on delivery:** a tote-scanning setting on the route. Already switched off; George confirmed delivery now works.
 - **Settings → Services list only finds items on the current page; rating page search the same:** configurator, separate ticket (Kenneth may already have one).
@@ -110,7 +120,7 @@ System.InvalidOperationException: The required column 'CourierCode' was not pres
 |---|---|---|
 | M0 | Confirm | Reply in Slack: R1–R4 causes agree with what you see, R3 column list, and the bucket env var on Cheetah prod Routed Ops (set / not set). Same day. |
 | M1 | Assign restores first (R1) | Assigning a job from driver A to B voids it on A's phone within one sync and despatches to B. Completed jobs untouched. Toast says what moved. Unit tests. |
-| M2 | Route-run actions (R2) | Pre-assign, Re-assign, Transfer, Unassign and Release work on a route run (RunId < 0), with the R1 behaviour. No "RunId + … required" text anywhere. |
+| M2 | Route-run actions (R2) | Pre-assign, Re-assign, Transfer and Unassign work on a route run (RunId < 0), with the R1 behaviour. Release keeps its legacy meaning. No "RunId + … required" text anywhere. |
 | M3 | Drivers on the map (R3) | Migration for `RVW_stpCourierPositions_Envelope`; All couriers returns 200 on Cheetah prod; selecting a run with a driver shows that driver's last ping. |
 | M4 | POD photos for route jobs (R4) | Job detail shows delivery photo, signature and pickup photos for a CAPS route job, including when the photo is on a child leg. Bucket env var confirmed. |
 | M5 | On Cheetah prod | R1–R4 released before the Monday session (Mon 30 Nov US / Tue 1 Dec NZ morning). Post the release note in Slack. |
