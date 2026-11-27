@@ -303,7 +303,7 @@ export interface CoverageMatchResponse {
  *
  * This is a HINT, deliberately not the authority:
  *   * Two of the six counts are filtered server-side - BookingCount is
- *     active-and-not-done, MappedStopsCount is non-void - so a route
+ *     active-only, MappedStopsCount is non-void - so a route
  *     whose only references are cancelled rows reads as clear here.
  *   * It cannot see tucJob or tblLinehaulTote at all.
  *

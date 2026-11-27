@@ -1224,6 +1224,8 @@ export default function RunViewer() {
                   runColorMap={runColorMap}
                   primaryRunKey={singleRunKey ?? undefined}
                   extraRunJobs={extraRunJobs}
+                  originLat={singleRun?.originLatitude ?? null}
+                  originLng={singleRun?.originLongitude ?? null}
                 />
               </Panel>
               <PanelResizeHandle className="h-1" />

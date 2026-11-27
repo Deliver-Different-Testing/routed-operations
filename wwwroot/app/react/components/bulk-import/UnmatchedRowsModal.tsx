@@ -39,12 +39,16 @@ export function UnmatchedRowsModal({ open, state, isUs, bucket, onClose }: Props
   const reason = (rowIndex: number) => {
     if (!isUnmatched) return `No service for this client at ${bucket?.depotName ?? 'this depot'}`;
     if (!m[codeField]) return `${codeLabel} column not mapped`;
-    // #332: a geocoder postcode only counts once accepted in Fix Addresses.
+    // #332: a kept sheet postcode is never swapped for the map's. An untouched
+    // suggestion is already tried when the sheet postcode has no depot, so a
+    // pending row only lands here when the map postcode has none either.
     const sg = isUs ? undefined : state.geocodeSuggestions[`pc:${rowIndex}`];
     if (sg?.decision === 'keep') {
       return `Sheet postcode ${sg.sheet || '(blank)'} kept (map says ${sg.map}); not covered by any depot`;
     }
-    if (sg?.decision === 'pending') return `Map says ${sg.map}: accept it in Fix Addresses to use it`;
+    if (sg?.decision === 'pending') {
+      return `Sheet postcode ${sg.sheet || '(blank)'} and map postcode ${sg.map} are not covered by any depot`;
+    }
     return cell(rowIndex, codeField)
       ? `${codeLabel} not covered by any ${isUs ? 'region' : 'depot'}`
       : `Missing ${codeLabel.toLowerCase()}`;

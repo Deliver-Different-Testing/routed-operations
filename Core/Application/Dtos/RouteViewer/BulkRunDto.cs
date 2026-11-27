@@ -138,4 +138,11 @@ public class BulkRunDto
     public string? AgentName { get; set; }
 
     public bool IsNpAgent { get; set; }
+
+    /// <summary>Route origin (Routes.OriginLatitude / OriginLongitude) on
+    /// synthetic route runs; null on real bulk runs. The map centres here
+    /// when the selected run has no job pins (Cheetah M3).</summary>
+    public decimal? OriginLatitude { get; set; }
+
+    public decimal? OriginLongitude { get; set; }
 }

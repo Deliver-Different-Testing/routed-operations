@@ -14,10 +14,13 @@ import type { BulkJob } from '../../services/routeViewerService';
 // bounce animation + flag/car marker creation.
 const markerInstances: any[] = [];
 const polylineInstances: any[] = [];
+// Viewport calls on the fake Map, in order (M3 origin centring).
+const mapViewCalls: Array<[string, unknown]> = [];
 
 function installFakeGoogle() {
   markerInstances.length = 0;
   polylineInstances.length = 0;
+  mapViewCalls.length = 0;
   const listeners: any[] = [];
   const g: any = {
     maps: {
@@ -33,7 +36,9 @@ function installFakeGoogle() {
       MapTypeId: { ROADMAP: 'ROADMAP' },
       Map: class {
         constructor(_el: any, _opts: any) {}
-        fitBounds(_b: any, _p: number) {}
+        fitBounds(_b: any, _p: number) { mapViewCalls.push(['fitBounds', null]); }
+        setCenter(c: any) { mapViewCalls.push(['setCenter', c]); }
+        setZoom(z: number) { mapViewCalls.push(['setZoom', z]); }
       },
       InfoWindow: class {
         setContent() {}
@@ -321,5 +326,86 @@ describe('RvMapBox', () => {
       const car = markerInstances.find((m) => m.opts?.title === 'Courier DRV');
       expect(car).toBeDefined();
     });
+  });
+
+  // Cheetah M3: an empty CAPS route run opens on its route origin instead
+  // of the tenant-wide default; a run with pins still fits to its pins.
+  it('centres on the route origin at zoom 11 when the run has no pins', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    renderMap({ runJobs: [], originLat: 39.5296, originLng: -119.8138 });
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['setZoom', 11]));
+    expect(mapViewCalls).toContainEqual(['setCenter', { lat: 39.5296, lng: -119.8138 }]);
+    expect(mapViewCalls.some(([k]) => k === 'fitBounds')).toBe(false);
+  });
+
+  // RVSPEC-F1: RunViewer rebuilds extraRunJobs every render (and polls every
+  // 25 s), which re-runs the marker effect. Re-centring each time would undo
+  // an operator's pan/zoom, so the depot centre fires once per
+  // (primaryRunKey, originLat, originLng).
+  it('does not re-centre on a re-render with the same run and origin', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    const base = { runDate: '2026-08-13', runJobs: [] as BulkJob[], selectedJobId: null,
+      viewMode: 'Combined' as const, primaryRunKey: 'r-7', originLat: 39.5296, originLng: -119.8138 };
+    const { rerender } = renderWithProviders(<RvMapBox {...base} extraRunJobs={[]} />);
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['setZoom', 11]));
+    rerender(<RvMapBox {...base} extraRunJobs={[]} />);
+    rerender(<RvMapBox {...base} extraRunJobs={[]} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mapViewCalls.filter(([k]) => k === 'setCenter')).toHaveLength(1);
+    expect(mapViewCalls.filter(([k]) => k === 'setZoom')).toHaveLength(1);
+  });
+
+  it('centres again when the operator switches to another route run', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    const base = { runDate: '2026-08-13', runJobs: [] as BulkJob[], selectedJobId: null,
+      viewMode: 'Combined' as const, primaryRunKey: 'r-7', originLat: 39.5296, originLng: -119.8138 };
+    const { rerender } = renderWithProviders(<RvMapBox {...base} />);
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['setZoom', 11]));
+    rerender(<RvMapBox {...base} primaryRunKey="r-8" originLat={38.58} originLng={-121.49} />);
+    await waitFor(() =>
+      expect(mapViewCalls).toContainEqual(['setCenter', { lat: 38.58, lng: -121.49 }]));
+    expect(mapViewCalls.filter(([k]) => k === 'setCenter')).toHaveLength(2);
+  });
+
+  // R1: going back to an empty run after the map showed something else must
+  // centre on that run's origin again, or the map stays on the other run.
+  it('re-centres on run A after viewing run B with pins', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    const base = { runDate: '2026-08-13', runJobs: [] as BulkJob[], selectedJobId: null,
+      viewMode: 'Combined' as const, primaryRunKey: 'r-7', originLat: 39.5296, originLng: -119.8138 };
+    const { rerender } = renderWithProviders(<RvMapBox {...base} />);
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['setZoom', 11]));
+    rerender(<RvMapBox {...base} primaryRunKey="r-8" runJobs={[mkJob()]} />);
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['fitBounds', null]));
+    rerender(<RvMapBox {...base} />);
+    await waitFor(() =>
+      expect(mapViewCalls.filter(([k]) => k === 'setCenter')).toHaveLength(2));
+    expect(mapViewCalls[mapViewCalls.length - 2]).toEqual(['setCenter', { lat: 39.5296, lng: -119.8138 }]);
+  });
+
+  it('re-centres on run A after it is deselected and selected again', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    const base = { runDate: '2026-08-13', runJobs: [] as BulkJob[], selectedJobId: null,
+      viewMode: 'Combined' as const, primaryRunKey: 'r-7', originLat: 39.5296, originLng: -119.8138 };
+    const { rerender } = renderWithProviders(<RvMapBox {...base} />);
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['setZoom', 11]));
+    rerender(<RvMapBox {...base} primaryRunKey={undefined} originLat={null} originLng={null} />);
+    await new Promise((r) => setTimeout(r, 20));
+    rerender(<RvMapBox {...base} />);
+    await waitFor(() =>
+      expect(mapViewCalls.filter(([k]) => k === 'setCenter')).toHaveLength(2));
+  });
+
+  it('still fits to the pins and ignores the origin when the run has jobs', async () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, googleMapsKey: 'K' };
+    installFakeGoogle();
+    renderMap({ runJobs: [mkJob()], originLat: 39.5296, originLng: -119.8138 });
+    await waitFor(() => expect(mapViewCalls).toContainEqual(['fitBounds', null]));
+    expect(mapViewCalls.some(([k]) => k === 'setCenter' || k === 'setZoom')).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { addressService } from '../../services/addressService';
 import {
+  effectiveNzPostCode,
   nextPendingDepotIndex,
   type DepotBucket,
   type WizardAction,
@@ -205,13 +206,17 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
         lookupKey = zipBase(usFix);
         hit = depotLookup[lookupKey];
       }
-      // NZ: fixedPostCodes only holds postcodes the operator ACCEPTED in Fix
-      // Addresses (#332), so an accepted one that matches a depot wins over
-      // the sheet postcode too; otherwise Accept would do nothing whenever the
-      // sheet postcode already matched. The bucket records it so the job is
-      // booked with the postcode it was grouped by.
-      if (!isUs && state.fixedPostCodes[i]) {
-        const suggested = nzPostCode(state.fixedPostCodes[i]);
+      // NZ (#332): an accepted map postcode that matches a depot wins over the
+      // sheet postcode too, otherwise Accept would do nothing whenever the
+      // sheet postcode already matched. An untouched suggestion only stands in
+      // when the sheet postcode matches no depot (effectiveNzPostCode). The
+      // bucket records it so the job is booked with the postcode it was
+      // grouped by.
+      const nzAlt = isUs
+        ? null
+        : effectiveNzPostCode(!!hit, state.fixedPostCodes[i], state.geocodeSuggestions[`pc:${i}`]);
+      if (nzAlt) {
+        const suggested = nzPostCode(nzAlt);
         if (depotLookup[suggested] && suggested !== lookupKey) {
           hit = depotLookup[suggested];
           overridePostCode = suggested;
@@ -251,6 +256,7 @@ export function SelectRegionsModal({ open, state, dispatch, onBack, onNext, onCa
     state.importType,
     state.fixedZips,
     state.fixedPostCodes,
+    state.geocodeSuggestions,
     isUs,
     depotLookup,
     coveredZipBases,

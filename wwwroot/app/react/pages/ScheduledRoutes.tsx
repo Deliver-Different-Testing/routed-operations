@@ -7,6 +7,7 @@ import { tenantMapCentre } from '../lib/mapDefaults';
 import { parseWktPolygon } from '../lib/wktPolygon';
 import { checkToteSave, initialToteScanning, toteSavePayload } from '../lib/finalMileTote';
 import { buildScheduleList, tickedHeaderIds } from '../lib/scheduleCoverageFilter';
+import { ROUTE_ROSTER_DOW_LABELS, ROUTE_ROSTER_DOW_OPTIONS } from '../lib/routeRosterDow';
 import { Button } from '../components/common/Button';
 import { Panel } from '../components/common/Panel';
 import { Modal } from '../components/common/Modal';
@@ -2078,7 +2079,7 @@ interface RosterProps {
   onChanged: () => Promise<void>;
 }
 
-function RosterModal({ route, onClose, onChanged }: RosterProps) {
+export function RosterModal({ route, onClose, onChanged }: RosterProps) {
   const toast = useToast();
   const askConfirm = useConfirm();
   const [entries, setEntries] = useState<RouteRosterEntry[]>([]);
@@ -2190,7 +2191,7 @@ function RosterModal({ route, onClose, onChanged }: RosterProps) {
           <div className="mt-2">
             {addMode === 'dow' ? (
               <select value={addDow} onChange={(e) => setAddDow(Number(e.target.value))} className={INPUT_CLASS}>
-                {DAYS_OF_WEEK.map((d, i) => <option key={d} value={i + 1}>{d}</option>)}
+                {ROUTE_ROSTER_DOW_OPTIONS.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
               </select>
             ) : (
               <input type="date" value={addDate} onChange={(e) => setAddDate(e.target.value)} className={INPUT_CLASS} />
@@ -2223,8 +2224,8 @@ function RosterModal({ route, onClose, onChanged }: RosterProps) {
                   {' - '}
                   {e.rosterDate
                     ? new Date(e.rosterDate).toLocaleDateString('en-GB')
-                    : e.dayOfWeek
-                      ? DAYS_OF_WEEK[e.dayOfWeek - 1]
+                    : e.dayOfWeek != null
+                      ? (ROUTE_ROSTER_DOW_LABELS[e.dayOfWeek] ?? '?')
                       : '?'}
                 </div>
               </div>

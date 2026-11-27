@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
+import { decideRvMapView } from '../../lib/rvMapView';
 import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { RvBox } from './RvBox';
 
@@ -63,9 +64,15 @@ interface Props {
    *  additional run so we can pin all of them together (Tier-2 item
    *  15 + item 8 multi-run overlay). */
   extraRunJobs?: Array<{ runKey: string; jobs: BulkJob[] }>;
+  /** Route origin of the single selected run (synthetic route runs
+   *  only). Used to centre the map when that run has no job pins
+   *  (Cheetah M3). Primitives, not an object, so the marker effect does
+   *  not re-run on every parent render. */
+  originLat?: number | null;
+  originLng?: number | null;
 }
 
-export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, primaryRunKey, extraRunJobs }: Props) {
+export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, primaryRunKey, extraRunJobs, originLat, originLng }: Props) {
   const user = useAuth();
   const [allCouriers, setAllCouriers] = useState(false);
   const [allRuns, setAllRuns] = useState(false);
@@ -79,6 +86,8 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
   const carMarkerRef = useRef<any>(null);
   const infoWindowRef = useRef<any>(null);
   const bounceTimeoutRef = useRef<number | null>(null);
+  // Last (primaryRunKey, origin) the map was centred on; see the marker effect.
+  const lastCentreKeyRef = useRef<string | null>(null);
 
   // Available couriers with a GPS ping. Uses the envelope endpoint so
   // we get lat/lng + vehicleType together for the flag+label render.
@@ -283,10 +292,25 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
       polylinesRef.current.push(polyline);
     }
 
-    if (markersRef.current.length > 0 && !bounds.isEmpty()) {
-      mapRef.current.fitBounds(bounds, 40);
+    const view = decideRvMapView(markersRef.current.length, originLat, originLng);
+    if (view.kind !== 'centre') {
+      // The map is showing something else now, so the next centre (even on
+      // the same run) must fire again.
+      lastCentreKeyRef.current = null;
     }
-  }, [mapReady, pinsPayload, polylineData, selectedJobId, runColorMap]);
+    if (view.kind === 'fit' && !bounds.isEmpty()) {
+      mapRef.current.fitBounds(bounds, 40);
+    } else if (view.kind === 'centre') {
+      // This effect re-runs on every parent render and the 25 s poll. Centre
+      // once per (run, origin) so an operator's pan/zoom is not undone.
+      const centreKey = `${primaryRunKey ?? ''}|${view.lat}|${view.lng}`;
+      if (lastCentreKeyRef.current !== centreKey) {
+        lastCentreKeyRef.current = centreKey;
+        mapRef.current.setCenter({ lat: view.lat, lng: view.lng });
+        mapRef.current.setZoom(view.zoom);
+      }
+    }
+  }, [mapReady, pinsPayload, polylineData, selectedJobId, runColorMap, originLat, originLng, primaryRunKey]);
 
   // Tier-3 item 4: bounce the selected job's pin for ~1.5s in addition
   // to the +25% scale bump the icon already gets. Cleared on unmount +
