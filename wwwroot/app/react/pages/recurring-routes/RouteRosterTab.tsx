@@ -10,12 +10,11 @@ import {
   type RouteRosterEntry,
 } from '@/services/recurringRouteService';
 import { useSharedTargets } from './SharedTargetsContext';
+import { ROUTE_ROSTER_DOW_LABELS as DOW_LABELS } from '@/lib/routeRosterDow';
 
 // Route Roster tab (Recurring Routes spec 4). Per-route weekly DOW pattern +
 // date overrides + 14-day preview. Ported from Configurator's inline RosterTab.
 // Backs the existing /api/recurring-routes/{routeId}/roster endpoint.
-
-const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function typeName(t: number | null): AssignTargetType | null {
   return t === 1 ? 'Courier' : t === 2 ? 'Agent' : t === 3 ? 'NetworkPartner' : null;

@@ -178,4 +178,42 @@ public class RouteViewerRunServiceTests
         await Assert.ThrowsAnyAsync<Exception>(() =>
             sut.GetBulkRunListAsync(new BulkRunListRequest { RunDate = DateTime.Today }));
     }
+
+    // -- Cheetah M3: route origin on the run DTO --------------------------
+    // RVW_stpBulkRuns_2 emits Routes.OriginLatitude / OriginLongitude on
+    // synthetic route rows and NULL on real tblBulkRun rows. The map
+    // centres on the origin when an empty route run is selected, so the
+    // coords must survive the mapping exactly, and NULL must stay null
+    // (never 0, which would centre the map on 0,0).
+
+    [Fact]
+    public void MapBulkRun_SyntheticRouteRow_CarriesOriginCoords()
+    {
+        var dto = RouteViewerRunService.MapBulkRun(new RouteViewerRunService.RawBulkRunRow
+        {
+            ID = "-3",
+            Name = "Route 3",
+            OriginLatitude = 39.529600000m,
+            OriginLongitude = -119.813800000m,
+        }, isMissing: false);
+
+        Assert.Equal(-3, dto.Id);
+        Assert.Equal(39.5296m, dto.OriginLatitude);
+        Assert.Equal(-119.8138m, dto.OriginLongitude);
+    }
+
+    [Fact]
+    public void MapBulkRun_RealRunRow_LeavesOriginNull()
+    {
+        var dto = RouteViewerRunService.MapBulkRun(new RouteViewerRunService.RawBulkRunRow
+        {
+            ID = "1234",
+            OriginLatitude = null,
+            OriginLongitude = null,
+        }, isMissing: false);
+
+        Assert.Equal(1234, dto.Id);
+        Assert.Null(dto.OriginLatitude);
+        Assert.Null(dto.OriginLongitude);
+    }
 }
