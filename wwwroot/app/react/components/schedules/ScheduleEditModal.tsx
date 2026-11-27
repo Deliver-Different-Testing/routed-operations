@@ -14,9 +14,13 @@ import { bulkPolygonService, type BulkPolygon } from '../../services/bulkPolygon
 import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { depotLabel, postcodeGroupLabel, postcodeLabel, postcodePluralLabel } from '../../lib/tenantLabels';
 import { depotOptions, hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
+import {
+  LINEHAUL_LABELS, ZONE_PERCENT_MAX, zonePercentError, bothChargedWarning, firstLinehaulPricingError,
+} from '../../lib/linehaulLegRules';
 import { ClientMultiPicker } from './ClientMultiPicker';
 import { ScheduleCoverageMap } from './ScheduleCoverageMap';
 import { LinehaulRunModal } from './LinehaulRunModal';
+import { WithLinehaulTabPricing } from '../schedules-new/WithLinehaulTabPricing';
 import type { LinehaulRunLookup } from '../../services/scheduleService';
 
 // ─── constants ─────────────────────────────────────────────────────────────
@@ -27,7 +31,9 @@ type LinehaulDraft = ScheduleGroupUpsertBody['linehauls'][number];
 const emptyLinehaul = (): LinehaulDraft => ({
   name: '', active: true, amount: 0, amountPercentage: 0,
   fromDepotId: null, toDepotId: null, minutes: null, linehaulRunId: null,
-  insertToBulk: true, applyDiscount: false, applyAddOnPercentage: false,
+  // UC #1115: on for a NEW leg, or every additional item is charged the
+  // full linehaul price. Loaded legs keep their stored value (toForm).
+  insertToBulk: true, applyDiscount: false, applyAddOnPercentage: true,
   weekDay: [0, 0, 0, 0, 0, 0, 0],
   departureAdvanceDays: null, fromClientAddress: false, dropOffLocationId: null,
   speedId: null,
@@ -210,6 +216,8 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
       ...form.linehauls.flatMap((l) => [l.fromClientAddress ? null : l.fromDepotId, l.toDepotId]),
     ];
     if (hasInactiveDepot(lookups?.depots ?? [], depotIds)) { toast.show(INACTIVE_DEPOT_MESSAGE, 'error'); return; }
+    const pricingError = firstLinehaulPricingError(form.linehauls);
+    if (pricingError) { toast.show(pricingError, 'error'); return; }
     setSaving(true);
     try {
       const res = await scheduleService.upsert(form);
@@ -532,133 +540,163 @@ export function ScheduleEditModal({ open, onClose, group, lookups, onSaved }: Pr
             <div className="text-[11px] text-text-muted italic">No linehaul legs configured.</div>
           )}
           {form.linehauls.map((l, i) => (
-            <div key={i} className="rounded-lg border border-border bg-surface-cream/40 p-3 mb-2 space-y-2">
-              <div className="grid grid-cols-1 lg:grid-cols-6 gap-2 items-end">
-                <Field label="Name" required>
-                  <input className={INPUT_CLASS} value={l.name ?? ''}
-                    onChange={(e) => updateLinehaul(i, { name: e.target.value })} />
-                </Field>
-                <Field label="Active">
-                  <label className="inline-flex items-center gap-2 text-sm py-1.5">
-                    <input type="checkbox" checked={l.active ?? false}
-                      onChange={(e) => updateLinehaul(i, { active: e.target.checked })} />
-                  </label>
-                </Field>
-                <Field label="Amount">
-                  <input type="number" className={INPUT_CLASS} value={l.amount ?? ''}
-                    onChange={(e) => updateLinehaul(i, { amount: e.target.value ? Number(e.target.value) : null })} />
-                </Field>
-                <Field label="Amount %">
-                  <input type="number" step="0.01" className={INPUT_CLASS} value={l.amountPercentage ?? ''}
-                    onChange={(e) => updateLinehaul(i, { amountPercentage: e.target.value ? Number(e.target.value) : null })} />
-                </Field>
-                <Field label="Minutes">
-                  <input type="number" className={INPUT_CLASS} value={l.minutes ?? ''}
-                    onChange={(e) => updateLinehaul(i, { minutes: e.target.value ? Number(e.target.value) : null })} />
-                </Field>
-                <div className="flex justify-end">
-                  <Button variant="danger" size="sm" onClick={() => removeLinehaul(i)}>Remove</Button>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-2">
-                <Field label="From Depot">
-                  <select className={INPUT_CLASS} value={l.fromDepotId ?? ''}
-                    disabled={l.fromClientAddress === true}
-                    onChange={(e) => updateLinehaul(i, { fromDepotId: e.target.value ? Number(e.target.value) : null })}>
-                    <option value="">From Depot *</option>
-                    {depotOptions(depots, l.fromDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-                  </select>
-                </Field>
-                <Field label="To Depot">
-                  <select className={INPUT_CLASS} value={l.toDepotId ?? ''}
-                    onChange={(e) => updateLinehaul(i, { toDepotId: e.target.value ? Number(e.target.value) : null })}>
-                    <option value="">To Depot *</option>
-                    {depotOptions(depots, l.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-                  </select>
-                </Field>
-                <Field
-                  label="Run"
-                  rightAdornment={
-                    <button
-                      type="button"
-                      className="text-[10px] text-brand-cyan hover:underline inline-flex items-center gap-0.5"
-                      onClick={() => setRunModalOpen(true)}
-                      title="Manage linehaul runs"
-                    >
-                      Edit
-                    </button>
-                  }
-                >
-                  <select className={INPUT_CLASS} value={l.linehaulRunId ?? ''}
-                    onChange={(e) => updateLinehaul(i, { linehaulRunId: e.target.value ? Number(e.target.value) : null })}>
-                    <option value="">Choose a Run</option>
-                    {linehaulRuns.map((r) => <option key={r.id} value={r.id}>{r.runName}</option>)}
-                  </select>
-                </Field>
-                <Field label="Drop-off Location">
-                  <select className={INPUT_CLASS} value={l.dropOffLocationId ?? ''}
-                    onChange={(e) => updateLinehaul(i, { dropOffLocationId: e.target.value ? Number(e.target.value) : null })}>
-                    <option value="">Choose...</option>
-                    {dropOffs.filter((d) => !l.toDepotId || d.depotId === l.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                  </select>
-                </Field>
-              </div>
-              <div>
-                <div className="text-[11px] font-semibold text-text-muted mb-1">Active Linehaul Days</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {DAY_LABELS_LONG.map((day, di) => {
-                    const on = l.weekDay[di] === 1;
-                    return (
-                      <label key={day}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium cursor-pointer border ${
-                          on ? 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/30'
-                             : 'bg-white text-text-muted border-border'}`}>
-                        <input type="checkbox" className="w-3 h-3" checked={on}
-                          onChange={(e) => {
-                            const wd = [...l.weekDay];
-                            wd[di] = e.target.checked ? 1 : 0;
-                            updateLinehaul(i, { weekDay: wd });
-                          }} />
-                        {day}
+            // UC #1115 Part B 2: job creation prices legs at the delivery speed.
+            <WithLinehaulTabPricing key={i} linehaulRunId={l.linehaulRunId ?? null} scheduleId={form.scheduleId ?? null}
+              // UC #1115 F2: any client can book an all-clients schedule (absent = true, and this
+              // modal creates default schedules), so check the generic rows only.
+              clientIds={group?.isDefault !== false ? [] : form.clientIds} speedId={form.speedId ?? null}>
+              {(fromTab) => (
+                <div className="rounded-lg border border-border bg-surface-cream/40 p-3 mb-2 space-y-2">
+                  <div className="grid grid-cols-1 lg:grid-cols-6 gap-2 items-end">
+                    <Field label="Name" required>
+                      <input className={INPUT_CLASS} value={l.name ?? ''}
+                        onChange={(e) => updateLinehaul(i, { name: e.target.value })} />
+                    </Field>
+                    <Field label="Active">
+                      <label className="inline-flex items-center gap-2 text-sm py-1.5">
+                        <input type="checkbox" checked={l.active ?? false}
+                          onChange={(e) => updateLinehaul(i, { active: e.target.checked })} />
                       </label>
-                    );
-                  })}
+                    </Field>
+                    <Field label="Amount">
+                      <input type="number" className={INPUT_CLASS} value={l.amount ?? ''} readOnly={fromTab}
+                        onChange={fromTab ? undefined : (e) => updateLinehaul(i, { amount: e.target.value ? Number(e.target.value) : null })} />
+                      {fromTab && <div className="text-[10px] text-text-muted">{LINEHAUL_LABELS.amountFromLinehaulTab}</div>}
+                    </Field>
+                    {/* Hidden when the Linehaul tab prices the leg, unless the stored value would fail the save. */}
+                    {(!fromTab || zonePercentError(l.amountPercentage) != null) && (
+                      <Field label={LINEHAUL_LABELS.amountPercentage}>
+                        <input type="number" step="0.01" min={0} max={ZONE_PERCENT_MAX} className={INPUT_CLASS}
+                          aria-label={LINEHAUL_LABELS.amountPercentage} value={l.amountPercentage ?? ''}
+                          onChange={(e) => updateLinehaul(i, { amountPercentage: e.target.value ? Number(e.target.value) : null })} />
+                      </Field>
+                    )}
+                    <Field label="Minutes">
+                      <input type="number" className={INPUT_CLASS} value={l.minutes ?? ''}
+                        onChange={(e) => updateLinehaul(i, { minutes: e.target.value ? Number(e.target.value) : null })} />
+                    </Field>
+                    <div className="flex justify-end">
+                      <Button variant="danger" size="sm" onClick={() => removeLinehaul(i)}>Remove</Button>
+                    </div>
+                  </div>
+                  <div className="text-[11px] space-y-0.5">
+                    {!fromTab && (
+                      <div className="text-text-muted">
+                        {LINEHAUL_LABELS.amountPercentage}: {LINEHAUL_LABELS.amountPercentageHelp}
+                      </div>
+                    )}
+                    {zonePercentError(l.amountPercentage) && (
+                      <div className="text-error" role="alert">{zonePercentError(l.amountPercentage)}</div>
+                    )}
+                    {!fromTab && bothChargedWarning(l.amount, l.amountPercentage) && (
+                      <div className="text-warning">{bothChargedWarning(l.amount, l.amountPercentage)}</div>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-2">
+                    <Field label="From Depot">
+                      <select className={INPUT_CLASS} value={l.fromDepotId ?? ''}
+                        disabled={l.fromClientAddress === true}
+                        onChange={(e) => updateLinehaul(i, { fromDepotId: e.target.value ? Number(e.target.value) : null })}>
+                        <option value="">From Depot *</option>
+                        {depotOptions(depots, l.fromDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="To Depot">
+                      <select className={INPUT_CLASS} value={l.toDepotId ?? ''}
+                        onChange={(e) => updateLinehaul(i, { toDepotId: e.target.value ? Number(e.target.value) : null })}>
+                        <option value="">To Depot *</option>
+                        {depotOptions(depots, l.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                      </select>
+                    </Field>
+                    <Field
+                      label="Run"
+                      rightAdornment={
+                        <button
+                          type="button"
+                          className="text-[10px] text-brand-cyan hover:underline inline-flex items-center gap-0.5"
+                          onClick={() => setRunModalOpen(true)}
+                          title="Manage linehaul runs"
+                        >
+                          Edit
+                        </button>
+                      }
+                    >
+                      <select className={INPUT_CLASS} value={l.linehaulRunId ?? ''}
+                        onChange={(e) => updateLinehaul(i, { linehaulRunId: e.target.value ? Number(e.target.value) : null })}>
+                        <option value="">Choose a Run</option>
+                        {linehaulRuns.map((r) => <option key={r.id} value={r.id}>{r.runName}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Drop-off Location">
+                      <select className={INPUT_CLASS} value={l.dropOffLocationId ?? ''}
+                        onChange={(e) => updateLinehaul(i, { dropOffLocationId: e.target.value ? Number(e.target.value) : null })}>
+                        <option value="">Choose...</option>
+                        {dropOffs.filter((d) => !l.toDepotId || d.depotId === l.toDepotId).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-semibold text-text-muted mb-1">Active Linehaul Days</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DAY_LABELS_LONG.map((day, di) => {
+                        const on = l.weekDay[di] === 1;
+                        return (
+                          <label key={day}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium cursor-pointer border ${
+                              on ? 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/30'
+                                 : 'bg-white text-text-muted border-border'}`}>
+                            <input type="checkbox" className="w-3 h-3" checked={on}
+                              onChange={(e) => {
+                                const wd = [...l.weekDay];
+                                wd[di] = e.target.checked ? 1 : 0;
+                                updateLinehaul(i, { weekDay: wd });
+                              }} />
+                            {day}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
+                    <Field label="Departure Advance Days">
+                      <input type="number" className={INPUT_CLASS} value={l.departureAdvanceDays ?? ''}
+                        onChange={(e) => updateLinehaul(i, { departureAdvanceDays: e.target.value ? Number(e.target.value) : null })} />
+                    </Field>
+                    <label className="inline-flex items-center gap-2 text-xs mt-6">
+                      <input type="checkbox" checked={l.fromClientAddress ?? false}
+                        onChange={(e) => updateLinehaul(i, { fromClientAddress: e.target.checked })} />
+                      Book From Client Address
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-xs mt-6">
+                      <input type="checkbox" checked={l.insertToBulk ?? false}
+                        onChange={(e) => updateLinehaul(i, { insertToBulk: e.target.checked })} />
+                      Insert To Bulk
+                    </label>
+                    <div className="flex flex-col gap-1 mt-4">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={l.applyDiscount ?? false}
+                          aria-describedby={`lh-${i}-discount-help`}
+                          onChange={(e) => updateLinehaul(i, { applyDiscount: e.target.checked })} />
+                        {LINEHAUL_LABELS.applyDiscount}
+                      </label>
+                      <div id={`lh-${i}-discount-help`} className="text-[10px] text-text-muted pl-5">{LINEHAUL_LABELS.applyDiscountHelp}</div>
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={l.applyAddOnPercentage ?? false}
+                          aria-describedby={`lh-${i}-addon-help`}
+                          onChange={(e) => updateLinehaul(i, { applyAddOnPercentage: e.target.checked })} />
+                        {LINEHAUL_LABELS.applyAddOnPercentage}
+                      </label>
+                      <div id={`lh-${i}-addon-help`} className="text-[10px] text-text-muted pl-5">{LINEHAUL_LABELS.applyAddOnPercentageHelp}</div>
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={l.chargePerConsignment ?? false}
+                          onChange={(e) => updateLinehaul(i, { chargePerConsignment: e.target.checked })} />
+                        Cartons once
+                      </label>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
-                <Field label="Departure Advance Days">
-                  <input type="number" className={INPUT_CLASS} value={l.departureAdvanceDays ?? ''}
-                    onChange={(e) => updateLinehaul(i, { departureAdvanceDays: e.target.value ? Number(e.target.value) : null })} />
-                </Field>
-                <label className="inline-flex items-center gap-2 text-xs mt-6">
-                  <input type="checkbox" checked={l.fromClientAddress ?? false}
-                    onChange={(e) => updateLinehaul(i, { fromClientAddress: e.target.checked })} />
-                  Book From Client Address
-                </label>
-                <label className="inline-flex items-center gap-2 text-xs mt-6">
-                  <input type="checkbox" checked={l.insertToBulk ?? false}
-                    onChange={(e) => updateLinehaul(i, { insertToBulk: e.target.checked })} />
-                  Insert To Bulk
-                </label>
-                <div className="flex flex-col gap-1 mt-4">
-                  <label className="inline-flex items-center gap-2 text-xs">
-                    <input type="checkbox" checked={l.applyDiscount ?? false}
-                      onChange={(e) => updateLinehaul(i, { applyDiscount: e.target.checked })} />
-                    Apply Discount
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-xs">
-                    <input type="checkbox" checked={l.applyAddOnPercentage ?? false}
-                      onChange={(e) => updateLinehaul(i, { applyAddOnPercentage: e.target.checked })} />
-                    Apply Add-on %
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-xs">
-                    <input type="checkbox" checked={l.chargePerConsignment ?? false}
-                      onChange={(e) => updateLinehaul(i, { chargePerConsignment: e.target.checked })} />
-                    Cartons once
-                  </label>
-                </div>
-              </div>
-            </div>
+              )}
+            </WithLinehaulTabPricing>
           ))}
         </Section>
 

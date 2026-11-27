@@ -6,7 +6,8 @@ import { schedulesV2Service } from '../../services/schedulesV2Service';
 import { bulkPolygonService } from '../../services/bulkPolygonService';
 import { polygonsForApp } from '../../lib/polygonAppFilter';
 import { ClientMultiPicker } from './ClientMultiPicker';
-import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg } from './ChainBuilder';
+import { ChainBuilder, deriveOriginFromLegs, legDepotIds, type Leg, type DepotLeg, type LinehaulLeg } from './ChainBuilder';
+import { firstLinehaulPricingError } from '../../lib/linehaulLegRules';
 import { hasInactiveDepot, INACTIVE_DEPOT_MESSAGE } from '../../lib/depotOptions';
 import { ScheduleCoverageMap } from '../schedules/ScheduleCoverageMap';
 import { useAuth } from '../../context/AuthContext';
@@ -331,6 +332,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
     const enabled = days.filter((d) => d.enabled);
     if (enabled.length === 0) { setError('Enable at least one operating day.'); return; }
     if (hasInactiveDepot(lookupsQuery.data?.depots ?? [], legDepotIds(legs))) { setError(INACTIVE_DEPOT_MESSAGE); return; }
+    const pricingError = firstLinehaulPricingError(legs.filter((l): l is LinehaulLeg => l.type === 'linehaul'));
+    if (pricingError) { setError(pricingError); return; }
     if (clientMode === 'specific' && clientIds.length === 0) {
       setError('Pick at least one client, or switch to "All clients".'); return;
     }
@@ -596,6 +599,7 @@ export function NewScheduleModal({ open, onClose }: Props) {
               onPickupBoxDiscountChange={setPickupBoxDiscount}
               dropOffLocationId={dropOffLocationId}
               onDropOffLocationIdChange={setDropOffLocationId}
+              pricing={{ clientIds: clientMode === 'specific' ? clientIds : [], scheduleId: null }}
             />
           </div>
         </div>
@@ -918,8 +922,8 @@ export function NewScheduleModal({ open, onClose }: Props) {
 
       <p className="mt-4 text-xs text-text-muted italic">
         Save picks up the first Collection leg's pickup depot, every Linehaul
-        leg (with its per-leg speed override + amount + add-on % + charging
-        flags), and the Delivery leg's region + speed + zone group + zones.
+        leg (with its per-leg speed override + amount + % of delivery zone
+        rate + charging flags), and the Delivery leg's region + speed + zone group + zones.
       </p>
     </Modal>
   );

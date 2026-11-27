@@ -1,6 +1,8 @@
 ﻿import { useState } from 'react';
 import type { DepotLookupItem, LookupItem } from '../../services/scheduleService';
 import { depotOptions } from '../../lib/depotOptions';
+import { LINEHAUL_LABELS, ZONE_PERCENT_MAX, zonePercentError, bothChargedWarning, formatZonePercent, formatLegAmount } from '../../lib/linehaulLegRules';
+import { WithLinehaulTabPricing } from './WithLinehaulTabPricing';
 
 // Vertical stacked leg builder - MVP of Dane's schedules-module
 // ChainBuilder (SCHEDULES.md section A4). Steve's brief section 2b
@@ -240,6 +242,9 @@ interface Props {
    *  field (tblBulkScheduleLinehaul.DropOffLocationID) and stays there. */
   dropOffLocationId?: number | null;
   onDropOffLocationIdChange?: (v: number | null) => void;
+  /** UC #1115 M3: clients + saved schedule id for the Linehaul-tab pricing
+   *  check. Omitted = always editable. */
+  pricing?: { clientIds: number[]; scheduleId: number | null };
 }
 
 const NEW_LEG: Record<LegType, Leg> = {
@@ -249,7 +254,9 @@ const NEW_LEG: Record<LegType, Leg> = {
     type: 'linehaul', linehaulRunId: null, fromDepotId: null, toDepotId: null,
     dayOffset: 0, transitMinutes: 0, speedId: null,
     amount: null, amountPercentage: null,
-    insertToBulk: null, applyDiscount: null, applyAddOnPercentage: null,
+    // UC #1115: on for a NEW leg, or every additional item is charged the
+    // full linehaul price. Loaded legs keep their stored value.
+    insertToBulk: null, applyDiscount: null, applyAddOnPercentage: true,
     name: null, active: true, weekDay: null,
     dropOffLocationId: null, fromClientAddress: null,
   },
@@ -265,6 +272,7 @@ export function ChainBuilder({
   onPickupBoxDiscountChange,
   dropOffLocationId,
   onDropOffLocationIdChange,
+  pricing,
 }: Props) {
   const [expanded, setExpanded] = useState<number | null>(0);
 
@@ -567,6 +575,11 @@ export function ChainBuilder({
                       onPickupBoxDiscountChange={onPickupBoxDiscountChange}
                       dropOffLocationId={dropOffLocationId ?? null}
                       onDropOffLocationIdChange={onDropOffLocationIdChange}
+                      pricing={pricing ? {
+                        ...pricing,
+                        // Job creation prices legs at the schedule (delivery) speed.
+                        speedId: (legs.find((l) => l.type === 'delivery') as DeliveryLeg | undefined)?.speedId ?? null,
+                      } : undefined}
                     />
                   </div>
                 )}
@@ -744,9 +757,10 @@ function LegSummary({ leg, lookups, originDepotName, originIsClientAddress, disp
           {leg.dropOffLocationId != null && (
             <> · drop-off {dropOffName(leg.dropOffLocationId) ?? `#${leg.dropOffLocationId}`}</>
           )}
-          {leg.amount != null && <> · ${leg.amount.toFixed(2)}</>}
+          {/* UC #1115: show the stored value (money keeps 4 decimals), not a rounded one. */}
+          {leg.amount != null && <> · ${formatLegAmount(leg.amount)}</>}
           {leg.amountPercentage != null && leg.amountPercentage !== 0 && (
-            <> · +{leg.amountPercentage}%</>
+            <> · {formatZonePercent(leg.amountPercentage)}</>
           )}
         </div>
       </>
@@ -912,6 +926,58 @@ export function LegZonePicker({
   );
 }
 
+/**
+ * UC #1115 spec v2 Part B 2. When a Linehaul tab row prices the leg (fncT, and job creation
+ * under J2), Amount is shown read-only with its stored value (never patched, so saving keeps
+ * it) and "Plus % of delivery zone rate" is hidden, unless its stored value is out of range,
+ * so the operator can still clear a value that would fail the save.
+ */
+function LinehaulPriceFields({ leg, onPatch, fromTab }: { leg: LinehaulLeg; onPatch: (patch: Partial<Leg>) => void; fromTab: boolean }) {
+  const showPercent = !fromTab || zonePercentError(leg.amountPercentage) != null;
+  return (
+    <>
+      <label className="block text-xs">
+        Amount ($)
+        <input
+          type="number"
+          step="0.01"
+          min={0}
+          value={leg.amount ?? ''}
+          readOnly={fromTab}
+          onChange={fromTab ? undefined : (e) => onPatch({ amount: e.target.value === '' ? null : Number(e.target.value) } as Partial<Leg>)}
+          className={`mt-1 w-full px-2 py-1 border border-border rounded${fromTab ? ' bg-surface-muted text-text-muted' : ''}`}
+          placeholder="inherit"
+        />
+        {fromTab && <span className="mt-0.5 block text-text-muted">{LINEHAUL_LABELS.amountFromLinehaulTab}</span>}
+      </label>
+      {showPercent && (
+        <div className="text-xs">
+          <label className="block">
+            {LINEHAUL_LABELS.amountPercentage}
+            <input
+              type="number"
+              step="0.1"
+              min={0}
+              max={ZONE_PERCENT_MAX}
+              value={leg.amountPercentage ?? ''}
+              onChange={(e) => onPatch({ amountPercentage: e.target.value === '' ? null : Number(e.target.value) } as Partial<Leg>)}
+              className="mt-1 w-full px-2 py-1 border border-border rounded"
+              placeholder="0"
+            />
+          </label>
+          <div className="mt-0.5 text-text-muted">{LINEHAUL_LABELS.amountPercentageHelp}</div>
+          {zonePercentError(leg.amountPercentage) && (
+            <div className="mt-0.5 text-error" role="alert">{zonePercentError(leg.amountPercentage)}</div>
+          )}
+        </div>
+      )}
+      {!fromTab && bothChargedWarning(leg.amount, leg.amountPercentage) && (
+        <div className="col-span-2 text-xs text-warning">{bothChargedWarning(leg.amount, leg.amountPercentage)}</div>
+      )}
+    </>
+  );
+}
+
 function LegEditor({
   leg,
   onPatch,
@@ -923,6 +989,7 @@ function LegEditor({
   onPickupBoxDiscountChange,
   dropOffLocationId,
   onDropOffLocationIdChange,
+  pricing,
 }: {
   leg: Leg;
   onPatch: (patch: Partial<Leg>) => void;
@@ -945,6 +1012,7 @@ function LegEditor({
   onPickupBoxDiscountChange?: (v: number | null) => void;
   dropOffLocationId?: number | null;
   onDropOffLocationIdChange?: (v: number | null) => void;
+  pricing?: { clientIds: number[]; scheduleId: number | null; speedId: number | null };
 }) {
   if (leg.type === 'collection') {
     const boxDiscounts = lookups.pickupBoxDiscounts ?? [];
@@ -1241,29 +1309,18 @@ function LegEditor({
             ))}
           </select>
         </label>
-        <label className="block text-xs">
-          Amount ($)
-          <input
-            type="number"
-            step="0.01"
-            min={0}
-            value={leg.amount ?? ''}
-            onChange={(e) => onPatch({ amount: e.target.value === '' ? null : Number(e.target.value) } as Partial<Leg>)}
-            className="mt-1 w-full px-2 py-1 border border-border rounded"
-            placeholder="inherit"
-          />
-        </label>
-        <label className="block text-xs">
-          Add-on %
-          <input
-            type="number"
-            step="0.1"
-            value={leg.amountPercentage ?? ''}
-            onChange={(e) => onPatch({ amountPercentage: e.target.value === '' ? null : Number(e.target.value) } as Partial<Leg>)}
-            className="mt-1 w-full px-2 py-1 border border-border rounded"
-            placeholder="0"
-          />
-        </label>
+        {pricing ? (
+          <WithLinehaulTabPricing
+            linehaulRunId={leg.linehaulRunId}
+            scheduleId={pricing.scheduleId}
+            clientIds={pricing.clientIds}
+            speedId={pricing.speedId}
+          >
+            {(fromTab) => <LinehaulPriceFields leg={leg} onPatch={onPatch} fromTab={fromTab} />}
+          </WithLinehaulTabPricing>
+        ) : (
+          <LinehaulPriceFields leg={leg} onPatch={onPatch} fromTab={false} />
+        )}
         <label className="col-span-2 flex items-center gap-2 text-xs">
           <input
             type="checkbox"
@@ -1280,7 +1337,8 @@ function LegEditor({
             onChange={(e) => onPatch({ applyDiscount: e.target.checked } as Partial<Leg>)}
             className="accent-brand-cyan"
           />
-          Apply schedule discount
+          {LINEHAUL_LABELS.applyDiscount}
+          <span className="text-text-muted">{LINEHAUL_LABELS.applyDiscountHelp}</span>
         </label>
         <label className="col-span-2 flex items-center gap-2 text-xs">
           <input
@@ -1289,7 +1347,8 @@ function LegEditor({
             onChange={(e) => onPatch({ applyAddOnPercentage: e.target.checked } as Partial<Leg>)}
             className="accent-brand-cyan"
           />
-          Apply add-on percentage
+          {LINEHAUL_LABELS.applyAddOnPercentage}
+          <span className="text-text-muted">{LINEHAUL_LABELS.applyAddOnPercentageHelp}</span>
         </label>
         <label className="col-span-2 flex items-center gap-2 text-xs">
           <input

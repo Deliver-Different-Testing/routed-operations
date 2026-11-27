@@ -435,6 +435,12 @@ public partial class DespatchContext(DbContextOptions options) : DbContext(optio
         modelBuilder.Entity<TblBulkScheduleLinehaul>(entity =>
         {
             entity.HasKey(e => e.Id);
+            // UC #1115 (spec 2.4 item 4b). The table has money and decimal(8,2).
+            // Unnamed, EF maps decimal to decimal(18,2) and SqlClient sends the
+            // parameter at scale 2, so every schedule save rounded a leg Amount
+            // like 2.8365 to 2.84 (#332). money keeps all 4 decimals.
+            entity.Property(e => e.Amount).HasColumnType("money");
+            entity.Property(e => e.AmountPercentage).HasColumnType("decimal(8,2)");
         });
 
         modelBuilder.Entity<TblBulkPostCodeRunName>(entity =>
