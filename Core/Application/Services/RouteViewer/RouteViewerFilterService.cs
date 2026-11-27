@@ -80,20 +80,24 @@ public class RouteViewerFilterService(
     }
 
     /// <summary>GET /api/runviewer/filters/regions - region dropdown.
-    /// SP returns siteID, Name, Active. Frontend filters on Active for
-    /// the "Active Regions Only" checkbox; we surface the flag in the
-    /// LookupDto's label via naming convention (id + label only for now;
-    /// consumer that needs Active reads /api/runviewer/runs/overview
-    /// which carries the flag).</summary>
-    public async Task<List<LookupDto>> GetRegionListAsync(DateTime? runDate)
+    /// SP returns siteID, Name, Active. Active is carried through as
+    /// `active` so the frontend "Active regions only" box can hide
+    /// inactive regions (Steve 2026-11-27, Cheetah Phoenix / Las Vegas).</summary>
+    public async Task<List<RegionLookupDto>> GetRegionListAsync(DateTime? runDate)
     {
         var raw = await Context.Database.SqlQueryRaw<RawRegionRow>(
             @"EXEC dbo.RVW_stpBulkRegions @RunDate = @RunDate",
             SpParam.Of("@RunDate", runDate))
             .ToListAsync();
 
-        return raw.Select(r => new LookupDto { id = r.siteID, label = r.Name }).ToList();
+        return raw.Select(r => ToRegionLookup(r.siteID, r.Name, r.Active)).ToList();
     }
+
+    /// <summary>Maps one RVW_stpBulkRegions row to the region dropdown DTO.
+    /// Public static so the Active mapping is unit-testable without the SP
+    /// (this repo avoids InternalsVisibleTo).</summary>
+    public static RegionLookupDto ToRegionLookup(int siteId, string? name, bool active) =>
+        new() { id = siteId, label = name, active = active };
 
     // Per-SP raw result rows. Property names MUST match SP result-set
     // column names (case-insensitive) so EF's SqlQueryRaw row-mapper
