@@ -14,18 +14,19 @@ const baseline = () => [
   http.get('/api/runviewer/couriers', () => HttpResponse.json({ response: [] })),
 ];
 
+const baseValue = (): FilterState => ({
+  runDate: '2026-08-13',
+  clientIds: [],
+  regionIds: [],
+  speedIds: [],
+  courierId: null,
+  activeRegionsOnly: false,
+  availableCouriersOnly: false,
+});
+
 function renderBar(overrides: Partial<Parameters<typeof RvFilterBar>[0]> = {}) {
-  const value: FilterState = {
-    runDate: '2026-08-13',
-    clientIds: [],
-    regionIds: [],
-    speedIds: [],
-    courierId: null,
-    activeRegionsOnly: false,
-    availableCouriersOnly: false,
-  };
   const defaults = {
-    value,
+    value: baseValue(),
     onChange: vi.fn(),
     onRefresh: vi.fn(),
   };
@@ -89,6 +90,46 @@ describe('RvFilterBar', () => {
   it('renders extraActions slot', () => {
     renderBar({ extraActions: <button>Custom</button> });
     expect(screen.getByRole('button', { name: 'Custom' })).toBeInTheDocument();
+  });
+
+  // Steve 2026-11-27: inactive Cheetah depots must drop out of the Region
+  // list when "Active regions only" is ticked, and come back when it is not.
+  describe('Region options follow activeRegionsOnly', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/runviewer/filters/regions', () => HttpResponse.json({
+          response: [
+            { id: 10, label: 'Dallas', active: true },
+            { id: 30, label: 'Phoenix', active: false },
+          ],
+        })),
+      );
+    });
+
+    const openRegion = async () => {
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /^Region/ }));
+      await screen.findByText('Dallas');
+    };
+
+    it('ticked: inactive region is not offered', async () => {
+      renderBar({ value: { ...baseValue(), activeRegionsOnly: true } });
+      await openRegion();
+      expect(screen.queryByText(/Phoenix/)).toBeNull();
+    });
+
+    it('unticked: inactive region is offered, marked (inactive)', async () => {
+      renderBar({ value: { ...baseValue(), activeRegionsOnly: false } });
+      await openRegion();
+      expect(screen.getByText('Phoenix (inactive)')).toBeInTheDocument();
+    });
+
+    it('ticked with Phoenix already selected: Phoenix stays, marked', async () => {
+      renderBar({ value: { ...baseValue(), activeRegionsOnly: true, regionIds: [30] } });
+      expect(await screen.findByRole('button', { name: /Region: Phoenix \(inactive\)/ })).toBeInTheDocument();
+      await openRegion();
+      expect(screen.getByRole('button', { name: 'Phoenix (inactive)' })).toBeInTheDocument();
+    });
   });
 
   it('toggles activeRegionsOnly via checkbox', async () => {

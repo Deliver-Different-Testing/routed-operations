@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { useRouteViewerLookups } from '../../hooks/queries/useRouteViewerLookups';
 import { routeViewerService } from '../../services/routeViewerService';
+import { regionFilterOptions } from '../../lib/regionOptions';
 import { MultiSelect } from '../common/MultiSelect';
 import { SingleSelect } from '../common/SingleSelect';
 import { Button } from '../common/Button';
@@ -82,7 +83,7 @@ export function RvFilterBar({ value, onChange, onRefresh, isRefreshing, extraAct
               whole filter row reads as a set. */}
           <SingleSelect
             label="Region"
-            options={regions.map((r) => ({ value: String(r.id), label: r.label }))}
+            options={regionFilterOptions(regions, value.activeRegionsOnly, value.regionIds[0])}
             selected={value.regionIds[0] != null ? String(value.regionIds[0]) : null}
             onChange={(v) => onChange({
               ...value,

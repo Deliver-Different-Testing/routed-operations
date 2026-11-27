@@ -16,6 +16,8 @@ import type { LabelPayload } from '../lib/labelPrint';
 // lowercase per BulkRunDto contract).
 export interface Lookup { id: number; label: string }
 export interface SuburbLookup extends Lookup { alias?: string | null }
+/** Region dropdown row. `active` mirrors tblBulkRegion.Active; missing reads as active. */
+export interface RegionLookup extends Lookup { active?: boolean }
 
 /** Sibling-job payload for the Related-tabs strip. Carries a full
  *  BulkJob snapshot so LH1/LH2/etc. legs (which have no tblBulkJob
@@ -202,7 +204,7 @@ export const routeViewerService = {
     unwrap<Lookup[]>(`/runviewer/filters/speeds${buildQuery({ runDate })}`),
 
   getRegions: (runDate: string) =>
-    unwrap<Lookup[]>(`/runviewer/filters/regions${buildQuery({ runDate })}`),
+    unwrap<RegionLookup[]>(`/runviewer/filters/regions${buildQuery({ runDate })}`),
 
   getSuburbs: () => unwrap<SuburbLookup[]>('/runviewer/filters/suburbs'),
 
