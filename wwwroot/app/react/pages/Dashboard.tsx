@@ -15,7 +15,7 @@ import { RoIcon, type RoIconName } from '../components/common/RoIcon';
 //
 // A card shows only when the person can open its page. That is the same rule
 // the Sidebar and the route guard use (Access Control switches, the network
-// partner list, DFRNT-staff-only pages), so the home page never offers a link
+// partner list), so the home page never offers a link
 // that lands on "This page isn't available".
 
 interface HomeCard {
@@ -26,10 +26,6 @@ interface HomeCard {
   /** Every switch the page sits behind. A Route Viewer child needs the
    *  group's switch and its own, as in navItems. */
   keys: readonly RoFeatureKey[];
-  /** Small pill after the title. */
-  tag?: { text: string; tone: 'new' | 'internal' };
-  /** DFRNT staff only (mirrors the Sidebar's internalOnly gate). */
-  internalOnly?: boolean;
   /** Wide card with a button, for the page most people open first. */
   lead?: { cta: string };
 }
@@ -67,7 +63,7 @@ function buildGroups(isUs: boolean): HomeGroup[] {
       hint: 'Set up the work before it happens',
       cards: [
         { to: '/recurring-routes', title: 'Recurring Routes', blurb: `Your regular routes: the ${codes} they cover and who runs them.`, icon: 'repeat', keys: ['ro-recurring-routes'] },
-        { to: '/schedules-new', title: 'Schedules', blurb: 'Which days and times each service runs, and for which customers.', icon: 'calendar', keys: ['ro-schedules-new'], tag: { text: 'New', tone: 'new' } },
+        { to: '/schedules-new', title: 'Schedules', blurb: 'Which days and times each service runs, and for which customers.', icon: 'calendar', keys: ['ro-schedules-new'] },
         { to: '/client-overrides', title: 'Client Overrides', blurb: 'Exceptions to the schedule for one customer.', icon: 'sliders', keys: ['ro-client-overrides'] },
         { to: '/driver-scheduling', title: 'Driver Rostering', blurb: 'Who is available, when, and on which route.', icon: 'users', keys: ['ro-driver-rostering'] },
         { to: '/polygon-builder', title: 'Polygon Builder', blurb: `Pick the ${codes} a route or zone covers on the map.`, icon: 'polygon', keys: ['ro-polygon-builder'] },
@@ -81,15 +77,6 @@ function buildGroups(isUs: boolean): HomeGroup[] {
         { to: '/routes', title: 'Route Builder', blurb: 'Build and edit one-off runs by hand on the map.', icon: 'map', keys: ['ro-route-builder'] },
         { to: '/quoting', title: 'Quoting', blurb: 'Work out drivers needed and cost for a new piece of work.', icon: 'calculator', keys: ['ro-quoting'] },
         { to: '/auto-assign-log', title: 'Auto-Assign Log', blurb: 'See which jobs were put on a run automatically, and why.', icon: 'checklist', keys: ['ro-auto-assign-log'] },
-        {
-          to: '/historic-archive',
-          title: 'Historic Archive Upload',
-          blurb: "Load a tenant's old job history.",
-          icon: 'archive',
-          keys: ['ro-historic-archive'],
-          tag: { text: 'DFRNT only', tone: 'internal' },
-          internalOnly: true,
-        },
       ],
     },
   ];
@@ -119,19 +106,6 @@ function todayLabel(now: Date, timeZone: string | null): string {
   } catch {
     return new Intl.DateTimeFormat('en-GB', options).format(now);
   }
-}
-
-const TAG_TONE: Record<'new' | 'internal', string> = {
-  new: 'bg-brand-cyan/20 text-brand-dark',
-  internal: 'bg-brand-orange/20 text-brand-dark',
-};
-
-function Tag({ tag }: { tag: NonNullable<HomeCard['tag']> }) {
-  return (
-    <span className={`ml-2 inline-block rounded-full px-2 py-0.5 align-middle text-[11px] font-semibold leading-none ${TAG_TONE[tag.tone]}`}>
-      {tag.text}
-    </span>
-  );
 }
 
 function LeadCard({ card }: { card: HomeCard }) {
@@ -164,10 +138,7 @@ function PageCard({ card }: { card: HomeCard }) {
         <RoIcon name={card.icon} />
       </span>
       <span className="block">
-        <span className="block text-base font-semibold text-text-primary">
-          {card.title}
-          {card.tag && <Tag tag={card.tag} />}
-        </span>
+        <span className="block text-base font-semibold text-text-primary">{card.title}</span>
         <span className="mt-0.5 block text-sm font-light text-text-primary">{card.blurb}</span>
       </span>
     </Link>
@@ -232,8 +203,7 @@ export default function Dashboard() {
 
   const allowed = user.bypassesFeatureSwitches ? () => true : makeFeatureAllowed(status, visibleFeatures);
   const canOpen = (card: HomeCard) =>
-    (!card.internalOnly || user.isInternal)
-    && !(user.isNetworkPartner && isPartnerDeniedPath(card.to))
+    !(user.isNetworkPartner && isPartnerDeniedPath(card.to))
     && card.keys.every((key) => allowed(key));
 
   // Today's counts only for a person who can open Route Viewer, and only once

@@ -372,13 +372,14 @@ async function stubBundleDetail(page: import('@playwright/test').Page) {
 }
 
 test.describe('Schedules NEW - Steve 2026-09-08 brief', () => {
-  test('sidebar has NEW-badged Schedules entry that opens the page', async ({ page }) => {
+  test('sidebar has one Schedules entry that opens the page', async ({ page }) => {
     await stubApis(page);
     await page.goto('/schedules-new');
 
-    // Sidebar renders both the legacy Schedules entry and the new one.
-    await expect(page.getByRole('link', { name: /^Schedules$/ }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Schedules NEW' })).toBeVisible();
+    // One Schedules entry since 2026-11-29: the old page left the menu and
+    // the NEW badge came off.
+    await expect(page.getByRole('link', { name: /^Schedules$/ })).toHaveCount(1);
+    await expect(page.getByRole('link', { name: /^Schedules$/ })).toHaveAttribute('href', /\/schedules-new$/);
 
     // Page header + 3 tabs. Tab buttons now carry a count pill so their
     // accessible name is like "Schedules 14" - use a startsWith regex.

@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 export type RoIconName =
   | 'route' | 'plane' | 'scan' | 'print' | 'headset'
   | 'repeat' | 'calendar' | 'sliders' | 'users' | 'polygon'
-  | 'upload' | 'map' | 'calculator' | 'checklist' | 'archive'
+  | 'upload' | 'map' | 'calculator' | 'checklist'
   | 'home' | 'tools' | 'box' | 'truck' | 'alert';
 
 const PATHS: Record<RoIconName, ReactNode> = {
@@ -30,7 +30,6 @@ const PATHS: Record<RoIconName, ReactNode> = {
   box: (<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12 4 7.5" />),
   truck: (<><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" /><path d="M5 17H3V6a1 1 0 0 1 1-1h9v12m-4 0h6m4 0h2v-6h-8m0-5h5l3 5" /></>),
   alert: (<path d="M12 9v4M12 17h.01M10.24 3.957 2.257 17.125A2 2 0 0 0 3.986 20h16.028a2 2 0 0 0 1.729-2.875L13.76 3.957a2 2 0 0 0-3.52 0z" />),
-  archive: (<><rect x="3" y="4" width="18" height="4" rx="2" /><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4" /></>),
 };
 
 export function RoIcon({ name, className = 'h-9 w-9' }: { name: RoIconName; className?: string }) {

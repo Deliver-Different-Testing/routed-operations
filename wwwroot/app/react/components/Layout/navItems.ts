@@ -21,8 +21,10 @@ export interface NavItem {
   /** When set, the item renders as a collapsible group header.
    *  Auto-expanded when any child's route matches the current path. */
   children?: NavItem[];
-  /** A routable page with its own switch but no menu entry (Mobile). The
-   *  route guard reads it; the Sidebar does not render it. */
+  /** A routable page with its own switch but no menu entry (Mobile, the old
+   *  Schedules page, Historic Archive Upload). The route guard still reads it,
+   *  so the page stays behind its switch; the Sidebar and the home page do
+   *  not offer it. */
   hidden?: boolean;
 }
 
@@ -47,14 +49,19 @@ export const navItems: NavItem[] = [
   },
   { to: '/quoting', label: 'Quoting', featureKey: 'ro-quoting' },
   { to: '/recurring-routes', label: 'Recurring Routes', featureKey: 'ro-recurring-routes' },
-  { to: '/schedules', label: 'Schedules', featureKey: 'ro-schedules' },
+  // The old tuple-keyed Schedules page. Off the menu since 2026-11-29 (Steve):
+  // the id-keyed page below is the Schedules page now. Still routable and
+  // still behind its switch for anyone holding a link.
+  { to: '/schedules', label: 'Schedules (old)', featureKey: 'ro-schedules', hidden: true },
   // Steve's 2026-09-08 brief: the id-keyed multi-client schedules view
   // sits alongside the legacy tuple-keyed Schedules page until ops sign
   // off on the new one. Both read the same day rows; the new one lifts
   // Dane's visual builder + client link tables + BaseScheduleId
   // overrides. Both stay live throughout Phase 1..5 of the workstream.
   // Its switch is "Schedules (NEW)" so the two read apart in Access Control.
-  { to: '/schedules-new', label: 'Schedules', badge: 'NEW', featureKey: 'ro-schedules-new' },
+  // The NEW badge came off 2026-11-29 with the old page leaving the menu. The
+  // route stays /schedules-new and the switch stays ro-schedules-new.
+  { to: '/schedules-new', label: 'Schedules', featureKey: 'ro-schedules-new' },
   // Client-first override view (F1 UI polish, 2026-09-24). Pick a client,
   // see every schedule they differ from - the view ops actually wanted,
   // impossible on the schedule-first surface without opening 2,725 rows.
@@ -69,5 +76,7 @@ export const navItems: NavItem[] = [
   // DFRNT-staff tool that loads legacy job history into tucJobArchive. Its
   // switch is seeded for DF Admin only (spec section 1); it used to be gated
   // on the Internal billing-flag claim.
-  { to: '/historic-archive', label: 'Historic Archive Upload', featureKey: 'ro-historic-archive' },
+  // Off the menu since 2026-11-29 (Steve): the upload is reached from Settings
+  // now. Still routable and still behind its DF Admin switch.
+  { to: '/historic-archive', label: 'Historic Archive Upload', featureKey: 'ro-historic-archive', hidden: true },
 ];

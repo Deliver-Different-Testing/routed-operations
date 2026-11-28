@@ -45,14 +45,31 @@ describe('Sidebar', () => {
     expect(linksUnder('Run the day')).toEqual(
       ['Route Viewer', 'Linehaul', 'Scan Manager', 'Print Manager', 'Customer Services']);
     expect(linksUnder('Plan')).toEqual(
-      ['Recurring Routes', 'Schedules', 'SchedulesNEW', 'Client Overrides', 'Driver Rostering', 'Polygon Builder']);
+      ['Recurring Routes', 'Schedules', 'Client Overrides', 'Driver Rostering', 'Polygon Builder']);
     expect(linksUnder('Tools')).toEqual(
-      ['Bulk Import', 'Route Builder', 'Quoting', 'Auto-Assign Log', 'Historic Archive Upload']);
+      ['Bulk Import', 'Route Builder', 'Quoting', 'Auto-Assign Log']);
   });
 
-  it('gives a menu entry to every page in the menu tree, so a new page cannot go missing', () => {
+  it('has one Schedules entry, opening the current Schedules page, with no NEW label', () => {
     renderWithProviders(<Sidebar />);
-    const leaves = navItems.flatMap((item) => (item.children ?? [item]).filter((leaf) => !leaf.hidden));
+    expect(screen.getAllByRole('link', { name: 'Schedules' })).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'Schedules' })).toHaveAttribute('href', '/schedules-new');
+    expect(screen.queryByText('NEW')).not.toBeInTheDocument();
+  });
+
+  it('does not link to the old Schedules page or to Historic Archive Upload, even for DFRNT staff', () => {
+    (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, bypassesFeatureSwitches: true, isInternal: true };
+    renderWithProviders(<Sidebar />);
+    const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
+    expect(hrefs).not.toContain('/schedules');
+    expect(hrefs).not.toContain('/historic-archive');
+    expect(screen.queryByText('Historic Archive Upload')).not.toBeInTheDocument();
+  });
+
+  it('gives a menu entry to every page in the menu tree that is not marked hidden, so a new page cannot go missing', () => {
+    renderWithProviders(<Sidebar />);
+    const leaves = navItems.filter((item) => !item.hidden)
+      .flatMap((item) => (item.children ?? [item]).filter((leaf) => !leaf.hidden));
     const hrefs = screen.getAllByRole('link').map((a) => a.getAttribute('href'));
     expect([...hrefs].sort()).toEqual(leaves.map((leaf) => leaf.to).sort());
   });
@@ -118,7 +135,6 @@ describe('Sidebar', () => {
     ]) {
       expect(screen.queryByText(label)).toBeNull();
     }
-    // Two entries share the label "Schedules" (old + NEW); both go.
     expect(screen.queryAllByText('Schedules')).toHaveLength(0);
   });
 
@@ -178,7 +194,7 @@ describe('Sidebar', () => {
     server.use(http.get('/api/me/visible-features', () => { throw new Error('should not be fetched'); }));
     (window as any).__APP_USER__ = { ...(window as any).__APP_USER__, bypassesFeatureSwitches: true };
     renderWithProviders(<Sidebar />);
-    expect(screen.getByText('Historic Archive Upload')).toBeInTheDocument();
+    expect(screen.getByText('Auto-Assign Log')).toBeInTheDocument();
     expect(screen.getByText('Quoting')).toBeInTheDocument();
   });
 

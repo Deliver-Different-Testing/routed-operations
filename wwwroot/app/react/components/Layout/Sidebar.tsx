@@ -34,13 +34,13 @@ const SECTIONS: readonly MenuSection[] = [
     id: 'plan',
     label: 'Plan',
     icon: 'calendar',
-    paths: ['/recurring-routes', '/schedules', '/schedules-new', '/client-overrides', '/driver-scheduling', '/polygon-builder'],
+    paths: ['/recurring-routes', '/schedules-new', '/client-overrides', '/driver-scheduling', '/polygon-builder'],
   },
   {
     id: 'tools',
     label: 'Tools',
     icon: 'tools',
-    paths: ['/bulk-import', '/routes', '/quoting', '/auto-assign-log', '/historic-archive'],
+    paths: ['/bulk-import', '/routes', '/quoting', '/auto-assign-log'],
   },
 ];
 const CATCH_ALL_SECTION = 'tools';
@@ -149,6 +149,7 @@ export function Sidebar() {
   const visibleItems = useMemo(() => {
     const allowed = auth.bypassesFeatureSwitches ? () => true : makeFeatureAllowed(status, visibleFeatures);
     return navItems
+      .filter((item) => !item.hidden)
       .filter((item) => !(auth.isNetworkPartner && isPartnerDeniedPath(item.to)))
       .filter((item) => allowed(item.featureKey))
       .map((item): NavItem => item.children

@@ -74,23 +74,19 @@ describe('Routed Operations home page', () => {
     }
   });
 
-  it('shows one Schedules card, marked New, and not the old Schedules page', () => {
+  it('shows one Schedules card, for the current Schedules page, with no New label', () => {
     renderWithProviders(<Dashboard />);
     expect(screen.getAllByRole('link', { name: /^Schedules/ })).toHaveLength(1);
-    expect(screen.getByText('New')).toBeInTheDocument();
+    expect(card(/^Schedules/)).toHaveAttribute('href', '/schedules-new');
+    expect(screen.queryByText('New')).not.toBeInTheDocument();
     expect(screen.queryByText('Schedules (legacy)')).not.toBeInTheDocument();
   });
 
-  it('keeps Historic Archive Upload for DFRNT staff only', () => {
+  it('does not offer Historic Archive Upload, even to DFRNT staff (it lives in Settings now)', () => {
+    asUser({ isInternal: true, bypassesFeatureSwitches: true });
     renderWithProviders(<Dashboard />);
     expect(noCard(/^Historic Archive Upload/)).toBeNull();
-  });
-
-  it('shows Historic Archive Upload, tagged DFRNT only, to DFRNT staff', () => {
-    asUser({ isInternal: true });
-    renderWithProviders(<Dashboard />);
-    expect(card(/^Historic Archive Upload/)).toHaveAttribute('href', '/historic-archive');
-    expect(screen.getByText('DFRNT only')).toBeInTheDocument();
+    expect(screen.queryByText('DFRNT only')).not.toBeInTheDocument();
   });
 
   it('hides a card whose page is switched off for the person', async () => {
