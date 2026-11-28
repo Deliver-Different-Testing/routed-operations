@@ -4,7 +4,7 @@ import { useVisibleFeatures } from '../hooks/queries/useVisibleFeatures';
 import { makeFeatureAllowed, type RoFeatureKey } from '../lib/accessSwitches';
 import { isPartnerDeniedPath } from '../lib/partnerAccess';
 import { postcodePluralLabel } from '../lib/tenantLabels';
-import { DashboardIcon, type DashboardIconName } from './dashboardIcons';
+import { RoIcon, type RoIconName } from '../components/common/RoIcon';
 
 // The Routed Operations home page: one card per page, grouped by what the
 // person is there to do, each with an icon and one plain line saying what
@@ -19,7 +19,7 @@ interface HomeCard {
   to: string;
   title: string;
   blurb: string;
-  icon: DashboardIconName;
+  icon: RoIconName;
   /** Every switch the page sits behind. A Route Viewer child needs the
    *  group's switch and its own, as in navItems. */
   keys: readonly RoFeatureKey[];
@@ -138,7 +138,7 @@ function LeadCard({ card }: { card: HomeCard }) {
       className="flex items-start gap-4 rounded-2xl bg-brand-dark p-5 text-white transition hover:-translate-y-0.5 hover:shadow-lg sm:col-span-2"
     >
       <span className="grid h-16 w-16 flex-none place-items-center rounded-2xl bg-brand-cyan text-brand-dark">
-        <DashboardIcon name={card.icon} />
+        <RoIcon name={card.icon} />
       </span>
       <span className="block">
         <span className="block text-xl font-semibold">{card.title}</span>
@@ -158,7 +158,7 @@ function PageCard({ card }: { card: HomeCard }) {
       className="flex items-start gap-4 rounded-2xl bg-surface-white p-4 transition hover:-translate-y-0.5 hover:shadow-lg"
     >
       <span className="grid h-14 w-14 flex-none place-items-center rounded-2xl bg-brand-cyan/20 text-brand-dark">
-        <DashboardIcon name={card.icon} />
+        <RoIcon name={card.icon} />
       </span>
       <span className="block">
         <span className="block text-base font-semibold text-text-primary">
