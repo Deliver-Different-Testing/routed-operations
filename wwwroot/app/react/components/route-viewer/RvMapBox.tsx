@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { tenantMapCentre } from '../../lib/mapDefaults';
 import { decideRvMapView } from '../../lib/rvMapView';
+import { mapPollInterval, runDriverMarker } from '../../lib/runDriverMarker';
 import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { RvBox } from './RvBox';
 
@@ -70,9 +71,12 @@ interface Props {
    *  not re-run on every parent render. */
   originLat?: number | null;
   originLng?: number | null;
+  /** Driver of the single selected run (Cheetah R3). Shown at their last
+   *  fix even when "All couriers" is off or does not include them. */
+  runCourierId?: number | null;
 }
 
-export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, primaryRunKey, extraRunJobs, originLat, originLng }: Props) {
+export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMap, primaryRunKey, extraRunJobs, originLat, originLng, runCourierId }: Props) {
   const user = useAuth();
   const [allCouriers, setAllCouriers] = useState(false);
   const [allRuns, setAllRuns] = useState(false);
@@ -84,6 +88,7 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
   const flagMarkersRef = useRef<any[]>([]);
   const polylinesRef = useRef<any[]>([]);
   const carMarkerRef = useRef<any>(null);
+  const driverMarkerRef = useRef<any>(null);
   const infoWindowRef = useRef<any>(null);
   const bounceTimeoutRef = useRef<number | null>(null);
   // Last (primaryRunKey, origin) the map was centred on; see the marker effect.
@@ -100,7 +105,20 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
     }),
     enabled: allCouriers,
     staleTime: 30_000,
-    refetchInterval: allCouriers ? 30_000 : false,
+    // Cheetah F5: after an error poll every 2 min instead of stopping for
+    // good; back to 30 s on success. Errors here never toast.
+    refetchInterval: (q) => mapPollInterval(allCouriers, q.state.status),
+  });
+
+  // Cheetah R3: the selected run's driver at their last fix, polled like
+  // the envelope set and with the same back-off after an error.
+  const runDriverEnabled = runCourierId != null && runCourierId > 0;
+  const runDriverQ = useQuery({
+    queryKey: ['rv-map-run-driver', runCourierId],
+    queryFn: () => routeViewerService.getCourierLastPosition(runCourierId!),
+    enabled: runDriverEnabled,
+    staleTime: 30_000,
+    refetchInterval: (q) => mapPollInterval(runDriverEnabled, q.state.status),
   });
 
   // Tracked-courier GPS poll. Tied to the currently selected job id so
@@ -365,6 +383,37 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, allCouriers, couriersQ.data]);
 
+  // Cheetah R3: run driver marker. Skipped when the All couriers layer
+  // already draws that courier (runDriverMarker decides).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const g = (window as any).google;
+    const m = runDriverEnabled
+      ? runDriverMarker(runDriverQ.data, allCouriers ? couriersQ.data : null)
+      : null;
+    if (!m) {
+      if (driverMarkerRef.current) {
+        driverMarkerRef.current.setMap(null);
+        driverMarkerRef.current = null;
+      }
+      return;
+    }
+    const pos = { lat: m.lat, lng: m.lng };
+    if (driverMarkerRef.current) {
+      driverMarkerRef.current.setPosition(pos);
+      driverMarkerRef.current.setLabel({ text: m.label, color: '#111', fontSize: '10px', fontWeight: 'bold', className: 'rv-flag-label' });
+    } else {
+      driverMarkerRef.current = new g.maps.Marker({
+        position: pos,
+        map: mapRef.current,
+        title: `Run driver ${m.label}`,
+        icon: flagIcon(g),
+        label: { text: m.label, color: '#111', fontSize: '10px', fontWeight: 'bold', className: 'rv-flag-label' },
+        zIndex: 4,
+      });
+    }
+  }, [mapReady, runDriverEnabled, runDriverQ.data, allCouriers, couriersQ.data]);
+
   // Tier-3 item 2: live car marker for the tracked courier. Position
   // is refreshed by the 15s useQuery poll; this effect just mirrors the
   // latest data onto a single Marker instance (create once, move on
@@ -409,6 +458,7 @@ export function RvMapBox({ runDate, runJobs, selectedJobId, viewMode, runColorMa
     flagMarkersRef.current.forEach((m) => { try { m.setMap(null); } catch { /* noop */ } });
     polylinesRef.current.forEach((p) => { try { p.setMap(null); } catch { /* noop */ } });
     if (carMarkerRef.current) { try { carMarkerRef.current.setMap(null); } catch { /* noop */ } }
+    if (driverMarkerRef.current) { try { driverMarkerRef.current.setMap(null); } catch { /* noop */ } }
     if (bounceTimeoutRef.current != null) window.clearTimeout(bounceTimeoutRef.current);
   }, []);
 

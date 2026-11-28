@@ -298,7 +298,7 @@ export function RvJobDetail({ bulkJobId, initialJob, onPickSibling, onTransferRo
         )}
 
         {/* POD photo carousel - renders when the job has POD photos. */}
-        <PodPhotoCarousel bulkJobId={job.bulkJobId} />
+        <PodPhotoCarousel bulkJobId={job.bulkJobId} jobId={job.jobId} />
 
         {/* 6. Pickup + Delivery notes - editable (unless LH-leg / non-internal) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 px-2 pb-2">

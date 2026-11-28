@@ -59,6 +59,16 @@ public class RunViewerCourierController(
         return Ok(new { response = rows });
     }
 
+    /// <summary>GET /api/runviewer/couriers/last-position?courierId= -
+    /// the selected run's driver at their latest fix (Cheetah R3).
+    /// Response is null when there is no fix to show.</summary>
+    [HttpGet("last-position")]
+    public async Task<IActionResult> GetCourierLastPosition([FromQuery] int courierId)
+    {
+        var position = await courierService.GetCourierLastPositionAsync(courierId);
+        return Ok(new { response = position });
+    }
+
     /// <summary>GET /api/runviewer/couriers/route?code&start&end - GPS
     /// trail for the Courier Route red-polyline map overlay.</summary>
     [HttpGet("route")]

@@ -47,8 +47,10 @@ public class CourierPositionDto
 
 /// <summary>
 /// Available-courier marker on the "All Couriers" map toggle. Sourced
-/// from MAP_stpEnvelope, filtered to a lat/lng bounding box supplied by
-/// the current map viewport.
+/// from RVW_stpCourierPositions_Envelope (20261128100000), filtered to a
+/// lat/lng bounding box supplied by the current map viewport, and from
+/// RVW_stpCourierLastPosition (20261128100100) for the selected run's driver.
+/// Timestamp is the fix time in server-local time (NZ on Cheetah), not UTC.
 /// </summary>
 public class AvailableCourierPositionDto
 {

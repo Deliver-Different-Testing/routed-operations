@@ -125,8 +125,8 @@ export function RvJobContextMenu({ x, y, jobs, runDate, onClose, onDone }: Props
   const doPickup = () => bulkRun('Pickup', (j) => routeViewerService.pickupJob(j.jobId));
   const doMissing = () => bulkRun('Missing', (j) => routeViewerService.missingJob(j.jobId), true);
   // Release Job wraps RVW_stpReleaseJob per legacy homeControl job menu.
-  // Soft release - clears the courier assignment without moving the job
-  // back to RunBuilder. Distinct from Void / Cancel.
+  // Release To Courier: status 18 -> 0, courier kept, so the job is sent to
+  // its driver's phone. Distinct from Void / Cancel.
   const doRelease = () => bulkRun('Release', (j) => routeViewerService.releaseJob(j.jobId), true);
   const doComplete = async () => {
     onClose();

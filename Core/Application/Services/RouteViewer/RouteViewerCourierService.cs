@@ -143,16 +143,44 @@ public class RouteViewerCourierService(
         var scope = await scopeResolver.ResolveAsync();
         if (!scope.IsAdmin) return new List<AvailableCourierPositionDto>();
 
-        var positions = await Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
-            @"EXEC dbo.MAP_stpEnvelope @MinLng, @MinLat, @MaxLng, @MaxLat",
+        // Cheetah R3 (2026-11-28): MAP_stpEnvelope returns columns this DTO does not have and drops
+        // US couriers (PolygonID NULL), so the endpoint 500'd on Cheetah. RVW_stpCourierPositions_Envelope
+        // returns exactly the six DTO columns (migration 20261128100000).
+        var positions = await QueryEnvelopeAsync(minLng, minLat, maxLng, maxLat);
+
+        return await branchGuard.FilterCourierRowsAsync(positions, c => c.CourierId);
+    }
+
+    protected virtual Task<List<AvailableCourierPositionDto>> QueryEnvelopeAsync(
+        decimal minLng, decimal minLat, decimal maxLng, decimal maxLat) =>
+        Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
+            @"EXEC dbo.RVW_stpCourierPositions_Envelope @MinLng, @MinLat, @MaxLng, @MaxLat",
             SpParam.Of("@MinLng", minLng),
             SpParam.Of("@MinLat", minLat),
             SpParam.Of("@MaxLng", maxLng),
             SpParam.Of("@MaxLat", maxLat))
             .ToListAsync();
 
-        return await branchGuard.FilterCourierRowsAsync(positions, c => c.CourierId);
+    /// <summary>GET /api/runviewer/couriers/last-position?courierId= - one
+    /// courier's latest GPS fix today (server date), so the selected run's driver shows on the
+    /// map even when the viewport envelope does not include them (Cheetah R3).
+    /// Null for NP sessions, couriers outside the caller's branches, or no fix.</summary>
+    public async Task<AvailableCourierPositionDto?> GetCourierLastPositionAsync(int courierId)
+    {
+        if (courierId <= 0) return null;
+        var scope = await scopeResolver.ResolveAsync();
+        if (!scope.IsAdmin) return null;
+
+        var rows = await QueryLastPositionAsync(courierId);
+        rows = await branchGuard.FilterCourierRowsAsync(rows, c => c.CourierId);
+        return rows.FirstOrDefault(r => r.Latitude is not null && r.Longitude is not null);
     }
+
+    protected virtual Task<List<AvailableCourierPositionDto>> QueryLastPositionAsync(int courierId) =>
+        Context.Database.SqlQueryRaw<AvailableCourierPositionDto>(
+            @"EXEC dbo.RVW_stpCourierLastPosition @CourierID",
+            SpParam.Of("@CourierID", courierId))
+            .ToListAsync();
 
     /// <summary>GET /api/runviewer/couriers/route?code&start&end - GPS
     /// trail for the Courier Route red polyline overlay. Typically

@@ -478,6 +478,94 @@ public class RouteViewerJobService(
         public DateTime? PodTime { get; set; }
     }
 
+    /// <summary>GET /api/runviewer/jobs/pod-media?jobId= - Cheetah R4
+    /// (2026-11-28). POD photos, delivery signatures and pickup photos by
+    /// tucJob id, for jobs with no tblBulkJob row (CAPS route jobs), so the
+    /// bulkJobId carousel above cannot find them. Family rule as DespatchWeb
+    /// JobRepository.GetPodMediaLegsAsync: a parent brings its non-void
+    /// child legs (live and archived), a child brings only itself. Media is
+    /// deduped by S3 key and labelled with the leg's job number.</summary>
+    public async Task<List<PodMediaDto>> GetJobPodMediaAsync(int jobId)
+    {
+        if (jobId <= 0) return new List<PodMediaDto>();
+        await scopeGuard.EnsureTucJobInScopeAsync(jobId);
+        await branchGuard.EnsureTucJobInScopeAsync(jobId);
+
+        var rows = await LoadPodLegsAsync(jobId);
+        var self = rows.FirstOrDefault(r => r.JobId == jobId);
+        if (self == null) return new List<PodMediaDto>();
+
+        var isChild = self.ParentId != null && self.ParentId != self.JobId;
+        var legs = new List<PodLegRow> { self };
+        if (!isChild)
+        {
+            legs.AddRange(rows
+                .Where(r => r.JobId != jobId && r.ParentId == jobId && !r.IsVoid)
+                .DistinctBy(r => r.JobId)
+                .OrderBy(r => r.JobNumber, StringComparer.Ordinal));
+        }
+
+        var media = new List<PodMediaDto>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var leg in legs)
+            {
+                // A leg with no time of its own is looked up in the current
+                // month (photos are filed by upload month).
+                var today = DateTime.Today;
+                var delivery = leg.CompletedTime ?? today;
+                var pickup = leg.PickUpTime ?? leg.CompletedTime ?? leg.DispatchedDate ?? today;
+                foreach (var obj in await s3PhotoReader.GetLegPodMediaAsync(leg.JobId, delivery, pickup))
+                {
+                    if (!seenKeys.Add(obj.Key)) continue;
+                    media.Add(new PodMediaDto { JobId = leg.JobId, JobNumber = leg.JobNumber, Kind = obj.Kind, Data = obj.Data });
+                }
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Env S3Bucket not set on this tenant: empty carousel, as the
+            // bulkJobId path does, but say so in the log.
+            logger.LogWarning(ex, "POD media for job {JobId} skipped: {Message}", jobId, ex.Message);
+            return new List<PodMediaDto>();
+        }
+
+        return media;
+    }
+
+    /// <summary>The requested job and every row whose ParentID is it, from
+    /// tucJob and tucJobArchive. Raw SQL because the archive entity here does
+    /// not map ParentID / PickUpTime.</summary>
+    protected virtual Task<List<PodLegRow>> LoadPodLegsAsync(int jobId) =>
+        Context.Database.SqlQueryRaw<PodLegRow>(
+            @"SELECT j.ucjbID AS JobId, j.ucjbNumber AS JobNumber, j.ParentID AS ParentId,
+                     j.ucjbComplTime AS CompletedTime, j.PickUpTime AS PickUpTime,
+                     CASE WHEN YEAR(j.ucjbDispDate) > 1900 THEN j.ucjbDispDate END AS DispatchedDate,
+                     j.ucjbVoid AS IsVoid
+              FROM dbo.tucJob j WITH (NOLOCK)
+              WHERE j.ucjbID = @JobID OR j.ParentID = @JobID
+              UNION ALL
+              SELECT a.ucjbID, a.ucjbNumber, a.ParentID, a.ucjbComplTime, a.PickUpTime,
+                     CASE WHEN YEAR(a.ucjbDispDate) > 1900 THEN a.ucjbDispDate END,
+                     a.ucjbVoid
+              FROM dbo.tucJobArchive a WITH (NOLOCK)
+              WHERE (a.ucjbID = @JobID OR a.ParentID = @JobID)
+                AND NOT EXISTS (SELECT 1 FROM dbo.tucJob l WITH (NOLOCK) WHERE l.ucjbID = a.ucjbID)",
+            SpParam.Of("@JobID", jobId))
+            .ToListAsync();
+
+    public class PodLegRow
+    {
+        public int JobId { get; set; }
+        public string? JobNumber { get; set; }
+        public int? ParentId { get; set; }
+        public DateTime? CompletedTime { get; set; }
+        public DateTime? PickUpTime { get; set; }
+        public DateTime? DispatchedDate { get; set; }
+        public bool IsVoid { get; set; }
+    }
+
     /// <summary>GET /api/runviewer/jobs/linehaul?depotId&name&runDate&...
     /// - linehaul jobs for a given depot + run name. NP-scoped via
     /// @NpAgentId inside the SP.</summary>

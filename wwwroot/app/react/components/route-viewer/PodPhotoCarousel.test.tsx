@@ -125,3 +125,36 @@ describe('PodPhotoCarousel', () => {
     await waitFor(() => expect(screen.getByText('1 / 2')).toBeInTheDocument());
   });
 });
+
+// Cheetah R4: a CAPS route job has no bulkJobId; the carousel must read by
+// tucJob id and say which leg each photo belongs to.
+describe('PodPhotoCarousel with a tucJob id only (CAPS route job)', () => {
+  it('reads the job family media by jobId and labels each slide by leg', async () => {
+    let photosCalled = false;
+    let askedJobId: string | null = null;
+    server.use(
+      http.get('/api/runviewer/jobs/pod-photos', () => { photosCalled = true; return HttpResponse.json({ response: [] }); }),
+      http.get('/api/runviewer/jobs/pod-media', ({ request }) => {
+        askedJobId = new URL(request.url).searchParams.get('jobId');
+        return HttpResponse.json({ response: [
+          { jobId: 500, jobNumber: 'C100', kind: 'Pickup photo', data: 'AAAA' },
+          { jobId: 502, jobNumber: 'C100-2', kind: 'Signature', data: 'BBBB' },
+        ] });
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithProviders(
+      <QueryClientProvider client={client}>
+        <PodPhotoCarousel bulkJobId={null} jobId={500} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('1 / 2')).toBeInTheDocument());
+    expect(askedJobId).toBe('500');
+    expect(photosCalled).toBe(false);
+    expect(screen.getByText('C100 Pickup photo')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByTitle('Next'));
+    expect(screen.getByText('C100-2 Signature')).toBeInTheDocument();
+    expect(screen.getByAltText(/POD photo 2$/)).toHaveAttribute('src', 'data:image/jpeg;base64,BBBB');
+  });
+});
