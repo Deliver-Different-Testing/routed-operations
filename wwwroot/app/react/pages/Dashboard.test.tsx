@@ -142,6 +142,50 @@ describe('Routed Operations home page', () => {
     expect(noCard(/^Quoting/)).toBeNull();
   });
 
+  // -- Today's numbers -------------------------------------------------
+
+  const todayIs = (runs: unknown[], regions: unknown[]) => server.use(
+    http.get('/api/runviewer/runs', () => HttpResponse.json({ response: runs })),
+    http.get('/api/runviewer/runs/overview', () => HttpResponse.json({ response: regions })),
+  );
+  const aRun = (over: Record<string, unknown>) => ({ id: 1, jobs: 5, status: 'R', isMissing: false, courierId: 7, agentName: null, ...over });
+
+  it("shows today's numbers from the same data Route Viewer uses", async () => {
+    todayIs(
+      [aRun({ id: 1 }), aRun({ id: 2, courierId: null }), aRun({ id: 3, isMissing: true })],
+      [{ regionId: 1, region: 'North', total: 63, pickedUp: 20, toDo: 43 }],
+    );
+    renderWithProviders(<Dashboard />);
+    expect(await screen.findByRole('link', { name: '2 Runs today' })).toHaveAttribute('href', '/route-viewer');
+    expect(screen.getByRole('link', { name: '63 Jobs today' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '20 Picked up' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '1 Runs with no driver or partner' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '1 On the exceptions list' })).toBeInTheDocument();
+  });
+
+  it('shows a dash, not a wrong number, when the numbers cannot be loaded', async () => {
+    server.use(
+      http.get('/api/runviewer/runs', () => new HttpResponse(null, { status: 500 })),
+      http.get('/api/runviewer/runs/overview', () => new HttpResponse(null, { status: 500 })),
+    );
+    renderWithProviders(<Dashboard />);
+    expect(await screen.findByRole('link', { name: '- Runs today' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '- Jobs today' })).toBeInTheDocument();
+  });
+
+  it("does not ask for or show today's numbers when the person cannot open Route Viewer", async () => {
+    onlyTheseSwitches(RO_FEATURE_KEYS.filter((k) => k !== 'ro-route-viewer'));
+    let asked = false;
+    server.use(
+      http.get('/api/runviewer/runs', () => { asked = true; return HttpResponse.json({ response: [] }); }),
+      http.get('/api/runviewer/runs/overview', () => { asked = true; return HttpResponse.json({ response: [] }); }),
+    );
+    renderWithProviders(<Dashboard />);
+    await waitFor(() => expect(noCard(/^Route Viewer/)).toBeNull());
+    expect(screen.queryByRole('link', { name: /Runs today$/ })).toBeNull();
+    expect(asked).toBe(false);
+  });
+
   it('says postcodes for a tenant outside the US', () => {
     renderWithProviders(<Dashboard />);
     expect(card(/^Recurring Routes/)).toHaveTextContent('postcodes');

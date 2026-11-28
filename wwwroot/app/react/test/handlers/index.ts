@@ -18,6 +18,10 @@ export const handlers: RequestHandler[] = [
   // Default: every Routed Operations switch is on, which is what a tenant sees
   // today. Tests of the gating itself override this via server.use(...).
   http.get('/api/me/visible-features', () => HttpResponse.json([...RO_FEATURE_KEYS])),
+  // The home page reads today's runs and region overview for its counts.
+  // Default: an empty day. Tests of the counts override via server.use(...).
+  http.get('/api/runviewer/runs', () => HttpResponse.json({ response: [] })),
+  http.get('/api/runviewer/runs/overview', () => HttpResponse.json({ response: [] })),
   // New Import on-demand and Staff Import ask this on the way past a step.
   // Default: nothing refused. Tests of the refusal override via server.use(...).
   http.post('/api/bulk-import/reference-check', () =>

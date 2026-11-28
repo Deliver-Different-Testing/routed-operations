@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useVisibleFeatures } from '../hooks/queries/useVisibleFeatures';
+import { useTodaySummary } from '../hooks/queries/useTodaySummary';
+import type { TodaySummary } from '../lib/todaySummary';
 import { makeFeatureAllowed, type RoFeatureKey } from '../lib/accessSwitches';
 import { isPartnerDeniedPath } from '../lib/partnerAccess';
 import { postcodePluralLabel } from '../lib/tenantLabels';
@@ -8,7 +10,8 @@ import { RoIcon, type RoIconName } from '../components/common/RoIcon';
 
 // The Routed Operations home page: one card per page, grouped by what the
 // person is there to do, each with an icon and one plain line saying what
-// the page is for. No counts or other data are loaded here.
+// the page is for. Above the cards, today's counts, read from the same data
+// Route Viewer loads (see lib/todaySummary), for a person who can open it.
 //
 // A card shows only when the person can open its page. That is the same rule
 // the Sidebar and the route guard use (Access Control switches, the network
@@ -171,6 +174,58 @@ function PageCard({ card }: { card: HomeCard }) {
   );
 }
 
+const ROUTE_VIEWER_KEYS: readonly RoFeatureKey[] = ['ro-route-viewer', 'ro-route-viewer-runs'];
+
+type Tone = 'plain' | 'good' | 'warn' | 'bad';
+const TONE: Record<Tone, string> = {
+  plain: 'text-text-primary',
+  good: 'text-emerald-600',
+  warn: 'text-brand-orange',
+  bad: 'text-red-600',
+};
+
+interface Count {
+  label: string;
+  icon: RoIconName;
+  pick: (summary: TodaySummary) => number;
+  /** Colour when the count is above zero. Zero is always plain. */
+  tone: Tone;
+}
+
+const COUNTS: readonly Count[] = [
+  { label: 'Runs today', icon: 'route', pick: (s) => s.runs, tone: 'plain' },
+  { label: 'Jobs today', icon: 'box', pick: (s) => s.jobs, tone: 'plain' },
+  { label: 'Picked up', icon: 'scan', pick: (s) => s.pickedUp, tone: 'good' },
+  { label: 'Runs with no driver or partner', icon: 'truck', pick: (s) => s.unassignedRuns, tone: 'warn' },
+  { label: 'On the exceptions list', icon: 'alert', pick: (s) => s.exceptions, tone: 'bad' },
+];
+
+/** One panel with keyline dividers. Every count opens Route Viewer. A count
+ *  that is still loading or could not be loaded shows a dash, never a zero. */
+function TodayStrip({ summary }: { summary: TodaySummary | null }) {
+  return (
+    <section aria-label="Today" className="mb-7 grid grid-cols-2 overflow-hidden rounded-2xl bg-surface-white sm:grid-cols-3 xl:grid-cols-5">
+      {COUNTS.map((count) => {
+        const value = summary ? count.pick(summary) : null;
+        const tone = value ? TONE[count.tone] : TONE.plain;
+        return (
+          <Link
+            key={count.label}
+            to="/route-viewer"
+            className="flex items-center gap-3 border-b border-l border-border-light px-5 py-4 transition hover:bg-surface-light"
+          >
+            <span className="flex-none text-brand-dark/70"><RoIcon name={count.icon} /></span>
+            <span className="block">
+              <span className={`block text-2xl font-bold leading-tight ${tone}`}>{value ?? '-'}</span>
+              <span className="block text-sm font-light text-text-primary">{count.label}</span>
+            </span>
+          </Link>
+        );
+      })}
+    </section>
+  );
+}
+
 export default function Dashboard() {
   const user = useAuth();
   const { visibleFeatures, status } = useVisibleFeatures();
@@ -180,6 +235,12 @@ export default function Dashboard() {
     (!card.internalOnly || user.isInternal)
     && !(user.isNetworkPartner && isPartnerDeniedPath(card.to))
     && card.keys.every((key) => allowed(key));
+
+  // Today's counts only for a person who can open Route Viewer, and only once
+  // the switches have answered, so nothing is requested for anyone else.
+  const canSeeToday = !(user.isNetworkPartner && isPartnerDeniedPath('/route-viewer'))
+    && (user.bypassesFeatureSwitches || (status === 'ready' && ROUTE_VIEWER_KEYS.every((key) => allowed(key))));
+  const today = useTodaySummary(canSeeToday);
 
   const groups = buildGroups(user.isUsTenant)
     .map((group) => ({ ...group, cards: group.cards.filter(canOpen) }))
@@ -194,6 +255,8 @@ export default function Dashboard() {
       <div className="mx-auto max-w-6xl">
         <h1 className="text-3xl font-bold text-text-primary">{greeting}</h1>
         <p className="mb-6 mt-1 text-base font-light text-text-primary">{todayLabel(now, user.timeZone)}</p>
+
+        {today.status !== 'off' && <TodayStrip summary={today.summary} />}
 
         {groups.length === 0 && (
           <p className="rounded-2xl bg-surface-white p-5 text-sm text-text-primary">
