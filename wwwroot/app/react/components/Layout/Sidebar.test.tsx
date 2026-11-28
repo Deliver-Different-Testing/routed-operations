@@ -31,9 +31,9 @@ describe('Sidebar', () => {
     expect(screen.getByText('Auto-Assign Log')).toBeInTheDocument();
   });
 
-  it('renders the stage footer text', () => {
+  it('shows no build-stage note under the menu', () => {
     renderWithProviders(<Sidebar />);
-    expect(screen.getByText('Stage 1 - Route Builder')).toBeInTheDocument();
+    expect(screen.queryByText(/Stage 1/)).not.toBeInTheDocument();
   });
 
   it('auto-expands the Route Viewer group when the current route is under /route-viewer', () => {

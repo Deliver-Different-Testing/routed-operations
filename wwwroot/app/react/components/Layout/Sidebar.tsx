@@ -167,7 +167,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="px-4 py-3 text-xs text-white/50">Stage 1 - Route Builder</div>
     </aside>
   );
 }

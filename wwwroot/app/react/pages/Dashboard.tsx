@@ -1,141 +1,219 @@
 import { Link } from 'react-router-dom';
-import { Card } from '../components/common/Card';
 import { useAuth } from '../context/AuthContext';
-import { postcodeLabel } from '../lib/tenantLabels';
+import { useVisibleFeatures } from '../hooks/queries/useVisibleFeatures';
+import { makeFeatureAllowed, type RoFeatureKey } from '../lib/accessSwitches';
+import { isPartnerDeniedPath } from '../lib/partnerAccess';
+import { postcodePluralLabel } from '../lib/tenantLabels';
+import { DashboardIcon, type DashboardIconName } from './dashboardIcons';
 
-interface ModuleCard {
+// The Routed Operations home page: one card per page, grouped by what the
+// person is there to do, each with an icon and one plain line saying what
+// the page is for. No counts or other data are loaded here.
+//
+// A card shows only when the person can open its page. That is the same rule
+// the Sidebar and the route guard use (Access Control switches, the network
+// partner list, DFRNT-staff-only pages), so the home page never offers a link
+// that lands on "This page isn't available".
+
+interface HomeCard {
   to: string;
   title: string;
   blurb: string;
-  cta: string;
-  /** Small pill rendered next to the title. Matches the Sidebar's NEW
-   *  badge convention so a preview module reads the same in both nav
-   *  surfaces. */
-  badge?: string;
-  /** When true, only render for internal-staff users (mirrors the
-   *  Sidebar's internalOnly gate). */
+  icon: DashboardIconName;
+  /** Every switch the page sits behind. A Route Viewer child needs the
+   *  group's switch and its own, as in navItems. */
+  keys: readonly RoFeatureKey[];
+  /** Small pill after the title. */
+  tag?: { text: string; tone: 'new' | 'internal' };
+  /** DFRNT staff only (mirrors the Sidebar's internalOnly gate). */
   internalOnly?: boolean;
+  /** Wide card with a button, for the page most people open first. */
+  lead?: { cta: string };
 }
 
-function buildModules(isUs: boolean, isInternal: boolean): ModuleCard[] {
-  const shortLower = postcodeLabel(isUs, true).toLowerCase();
-  // Order matches the Sidebar so the Dashboard cards read top-to-bottom
-  // in the same sequence as the left nav: Bulk Import -> Routes ->
-  // Route Viewer -> Quoting -> Recurring Routes -> Schedules ->
-  // Schedules NEW -> Driver Scheduling -> Polygon Builder ->
-  // Historic Archive Upload (internal only).
-  // (Dashboard + Auto-Assign Log have no card - Dashboard is this page,
-  // Auto-Assign Log is a diagnostics tool that operators rarely open
-  // from a card.)
-  const all: ModuleCard[] = [
+interface HomeGroup {
+  title: string;
+  hint: string;
+  cards: HomeCard[];
+}
+
+function buildGroups(isUs: boolean): HomeGroup[] {
+  // "postcodes" for NZ and AU, "ZIPs" for the US.
+  const codes = isUs ? postcodePluralLabel(true).replace('Zips', 'ZIPs') : postcodePluralLabel(false).toLowerCase();
+  return [
     {
-      to: '/bulk-import',
-      title: 'Data Import',
-      blurb: 'Direct-insert wizard that replaces BulkImportHyper. Auto column mapping, suburb / address fixup, per-depot schedule pick, staff import bypass, bulk complete and bulk delete with FK cascade.',
-      cta: 'Open Data Import',
+      title: 'Run the day',
+      hint: 'What is happening right now',
+      cards: [
+        {
+          to: '/route-viewer',
+          title: 'Route Viewer',
+          blurb: 'Every run for the day on one screen. Assign a driver or partner, follow progress on the map, and deal with exceptions.',
+          icon: 'route',
+          keys: ['ro-route-viewer', 'ro-route-viewer-runs'],
+          lead: { cta: "Open today's runs" },
+        },
+        { to: '/route-viewer/linehaul', title: 'Linehaul', blurb: 'Follow freight between depots and airports, leg by leg.', icon: 'plane', keys: ['ro-route-viewer', 'ro-linehaul'] },
+        { to: '/route-viewer/scans', title: 'Scan Manager', blurb: 'See every scan, and what has not been scanned yet.', icon: 'scan', keys: ['ro-route-viewer', 'ro-scan-manager'] },
+        { to: '/route-viewer/print', title: 'Print Manager', blurb: 'Print run sheets and labels for a run.', icon: 'print', keys: ['ro-route-viewer', 'ro-print-manager'] },
+        { to: '/route-viewer/cs', title: 'Customer Services', blurb: 'Find a job fast when a customer calls.', icon: 'headset', keys: ['ro-route-viewer', 'ro-customer-services'] },
+      ],
     },
     {
-      to: '/routes',
-      title: 'Route Builder',
-      blurb: 'Batch cockpit for building, editing and dispatching runs. Full parity with the legacy RunBuilder including map right-click, multibox, group bulk-move, layout save/load, merge run and hotkeys.',
-      cta: 'Open Route Builder',
+      title: 'Plan',
+      hint: 'Set up the work before it happens',
+      cards: [
+        { to: '/recurring-routes', title: 'Recurring Routes', blurb: `Your regular routes: the ${codes} they cover and who runs them.`, icon: 'repeat', keys: ['ro-recurring-routes'] },
+        { to: '/schedules-new', title: 'Schedules', blurb: 'Which days and times each service runs, and for which customers.', icon: 'calendar', keys: ['ro-schedules-new'], tag: { text: 'New', tone: 'new' } },
+        { to: '/client-overrides', title: 'Client Overrides', blurb: 'Exceptions to the schedule for one customer.', icon: 'sliders', keys: ['ro-client-overrides'] },
+        { to: '/driver-scheduling', title: 'Driver Rostering', blurb: 'Who is available, when, and on which route.', icon: 'users', keys: ['ro-driver-rostering'] },
+        { to: '/polygon-builder', title: 'Polygon Builder', blurb: `Pick the ${codes} a route or zone covers on the map.`, icon: 'polygon', keys: ['ro-polygon-builder'] },
+      ],
     },
     {
-      to: '/route-viewer',
-      title: 'Route Viewer',
-      blurb: 'Operator cockpit that replaces the legacy RunViewer suite. Five sub-modules: Run Viewer (primary dispatch), Scan Manager (Bulk + Routed), Print Manager, Customer Services, Linehaul. Backend endpoints under /api/runviewer/* are live and returning real tenant data; frontend UI builds out P3+.',
-      cta: 'Open Route Viewer',
-    },
-    {
-      to: '/quoting',
-      title: 'Quoting',
-      blurb: 'Upload a shadow-job CSV, pick a rate card and service level, then simulate to get drivers required, cost / job, cost / km and a recommended quote. Never touches operational dispatch.',
-      cta: 'Open Quoting',
-    },
-    {
-      to: '/recurring-routes',
-      title: 'Recurring Routes',
-      blurb: `Manage the Configurator Route table: name, area, schedule, default courier / agent / NP, ${shortLower} codes and roster. Same rows visible in DF Admin > Operations > Recurring Routes.`,
-      cta: 'Open Recurring Routes',
-    },
-    {
-      to: '/schedules',
-      // "Schedules (legacy)" - the sidebar keeps the shorter "Schedules"
-      // label for real estate, but on the Dashboard we distinguish so
-      // screen readers don't see two identical <h2> headings. Audit
-      // MEDIUM #16 (2026-09-17).
-      title: 'Schedules (legacy)',
-      blurb: 'Legacy tuple-keyed schedules view (Name + LegacyClientId). Still live for operators who prefer the old shape while the id-keyed Schedules NEW view rolls out.',
-      cta: 'Open Schedules',
-    },
-    {
-      to: '/schedules-new',
-      title: 'Schedules',
-      blurb: "Steve's 2026-09-08 multi-client schedules view keyed on ScheduleId. One schedule, many clients; overrides stay linked to their base via BaseScheduleId; recurring routes and linehaul runs sit alongside instead of on a separate page.",
-      cta: 'Open Schedules NEW',
-      badge: 'NEW',
-    },
-    {
-      to: '/driver-scheduling',
-      title: 'Driver Rostering',
-      blurb: 'Courier availability rosters + time slots + SMS notifications. Ported from the legacy CourierManager scheduler; distinct from Schedules above (that covers booking / prebook templates, this covers driver-side rosters).',
-      cta: 'Open Driver Rostering',
-    },
-    {
-      to: '/polygon-builder',
-      title: 'Polygon Builder',
-      blurb: `Pick ${shortLower} boundaries on a Google Map, then save the selection as a recurring route (writes Route + RouteZipcodes so it drives the downstream prebook cron).`,
-      cta: 'Open Polygon Builder',
-    },
-    {
-      to: '/historic-archive',
-      title: 'Historic Archive Upload',
-      blurb: 'Load legacy job history into tucJobArchive. Internal-only surface; the server enforces the same Internal-claim gate on the controller. Field mapping supports the full 68-field OTG CSV shape.',
-      cta: 'Open Historic Archive Upload',
-      internalOnly: true,
+      title: 'Tools',
+      hint: 'Used now and then',
+      cards: [
+        { to: '/bulk-import', title: 'Bulk Import', blurb: 'Load many jobs at once from a spreadsheet.', icon: 'upload', keys: ['ro-bulk-import'] },
+        { to: '/routes', title: 'Route Builder', blurb: 'Build and edit one-off runs by hand on the map.', icon: 'map', keys: ['ro-route-builder'] },
+        { to: '/quoting', title: 'Quoting', blurb: 'Work out drivers needed and cost for a new piece of work.', icon: 'calculator', keys: ['ro-quoting'] },
+        { to: '/auto-assign-log', title: 'Auto-Assign Log', blurb: 'See which jobs were put on a run automatically, and why.', icon: 'checklist', keys: ['ro-auto-assign-log'] },
+        {
+          to: '/historic-archive',
+          title: 'Historic Archive Upload',
+          blurb: "Load a tenant's old job history.",
+          icon: 'archive',
+          keys: ['ro-historic-archive'],
+          tag: { text: 'DFRNT only', tone: 'internal' },
+          internalOnly: true,
+        },
+      ],
     },
   ];
+}
 
-  return all.filter((m) => !m.internalOnly || isInternal);
+/** "morning" before noon, "afternoon" until 5pm, then "evening", by the tenant's clock. */
+function partOfDay(now: Date, timeZone: string | null): 'morning' | 'afternoon' | 'evening' {
+  let hour = now.getHours();
+  if (timeZone) {
+    try {
+      const text = new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone }).format(now);
+      const parsed = Number.parseInt(text, 10);
+      if (!Number.isNaN(parsed)) hour = parsed;
+    } catch {
+      // Unknown zone name: keep the browser's hour.
+    }
+  }
+  if (hour < 12) return 'morning';
+  if (hour < 17) return 'afternoon';
+  return 'evening';
+}
+
+function todayLabel(now: Date, timeZone: string | null): string {
+  const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
+  try {
+    return new Intl.DateTimeFormat('en-GB', timeZone ? { ...options, timeZone } : options).format(now);
+  } catch {
+    return new Intl.DateTimeFormat('en-GB', options).format(now);
+  }
+}
+
+const TAG_TONE: Record<'new' | 'internal', string> = {
+  new: 'bg-brand-cyan/20 text-brand-dark',
+  internal: 'bg-brand-orange/20 text-brand-dark',
+};
+
+function Tag({ tag }: { tag: NonNullable<HomeCard['tag']> }) {
+  return (
+    <span className={`ml-2 inline-block rounded-full px-2 py-0.5 align-middle text-[11px] font-semibold leading-none ${TAG_TONE[tag.tone]}`}>
+      {tag.text}
+    </span>
+  );
+}
+
+function LeadCard({ card }: { card: HomeCard }) {
+  return (
+    <Link
+      to={card.to}
+      className="flex items-start gap-4 rounded-2xl bg-brand-dark p-5 text-white transition hover:-translate-y-0.5 hover:shadow-lg sm:col-span-2"
+    >
+      <span className="grid h-16 w-16 flex-none place-items-center rounded-2xl bg-brand-cyan text-brand-dark">
+        <DashboardIcon name={card.icon} />
+      </span>
+      <span className="block">
+        <span className="block text-xl font-semibold">{card.title}</span>
+        <span className="mt-1 block text-sm font-light">{card.blurb}</span>
+        <span className="mt-3 inline-block rounded bg-brand-cyan px-3 py-1.5 text-sm font-semibold text-brand-dark">
+          {card.lead?.cta}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+function PageCard({ card }: { card: HomeCard }) {
+  return (
+    <Link
+      to={card.to}
+      className="flex items-start gap-4 rounded-2xl bg-surface-white p-4 transition hover:-translate-y-0.5 hover:shadow-lg"
+    >
+      <span className="grid h-14 w-14 flex-none place-items-center rounded-2xl bg-brand-cyan/20 text-brand-dark">
+        <DashboardIcon name={card.icon} />
+      </span>
+      <span className="block">
+        <span className="block text-base font-semibold text-text-primary">
+          {card.title}
+          {card.tag && <Tag tag={card.tag} />}
+        </span>
+        <span className="mt-0.5 block text-sm font-light text-text-primary">{card.blurb}</span>
+      </span>
+    </Link>
+  );
 }
 
 export default function Dashboard() {
   const user = useAuth();
-  const modules = buildModules(user.isUsTenant, user.isInternal);
-  return (
-    <div className="h-full p-6 overflow-auto">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <Card title="You">
-          <div className="text-sm text-text-secondary space-y-1">
-            <div>Name: {user.fullName ?? 'Unknown'}</div>
-            <div>Email: {user.email ?? 'Unknown'}</div>
-            <div>Tenant: {user.currentTenantId ?? 'Unknown'}</div>
-            <div>Region: {user.countryCode ?? 'Unknown'}</div>
-          </div>
-        </Card>
+  const { visibleFeatures, status } = useVisibleFeatures();
 
-        {modules.map((m) => (
-          <Card key={m.to} className="h-full flex flex-col">
-            <div className="flex items-center gap-2 mb-3">
-              <h2 className="text-base font-semibold text-text-primary">{m.title}</h2>
-              {m.badge && (
-                <span
-                  className="text-[10px] font-semibold tracking-wide rounded px-1.5 py-0.5 leading-none bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/40"
-                >
-                  {m.badge}
-                </span>
+  const allowed = user.bypassesFeatureSwitches ? () => true : makeFeatureAllowed(status, visibleFeatures);
+  const canOpen = (card: HomeCard) =>
+    (!card.internalOnly || user.isInternal)
+    && !(user.isNetworkPartner && isPartnerDeniedPath(card.to))
+    && card.keys.every((key) => allowed(key));
+
+  const groups = buildGroups(user.isUsTenant)
+    .map((group) => ({ ...group, cards: group.cards.filter(canOpen) }))
+    .filter((group) => group.cards.length > 0);
+
+  const now = new Date();
+  const firstName = (user.fullName ?? '').trim().split(/\s+/)[0];
+  const greeting = `Good ${partOfDay(now, user.timeZone)}${firstName ? `, ${firstName}` : ''}`;
+
+  return (
+    <div className="h-full overflow-auto p-6">
+      <div className="mx-auto max-w-6xl">
+        <h1 className="text-3xl font-bold text-text-primary">{greeting}</h1>
+        <p className="mb-6 mt-1 text-base font-light text-text-primary">{todayLabel(now, user.timeZone)}</p>
+
+        {groups.length === 0 && (
+          <p className="rounded-2xl bg-surface-white p-5 text-sm text-text-primary">
+            None of the Routed Operations pages are switched on for you yet.
+            Ask your administrator to switch on the pages you need in Access Control.
+          </p>
+        )}
+
+        {groups.map((group) => (
+          <section key={group.title} className="mb-7">
+            <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-text-primary">
+              {group.title}
+              <span className="ml-3 text-sm font-light normal-case tracking-normal">{group.hint}</span>
+            </h2>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {group.cards.map((card) =>
+                card.lead ? <LeadCard key={card.to} card={card} /> : <PageCard key={card.to} card={card} />,
               )}
             </div>
-            <p className="text-sm text-text-secondary">{m.blurb}</p>
-            <div className="mt-auto pt-3">
-              <Link
-                to={m.to}
-                className="inline-block px-3 py-1.5 rounded bg-brand-cyan text-brand-dark text-sm font-medium hover:bg-brand-cyan/90"
-              >
-                {m.cta}
-              </Link>
-            </div>
-          </Card>
+          </section>
         ))}
       </div>
     </div>
