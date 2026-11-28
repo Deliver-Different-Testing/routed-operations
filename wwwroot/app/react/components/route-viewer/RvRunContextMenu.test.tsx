@@ -5,6 +5,7 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import { RvRunContextMenu } from './RvRunContextMenu';
+import type { BulkRun } from '../../services/routeViewerService';
 
 function renderMenu(over: Partial<Parameters<typeof RvRunContextMenu>[0]> = {}) {
   const defaults = {
@@ -52,8 +53,16 @@ describe('RvRunContextMenu', () => {
     expect(screen.queryByText('Transfer Route')).toBeNull();
   });
 
-  it('disables Pre-assign Run for negative runId', () => {
+  // Cheetah R2: a CAPS route run (runId = -RouteId) can be pre-assigned;
+  // it used to be disabled and Ruth had no way to put a driver on it.
+  it('enables Pre-assign Run for a route run (negative runId)', () => {
     renderMenu({ runId: -5 });
+    const btn = screen.getByText('Pre-assign Run').closest('button')!;
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('disables Pre-assign Run when there is no run (runId 0)', () => {
+    renderMenu({ runId: 0 });
     const btn = screen.getByText('Pre-assign Run').closest('button')!;
     expect(btn).toBeDisabled();
   });
@@ -333,6 +342,66 @@ describe('RvRunContextMenu run rows', () => {
     expect(run52.get('unassignedOnly')).toBeNull();
   });
 
+  // Fix round 2 (delta MUST FIX 2): Release only moves status 18 jobs to 0.
+  // A route run row that is not the pre-assigned row has none, so Release
+  // would do nothing (or, before the proc fix, reset in-progress jobs).
+  it('hides Release Run on a route run row with no pre-assigned jobs', () => {
+    renderMenu({ runId: -5, rows: [row({ id: -5, courierId: 7, courierCode: 'C7', preAssigned: 0 })] } as any);
+    expect(screen.queryByText('Release Run')).toBeNull();
+  });
+
+  it('shows Release Run on the pre-assigned row of a route run', () => {
+    renderMenu({ runId: -5, rows: [row({ id: -5, courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
+    expect(screen.getByText('Release Run')).toBeInTheDocument();
+  });
+
+  it('keeps Release Run on a normal run row whatever its pre-assign flag (unchanged)', () => {
+    renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 0 })] } as any);
+    expect(screen.getByText('Release Run')).toBeInTheDocument();
+  });
+
+  // Fix round 3 B3/B5: rows in the shape RVW_stpBulkRuns_2 returns through
+  // /api/runviewer/runs (BulkRun), values from dbtests/06 on local NZ after
+  // 20261128100600: route -1 splits courier 40 into a despatched row
+  // (PreAssigned 0, LIVE) and a status-18 row (PreAssigned 1, READY).
+  const routeRow = (over: Partial<BulkRun> = {}): BulkRun => ({
+    id: -1, name: 'Route 1', area: null, suburbs: null, fromCities: null,
+    toLocationName: null, velocity: 'red', hashKey: null, status: 'LIVE', jobs: 1, incompleteJobs: 1,
+    totalPickup: 1, incompletePickup: 1, hasReturns: false, returnsTotal: 0, isMissing: false,
+    preAssigned: 0, isActive: 1, courierId: 40, courierName: 'Courier 40', courierCode: '40',
+    courierPercentageFormatted: null, courierOnlineStatus: null, courierOfflineMins: null,
+    agentName: null, isNpAgent: false, ...over,
+  });
+
+  it('a despatched route run row (PreAssigned 0, has a driver) offers Re-assign and Unassign driver but not Release', () => {
+    renderMenu({ runId: -1, rows: [routeRow()] } as any);
+    expect(screen.getByText('Re-assign to another driver')).toBeInTheDocument();
+    expect(screen.getByText('Unassign driver')).toBeInTheDocument();
+    expect(screen.queryByText('Pre-assign Run')).toBeNull();
+    expect(screen.queryByText('Release Run')).toBeNull();
+  });
+
+  it('the status-18 route run row (PreAssigned 1) offers Re-assign, Unassign driver and Release', () => {
+    renderMenu({ runId: -1, rows: [routeRow({ preAssigned: 1, status: 'READY' })] } as any);
+    expect(screen.getByText('Re-assign to another driver')).toBeInTheDocument();
+    expect(screen.getByText('Unassign driver')).toBeInTheDocument();
+    expect(screen.getByText('Release Run')).toBeInTheDocument();
+  });
+
+  it('a route run row with no driver offers Pre-assign Run only', () => {
+    renderMenu({ runId: -1, rows: [routeRow({ courierId: null, courierName: null, courierCode: null })] } as any);
+    expect(screen.getByText('Pre-assign Run')).toBeInTheDocument();
+    expect(screen.queryByText('Re-assign to another driver')).toBeNull();
+    expect(screen.queryByText('Release Run')).toBeNull();
+  });
+
+  it('a normal run row with a driver that is not pre-assigned keeps Pre-assign Run (unchanged)', () => {
+    renderMenu({ runId: 3103, rows: [routeRow({ id: 3103, name: 'RUN3103' })] } as any);
+    expect(screen.getByText('Pre-assign Run')).toBeInTheDocument();
+    expect(screen.queryByText('Re-assign to another driver')).toBeNull();
+    expect(screen.getByText('Release Run')).toBeInTheDocument();
+  });
+
   it('a pre-assigned row offers Re-assign to another driver and Unassign driver', () => {
     renderMenu({ runId: 41, rows: [row({ courierId: 7, courierCode: 'C7', preAssigned: 1 })] } as any);
     expect(screen.getByText('Re-assign to another driver')).toBeInTheDocument();
@@ -351,7 +420,7 @@ describe('RvRunContextMenu run rows', () => {
     await user.click(screen.getByText('Unassign driver'));
     await user.click(await screen.findByRole('button', { name: 'OK' }));
     await waitFor(() => expect(props.onDone).toHaveBeenCalled());
-    expect(sent).toEqual({ runId: 41, courierCode: 'C7' });
+    expect(sent).toEqual({ runId: 41, courierCode: 'C7', runDate: '2026-08-13' });
     expect(prompt).not.toHaveBeenCalled();
   });
 
@@ -368,7 +437,7 @@ describe('RvRunContextMenu run rows', () => {
     await user.click(await screen.findByText('Kay (K9)'));
     await user.click(screen.getByRole('button', { name: 'Re-assign' }));
     await waitFor(() => expect(props.onDone).toHaveBeenCalled());
-    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7' });
+    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7', runDate: '2026-08-13' });
     expect(prompt).not.toHaveBeenCalled();
   });
 
@@ -385,7 +454,7 @@ describe('RvRunContextMenu run rows', () => {
     await user.click(await screen.findByText('Kay (K9)'));
     await user.click(screen.getByRole('button', { name: 'Pre-assign' }));
     await waitFor(() => expect(props.onDone).toHaveBeenCalled());
-    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7' });
+    expect(sent).toEqual({ runId: 41, toCourierCode: 'K9', fromCourierCode: 'C7', runDate: '2026-08-13' });
     expect(prompt).not.toHaveBeenCalled();
   });
 

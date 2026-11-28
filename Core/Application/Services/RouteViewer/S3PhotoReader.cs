@@ -74,6 +74,58 @@ public class S3PhotoReader(
         return results;
     }
 
+    /// <summary>Cheetah R4 (2026-11-28): POD media for ONE leg of a job
+    /// family, keyed by S3 key so the caller can dedupe across legs.
+    /// Folder + key scheme as DespatchWeb JobPhotoService
+    /// (`{folder}/{yyyy}/{MM}/{jobId}-...`): each folder is tried in the
+    /// reference month, then the month before, then the month after, and
+    /// stops at the first month with a hit. Photos are filed by upload
+    /// month, so a leg finished near a month boundary can sit either side.
+    /// Throws InvalidOperationException when env S3Bucket is not set.</summary>
+    public virtual async Task<List<PodMediaObject>> GetLegPodMediaAsync(int jobId, DateTime deliveryReference, DateTime pickupReference)
+    {
+        var results = new List<PodMediaObject>();
+        var folders = new (string Folder, string Kind, DateTime Reference)[]
+        {
+            ("DeliveryPhotos", "Delivery photo", deliveryReference),
+            ("DeliverySignatures", "Signature", deliveryReference),
+            ("PickupPhotos", "Pickup photo", pickupReference),
+        };
+
+        foreach (var (folder, kind, reference) in folders)
+        {
+            var month = new DateTime(reference.Year, reference.Month, 1);
+            foreach (var m in new[] { month, month.AddMonths(-1), month.AddMonths(1) })
+            {
+                var listResp = await s3Client.ListObjectsV2Async(new ListObjectsV2Request
+                {
+                    BucketName = Bucket,
+                    Prefix = $"{folder}/{m.Year:0000}/{m.Month:00}/{jobId}-",
+                });
+                var objects = listResp?.S3Objects ?? new List<S3Object>();
+                if (objects.Count == 0) continue;
+
+                foreach (var obj in objects)
+                {
+                    try
+                    {
+                        using var getResp = await s3Client.GetObjectAsync(Bucket, obj.Key);
+                        using var ms = new MemoryStream();
+                        await getResp.ResponseStream.CopyToAsync(ms);
+                        results.Add(new PodMediaObject(obj.Key, kind, ms.ToArray()));
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Failed to read S3 object {Key}", obj.Key);
+                    }
+                }
+                break;
+            }
+        }
+
+        return results;
+    }
+
     /// <summary>Uploads a POD photo / delivery signature to S3.
     /// Key convention mirrors legacy BookController.SavePodPhoto:
     /// `DeliveryPhotos/{yyyy}/{MM}/{jobId}-DeliveryPhoto-{timestamp}`
@@ -209,3 +261,6 @@ public class S3PhotoReader(
         return results;
     }
 }
+
+/// <summary>One POD media object read from S3 (Cheetah R4).</summary>
+public record PodMediaObject(string Key, string Kind, byte[] Data);

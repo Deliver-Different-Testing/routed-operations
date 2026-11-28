@@ -15,6 +15,7 @@ import {
   buildRunFilterIdentity, pruneSelectedRunIds, rowKeyForJob, runIdOfKey, runRowJobFilters, runRowKey,
 } from '../../lib/runViewerSelection';
 import { resolveRunDropRoute } from '../../lib/runDropTarget';
+import { formatRunAssignToast } from '../../lib/assignmentToast';
 import { RvJobDetail } from '../../components/route-viewer/RvJobDetail';
 import { RvRunContextMenu } from '../../components/route-viewer/RvRunContextMenu';
 import { RvJobContextMenu } from '../../components/route-viewer/RvJobContextMenu';
@@ -806,9 +807,11 @@ export default function RunViewer() {
                       // #311/#326 + #816: `from` is the dropped-on ROW's
                       // courier, so only that half of a split run moves.
                       const from = run.courierCode ?? null;
-                      routeViewerService.preAssignRun(run.id, courierCode, from)
-                        .then(() => {
-                          toast.show(`Pre-assigned ${courierCode} to run ${run.name ?? run.id}.`);
+                      // Cheetah R2: runDate lets a route run (id < 0) resolve its jobs.
+                      routeViewerService.preAssignRun(run.id, courierCode, from, filters.runDate)
+                        .then((res) => {
+                          // F1: a route run reports moved / skipped / failed counts.
+                          toast.show(formatRunAssignToast(res, `Pre-assigned ${courierCode} to run ${run.name ?? run.id}.`));
                           runsQuery.refetch();
                         })
                         .catch((err) => toast.show(`Assign failed: ${err.message}`));
@@ -1226,6 +1229,7 @@ export default function RunViewer() {
                   extraRunJobs={extraRunJobs}
                   originLat={singleRun?.originLatitude ?? null}
                   originLng={singleRun?.originLongitude ?? null}
+                  runCourierId={singleRun?.courierId ?? null}
                 />
               </Panel>
               <PanelResizeHandle className="h-1" />

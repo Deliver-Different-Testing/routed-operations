@@ -175,6 +175,23 @@ public class RunViewerJobController(
         }
     }
 
+    /// <summary>GET /api/runviewer/jobs/pod-media?jobId= - POD photos,
+    /// signatures and pickup photos by tucJob id across the job family
+    /// (Cheetah R4: CAPS route jobs have no bulkJobId).</summary>
+    [HttpGet("pod-media")]
+    public async Task<IActionResult> GetJobPodMedia([FromQuery] int jobId)
+    {
+        try
+        {
+            var media = await jobService.GetJobPodMediaAsync(jobId);
+            return Ok(new { response = media });
+        }
+        catch (NpLabelScopeException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = ex.Message });
+        }
+    }
+
     /// <summary>POST /api/runviewer/jobs/{jobId}/pod-photo - upload a
     /// POD photo or delivery signature. Multipart form-data with the
     /// file field named `file`; optional `isSignature=true` query

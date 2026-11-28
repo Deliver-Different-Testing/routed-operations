@@ -5,6 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import { routeViewerService, type BulkJob } from '../../services/routeViewerService';
 import { matchesViewMode, type ViewMode } from '../../lib/runViewerViewMode';
 import { runRowJobFilters } from '../../lib/runViewerSelection';
+import { formatRunAssignToast } from '../../lib/assignmentToast';
 import { AssignRouteDialog } from './AssignRouteDialog';
 import { TransferRouteDialog } from './TransferRouteDialog';
 
@@ -196,15 +197,18 @@ export function RvRunContextMenu({
     }
   };
 
-  const preAssignable = runId >= 0;
+  // Cheetah R2: CAPS route runs (runId = -RouteId) pre-assign too; the
+  // server resolves the route's jobs for runDate. Only 0 is not a run.
+  const preAssignable = runId !== 0;
 
   // #816: Pre-assign (and Re-assign on a pre-assigned row) picks the new
   // driver in the courier picker and sends the row's current driver as
-  // `from`, so RVW_stpPreAssignRun moves the row's jobs and nobody else's.
+  // `from`, so the row's jobs move and nobody else's. A route run is sent to
+  // the new driver at once and the toast gives the per-job counts (F1).
   // The picker shows the SP's error (e.g. an unknown courier code) inline.
   const pickCourier = async (toCode: string) => {
-    await routeViewerService.preAssignRun(runId, toCode, rowCourierCode);
-    return `Pre-assigned ${toCode} to run ${clicked.name ?? `#${runId}`}.`;
+    const res = await routeViewerService.preAssignRun(runId, toCode, rowCourierCode, runDate);
+    return formatRunAssignToast(res, `Pre-assigned ${toCode} to run ${clicked.name ?? `#${runId}`}.`);
   };
 
   // Unassign the row's own driver. The row knows its courier, so there is
@@ -218,7 +222,7 @@ export function RvRunContextMenu({
       danger: true,
     }))) return;
     try {
-      await routeViewerService.unassignRun(runId, rowCourierCode);
+      await routeViewerService.unassignRun(runId, rowCourierCode, runDate);
       toast.show(`Unassigned ${rowCourierCode} from run.`, 'success');
       onDone();
     } catch (e) { toast.show(`Unassign failed: ${(e as Error).message}`, 'error'); }
@@ -245,11 +249,11 @@ export function RvRunContextMenu({
     if (!courierCode) return;
     if (!(await confirm({
       title: 'Release run',
-      message: `Soft-release ${courierCode} from run #${runId}? The courier is dropped without hard-unassigning.`,
+      message: `Release run #${runId} to ${courierCode}? Its pre-assigned jobs are sent to ${courierCode}'s phone.`,
     }))) return;
     try {
-      await routeViewerService.releaseRun(runId, courierCode.trim());
-      toast.show(`Released ${courierCode} from run.`, 'success');
+      await routeViewerService.releaseRun(runId, courierCode.trim(), runDate);
+      toast.show(`Sent the run's pre-assigned jobs to ${courierCode}'s phone.`, 'success');
       onDone();
     } catch (e) { toast.show(`Release failed: ${(e as Error).message}`, 'error'); }
   };
@@ -288,7 +292,12 @@ export function RvRunContextMenu({
         <MenuItem onClick={doSendSms}>
           Send SMS to run's drivers
         </MenuItem>
-        {rowIsPreAssigned ? (
+        {/* Fix round 3 B3: a route run row (runId < 0) with a driver holds that
+            driver's live jobs, pre-assigned (status 18) or already despatched,
+            so it offers Re-assign and Unassign either way. Picking the same
+            driver is the resend path (restore, then despatch again). Normal
+            runs keep the menu as it was. */}
+        {rowIsPreAssigned || (runId < 0 && rowCourierCode) ? (
           <>
             <MenuItem onClick={() => setCourierPick('reassign')} disabled={!preAssignable}>
               Re-assign to another driver
@@ -302,9 +311,14 @@ export function RvRunContextMenu({
             Pre-assign Run
           </MenuItem>
         )}
-        <MenuItem onClick={doRelease}>
-          Release Run
-        </MenuItem>
+        {/* Release only acts on pre-assigned (status 18) jobs. A route run
+            row holds them only when it is the pre-assigned row; normal runs
+            keep the menu as it was. */}
+        {(runId >= 0 || rowIsPreAssigned) && (
+          <MenuItem onClick={doRelease}>
+            Release Run
+          </MenuItem>
+        )}
         <MenuItem onClick={() => { onClose(); toast.show('Validate Route pending (P4b).'); }}>
           Validate Route
         </MenuItem>

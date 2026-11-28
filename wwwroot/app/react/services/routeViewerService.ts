@@ -10,6 +10,8 @@
 
 import { buildQuery, request } from './api';
 import type { LabelPayload } from '../lib/labelPrint';
+import type { AssignmentOutcome } from '../lib/assignmentToast';
+import type { CourierPosition } from '../lib/runDriverMarker';
 
 // Row-shape mirrors of the C# DTOs. Match the JSON casing that Newtonsoft
 // emits from RoutedOperations (camelCase by default; `area` stays
@@ -351,6 +353,14 @@ export const routeViewerService = {
   getPodPhotos: (bulkJobId: number) =>
     unwrap<string[]>(`/runviewer/jobs/pod-photos${buildQuery({ bulkJobId })}`),
 
+  /** Cheetah R4: POD media by tucJob id across the job family (parent +
+   *  child legs), for jobs with no bulkJobId (CAPS route jobs). `data` is
+   *  base64; `kind` is "Delivery photo", "Signature" or "Pickup photo". */
+  getPodMedia: (jobId: number) =>
+    unwrap<Array<{ jobId: number; jobNumber: string | null; kind: string; data: string }>>(
+      `/runviewer/jobs/pod-media${buildQuery({ jobId })}`,
+    ),
+
   // -----------------------------------------------------------------
   // Couriers
   // -----------------------------------------------------------------
@@ -396,7 +406,7 @@ export const routeViewerService = {
   /** Bounding-box query for the "All Couriers" map toggle. Returns every
    *  active courier with a GPS ping inside the given lat/lng envelope,
    *  plus their vehicle type + code for the flag label. Wraps
-   *  MAP_stpEnvelope via GET /runviewer/couriers/available. */
+   *  RVW_stpCourierPositions_Envelope via GET /runviewer/couriers/available. */
   getAvailableCouriers: (bounds: { minLng: number; minLat: number; maxLng: number; maxLat: number }) =>
     unwrap<Array<{
       courierId: number;
@@ -412,6 +422,14 @@ export const routeViewerService = {
         maxLng: bounds.maxLng,
         maxLat: bounds.maxLat,
       })}`,
+    ),
+
+  /** Cheetah R3: one courier's latest GPS fix (any day), so the selected
+   *  run's driver shows on the map even when the envelope set lacks them.
+   *  Null when there is no fix. Wraps RVW_stpCourierLastPosition. */
+  getCourierLastPosition: (courierId: number) =>
+    unwrap<CourierPosition | null>(
+      `/runviewer/couriers/last-position${buildQuery({ courierId })}`,
     ),
 
   // -----------------------------------------------------------------
@@ -612,9 +630,7 @@ export const routeViewerService = {
     jobIds: number[];
     targetType: 'Courier' | 'Agent' | 'NetworkPartner';
     targetId: number;
-  }) => unwrapPost<{
-    succeeded: number;
-    failed: number;
+  }) => unwrapPost<AssignmentOutcome & {
     errors: string[];
     targetType: string;
     targetId: number;
@@ -695,34 +711,42 @@ export const routeViewerService = {
       speedIds: (speedIds ?? []).join(',') || undefined,
     })}`),
 
-  /** Pre-assign an entire run to a courier via RVW_stpPreAssignRun.
-   *  Backs the drag-drop courier-onto-run flow (audit item 13). Pass
-   *  the previous courier code (if any) so the SP can release +
-   *  re-assign atomically. */
-  preAssignRun: (runId: number, toCourierCode: string, fromCourierCode?: string | null) =>
-    unwrapPost<string>('/runviewer/jobs/preassign-run', {
+  /** Pre-assign an entire run to a courier. Backs the drag-drop
+   *  courier-onto-run flow (audit item 13). Pass the previous courier
+   *  code (if any) so only that driver's jobs move.
+   *  Normal run: RVW_stpPreAssignRun, status 18, nothing sent; returns "ok".
+   *  Route run (runId < 0): the server runs RVW_stpTransferRun, which takes
+   *  the jobs off the old driver and sends them to the new one, and returns
+   *  the per-job counts for the toast (Cheetah F1). */
+  // Cheetah R2: runDate (yyyy-MM-dd) is required by the server when runId
+  // is negative (a CAPS route run, -RouteId); it is ignored for real runs.
+  preAssignRun: (runId: number, toCourierCode: string, fromCourierCode?: string | null, runDate?: string) =>
+    unwrapPost<AssignmentOutcome | string>('/runviewer/jobs/preassign-run', {
       runId,
       toCourierCode,
       fromCourierCode: fromCourierCode ?? null,
+      ...(runDate ? { runDate } : {}),
     }),
 
   /** Bulk-transfer every job on a run from one courier to another.
    *  Wraps RVW_stpTransferRun. Different from preAssignRun: this
    *  actually moves the jobs, not just pre-assigns. */
-  transferRun: (runId: number, toCourierCode: string, fromCourierCode?: string | null) =>
+  transferRun: (runId: number, toCourierCode: string, fromCourierCode?: string | null, runDate?: string) =>
     unwrapPost<string>('/runviewer/jobs/transfer-run', {
       runId,
       toCourierCode,
       fromCourierCode: fromCourierCode ?? null,
+      ...(runDate ? { runDate } : {}),
     }),
 
-  /** Soft release a courier from a run. Wraps RVW_stpReleaseRun. */
-  releaseRun: (runId: number, courierCode: string) =>
-    unwrapPost<string>('/runviewer/jobs/release-run', { runId, courierCode }),
+  /** Release To Courier: sends the run's pre-assigned jobs to the
+   *  courier's phone (status 18 -> 0, courier kept). Wraps RVW_stpReleaseRun. */
+  releaseRun: (runId: number, courierCode: string, runDate?: string) =>
+    unwrapPost<string>('/runviewer/jobs/release-run', { runId, courierCode, ...(runDate ? { runDate } : {}) }),
 
   /** Hard unassign a courier from a run. Wraps RVW_stpUnAssignRun. */
-  unassignRun: (runId: number, courierCode: string) =>
-    unwrapPost<string>('/runviewer/jobs/unassign-run', { runId, courierCode }),
+  unassignRun: (runId: number, courierCode: string, runDate?: string) =>
+    unwrapPost<string>('/runviewer/jobs/unassign-run', { runId, courierCode, ...(runDate ? { runDate } : {}) }),
 
   // -----------------------------------------------------------------
   // Job actions (T1.b endpoints wrapping RVW_stp* mutation SPs)

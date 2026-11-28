@@ -18,6 +18,11 @@ namespace RoutedOperations.API.Controllers;
 public class RunViewerAssignmentController(
     RouteViewerAssignmentService assignmentService) : BaseController
 {
+    // Cheetah R2: plain operator text, never field names.
+    internal const string PickRunMessage = "Pick a run first.";
+    internal const string PickDriverMessage = "Pick a driver first.";
+    internal const string NoDriverMessage = "This run has no driver to remove.";
+
     /// <summary>GET /api/runviewer/jobs/{jobId}/assignable-targets -
     /// initial 3-bucket picker load.</summary>
     [HttpGet("{jobId:int}/assignable-targets")]
@@ -114,19 +119,24 @@ public class RunViewerAssignmentController(
     }
 
     /// <summary>POST /api/runviewer/jobs/preassign-run - drag-drop
-    /// entry point. Pre-assigns a whole run to a courier via
-    /// RVW_stpPreAssignRun. Optional FromCourierCode carries the
-    /// previous assignee so the SP can release + reassign atomically.</summary>
+    /// entry point. Normal run: RVW_stpPreAssignRun (status 18), returns
+    /// "ok". Route run (RunId &lt; 0): RVW_stpTransferRun (restore, then
+    /// despatch), returns the per-job outcome. Optional FromCourierCode
+    /// limits it to that courier's jobs.</summary>
     [HttpPost("preassign-run")]
     [Authorize(Policy = "RouteViewer.Admin")]
     public async Task<IActionResult> PreAssignRun([FromBody] PreAssignRunRequest request)
     {
-        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
-            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        // Cheetah R2: a CAPS route run has RunId = -RouteId; only 0 is invalid.
+        if (request.RunId == 0)
+            return BadRequest(new { message = PickRunMessage });
+        if (string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = PickDriverMessage });
         try
         {
-            await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode);
-            return Ok(new { response = "ok" });
+            // A route run returns what happened per job (moved / skipped / failed).
+            var outcome = await assignmentService.PreAssignRunAsync(request.RunId, request.FromCourierCode, request.ToCourierCode, request.RunDate);
+            return outcome == null ? Ok(new { response = "ok" }) : Ok(new { response = outcome });
         }
         catch (RunCourierRejectedException ex)
         {
@@ -145,12 +155,18 @@ public class RunViewerAssignmentController(
     [Authorize(Policy = "RouteViewer.Admin")]
     public async Task<IActionResult> TransferRun([FromBody] TransferRunRequest request)
     {
-        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
-            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        if (request.RunId == 0)
+            return BadRequest(new { message = PickRunMessage });
+        if (string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = PickDriverMessage });
         try
         {
-            await assignmentService.TransferRunAsync(request.RunId, request.FromCourierCode ?? string.Empty, request.ToCourierCode);
+            await assignmentService.TransferRunAsync(request.RunId, request.FromCourierCode ?? string.Empty, request.ToCourierCode, request.RunDate);
             return Ok(new { response = "ok" });
+        }
+        catch (RunCourierRejectedException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (NpLabelScopeException ex)
         {
@@ -164,12 +180,18 @@ public class RunViewerAssignmentController(
     [Authorize(Policy = "RouteViewer.Admin")]
     public async Task<IActionResult> ReleaseRun([FromBody] ReleaseRunRequest request)
     {
-        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
-            return BadRequest(new { message = "RunId + CourierCode required." });
+        if (request.RunId == 0)
+            return BadRequest(new { message = PickRunMessage });
+        if (string.IsNullOrWhiteSpace(request.CourierCode))
+            return BadRequest(new { message = NoDriverMessage });
         try
         {
-            await assignmentService.ReleaseRunAsync(request.RunId, request.CourierCode);
+            await assignmentService.ReleaseRunAsync(request.RunId, request.CourierCode, request.RunDate);
             return Ok(new { response = "ok" });
+        }
+        catch (RunCourierRejectedException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (NpLabelScopeException ex)
         {
@@ -183,11 +205,13 @@ public class RunViewerAssignmentController(
     [Authorize(Policy = "RouteViewer.Admin")]
     public async Task<IActionResult> UnAssignRun([FromBody] UnAssignRunRequest request)
     {
-        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.CourierCode))
-            return BadRequest(new { message = "RunId + CourierCode required." });
+        if (request.RunId == 0)
+            return BadRequest(new { message = PickRunMessage });
+        if (string.IsNullOrWhiteSpace(request.CourierCode))
+            return BadRequest(new { message = NoDriverMessage });
         try
         {
-            await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode);
+            await assignmentService.UnAssignRunAsync(request.RunId, request.CourierCode, request.RunDate);
             return Ok(new { response = "ok" });
         }
         catch (RunCourierRejectedException ex)
@@ -207,12 +231,18 @@ public class RunViewerAssignmentController(
     [Authorize(Policy = "RouteViewer.Admin")]
     public async Task<IActionResult> TransferOriginalRunOrder([FromBody] TransferOriginalRunOrderRequest request)
     {
-        if (request.RunId <= 0 || string.IsNullOrWhiteSpace(request.ToCourierCode))
-            return BadRequest(new { message = "RunId + ToCourierCode required." });
+        if (request.RunId == 0)
+            return BadRequest(new { message = PickRunMessage });
+        if (string.IsNullOrWhiteSpace(request.ToCourierCode))
+            return BadRequest(new { message = PickDriverMessage });
         try
         {
             await assignmentService.TransferOriginalRunOrderAsync(request.RunId, request.ToCourierCode);
             return Ok(new { response = "ok" });
+        }
+        catch (RunCourierRejectedException ex)
+        {
+            return BadRequest(new { message = ex.Message });
         }
         catch (NpLabelScopeException ex)
         {

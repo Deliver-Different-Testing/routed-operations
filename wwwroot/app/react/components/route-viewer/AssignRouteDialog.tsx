@@ -3,6 +3,8 @@ import { Modal } from '../common/Modal';
 import { Button } from '../common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { routeViewerService } from '../../services/routeViewerService';
+import { formatAssignmentToast, type AssignmentOutcome } from '../../lib/assignmentToast';
+import { ApiError } from '../../services/api';
 
 // Route Viewer Assign Route dialog (master Section 13.1 + P6). Unified
 // 3-way picker: Courier / Agent / Network Partner. NP users see courier
@@ -178,12 +180,21 @@ export function AssignRouteDialog({ jobIds, runLabel, anchorJobId, courierAction
         setError(result.errors[0] ?? `All ${result.failed} jobs failed to assign.`);
         return;
       }
-      const summary = result.failed > 0
+      // Cheetah R1: a courier assign that took jobs off another driver, or
+      // skipped completed jobs, says so ("Moved 3 jobs from 22 to 2.").
+      // F3: a job that failed after it came off the old driver is named.
+      const summary = bucket === 'courier' && ((result.moved ?? 0) > 0 || (result.rejected?.length ?? 0) > 0
+        || (result.failedJobs?.length ?? 0) > 0)
+        ? formatAssignmentToast(result)
+        : result.failed > 0
         ? `Assigned ${picked.label} as ${label} to ${result.succeeded} of ${jobIds.length} jobs on ${runLabel} (${result.failed} failed).`
         : `Assigned ${picked.label} as ${label} to ${runLabel} (${result.succeeded} jobs).`;
       onSuccess(summary);
     } catch (e) {
-      setError((e as Error).message);
+      // F3: when every job failed the server answers 500 with the result in
+      // the body; name the jobs now on nobody's phone instead of "HTTP 500".
+      const body = e instanceof ApiError ? (e.body as { response?: AssignmentOutcome } | null) : null;
+      setError(body?.response?.failedJobs?.length ? formatAssignmentToast(body.response) : (e as Error).message);
     } finally {
       setSubmitting(false);
     }

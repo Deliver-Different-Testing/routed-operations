@@ -11,23 +11,43 @@ import { routeViewerService } from '../../services/routeViewerService';
 // Silent-empty behaviour: shows nothing (returns null) when a job has
 // no photos yet. That keeps the Detail pane visually clean until POD
 // is actually recorded.
+//
+// Cheetah R4 (2026-11-28): a CAPS route job has no tblBulkJob row, so
+// with no bulkJobId the carousel reads GET /api/runviewer/jobs/pod-media
+// by tucJob id instead. That covers the parent and every child leg
+// (delivery photo, signature, pickup photo) and labels each slide with
+// its leg. Jobs that have a bulkJobId keep the original read.
 
 interface Props {
   bulkJobId: number | null;
+  /** tucJob id; used only when there is no bulkJobId. */
+  jobId?: number | null;
 }
 
-export function PodPhotoCarousel({ bulkJobId }: Props) {
+interface Slide {
+  data: string;
+  label: string | null;
+}
+
+export function PodPhotoCarousel({ bulkJobId, jobId }: Props) {
   const [idx, setIdx] = useState(0);
   const [lightbox, setLightbox] = useState(false);
-  const q = useQuery({
-    queryKey: ['rv-pod-photos', bulkJobId],
-    queryFn: () => routeViewerService.getPodPhotos(bulkJobId!),
-    enabled: bulkJobId != null,
+  const byBulk = bulkJobId != null && bulkJobId > 0;
+  const byJob = !byBulk && jobId != null && jobId > 0;
+  const q = useQuery<Slide[]>({
+    queryKey: byBulk ? ['rv-pod-photos', bulkJobId] : ['rv-pod-media', jobId],
+    queryFn: async () => byBulk
+      ? (await routeViewerService.getPodPhotos(bulkJobId!)).map((data) => ({ data, label: null }))
+      : (await routeViewerService.getPodMedia(jobId!)).map((m) => ({
+          data: m.data,
+          label: [m.jobNumber, m.kind].filter(Boolean).join(' ') || null,
+        })),
+    enabled: byBulk || byJob,
     staleTime: 60_000,
   });
 
   // Reset the visible slide whenever the job changes.
-  useEffect(() => { setIdx(0); setLightbox(false); }, [bulkJobId]);
+  useEffect(() => { setIdx(0); setLightbox(false); }, [bulkJobId, jobId]);
 
   useEffect(() => {
     if (!lightbox) return;
@@ -37,9 +57,10 @@ export function PodPhotoCarousel({ bulkJobId }: Props) {
   }, [lightbox]);
 
   const photos = q.data ?? [];
-  if (bulkJobId == null || photos.length === 0) return null;
+  if (!(byBulk || byJob) || photos.length === 0) return null;
 
-  const current = photos[idx];
+  const slide = photos[Math.min(idx, photos.length - 1)];
+  const current = slide.data;
   const prev = () => setIdx((i) => (i - 1 + photos.length) % photos.length);
   const next = () => setIdx((i) => (i + 1) % photos.length);
 
@@ -49,6 +70,7 @@ export function PodPhotoCarousel({ bulkJobId }: Props) {
         <div className="px-3 py-1.5 border-b border-border text-[10px] uppercase tracking-wide text-text-muted font-medium flex items-center gap-2">
           <span>POD Photos</span>
           <span className="text-text-primary">{idx + 1} / {photos.length}</span>
+          {slide.label && <span className="normal-case text-text-primary">{slide.label}</span>}
           <div className="ml-auto flex items-center gap-1">
             {photos.length > 1 && (
               <>
